@@ -56,9 +56,54 @@ public class AutomationSession : IDisposable
     /// <summary>
     /// The window element that is currently active for the /ui endpoint.
     /// When null, operations fall back to the application's main window.
-    /// Updated by the "switchwindow" operation.
+    /// Updated by the "switchwindow" operation or auto-follow detection.
     /// </summary>
     public AutomationElement? ActiveWindow { get; set; }
+
+    /// <summary>
+    /// When true (the default), element operations automatically switch focus to any
+    /// new top-level window that opens within the application after the session started,
+    /// without requiring an explicit "switchwindow" call.
+    /// </summary>
+    public bool AutoFollowNewWindows { get; set; } = true;
+
+    // Tracks window handles seen so far; new ones trigger auto-follow.
+    private readonly HashSet<IntPtr> _seenWindowHandles = new();
+    private readonly object _windowLock = new();
+
+    /// <summary>
+    /// Seeds the set of known window handles with the initial application windows,
+    /// so that windows already open at launch are not treated as "new" later.
+    /// </summary>
+    internal void SeedWindowHandles(IEnumerable<IntPtr> handles)
+    {
+        lock (_windowLock)
+            foreach (var h in handles)
+                _seenWindowHandles.Add(h);
+    }
+
+    /// <summary>
+    /// Inspects <paramref name="currentWindows"/>, registers their handles as known,
+    /// and returns the first window whose handle was not previously seen.
+    /// Returns null when all windows were already known.
+    /// </summary>
+    internal AutomationElement? ClaimFirstNewWindow(AutomationElement[] currentWindows)
+    {
+        lock (_windowLock)
+        {
+            AutomationElement? newest = null;
+            foreach (var w in currentWindows)
+            {
+                IntPtr h;
+                try { h = w.Properties.NativeWindowHandle.Value; }
+                catch { continue; }
+
+                if (h != IntPtr.Zero && _seenWindowHandles.Add(h))
+                    newest = w;
+            }
+            return newest;
+        }
+    }
 
     /// <summary>
     /// Caches a UI element and returns a stable string ID for it.
