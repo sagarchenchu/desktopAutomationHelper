@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DesktopAutomationDriver.Tests/DesktopAutomationDriver.Tests.csproj" />
+    <Project Path="src/DesktopAutomationDriver/DesktopAutomationDriver.csproj" />
+  </Folder>
+</Solution>
