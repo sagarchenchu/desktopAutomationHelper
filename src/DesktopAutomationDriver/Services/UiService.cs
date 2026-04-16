@@ -107,6 +107,7 @@ public class UiService : IUiService
             "getcontroltype" => GetControlType(request),
             "getselected"    => GetSelected(request),
             "gettable"       => GetTable(request),
+            "gettabledata"   => GetTable(request),
             "gettableheaders"=> GetTableHeaders(request),
 
             // ----- Position Comparison -----
