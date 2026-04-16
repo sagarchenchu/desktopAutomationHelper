@@ -356,7 +356,13 @@ public sealed class RecordingOverlayWindow : Form
 
         // ── Interactive actions ──────────────────────────────────────────────
         AddActionItem(menu, "Click", element, elementInfo, ActionType.Click,
-            () => element?.Click());
+            () =>
+            {
+                if (element?.Patterns.Invoke.IsSupported == true)
+                    element.Patterns.Invoke.Pattern.Invoke();
+                else
+                    element?.Click();
+            });
         AddActionItem(menu, "Double Click", element, elementInfo, ActionType.DoubleClick,
             () => element?.DoubleClick());
         AddActionItem(menu, "Hover", element, elementInfo, ActionType.Hover,
@@ -386,11 +392,25 @@ public sealed class RecordingOverlayWindow : Form
         AddQueryItem(menu, "Is Disabled", element, elementInfo, ActionType.IsDisabled,
             () => element != null && !element.IsEnabled);
 
-        // ── Children submenu (for container controls) ────────────────────────
-        if (element != null && IsContainer(element.ControlType))
+        // Is Editable — only for Edit controls (text boxes)
+        if (element != null && element.ControlType == ControlType.Edit)
+        {
+            AddQueryItem(menu, "Is Editable", element, elementInfo, ActionType.IsEditable,
+                () => element.Patterns.Value.IsSupported && element.Patterns.Value.Pattern?.IsReadOnly == false);
+        }
+
+        // ── Children submenu (for container controls and expandable edit/combo fields) ───
+        if (element != null && (IsContainer(element.ControlType) || element.Patterns.ExpandCollapse.IsSupported))
         {
             try
             {
+                // Expand the element first so that dropdown/popup children are visible in the UIA tree
+                if (!IsContainer(element.ControlType) && element.Patterns.ExpandCollapse.IsSupported)
+                {
+                    try { element.Patterns.ExpandCollapse.Pattern.Expand(); }
+                    catch { /* best effort */ }
+                }
+
                 var children = element.FindAllChildren();
                 if (children.Length > 0)
                 {

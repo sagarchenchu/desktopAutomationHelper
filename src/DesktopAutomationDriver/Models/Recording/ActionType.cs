@@ -12,5 +12,6 @@ public enum ActionType
     IsVisible,
     IsClickable,
     IsEnabled,
-    IsDisabled
+    IsDisabled,
+    IsEditable
 }
