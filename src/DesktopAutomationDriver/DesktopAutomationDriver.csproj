@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>DesktopAutomationDriver</AssemblyName>
+    <RootNamespace>DesktopAutomationDriver</RootNamespace>
+    <Description>Windows Desktop Application Automation Driver using UIA2 and UIA3</Description>
+    <Version>1.0.0</Version>
+    <!-- Allow building Windows-targeted code on non-Windows machines -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Self-contained executable settings -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FlaUI.Core" Version="5.0.0" />
+    <PackageReference Include="FlaUI.UIA2" Version="5.0.0" />
+    <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
+  </ItemGroup>
+
+</Project>
