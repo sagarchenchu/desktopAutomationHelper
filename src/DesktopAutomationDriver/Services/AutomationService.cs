@@ -142,11 +142,13 @@ public class AutomationService : IAutomationService
     {
         var element = GetElement(session, elementId);
 
-        // Try TextBox value first, fall back to Name property
+        // Try TextBox value first, fall back to Name property.
+        // Limit text retrieval to 1 MB to prevent excessive memory use.
+        const int MaxTextLength = 1_048_576;
         try
         {
             if (element.Patterns.Text.IsSupported)
-                return element.Patterns.Text.Pattern.DocumentRange.GetText(int.MaxValue);
+                return element.Patterns.Text.Pattern.DocumentRange.GetText(MaxTextLength);
         }
         catch { /* fall through */ }
 
