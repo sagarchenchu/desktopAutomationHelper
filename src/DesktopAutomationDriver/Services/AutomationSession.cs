@@ -126,7 +126,27 @@ public class AutomationSession : IDisposable
         if (_disposed) return;
         _disposed = true;
         _elementCache.Clear();
+        CloseAllApplicationWindows();
         try { Automation.Dispose(); } catch { /* best effort */ }
         try { Application.Dispose(); } catch { /* best effort */ }
+    }
+
+    /// <summary>
+    /// Sends a graceful close message to every top-level window of the application,
+    /// then kills the process as a safety net for windows that did not respond.
+    /// </summary>
+    private void CloseAllApplicationWindows()
+    {
+        try
+        {
+            var windows = Application.GetAllTopLevelWindows(Automation);
+            foreach (var w in windows)
+            {
+                try { w.Patterns.Window.PatternOrDefault?.Close(); }
+                catch { /* best effort */ }
+            }
+            try { Application.Kill(); } catch { /* best effort */ }
+        }
+        catch { /* best effort */ }
     }
 }

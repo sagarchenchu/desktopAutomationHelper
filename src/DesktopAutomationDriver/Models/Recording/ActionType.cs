@@ -9,8 +9,10 @@ public enum ActionType
     DoubleClick,
     Hover,
     Select,
+    Type,
     IsVisible,
     IsClickable,
     IsEnabled,
-    IsDisabled
+    IsDisabled,
+    IsEditable
 }

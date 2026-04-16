@@ -29,4 +29,10 @@ public class RecordedAction
     /// "Is Visible check on Submit Button: True").
     /// </summary>
     public string? Description { get; set; }
+
+    /// <summary>
+    /// The text value associated with the action (e.g. the string typed into an Edit field).
+    /// Null for actions that do not carry a value.
+    /// </summary>
+    public string? Value { get; set; }
 }
