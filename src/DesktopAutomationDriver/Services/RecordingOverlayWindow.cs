@@ -117,6 +117,9 @@ public sealed class RecordingOverlayWindow : Form
     {
         var screen = Screen.PrimaryScreen ?? Screen.AllScreens[0];
 
+        const int OverlayWidth  = 420;
+        const int OverlayHeight = 52;
+
         FormBorderStyle = FormBorderStyle.None;
         TopMost = true;
         ShowInTaskbar = false;
@@ -125,8 +128,12 @@ public sealed class RecordingOverlayWindow : Form
         BackColor = Color.FromArgb(20, 20, 20);
         ForeColor = Color.White;
 
-        // Narrow status bar at the top of the primary screen
-        Bounds = new Rectangle(screen.Bounds.Left, screen.Bounds.Top, screen.Bounds.Width, 52);
+        // Small widget pinned to the top-right corner of the primary screen
+        Bounds = new Rectangle(
+            screen.Bounds.Right - OverlayWidth,
+            screen.Bounds.Top,
+            OverlayWidth,
+            OverlayHeight);
 
         _statusLabel = new WinLabel
         {
@@ -134,8 +141,8 @@ public sealed class RecordingOverlayWindow : Form
             ForeColor = Color.White,
             BackColor = Color.Transparent,
             TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Segoe UI", 11f, FontStyle.Regular),
-            Text = "  Recording Helper  │  Ctrl+P = Passive  │  Ctrl+A = Assistive  │  Ctrl+S = Stop  "
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Regular),
+            Text = "● REC  P=Passive  A=Assistive  S=Stop"
         };
 
         Controls.Add(_statusLabel);
@@ -210,7 +217,13 @@ public sealed class RecordingOverlayWindow : Form
         var info = _service.GetElementAtPoint(pt);
         var name = info?.Name ?? info?.AutomationId ?? info?.ControlType ?? "unknown";
         var ct = info?.ControlType ?? string.Empty;
-        var text = $"  Assistive ACTIVE  │  Cursor on: [{ct}] {name}  │  Right-click for actions  │  Ctrl+S = Stop  ";
+
+        // Truncate the element name so the label always fits in the 420 px corner widget
+        // (≈ 9.5 pt Segoe UI → ~18 px/char → 22 chars keeps the label under ~400 px).
+        const int MaxNameLen = 22;
+        var displayName = name.Length > MaxNameLen ? name[..MaxNameLen] + "…" : name;
+
+        var text = $"● [{ct}] {displayName}  Right-click";
         if (_statusLabel.Text != text)
             _statusLabel.Text = text;
     }
@@ -250,8 +263,8 @@ public sealed class RecordingOverlayWindow : Form
     {
         _service.SetMode(mode);
         var label = mode == RecordingMode.Passive
-            ? "  Passive ACTIVE  │  Recording clicks & keys  │  Ctrl+A = Assistive  │  Ctrl+S = Stop  "
-            : "  Assistive ACTIVE  │  Right-click any element for available actions  │  Ctrl+P = Passive  │  Ctrl+S = Stop  ";
+            ? "● PASSIVE  Recording clicks & keys  S=Stop"
+            : "● ASSISTIVE  Right-click element  S=Stop";
         _statusLabel.Text = label;
     }
 

@@ -689,12 +689,60 @@ public class UiService : IUiService
 
     /// <summary>
     /// Returns the current window root for element searches.
-    /// Falls back to the application's main window when no window switch has occurred.
+    /// When <see cref="AutomationSession.AutoFollowNewWindows"/> is true (the default),
+    /// automatically switches to any top-level window that has opened in the application
+    /// since the session started (or since the last explicit window switch), and clears
+    /// a stale <see cref="AutomationSession.ActiveWindow"/> if the window has closed.
+    /// Falls back to the application's main window when no active window is set.
     /// </summary>
-    private AutomationElement GetWindowRoot(AutomationSession session) =>
-        session.ActiveWindow
+    private AutomationElement GetWindowRoot(AutomationSession session)
+    {
+        if (session.AutoFollowNewWindows)
+        {
+            try
+            {
+                var allWindows = session.Application.GetAllTopLevelWindows(session.Automation);
+
+                // Auto-follow: switch to the first window that has opened since last check.
+                var newWindow = session.ClaimFirstNewWindow(allWindows);
+                if (newWindow != null)
+                {
+                    session.ActiveWindow = newWindow;
+                    _logger.LogInformation(
+                        "Auto-followed new window: '{Title}'", SanitizeValue(newWindow.Name));
+                }
+
+                // Validate that the current ActiveWindow is still open; clear it if closed.
+                if (session.ActiveWindow != null)
+                {
+                    var activeHandle = SafeWindowHandle(session.ActiveWindow);
+                    if (activeHandle == IntPtr.Zero ||
+                        !allWindows.Any(w => SafeWindowHandle(w) == activeHandle))
+                    {
+                        _logger.LogInformation(
+                            "Active window closed; reverting to main application window.");
+                        session.ActiveWindow = null;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex,
+                    "Auto-follow window check failed; continuing with current active window.");
+            }
+        }
+
+        return session.ActiveWindow
             ?? session.Application.GetMainWindow(session.Automation)
             ?? throw new InvalidOperationException("Could not find the main window of the application.");
+    }
+
+    /// <summary>Returns the native window handle of an element, or IntPtr.Zero on failure.</summary>
+    private static IntPtr SafeWindowHandle(AutomationElement element)
+    {
+        try { return element.Properties.NativeWindowHandle.Value; }
+        catch { return IntPtr.Zero; }
+    }
 
     /// <summary>
     /// Finds an element using a locator with up to 5 s retry (500 ms interval).
