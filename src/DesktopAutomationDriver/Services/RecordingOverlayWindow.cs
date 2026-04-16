@@ -499,23 +499,38 @@ public sealed class RecordingOverlayWindow : Form
 
     internal static ElementInfo BuildElementInfo(AutomationElement element)
     {
-        var ct = element.ControlType.ToString();
+        string ct;
+        try { ct = element.ControlType.ToString(); }
+        catch (Exception) { ct = string.Empty; }
+
+        string? name = null;
+        try { name = element.Name; } catch (Exception) { }
+
+        string? automationId = null;
+        try { automationId = element.AutomationId; } catch (Exception) { }
+
+        string? className = null;
+        try { className = element.ClassName; } catch (Exception) { }
+
+        string? boundingRect = null;
+        try { boundingRect = element.BoundingRectangle.ToString(); } catch (Exception) { }
+
         var info = new ElementInfo
         {
-            Name = element.Name,
-            AutomationId = element.AutomationId,
-            ClassName = element.ClassName,
+            Name = name,
+            AutomationId = automationId,
+            ClassName = className,
             ControlType = ct,
-            BoundingRectangle = element.BoundingRectangle.ToString()
+            BoundingRectangle = boundingRect
         };
 
         // Build the best possible XPath hint
-        if (!string.IsNullOrEmpty(element.AutomationId))
-            info.SuggestedXPath = $"//{ct}[@AutomationId='{element.AutomationId}']";
-        else if (!string.IsNullOrEmpty(element.Name))
-            info.SuggestedXPath = $"//{ct}[@Name='{element.Name}']";
-        else if (!string.IsNullOrEmpty(element.ClassName))
-            info.SuggestedXPath = $"//{ct}[@ClassName='{element.ClassName}']";
+        if (!string.IsNullOrEmpty(automationId))
+            info.SuggestedXPath = $"//{ct}[@AutomationId='{automationId}']";
+        else if (!string.IsNullOrEmpty(name))
+            info.SuggestedXPath = $"//{ct}[@Name='{name}']";
+        else if (!string.IsNullOrEmpty(className))
+            info.SuggestedXPath = $"//{ct}[@ClassName='{className}']";
 
         return info;
     }
