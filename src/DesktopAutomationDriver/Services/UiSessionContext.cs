@@ -52,7 +52,8 @@ public class UiSessionContext : IUiSessionContext, IDisposable
                 sessionId, app, automation, "UIA3", exePath, null);
 
             _activeSession = session;
-            _logger.LogInformation("UI session launched for: {ExePath}", exePath);
+            _logger.LogInformation("UI session launched for: {ExePath}",
+                SanitizePath(exePath));
             return session;
         }
     }
@@ -75,4 +76,8 @@ public class UiSessionContext : IUiSessionContext, IDisposable
         _disposed = true;
         Close();
     }
+
+    private static string SanitizePath(string? path) =>
+        System.Text.RegularExpressions.Regex.Replace(
+            path ?? string.Empty, @"[\r\n\t]", "_");
 }

@@ -78,7 +78,7 @@ public class UiService : IUiService
         if (string.IsNullOrWhiteSpace(request.Operation))
             throw new ArgumentException("'operation' is required.");
 
-        _logger.LogDebug("UI operation: {Operation}", request.Operation);
+        _logger.LogDebug("UI operation: {Operation}", SanitizeValue(request.Operation));
 
         return request.Operation.ToLowerInvariant() switch
         {
@@ -422,25 +422,25 @@ public class UiService : IUiService
     private object? IsRightOf(UiRequest req)
     {
         var (r1, r2) = GetTwoRects(req);
-        return new { result = r1.Left >= r2.Right };
+        return new { isRightOf = r1.Left >= r2.Right };
     }
 
     private object? IsLeftOf(UiRequest req)
     {
         var (r1, r2) = GetTwoRects(req);
-        return new { result = r1.Right <= r2.Left };
+        return new { isLeftOf = r1.Right <= r2.Left };
     }
 
     private object? IsAbove(UiRequest req)
     {
         var (r1, r2) = GetTwoRects(req);
-        return new { result = r1.Bottom <= r2.Top };
+        return new { isAbove = r1.Bottom <= r2.Top };
     }
 
     private object? IsBelow(UiRequest req)
     {
         var (r1, r2) = GetTwoRects(req);
-        return new { result = r1.Top >= r2.Bottom };
+        return new { isBelow = r1.Top >= r2.Bottom };
     }
 
     private object? GetPosition(UiRequest req)
@@ -619,7 +619,16 @@ public class UiService : IUiService
         var locator = RequireLocator(req);
         var session = RequireSession();
         var root = GetWindowRoot(session);
+        return FindLocatorWithRetry(session, root, locator);
+    }
 
+    /// <summary>
+    /// Finds an element by <paramref name="locator"/> with up to 5 s retry.
+    /// Used directly when a locator is already in hand (e.g. locator2 lookups).
+    /// </summary>
+    private AutomationElement FindLocatorWithRetry(
+        AutomationSession session, AutomationElement root, UiLocator locator)
+    {
         var deadline = DateTime.UtcNow + DefaultRetry;
         while (true)
         {
@@ -713,9 +722,8 @@ public class UiService : IUiService
         var root = GetWindowRoot(session);
 
         var e1 = FindWithRetry(req);
-        // Find the second element using locator2.
-        var req2 = new UiRequest { Operation = req.Operation, Locator = req.Locator2 };
-        var e2 = FindWithRetry(req2);
+        // Find the second element directly by its locator (no UiRequest wrapper needed).
+        var e2 = FindLocatorWithRetry(session, root, req.Locator2);
 
         return (e1.BoundingRectangle, e2.BoundingRectangle);
     }
@@ -884,4 +892,12 @@ public class UiService : IUiService
             return (VirtualKeyShort)('0' + (c - '0'));
         return null;
     }
+
+    /// <summary>
+    /// Strips control characters from a user-supplied string before it is
+    /// written to a log message to prevent log-injection attacks.
+    /// </summary>
+    private static string SanitizeValue(string? value) =>
+        System.Text.RegularExpressions.Regex.Replace(
+            value ?? string.Empty, @"[\r\n\t]", "_");
 }
