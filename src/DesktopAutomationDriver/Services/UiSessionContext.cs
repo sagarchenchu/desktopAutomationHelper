@@ -59,6 +59,44 @@ public class UiSessionContext : IUiSessionContext, IDisposable
     }
 
     /// <inheritdoc/>
+    public AutomationSession Attach(int processId)
+    {
+        lock (_lock)
+        {
+            if (_activeSession != null)
+            {
+                _logger.LogInformation(
+                    "Closing existing UI session before attaching to process {ProcessId}.", processId);
+                _activeSession.Dispose();
+                _activeSession = null;
+            }
+
+            Process process;
+            try
+            {
+                process = Process.GetProcessById(processId);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot attach: no process with ID {processId} is running.", ex);
+            }
+
+            var automation = new UIA3Automation();
+            var app = FlaUIApplication.Attach(process);
+
+            var sessionId = Guid.NewGuid().ToString("N");
+            var session = new AutomationSession(
+                sessionId, app, automation, "UIA3", null, SanitizePath(process.ProcessName));
+
+            _activeSession = session;
+            _logger.LogInformation("UI session attached to process {ProcessId} ({ProcessName}).",
+                processId, SanitizePath(process.ProcessName));
+            return session;
+        }
+    }
+
+    /// <inheritdoc/>
     public void Close()
     {
         lock (_lock)
