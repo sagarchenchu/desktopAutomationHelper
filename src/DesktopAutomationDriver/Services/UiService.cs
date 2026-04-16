@@ -180,76 +180,94 @@ public class UiService : IUiService
             throw new ArgumentException("'value' must be a partial window title for 'switchwindow'.");
 
         var session = _ctx.ActiveSession;
-        AutomationElement? match = null;
+        var deadline = DateTime.UtcNow + DefaultRetry;
 
         if (session != null)
         {
-            // Try the application's own top-level windows first (fast path).
-            match = session.Application.GetAllTopLevelWindows(session.Automation)
-                .FirstOrDefault(w =>
-                    w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
-
-            // Fall back to ALL desktop windows so callers can switch to any open window,
-            // including windows from other processes.
-            if (match == null)
+            // Retry loop: the target window may not yet be visible immediately after
+            // an action that opens it (e.g. a button click), so we poll until it appears.
+            AutomationElement? match;
+            while (true)
             {
-                var cf = session.Automation.ConditionFactory;
-                match = session.Automation.GetDesktop()
-                    .FindAllChildren(cf.ByControlType(ControlType.Window))
-                    .FirstOrDefault(w =>
-                        w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+                match = FindWindowByTitle(session, req.Value);
+                if (match != null) break;
+                if (DateTime.UtcNow >= deadline)
+                    throw new InvalidOperationException(
+                        $"No window with title containing '{req.Value}' was found within {DefaultRetry.TotalSeconds}s.");
+                Thread.Sleep(RetryInterval);
             }
+
+            session.ActiveWindow = match;
+            match.SetForeground();
+            return new { title = match.Name };
         }
         else
         {
             // No active session: search all desktop windows using a temporary automation,
             // then attach to the found window's process to establish a session.
-            int processId = FindWindowProcessId(req.Value);
+            int processId = FindWindowProcessId(req.Value, deadline);
             session = _ctx.Attach(processId);
 
             // Re-find the window using the freshly created session's automation.
-            match = session.Application.GetAllTopLevelWindows(session.Automation)
-                .FirstOrDefault(w =>
-                    w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
-
+            var match = FindWindowByTitle(session, req.Value);
             if (match == null)
-            {
-                var cf = session.Automation.ConditionFactory;
-                match = session.Automation.GetDesktop()
-                    .FindAllChildren(cf.ByControlType(ControlType.Window))
-                    .FirstOrDefault(w =>
-                        w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
-            }
+                throw new InvalidOperationException(
+                    $"No window with title containing '{req.Value}' was found.");
+
+            session.ActiveWindow = match;
+            match.SetForeground();
+            return new { title = match.Name };
         }
+    }
 
-        if (match == null)
-            throw new InvalidOperationException(
-                $"No window with title containing '{req.Value}' was found.");
+    /// <summary>
+    /// Searches the session's application windows and then all desktop windows for one
+    /// whose title contains <paramref name="titleFragment"/>.
+    /// Returns null when no match is found.
+    /// </summary>
+    private static AutomationElement? FindWindowByTitle(AutomationSession session, string titleFragment)
+    {
+        // Try the application's own top-level windows first (fast path).
+        var match = session.Application.GetAllTopLevelWindows(session.Automation)
+            .FirstOrDefault(w => w.Name.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
 
-        session.ActiveWindow = match;
-        match.SetForeground();
-        return new { title = match.Name };
+        if (match != null) return match;
+
+        // Fall back to ALL desktop windows so callers can switch to any open window,
+        // including windows from other processes.
+        var cf = session.Automation.ConditionFactory;
+        return session.Automation.GetDesktop()
+            .FindAllChildren(cf.ByControlType(ControlType.Window))
+            .FirstOrDefault(w => w.Name.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
     /// Searches all top-level desktop windows for one whose title contains
     /// <paramref name="titleFragment"/> and returns its process ID.
-    /// Throws <see cref="InvalidOperationException"/> if no match is found.
+    /// Retries until <paramref name="deadline"/> to handle windows that open with a delay.
+    /// Throws <see cref="InvalidOperationException"/> if no match is found before the deadline.
     /// </summary>
-    private static int FindWindowProcessId(string titleFragment)
+    private static int FindWindowProcessId(string titleFragment, DateTime deadline)
     {
         using var tempAutomation = new UIA3Automation();
         var cf = tempAutomation.ConditionFactory;
-        var match = tempAutomation.GetDesktop()
-            .FindAllChildren(cf.ByControlType(ControlType.Window))
-            .FirstOrDefault(w =>
-                w.Name.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
 
-        if (match == null)
-            throw new InvalidOperationException(
-                $"No window with title containing '{titleFragment}' was found.");
+        while (true)
+        {
+            var match = tempAutomation.GetDesktop()
+                .FindAllChildren(cf.ByControlType(ControlType.Window))
+                .FirstOrDefault(w =>
+                    w.Name.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
 
-        return match.Properties.ProcessId.Value;
+            if (match != null)
+                return match.Properties.ProcessId.Value;
+
+            if (DateTime.UtcNow >= deadline)
+                throw new InvalidOperationException(
+                    $"No window with title containing '{titleFragment}' was found within {DefaultRetry.TotalSeconds}s.");
+
+            Thread.Sleep(RetryInterval);
+        }
     }
 
     private object? Refresh()
