@@ -399,6 +399,47 @@ public sealed class RecordingOverlayWindow : Form
                 () => element.Patterns.Value.IsSupported && element.Patterns.Value.Pattern?.IsReadOnly == false);
         }
 
+        // Type — only for Edit controls (text boxes)
+        if (element != null && element.ControlType == ControlType.Edit)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            var typeItem = new ToolStripMenuItem("Type…");
+            typeItem.Click += (_, _) =>
+            {
+                var text = ShowTypePrompt(elementInfo?.Name ?? elementInfo?.AutomationId ?? "element");
+                if (text == null) return; // user cancelled
+
+                var elementLabel = ElementInfo.GetLabel(elementInfo);
+                try
+                {
+                    if (element.Patterns.Value.IsSupported)
+                        element.Patterns.Value.Pattern.SetValue(text);
+                    else
+                    {
+                        element.Focus();
+                        System.Windows.Forms.SendKeys.SendWait(EscapeForSendKeys(text));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Type action failed for element \"{Label}\"", elementLabel);
+                }
+
+                // Use single quotes in the description to avoid breaking the string when text contains double quotes
+                var displayText = text.Replace("'", "\\'", StringComparison.Ordinal);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Type,
+                    Mode = RecordingMode.Assistive,
+                    Element = elementInfo,
+                    Value = text,
+                    Description = $"Type '{displayText}' into {elementLabel}"
+                });
+                UpdateStatusAfterAction($"Type into [{elementInfo?.ControlType}] {elementLabel}");
+            };
+            menu.Items.Add(typeItem);
+        }
+
         // ── Children submenu (for container controls and expandable edit/combo fields) ───
         if (element != null && (IsContainer(element.ControlType) || element.Patterns.ExpandCollapse.IsSupported))
         {
@@ -618,5 +659,94 @@ public sealed class RecordingOverlayWindow : Form
         }
         catch { /* best effort */ }
         return element;
+    }
+
+    /// <summary>
+    /// Escapes characters that have special meaning in <see cref="System.Windows.Forms.SendKeys"/>
+    /// (+, ^, %, ~, (, ), {, }, [, ]) by wrapping each one in curly braces.
+    /// </summary>
+    private static string EscapeForSendKeys(string text)
+    {
+        // Characters that SendKeys interprets as special commands
+        const string SpecialChars = "+^%~(){}[]";
+        var sb = new System.Text.StringBuilder(text.Length * 2);
+        foreach (var ch in text)
+        {
+            if (SpecialChars.Contains(ch, StringComparison.Ordinal))
+            {
+                sb.Append('{');
+                sb.Append(ch);
+                sb.Append('}');
+            }
+            else
+            {
+                sb.Append(ch);
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Shows a small modal input dialog prompting the user to enter text to type
+    /// into the focused element. Returns the entered text, or null if cancelled.
+    /// </summary>
+    private static string? ShowTypePrompt(string elementLabel)
+    {
+        string? result = null;
+
+        using var form = new Form
+        {
+            Text = "Type into element",
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterScreen,
+            Width = 380,
+            Height = 145,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            TopMost = true
+        };
+
+        var label = new WinLabel
+        {
+            Text = $"Text to type into \"{elementLabel}\":",
+            Left = 12,
+            Top = 12,
+            Width = 350,
+            AutoSize = true
+        };
+
+        var textBox = new System.Windows.Forms.TextBox
+        {
+            Left = 12,
+            Top = 35,
+            Width = 340
+        };
+
+        var okBtn = new System.Windows.Forms.Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Left = 192,
+            Top = 68,
+            Width = 80
+        };
+
+        var cancelBtn = new System.Windows.Forms.Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Left = 278,
+            Top = 68,
+            Width = 80
+        };
+
+        form.AcceptButton = okBtn;
+        form.CancelButton = cancelBtn;
+        form.Controls.AddRange([label, textBox, okBtn, cancelBtn]);
+
+        if (form.ShowDialog() == DialogResult.OK)
+            result = textBox.Text;
+
+        return result;
     }
 }
