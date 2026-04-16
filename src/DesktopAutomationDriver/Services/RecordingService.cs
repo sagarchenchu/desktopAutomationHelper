@@ -129,6 +129,16 @@ public sealed class RecordingService : IRecordingService, IDisposable
     {
         action.Timestamp = DateTimeOffset.UtcNow;
         action.Mode = _currentMode;
+
+        // Generate a fallback description if the caller did not supply one
+        if (string.IsNullOrEmpty(action.Description))
+        {
+            var elementLabel = ElementInfo.GetLabel(action.Element);
+            action.Description = action.QueryResult.HasValue
+                ? $"{action.ActionType} check on {elementLabel}: {action.QueryResult}"
+                : $"{action.ActionType} on {elementLabel}";
+        }
+
         lock (_lock) { _actions.Add(action); }
         _logger.LogDebug("Recorded action: {Type} on [{Element}]",
             action.ActionType, action.Element?.ControlType ?? "?");
