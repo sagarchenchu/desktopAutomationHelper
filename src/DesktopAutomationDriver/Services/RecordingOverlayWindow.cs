@@ -445,18 +445,40 @@ public sealed class RecordingOverlayWindow : Form
         {
             try
             {
-                // Expand the element first so that dropdown/popup children are visible in the UIA tree
-                if (!IsContainer(element.ControlType) && element.Patterns.ExpandCollapse.IsSupported)
+                // Always expand when the ExpandCollapse pattern is supported so that
+                // dropdown/popup children (e.g. ComboBox list items) become visible
+                // in the UIA tree before we query for children.
+                if (element.Patterns.ExpandCollapse.IsSupported)
                 {
                     try { element.Patterns.ExpandCollapse.Pattern.Expand(); }
                     catch { /* best effort */ }
+                    Thread.Sleep(100); // brief pause so list items materialize
                 }
 
-                var children = element.FindAllChildren();
+                // For ComboBox elements, retrieve the ListItem descendants (the actual
+                // dropdown options) rather than the immediate structural children
+                // (Edit, Button, List) which are not useful to the user.
+                AutomationElement[] children;
+                string childrenMenuLabel;
+                if (element.ControlType == ControlType.ComboBox && _automation != null)
+                {
+                    var cf = _automation.ConditionFactory;
+                    children = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
+                    childrenMenuLabel = children.Length > 0 ? "Options ▶" : "Children ▶";
+                    // Fall back to immediate children when no list items are found
+                    if (children.Length == 0)
+                        children = element.FindAllChildren();
+                }
+                else
+                {
+                    children = element.FindAllChildren();
+                    childrenMenuLabel = "Children ▶";
+                }
+
                 if (children.Length > 0)
                 {
                     menu.Items.Add(new ToolStripSeparator());
-                    var childrenMenu = new ToolStripMenuItem("Children ▶");
+                    var childrenMenu = new ToolStripMenuItem(childrenMenuLabel);
                     foreach (var child in children.Take(MaxChildrenToDisplay))
                     {
                         var childInfo = BuildElementInfo(child);
