@@ -115,8 +115,8 @@ static async Task RunProbeServerAsync(
             try
             {
                 // Only serve GET /verify; return 404 for everything else.
-                if (!req.Url!.AbsolutePath.Equals("/verify", StringComparison.OrdinalIgnoreCase) &&
-                    !req.Url.AbsolutePath.Equals("/verify/", StringComparison.OrdinalIgnoreCase))
+                var requestedPath = req.Url!.AbsolutePath.TrimEnd('/');
+                if (!requestedPath.Equals("/verify", StringComparison.OrdinalIgnoreCase))
                 {
                     resp.StatusCode = 404;
                     resp.Close();

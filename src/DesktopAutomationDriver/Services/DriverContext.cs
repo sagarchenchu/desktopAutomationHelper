@@ -43,16 +43,18 @@ public sealed class DriverContext : IDriverContext
 
     /// <summary>
     /// Maps a Windows username to a stable port in [PortBase, PortBase+PortRange).
-    /// Uses FNV-1a 32-bit so the mapping is the same across .NET versions.
+    /// Uses FNV-1a 32-bit over the UTF-8 bytes of the lower-cased username so
+    /// the mapping is stable across .NET versions and handles non-ASCII names.
     /// </summary>
     internal static int ComputeUserPort(string username)
     {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(username.ToLowerInvariant());
         unchecked
         {
             uint hash = 2166136261u; // FNV-1a 32-bit offset basis
-            foreach (char c in username.ToLowerInvariant())
+            foreach (var b in bytes)
             {
-                hash ^= (byte)(c & 0xFF);
+                hash ^= b;
                 hash *= 16777619u; // FNV prime
             }
             return PortBase + (int)(hash % (uint)PortRange);
