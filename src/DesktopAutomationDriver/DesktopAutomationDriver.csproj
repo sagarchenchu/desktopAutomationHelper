@@ -10,6 +10,8 @@
     <Version>1.0.0</Version>
     <!-- Allow building Windows-targeted code on non-Windows machines -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Required for the recording overlay (WinForms transparent window + Win32 hooks) -->
+    <UseWindowsForms>true</UseWindowsForms>
     <!-- Self-contained executable settings -->
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>

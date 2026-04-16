@@ -35,6 +35,7 @@ builder.Services.AddControllers()
 builder.Services.AddSingleton<IDriverContext>(driverContext);
 builder.Services.AddSingleton<ISessionManager, SessionManager>();
 builder.Services.AddSingleton<IAutomationService, AutomationService>();
+builder.Services.AddSingleton<IRecordingService, RecordingService>();
 
 builder.Logging.AddConsole();
 
@@ -181,6 +182,13 @@ static void LogStartupBanner(IDriverContext ctx, ILogger logger)
     sb.AppendLine($"║  POST http://localhost:{p}/session/{{id}}/element");
     sb.AppendLine($"║  POST http://localhost:{p}/session/{{id}}/elements");
     sb.AppendLine("║  ...and all element action / query routes");
+    sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
+    sb.AppendLine("║  RECORDING (require: Authorization: Bearer <token>)          ║");
+    sb.AppendLine("║                                                              ║");
+    sb.AppendLine($"║  POST http://localhost:{p}/record/start  <- open overlay");
+    sb.AppendLine($"║  GET  http://localhost:{p}/record/status");
+    sb.AppendLine($"║  GET  http://localhost:{p}/record/actions");
+    sb.AppendLine($"║  POST http://localhost:{p}/record/stop   <- export JSON");
     sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
     sb.AppendLine("║  PROBE (no auth)                                             ║");
     sb.AppendLine($"║  {probeInfo,-62}║");
