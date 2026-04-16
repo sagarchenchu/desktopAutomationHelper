@@ -89,7 +89,7 @@ public class SessionManager : ISessionManager, IDisposable
     {
         if (_sessions.TryRemove(sessionId, out var session))
         {
-            _logger.LogInformation("Closing session: {SessionId}", sessionId);
+            _logger.LogInformation("Closing session: {SessionId}", SanitizeId(sessionId));
             session.Dispose();
         }
     }
@@ -108,4 +108,11 @@ public class SessionManager : ISessionManager, IDisposable
         }
         _sessions.Clear();
     }
+
+    /// <summary>
+    /// Strips control characters from a session ID before including it in a
+    /// log message to prevent log-injection attacks.
+    /// </summary>
+    private static string SanitizeId(string id) =>
+        System.Text.RegularExpressions.Regex.Replace(id ?? string.Empty, @"[\r\n\t]", "_");
 }
