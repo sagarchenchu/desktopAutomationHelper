@@ -189,7 +189,9 @@ public sealed class RecordingService : IRecordingService, IDisposable
         try
         {
             var element = _automation.FromPoint(point);
-            return element == null ? null : RecordingOverlayWindow.BuildElementInfo(element);
+            if (element == null) return null;
+            element = RecordingOverlayWindow.DrillDownToElementAtPoint(element, point);
+            return RecordingOverlayWindow.BuildElementInfo(element);
         }
         catch (Exception ex)
         {

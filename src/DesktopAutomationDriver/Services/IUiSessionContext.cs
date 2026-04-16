@@ -20,6 +20,14 @@ public interface IUiSessionContext
     AutomationSession Launch(string exePath);
 
     /// <summary>
+    /// Attaches to an already-running process and creates a new active session.
+    /// Any previously active session is closed first.
+    /// </summary>
+    /// <param name="processId">The PID of the process to attach to.</param>
+    /// <returns>The newly created session.</returns>
+    AutomationSession Attach(int processId);
+
+    /// <summary>
     /// Closes the active session and terminates the application.
     /// </summary>
     void Close();

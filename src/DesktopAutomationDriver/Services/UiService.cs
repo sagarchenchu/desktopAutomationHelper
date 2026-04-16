@@ -6,6 +6,7 @@ using FlaUI.Core.Conditions;
 using FlaUI.Core.Definitions;
 using FlaUI.Core.Input;
 using FlaUI.Core.WindowsAPI;
+using FlaUI.UIA3;
 
 namespace DesktopAutomationDriver.Services;
 
@@ -106,6 +107,7 @@ public class UiService : IUiService
             "getcontroltype" => GetControlType(request),
             "getselected"    => GetSelected(request),
             "gettable"       => GetTable(request),
+            "gettabledata"   => GetTable(request),
             "gettableheaders"=> GetTableHeaders(request),
 
             // ----- Position Comparison -----
@@ -177,10 +179,48 @@ public class UiService : IUiService
         if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("'value' must be a partial window title for 'switchwindow'.");
 
-        var session = RequireSession();
-        var allWindows = session.Application.GetAllTopLevelWindows(session.Automation);
-        var match = allWindows.FirstOrDefault(w =>
-            w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+        var session = _ctx.ActiveSession;
+        AutomationElement? match = null;
+
+        if (session != null)
+        {
+            // Try the application's own top-level windows first (fast path).
+            match = session.Application.GetAllTopLevelWindows(session.Automation)
+                .FirstOrDefault(w =>
+                    w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+
+            // Fall back to ALL desktop windows so callers can switch to any open window,
+            // including windows from other processes.
+            if (match == null)
+            {
+                var cf = session.Automation.ConditionFactory;
+                match = session.Automation.GetDesktop()
+                    .FindAllChildren(cf.ByControlType(ControlType.Window))
+                    .FirstOrDefault(w =>
+                        w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+        else
+        {
+            // No active session: search all desktop windows using a temporary automation,
+            // then attach to the found window's process to establish a session.
+            int processId = FindWindowProcessId(req.Value);
+            session = _ctx.Attach(processId);
+
+            // Re-find the window using the freshly created session's automation.
+            match = session.Application.GetAllTopLevelWindows(session.Automation)
+                .FirstOrDefault(w =>
+                    w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+
+            if (match == null)
+            {
+                var cf = session.Automation.ConditionFactory;
+                match = session.Automation.GetDesktop()
+                    .FindAllChildren(cf.ByControlType(ControlType.Window))
+                    .FirstOrDefault(w =>
+                        w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+            }
+        }
 
         if (match == null)
             throw new InvalidOperationException(
@@ -189,6 +229,27 @@ public class UiService : IUiService
         session.ActiveWindow = match;
         match.SetForeground();
         return new { title = match.Name };
+    }
+
+    /// <summary>
+    /// Searches all top-level desktop windows for one whose title contains
+    /// <paramref name="titleFragment"/> and returns its process ID.
+    /// Throws <see cref="InvalidOperationException"/> if no match is found.
+    /// </summary>
+    private static int FindWindowProcessId(string titleFragment)
+    {
+        using var tempAutomation = new UIA3Automation();
+        var cf = tempAutomation.ConditionFactory;
+        var match = tempAutomation.GetDesktop()
+            .FindAllChildren(cf.ByControlType(ControlType.Window))
+            .FirstOrDefault(w =>
+                w.Name.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
+
+        if (match == null)
+            throw new InvalidOperationException(
+                $"No window with title containing '{titleFragment}' was found.");
+
+        return match.Properties.ProcessId.Value;
     }
 
     private object? Refresh()
@@ -629,12 +690,60 @@ public class UiService : IUiService
 
     /// <summary>
     /// Returns the current window root for element searches.
-    /// Falls back to the application's main window when no window switch has occurred.
+    /// When <see cref="AutomationSession.AutoFollowNewWindows"/> is true (the default),
+    /// automatically switches to any top-level window that has opened in the application
+    /// since the session started (or since the last explicit window switch), and clears
+    /// a stale <see cref="AutomationSession.ActiveWindow"/> if the window has closed.
+    /// Falls back to the application's main window when no active window is set.
     /// </summary>
-    private AutomationElement GetWindowRoot(AutomationSession session) =>
-        session.ActiveWindow
+    private AutomationElement GetWindowRoot(AutomationSession session)
+    {
+        if (session.AutoFollowNewWindows)
+        {
+            try
+            {
+                var allWindows = session.Application.GetAllTopLevelWindows(session.Automation);
+
+                // Auto-follow: switch to the first window that has opened since last check.
+                var newWindow = session.ClaimFirstNewWindow(allWindows);
+                if (newWindow != null)
+                {
+                    session.ActiveWindow = newWindow;
+                    _logger.LogInformation(
+                        "Auto-followed new window: '{Title}'", SanitizeValue(newWindow.Name));
+                }
+
+                // Validate that the current ActiveWindow is still open; clear it if closed.
+                if (session.ActiveWindow != null)
+                {
+                    var activeHandle = SafeWindowHandle(session.ActiveWindow);
+                    if (activeHandle == IntPtr.Zero ||
+                        !allWindows.Any(w => SafeWindowHandle(w) == activeHandle))
+                    {
+                        _logger.LogInformation(
+                            "Active window closed; reverting to main application window.");
+                        session.ActiveWindow = null;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex,
+                    "Auto-follow window check failed; continuing with current active window.");
+            }
+        }
+
+        return session.ActiveWindow
             ?? session.Application.GetMainWindow(session.Automation)
             ?? throw new InvalidOperationException("Could not find the main window of the application.");
+    }
+
+    /// <summary>Returns the native window handle of an element, or IntPtr.Zero on failure.</summary>
+    private static IntPtr SafeWindowHandle(AutomationElement element)
+    {
+        try { return element.Properties.NativeWindowHandle.Value; }
+        catch { return IntPtr.Zero; }
+    }
 
     /// <summary>
     /// Finds an element using a locator with up to 5 s retry (500 ms interval).

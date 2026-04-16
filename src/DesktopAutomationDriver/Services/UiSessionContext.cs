@@ -54,6 +54,52 @@ public class UiSessionContext : IUiSessionContext, IDisposable
             _activeSession = session;
             _logger.LogInformation("UI session launched for: {ExePath}",
                 SanitizePath(exePath));
+
+            // Seed known window handles so windows already open at launch are not
+            // treated as "new" the first time GetWindowRoot checks for new windows.
+            SeedKnownWindows(session);
+            return session;
+        }
+    }
+
+    /// <inheritdoc/>
+    public AutomationSession Attach(int processId)
+    {
+        lock (_lock)
+        {
+            if (_activeSession != null)
+            {
+                _logger.LogInformation(
+                    "Closing existing UI session before attaching to process {ProcessId}.", processId);
+                _activeSession.Dispose();
+                _activeSession = null;
+            }
+
+            Process process;
+            try
+            {
+                process = Process.GetProcessById(processId);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot attach: no process with ID {processId} is running.", ex);
+            }
+
+            var automation = new UIA3Automation();
+            var app = FlaUIApplication.Attach(process);
+
+            var sessionId = Guid.NewGuid().ToString("N");
+            var session = new AutomationSession(
+                sessionId, app, automation, "UIA3", null, SanitizePath(process.ProcessName));
+
+            _activeSession = session;
+            _logger.LogInformation("UI session attached to process {ProcessId} ({ProcessName}).",
+                processId, SanitizePath(process.ProcessName));
+
+            // Seed known window handles so windows already open at attach are not
+            // treated as "new" the first time GetWindowRoot checks for new windows.
+            SeedKnownWindows(session);
             return session;
         }
     }
@@ -80,4 +126,25 @@ public class UiSessionContext : IUiSessionContext, IDisposable
     private static string SanitizePath(string? path) =>
         System.Text.RegularExpressions.Regex.Replace(
             path ?? string.Empty, @"[\r\n\t]", "_");
+
+    /// <summary>
+    /// Populates the session's set of known window handles from the application's
+    /// current top-level windows, so those windows are not treated as "new" by the
+    /// auto-follow logic.
+    /// </summary>
+    private static void SeedKnownWindows(AutomationSession session)
+    {
+        try
+        {
+            var windows = session.Application.GetAllTopLevelWindows(session.Automation);
+            session.SeedWindowHandles(windows
+                .Select(w =>
+                {
+                    try { return w.Properties.NativeWindowHandle.Value; }
+                    catch { return IntPtr.Zero; }
+                })
+                .Where(h => h != IntPtr.Zero));
+        }
+        catch { /* best effort – auto-follow will still work, just may pick up existing windows once */ }
+    }
 }
