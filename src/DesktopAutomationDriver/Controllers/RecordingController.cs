@@ -1,4 +1,5 @@
 using DesktopAutomationDriver.Models.Recording;
+using DesktopAutomationDriver.Models.Request;
 using DesktopAutomationDriver.Models.Response;
 using DesktopAutomationDriver.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -31,30 +32,34 @@ public class RecordingController : ControllerBase
     /// POST /record/start
     ///
     /// Opens a transparent always-on-top status bar at the top of the primary screen.
-    /// The user then presses:
+    /// Optionally launches an application and/or auto-stops after a given number of seconds.
+    ///
+    /// Request body (all fields optional):
+    ///   exePath     – full path to an executable to launch before recording begins.
+    ///   outputPath  – directory where the JSON export file should be saved.
+    ///   waitSeconds – number of seconds before the recording auto-stops.
+    ///
+    /// The user can also interact with the overlay directly:
     ///   Ctrl+P  – Passive recording (mouse clicks / keyboard captured automatically)
     ///   Ctrl+A  – Assistive recording (right-click an element to choose an action)
     ///   Ctrl+S  – Stop and export to JSON
     /// </summary>
     [HttpPost("start")]
-    public IActionResult Start()
+    public IActionResult Start([FromBody] StartRecordingRequest? request = null)
     {
         try
         {
-            var error = _recordingService.StartRecording();
-            if (!string.IsNullOrEmpty(error))
-                return Conflict(WebDriverResponse<ErrorDetail>.Error(9, error, "recording already active"));
+            var result = _recordingService.StartRecording(request);
+            if (!string.IsNullOrEmpty(result.Error))
+                return Conflict(WebDriverResponse<ErrorDetail>.Error(9, result.Error, "recording already active"));
 
-            return Ok(WebDriverResponse<object>.Success(new
+            return Ok(new
             {
-                message = "Recording overlay opened.",
-                instructions = new
-                {
-                    ctrlP = "Passive recording — mouse clicks and keyboard events captured automatically.",
-                    ctrlA = "Assistive recording — right-click any element to select an action from a menu.",
-                    ctrlS = "Stop recording and save actions to a JSON file."
-                }
-            }));
+                success = true,
+                message = "Recording started.",
+                launch = result.Launch,
+                outputPath = result.OutputPath
+            });
         }
         catch (Exception ex)
         {

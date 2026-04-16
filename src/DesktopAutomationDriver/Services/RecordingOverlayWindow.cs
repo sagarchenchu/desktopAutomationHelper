@@ -298,11 +298,13 @@ public sealed class RecordingOverlayWindow : Form
     private void RecordPassiveClick(System.Drawing.Point pt, ActionType actionType)
     {
         var info = _service.GetElementAtPoint(pt);
+        var actionLabel = actionType == ActionType.DoubleClick ? "Double Click" : "Click";
         _service.AddAction(new RecordedAction
         {
             ActionType = actionType,
             Mode = RecordingMode.Passive,
-            Element = info
+            Element = info,
+            Description = BuildDescription(actionLabel, info)
         });
     }
 
@@ -390,7 +392,8 @@ public sealed class RecordingOverlayWindow : Form
                             {
                                 ActionType = ActionType.Select,
                                 Mode = RecordingMode.Assistive,
-                                Element = capturedChildInfo
+                                Element = capturedChildInfo,
+                                Description = BuildDescription("Select", capturedChildInfo)
                             });
                             try
                             {
@@ -433,7 +436,8 @@ public sealed class RecordingOverlayWindow : Form
             {
                 ActionType = actionType,
                 Mode = RecordingMode.Assistive,
-                Element = info
+                Element = info,
+                Description = BuildDescription(label, info)
             });
             UpdateStatusAfterAction($"{label} on [{info?.ControlType}] {info?.Name ?? "(element)"}");
         };
@@ -460,7 +464,8 @@ public sealed class RecordingOverlayWindow : Form
                 ActionType = actionType,
                 Mode = RecordingMode.Assistive,
                 Element = info,
-                QueryResult = result
+                QueryResult = result,
+                Description = $"{label} check on {ElementInfo.GetLabel(info)}: {result}"
             });
             UpdateStatusAfterAction($"{label}: {result}  │  [{info?.ControlType}] {info?.Name ?? "(element)"}");
         };
@@ -485,6 +490,12 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Builds a description for an interactive action, e.g. "Click on Login Button".
+    /// </summary>
+    private static string BuildDescription(string actionLabel, ElementInfo? info) =>
+        $"{actionLabel} on {ElementInfo.GetLabel(info)}";
 
     internal static ElementInfo BuildElementInfo(AutomationElement element)
     {

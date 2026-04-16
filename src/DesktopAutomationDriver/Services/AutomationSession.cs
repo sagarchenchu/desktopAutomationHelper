@@ -54,6 +54,13 @@ public class AutomationSession : IDisposable
     public DateTimeOffset CreatedAt { get; }
 
     /// <summary>
+    /// The window element that is currently active for the /ui endpoint.
+    /// When null, operations fall back to the application's main window.
+    /// Updated by the "switchwindow" operation.
+    /// </summary>
+    public AutomationElement? ActiveWindow { get; set; }
+
+    /// <summary>
     /// Caches a UI element and returns a stable string ID for it.
     /// </summary>
     public string CacheElement(AutomationElement element)

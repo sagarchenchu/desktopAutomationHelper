@@ -1,4 +1,5 @@
 using DesktopAutomationDriver.Models.Recording;
+using DesktopAutomationDriver.Models.Request;
 
 namespace DesktopAutomationDriver.Services;
 
@@ -18,9 +19,10 @@ public interface IRecordingService
 
     /// <summary>
     /// Opens the transparent recording overlay and installs low-level input hooks.
-    /// Returns an error message if recording is already active.
+    /// Optionally launches an application and schedules an automatic stop.
+    /// Returns a <see cref="StartRecordingResult"/> whose <c>Error</c> is non-null on failure.
     /// </summary>
-    string StartRecording();
+    StartRecordingResult StartRecording(StartRecordingRequest? request = null);
 
     /// <summary>
     /// Stops the active recording, writes the JSON export file and returns the result.
