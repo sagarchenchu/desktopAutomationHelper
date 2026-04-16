@@ -76,7 +76,7 @@ public class SessionManager : ISessionManager, IDisposable
             capabilities.AppName);
 
         _sessions[sessionId] = session;
-        _logger.LogInformation("Session created: {SessionId}", sessionId);
+        _logger.LogInformation("Session created: {SessionId}", SanitizeId(sessionId));
         return session;
     }
 
