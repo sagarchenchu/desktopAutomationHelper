@@ -735,12 +735,23 @@ public class UiService : IUiService
                 if (session.ActiveWindow != null)
                 {
                     var activeHandle = SafeWindowHandle(session.ActiveWindow);
-                    if (activeHandle == IntPtr.Zero ||
-                        !allWindows.Any(w => SafeWindowHandle(w) == activeHandle))
+                    if (activeHandle == IntPtr.Zero)
                     {
+                        // Element handle is zero — element is gone.
                         _logger.LogInformation(
                             "Active window closed; reverting to main application window.");
                         session.ActiveWindow = null;
+                    }
+                    else if (!allWindows.Any(w => SafeWindowHandle(w) == activeHandle))
+                    {
+                        // Handle not in this session's process — could be a cross-process window
+                        // set by SwitchWindow. Only clear if the element is truly inaccessible.
+                        if (!IsElementAlive(session.ActiveWindow))
+                        {
+                            _logger.LogInformation(
+                                "Active window closed; reverting to main application window.");
+                            session.ActiveWindow = null;
+                        }
                     }
                 }
             }
@@ -754,6 +765,21 @@ public class UiService : IUiService
         return session.ActiveWindow
             ?? session.Application.GetMainWindow(session.Automation)
             ?? throw new InvalidOperationException("Could not find the main window of the application.");
+    }
+
+    /// <summary>
+    /// Returns true when the element is still accessible via UI Automation.
+    /// Accessing a stale or destroyed element raises a COMException; this helper
+    /// treats any such exception as "element is gone".
+    /// </summary>
+    private static bool IsElementAlive(AutomationElement element)
+    {
+        try
+        {
+            _ = element.Properties.NativeWindowHandle.Value;
+            return true;
+        }
+        catch { return false; }
     }
 
     /// <summary>Returns the native window handle of an element, or IntPtr.Zero on failure.</summary>

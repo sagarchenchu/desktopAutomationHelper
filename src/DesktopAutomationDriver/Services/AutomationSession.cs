@@ -133,10 +133,12 @@ public class AutomationSession : IDisposable
 
     /// <summary>
     /// Sends a graceful close message to every top-level window of the application,
-    /// then kills the process as a safety net for windows that did not respond.
+    /// then kills the process (including its entire child-process tree) as a safety
+    /// net for windows that did not respond to the close message.
     /// </summary>
     private void CloseAllApplicationWindows()
     {
+        // Step 1: graceful close via the Window UIA pattern.
         try
         {
             var windows = Application.GetAllTopLevelWindows(Automation);
@@ -145,8 +147,21 @@ public class AutomationSession : IDisposable
                 try { w.Patterns.Window.PatternOrDefault?.Close(); }
                 catch { /* best effort */ }
             }
-            try { Application.Kill(); } catch { /* best effort */ }
         }
         catch { /* best effort */ }
+
+        // Step 2: kill the process and its entire child-process tree so that any
+        // windows not handled by the graceful close are forcefully terminated.
+        try
+        {
+            var proc = System.Diagnostics.Process.GetProcessById(Application.ProcessId);
+            if (!proc.HasExited)
+                proc.Kill(entireProcessTree: true);
+        }
+        catch { /* best effort */ }
+
+        // Step 3: fallback via FlaUI's own kill helper (handles the case where the
+        // process ID look-up above failed but the FlaUI handle is still valid).
+        try { Application.Kill(); } catch { /* best effort */ }
     }
 }
