@@ -25,4 +25,14 @@ public class ElementInfo
     /// element via the existing element-finding API.
     /// </summary>
     public string? SuggestedXPath { get; set; }
+
+    /// <summary>
+    /// Returns a human-readable label for the element using the best available
+    /// identifier: Name → AutomationId → ControlType → "(element)".
+    /// </summary>
+    public static string GetLabel(ElementInfo? info) =>
+        !string.IsNullOrEmpty(info?.Name) ? info.Name! :
+        !string.IsNullOrEmpty(info?.AutomationId) ? info.AutomationId! :
+        !string.IsNullOrEmpty(info?.ControlType) ? info.ControlType! :
+        "(element)";
 }

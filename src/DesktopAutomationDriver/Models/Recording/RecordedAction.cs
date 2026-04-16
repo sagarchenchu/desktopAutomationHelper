@@ -22,4 +22,11 @@ public class RecordedAction
     /// Null for interactive actions.
     /// </summary>
     public bool? QueryResult { get; set; }
+
+    /// <summary>
+    /// Human-readable description of the complete action, combining the action
+    /// type and the element it was performed on (e.g. "Click on Login Button",
+    /// "Is Visible check on Submit Button: True").
+    /// </summary>
+    public string? Description { get; set; }
 }
