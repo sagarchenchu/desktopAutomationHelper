@@ -5,6 +5,9 @@ using FlaUI.Core;
 using FlaUI.UIA2;
 using FlaUI.UIA3;
 
+// Alias to avoid ambiguity with System.Windows.Forms.Application (added via UseWindowsForms)
+using FlaUIApplication = FlaUI.Core.Application;
+
 namespace DesktopAutomationDriver.Services;
 
 /// <summary>
@@ -30,7 +33,7 @@ public class SessionManager : ISessionManager, IDisposable
             ? new UIA2Automation()
             : new UIA3Automation();
 
-        Application application;
+        FlaUIApplication application;
 
         if (!string.IsNullOrWhiteSpace(capabilities.App))
         {
@@ -44,7 +47,7 @@ public class SessionManager : ISessionManager, IDisposable
             if (!string.IsNullOrWhiteSpace(capabilities.AppWorkingDir))
                 launchInfo.WorkingDirectory = capabilities.AppWorkingDir;
 
-            application = Application.Launch(launchInfo);
+            application = FlaUIApplication.Launch(launchInfo);
         }
         else if (!string.IsNullOrWhiteSpace(capabilities.AppName))
         {
@@ -52,7 +55,7 @@ public class SessionManager : ISessionManager, IDisposable
             var process = Process.GetProcessesByName(capabilities.AppName).FirstOrDefault()
                 ?? throw new InvalidOperationException(
                     $"No running process found with name '{capabilities.AppName}'.");
-            application = Application.Attach(process);
+            application = FlaUIApplication.Attach(process);
         }
         else
         {

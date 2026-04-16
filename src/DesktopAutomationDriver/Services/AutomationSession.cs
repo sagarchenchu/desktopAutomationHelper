@@ -1,6 +1,9 @@
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 
+// Alias to avoid ambiguity with System.Windows.Forms.Application (added via UseWindowsForms)
+using FlaUIApplication = FlaUI.Core.Application;
+
 namespace DesktopAutomationDriver.Services;
 
 /// <summary>
@@ -14,7 +17,7 @@ public class AutomationSession : IDisposable
 
     public AutomationSession(
         string sessionId,
-        Application application,
+        FlaUIApplication application,
         AutomationBase automation,
         string uiaType,
         string? appPath,
@@ -33,7 +36,7 @@ public class AutomationSession : IDisposable
     public string SessionId { get; }
 
     /// <summary>FlaUI Application wrapper.</summary>
-    public Application Application { get; }
+    public FlaUIApplication Application { get; }
 
     /// <summary>FlaUI UIA2 or UIA3 automation backend.</summary>
     public AutomationBase Automation { get; }
