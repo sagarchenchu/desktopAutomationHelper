@@ -128,6 +128,7 @@ public class UiService : IUiService
             "check"       => Check(request),
             "uncheck"     => Uncheck(request),
             "select"      => Select(request),
+            "selectaid"   => SelectByAid(request),
 
             _ => throw new ArgumentException(
                 $"Unknown operation '{request.Operation}'. " +
@@ -573,6 +574,30 @@ public class UiService : IUiService
             items[idx].Patterns.SelectionItem.Pattern.Select();
         }
 
+        return null;
+    }
+
+    private object? SelectByAid(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("'value' (item AutomationId) is required for 'selectaid'.");
+
+        var element = FindWithRetry(req);
+        var cf = RequireSession().Automation.ConditionFactory;
+
+        // Expand the combo/list so that items become available.
+        element.Patterns.ExpandCollapse.PatternOrDefault?.Expand();
+        Thread.Sleep(100);
+
+        var items = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
+        var match = items.FirstOrDefault(i =>
+            i.AutomationId.Equals(req.Value, StringComparison.OrdinalIgnoreCase));
+
+        if (match == null)
+            throw new InvalidOperationException(
+                $"ComboBox item with AutomationId '{req.Value}' not found.");
+
+        match.Patterns.SelectionItem.Pattern.Select();
         return null;
     }
 
