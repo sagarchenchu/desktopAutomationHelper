@@ -18,7 +18,12 @@ var builder = WebApplication.CreateBuilder(args);
 // Can still be overridden by passing --urls on the command line or via the
 // ASPNETCORE_URLS environment variable for special cases.
 // -----------------------------------------------------------------------
-builder.WebHost.UseUrls($"http://0.0.0.0:{driverContext.MainPort}");
+// Bind on all IPv4 interfaces (0.0.0.0) AND the IPv6 loopback (::1) so that
+// both http://localhost:{port} and http://127.0.0.1:{port} work regardless of
+// whether the OS resolves "localhost" to IPv4 or IPv6.
+builder.WebHost.UseUrls(
+    $"http://0.0.0.0:{driverContext.MainPort}",
+    $"http://[::1]:{driverContext.MainPort}");
 
 // -----------------------------------------------------------------------
 // Services
@@ -75,15 +80,20 @@ await probeTask;
 static async Task RunProbeServerAsync(
     IDriverContext ctx, ILogger logger, CancellationToken ct)
 {
+    // Bind both "localhost" (hostname, covers IPv6 when OS resolves it that way)
+    // and "127.0.0.1" (explicit IPv4 loopback) so callers can use either form.
     const string prefix = "http://localhost:9102/";
+    const string prefix127 = "http://127.0.0.1:9102/";
     using var listener = new HttpListener();
     listener.Prefixes.Add(prefix);
+    listener.Prefixes.Add(prefix127);
 
     try
     {
         listener.Start();
         ctx.ProbePortActive = true;
-        logger.LogInformation("Probe server bound to http://localhost:9102/verify");
+        logger.LogInformation(
+            "Probe server bound to http://localhost:9102/verify and http://127.0.0.1:9102/verify");
     }
     catch (HttpListenerException ex)
     {
@@ -160,6 +170,9 @@ static void LogStartupBanner(IDriverContext ctx, ILogger logger)
     var probeInfo = ctx.ProbePortActive
         ? $"http://localhost:{ctx.ProbePort}/verify  (active)"
         : $"port {ctx.ProbePort} unavailable — use main port for /verify";
+    var probeInfo2 = ctx.ProbePortActive
+        ? $"http://127.0.0.1:{ctx.ProbePort}/verify  (active)"
+        : string.Empty;
 
     var p = ctx.MainPort;
     var sb = new System.Text.StringBuilder();
@@ -172,9 +185,12 @@ static void LogStartupBanner(IDriverContext ctx, ILogger logger)
     sb.AppendLine($"║  Bearer token  : {ctx.BearerToken,-44}║");
     sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
     sb.AppendLine("║  ENDPOINTS  (require: Authorization: Bearer <token>)         ║");
+    sb.AppendLine("║  Accessible via localhost OR 127.0.0.1                       ║");
     sb.AppendLine("║                                                              ║");
     sb.AppendLine($"║  GET  http://localhost:{p}/verify    <- no auth, returns token");
+    sb.AppendLine($"║  GET  http://127.0.0.1:{p}/verify");
     sb.AppendLine($"║  GET  http://localhost:{p}/status");
+    sb.AppendLine($"║  GET  http://127.0.0.1:{p}/status");
     sb.AppendLine($"║  POST http://localhost:{p}/session");
     sb.AppendLine($"║  GET  http://localhost:{p}/sessions");
     sb.AppendLine($"║  GET  http://localhost:{p}/session/{{id}}");
@@ -192,6 +208,8 @@ static void LogStartupBanner(IDriverContext ctx, ILogger logger)
     sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
     sb.AppendLine("║  PROBE (no auth)                                             ║");
     sb.AppendLine($"║  {probeInfo,-62}║");
+    if (!string.IsNullOrEmpty(probeInfo2))
+        sb.AppendLine($"║  {probeInfo2,-62}║");
     sb.AppendLine("╚══════════════════════════════════════════════════════════════╝");
     sb.AppendLine($"  Authorization header to use:");
     sb.AppendLine($"    Authorization: Bearer {ctx.BearerToken}");
