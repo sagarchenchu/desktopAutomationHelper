@@ -287,21 +287,28 @@ public class ElementController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
-            _logger.LogWarning(ex, "Operation failed in session {SessionId}", sessionId);
+            _logger.LogWarning(ex, "Operation failed in session {SessionId}", SanitizeId(sessionId));
             return NotFound(WebDriverResponse<ErrorDetail>.Error(
                 7, ex.Message, "no such element"));
         }
         catch (ArgumentException ex)
         {
-            _logger.LogWarning(ex, "Invalid argument in session {SessionId}", sessionId);
+            _logger.LogWarning(ex, "Invalid argument in session {SessionId}", SanitizeId(sessionId));
             return BadRequest(WebDriverResponse<ErrorDetail>.Error(
                 13, ex.Message, "invalid argument"));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected error in session {SessionId}", sessionId);
+            _logger.LogError(ex, "Unexpected error in session {SessionId}", SanitizeId(sessionId));
             return StatusCode(500, WebDriverResponse<ErrorDetail>.Error(
                 13, ex.Message, "unknown error"));
         }
     }
+
+    /// <summary>
+    /// Strips control characters from a session/element ID before it is
+    /// included in a log message to prevent log-injection attacks.
+    /// </summary>
+    private static string SanitizeId(string id) =>
+        System.Text.RegularExpressions.Regex.Replace(id ?? string.Empty, @"[\r\n\t]", "_");
 }

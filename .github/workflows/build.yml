@@ -10,6 +10,8 @@ jobs:
   build-and-test:
     name: Build and Test (Windows)
     runs-on: windows-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -46,6 +48,8 @@ jobs:
     name: Publish Standalone EXE (Windows)
     runs-on: windows-latest
     needs: build-and-test
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
