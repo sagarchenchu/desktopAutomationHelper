@@ -320,6 +320,11 @@ public sealed class RecordingOverlayWindow : Form
             _logger.LogWarning(ex, "Could not get element at point {Pt} for assistive menu", pt);
         }
 
+        // For container controls (e.g. WinForms MenuStrip/MenuBar), FromPoint may return
+        // the parent instead of the specific child under the cursor. Drill down one level.
+        if (element != null)
+            element = DrillDownToElementAtPoint(element, pt);
+
         var elementInfo = element != null ? BuildElementInfo(element) : null;
 
         var menu = new ContextMenuStrip { ShowImageMargin = false };
@@ -551,4 +556,34 @@ public sealed class RecordingOverlayWindow : Form
         ct == ControlType.Tab ||
         ct == ControlType.ComboBox ||
         ct == ControlType.ToolBar;
+
+    /// <summary>
+    /// When <paramref name="element"/> is a container (e.g. MenuBar, Menu, ToolBar) and
+    /// <c>automation.FromPoint</c> returned the parent instead of the child that is
+    /// visually under the cursor, drill down one level by matching child bounding rectangles.
+    /// Returns the most specific child found, or the original element when none matches.
+    /// </summary>
+    internal static AutomationElement DrillDownToElementAtPoint(
+        AutomationElement element, System.Drawing.Point pt)
+    {
+        if (!IsContainer(element.ControlType))
+            return element;
+        try
+        {
+            var children = element.FindAllChildren();
+            var child = children.FirstOrDefault(c =>
+            {
+                try
+                {
+                    var r = c.BoundingRectangle;
+                    return !r.IsEmpty && r.Contains(pt.X, pt.Y);
+                }
+                catch { return false; }
+            });
+            if (child != null)
+                return child;
+        }
+        catch { /* best effort */ }
+        return element;
+    }
 }

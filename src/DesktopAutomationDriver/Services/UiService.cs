@@ -6,6 +6,7 @@ using FlaUI.Core.Conditions;
 using FlaUI.Core.Definitions;
 using FlaUI.Core.Input;
 using FlaUI.Core.WindowsAPI;
+using FlaUI.UIA3;
 
 namespace DesktopAutomationDriver.Services;
 
@@ -177,10 +178,48 @@ public class UiService : IUiService
         if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("'value' must be a partial window title for 'switchwindow'.");
 
-        var session = RequireSession();
-        var allWindows = session.Application.GetAllTopLevelWindows(session.Automation);
-        var match = allWindows.FirstOrDefault(w =>
-            w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+        var session = _ctx.ActiveSession;
+        AutomationElement? match = null;
+
+        if (session != null)
+        {
+            // Try the application's own top-level windows first (fast path).
+            match = session.Application.GetAllTopLevelWindows(session.Automation)
+                .FirstOrDefault(w =>
+                    w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+
+            // Fall back to ALL desktop windows so callers can switch to any open window,
+            // including windows from other processes.
+            if (match == null)
+            {
+                var cf = session.Automation.ConditionFactory;
+                match = session.Automation.GetDesktop()
+                    .FindAllChildren(cf.ByControlType(ControlType.Window))
+                    .FirstOrDefault(w =>
+                        w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+        else
+        {
+            // No active session: search all desktop windows using a temporary automation,
+            // then attach to the found window's process to establish a session.
+            int processId = FindWindowProcessId(req.Value);
+            session = _ctx.Attach(processId);
+
+            // Re-find the window using the freshly created session's automation.
+            match = session.Application.GetAllTopLevelWindows(session.Automation)
+                .FirstOrDefault(w =>
+                    w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+
+            if (match == null)
+            {
+                var cf = session.Automation.ConditionFactory;
+                match = session.Automation.GetDesktop()
+                    .FindAllChildren(cf.ByControlType(ControlType.Window))
+                    .FirstOrDefault(w =>
+                        w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+            }
+        }
 
         if (match == null)
             throw new InvalidOperationException(
@@ -189,6 +228,27 @@ public class UiService : IUiService
         session.ActiveWindow = match;
         match.SetForeground();
         return new { title = match.Name };
+    }
+
+    /// <summary>
+    /// Searches all top-level desktop windows for one whose title contains
+    /// <paramref name="titleFragment"/> and returns its process ID.
+    /// Throws <see cref="InvalidOperationException"/> if no match is found.
+    /// </summary>
+    private static int FindWindowProcessId(string titleFragment)
+    {
+        using var tempAutomation = new UIA3Automation();
+        var cf = tempAutomation.ConditionFactory;
+        var match = tempAutomation.GetDesktop()
+            .FindAllChildren(cf.ByControlType(ControlType.Window))
+            .FirstOrDefault(w =>
+                w.Name.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
+
+        if (match == null)
+            throw new InvalidOperationException(
+                $"No window with title containing '{titleFragment}' was found.");
+
+        return match.Properties.ProcessId.Value;
     }
 
     private object? Refresh()
