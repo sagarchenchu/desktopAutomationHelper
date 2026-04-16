@@ -87,4 +87,22 @@ public class ModelTests
         var resp = new ElementResponse();
         Assert.Equal(string.Empty, resp.ElementId);
     }
+
+    [Fact]
+    public void VerifyResponse_DefaultRunningIsTrue()
+    {
+        var resp = new VerifyResponse();
+        Assert.True(resp.Running);
+    }
+
+    [Fact]
+    public void VerifyResponse_DefaultsAreEmptyOrZero()
+    {
+        var resp = new VerifyResponse();
+        Assert.Equal(string.Empty, resp.Username);
+        Assert.Equal(0, resp.Port);
+        Assert.Null(resp.ProbePort);
+        Assert.Equal(string.Empty, resp.Token);
+        Assert.Equal(string.Empty, resp.AuthorizationHeader);
+    }
 }
