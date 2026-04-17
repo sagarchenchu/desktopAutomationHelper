@@ -984,12 +984,17 @@ public class UiService : IUiService
 
     /// <summary>
     /// Attempts a single element search. Returns null when not found.
+    /// When <see cref="UiLocator.XPath"/> is set it is evaluated via <see cref="FindByXPath"/>;
+    /// otherwise the standard attribute-condition approach is used.
     /// </summary>
     private static AutomationElement? TryFindElement(
         AutomationElement root, AutomationSession session, UiLocator locator)
     {
         try
         {
+            if (!string.IsNullOrWhiteSpace(locator.XPath))
+                return FindByXPath(root, session, locator.XPath);
+
             var condition = BuildCondition(session, locator);
             return root.FindFirstDescendant(condition);
         }
@@ -997,6 +1002,265 @@ public class UiService : IUiService
         {
             return null;
         }
+    }
+
+    // =========================================================================
+    // XPath element finding
+    // =========================================================================
+
+    /// <summary>Represents one step in a parsed XPath expression.</summary>
+    private sealed class XPathStep
+    {
+        public bool IsDescendant { get; set; }
+        public string NodeName { get; set; } = "*";
+        public Dictionary<string, string> Attrs { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+        public int? Index { get; set; }
+    }
+
+    /// <summary>
+    /// Evaluates a simple XPath expression against the UIA tree rooted at
+    /// <paramref name="root"/> and returns the first matching element, or
+    /// <see langword="null"/> when no element matches.
+    /// </summary>
+    private static AutomationElement? FindByXPath(
+        AutomationElement root, AutomationSession session, string xpath)
+    {
+        var steps = ParseXPath(xpath);
+        var cf = session.Automation.ConditionFactory;
+
+        IReadOnlyList<AutomationElement> current = [root];
+
+        foreach (var step in steps)
+        {
+            var next = new List<AutomationElement>();
+            bool hasFilter = step.NodeName != "*" || step.Attrs.Count > 0;
+
+            foreach (var parent in current)
+            {
+                AutomationElement[] found;
+                if (hasFilter)
+                {
+                    var condition = BuildStepCondition(cf, step);
+                    found = step.IsDescendant
+                        ? parent.FindAllDescendants(condition)
+                        : parent.FindAllChildren(condition);
+                }
+                else
+                {
+                    found = step.IsDescendant
+                        ? parent.FindAllDescendants()
+                        : parent.FindAllChildren();
+                }
+
+                if (step.Index.HasValue)
+                {
+                    int idx = step.Index.Value - 1; // 1-based → 0-based
+                    if (idx >= 0 && idx < found.Length)
+                        next.Add(found[idx]);
+                }
+                else
+                {
+                    next.AddRange(found);
+                }
+            }
+
+            current = next;
+            if (current.Count == 0) return null;
+        }
+
+        return current.Count > 0 ? current[0] : null;
+    }
+
+    /// <summary>
+    /// Parses an XPath string into a list of <see cref="XPathStep"/> objects.
+    /// Supports <c>//</c> (descendant) and <c>/</c> (child) separators, node-name
+    /// filters, <c>[@Attr='value']</c> predicates (joined by <c>and</c>), and
+    /// <c>[n]</c> 1-based index selection.
+    /// </summary>
+    private static List<XPathStep> ParseXPath(string xpath)
+    {
+        xpath = xpath.Trim();
+        if (string.IsNullOrEmpty(xpath))
+            throw new ArgumentException("XPath expression is empty.");
+
+        var steps = new List<XPathStep>();
+        int i = 0;
+        bool firstToken = true;
+
+        while (i < xpath.Length)
+        {
+            bool isDescendant;
+
+            if (firstToken)
+            {
+                firstToken = false;
+                if (i + 1 < xpath.Length && xpath[i] == '/' && xpath[i + 1] == '/')
+                { isDescendant = true; i += 2; }
+                else if (xpath[i] == '/')
+                { isDescendant = false; i += 1; }
+                else
+                { isDescendant = true; } // no leading slash → treat as //
+            }
+            else
+            {
+                if (i + 1 < xpath.Length && xpath[i] == '/' && xpath[i + 1] == '/')
+                { isDescendant = true; i += 2; }
+                else if (xpath[i] == '/')
+                { isDescendant = false; i += 1; }
+                else
+                    break; // trailing slash or parse done
+            }
+
+            if (i >= xpath.Length) break;
+
+            var step = new XPathStep { IsDescendant = isDescendant };
+
+            // --- parse node name (up to '[' or '/') ---
+            int nameStart = i;
+            while (i < xpath.Length && xpath[i] != '[' && xpath[i] != '/')
+                i++;
+            step.NodeName = xpath[nameStart..i].Trim();
+            if (string.IsNullOrEmpty(step.NodeName))
+                step.NodeName = "*";
+
+            // --- parse predicates: [@Attr='val'] or [n] ---
+            while (i < xpath.Length && xpath[i] == '[')
+            {
+                i++; // skip '['
+                int start = i;
+                int depth = 1;
+                bool inSingle = false, inDouble = false;
+
+                while (i < xpath.Length && depth > 0)
+                {
+                    char c = xpath[i];
+                    if (!inSingle && !inDouble)
+                    {
+                        if (c == '\'') inSingle = true;
+                        else if (c == '"') inDouble = true;
+                        else if (c == '[') depth++;
+                        else if (c == ']') { depth--; if (depth == 0) break; }
+                    }
+                    else if (inSingle && c == '\'') inSingle = false;
+                    else if (inDouble && c == '"') inDouble = false;
+                    i++;
+                }
+
+                var content = xpath[start..i].Trim();
+                i++; // skip ']'
+
+                if (int.TryParse(content, out int idx))
+                    step.Index = idx;
+                else
+                    ParsePredicateContent(content, step.Attrs);
+            }
+
+            steps.Add(step);
+        }
+
+        if (steps.Count == 0)
+            throw new ArgumentException($"No valid steps found in XPath expression: '{xpath}'");
+
+        return steps;
+    }
+
+    /// <summary>
+    /// Parses the content of a <c>[@…]</c> predicate (possibly joined by <c>and</c>)
+    /// and adds the resulting attribute key/value pairs to <paramref name="attrs"/>.
+    /// </summary>
+    private static void ParsePredicateContent(
+        string content, Dictionary<string, string> attrs)
+    {
+        foreach (var raw in SplitByAnd(content))
+        {
+            var part = raw.Trim();
+            if (!part.StartsWith('@'))
+                throw new ArgumentException(
+                    $"Predicate '{part}' is not a valid attribute predicate. " +
+                    "Use @AttributeName='value' (e.g. @Name='OK' or @AutomationId='btn1').");
+
+            int eq = part.IndexOf('=');
+            if (eq < 0)
+                throw new ArgumentException(
+                    $"Predicate '{part}' is missing '='.");
+
+            var name  = part[1..eq].Trim();
+            var value = part[(eq + 1)..].Trim();
+
+            if ((value.StartsWith('\'') && value.EndsWith('\'')) ||
+                (value.StartsWith('"')  && value.EndsWith('"')))
+                value = value[1..^1];
+
+            attrs[name] = value;
+        }
+    }
+
+    /// <summary>
+    /// Splits a predicate string on the keyword <c> and </c> (case-insensitive),
+    /// respecting single- and double-quoted substrings.
+    /// </summary>
+    private static List<string> SplitByAnd(string content)
+    {
+        var result = new List<string>();
+        int start = 0;
+        bool inSingle = false, inDouble = false;
+
+        for (int i = 0; i < content.Length; i++)
+        {
+            char c = content[i];
+
+            if (!inSingle && !inDouble)
+            {
+                if (c == '\'') { inSingle = true; continue; }
+                if (c == '"')  { inDouble = true; continue; }
+
+                if (i + 5 <= content.Length &&
+                    content[i..].StartsWith(" and ", StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Add(content[start..i]);
+                    i += 4; // skip " and " (loop will add 1 more)
+                    start = i + 1;
+                }
+            }
+            else if (inSingle && c == '\'') inSingle = false;
+            else if (inDouble && c == '"')  inDouble = false;
+        }
+
+        result.Add(content[start..]);
+        return result;
+    }
+
+    /// <summary>
+    /// Builds a FlaUI condition from a single <see cref="XPathStep"/>.
+    /// When the step has no node-name filter and no attributes, a <see cref="TrueCondition"/>
+    /// is returned so that all elements are matched.
+    /// </summary>
+    private static ConditionBase BuildStepCondition(
+        ConditionFactory cf, XPathStep step)
+    {
+        var conditions = new List<ConditionBase>();
+
+        if (step.NodeName != "*")
+            conditions.Add(cf.ByControlType(ParseControlType(step.NodeName)));
+
+        foreach (var (key, value) in step.Attrs)
+        {
+            conditions.Add(key.ToLowerInvariant() switch
+            {
+                "name"         => cf.ByName(value),
+                "automationid" => cf.ByAutomationId(value),
+                "classname"    => cf.ByClassName(value),
+                "controltype"  => cf.ByControlType(ParseControlType(value)),
+                _ => throw new ArgumentException(
+                    $"Unsupported XPath attribute '@{key}'. " +
+                    "Supported: @Name, @AutomationId, @ClassName, @ControlType.")
+            });
+        }
+
+        return conditions.Count == 1
+                ? conditions[0]
+                : new AndCondition(conditions.ToArray());
     }
 
     /// <summary>
@@ -1020,7 +1284,7 @@ public class UiService : IUiService
         if (conditions.Count == 0)
             throw new ArgumentException(
                 "Locator must specify at least one property " +
-                "(name, automationId, className, or controlType).");
+                "(name, automationId, className, controlType, or xpath).");
 
         return conditions.Count == 1
             ? conditions[0]
@@ -1041,6 +1305,7 @@ public class UiService : IUiService
     private static string DescribeLocator(UiLocator l)
     {
         var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(l.XPath))         parts.Add($"xpath='{l.XPath}'");
         if (!string.IsNullOrWhiteSpace(l.Name))           parts.Add($"name='{l.Name}'");
         if (!string.IsNullOrWhiteSpace(l.AutomationId))   parts.Add($"automationId='{l.AutomationId}'");
         if (!string.IsNullOrWhiteSpace(l.ClassName))      parts.Add($"className='{l.ClassName}'");
