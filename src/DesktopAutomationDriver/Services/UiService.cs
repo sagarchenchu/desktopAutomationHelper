@@ -131,6 +131,7 @@ public class UiService : IUiService
             "uncheck"     => Uncheck(request),
             "select"      => Select(request),
             "selectaid"   => SelectByAid(request),
+            "clickgridcell" => ClickGridCell(request),
 
             _ => throw new ArgumentException(
                 $"Unknown operation '{request.Operation}'. " +
@@ -694,6 +695,46 @@ public class UiService : IUiService
                 $"ComboBox item with AutomationId '{req.Value}' not found.");
 
         match.Patterns.SelectionItem.Pattern.Select();
+        return null;
+    }
+
+    private object? ClickGridCell(UiRequest req)
+    {
+        if (req.Index == null)
+            throw new ArgumentException("'index' (row index) is required for 'clickGridCell'.");
+        if (req.ColumnIndex == null)
+            throw new ArgumentException("'columnIndex' is required for 'clickGridCell'.");
+
+        var element = FindWithRetry(req);
+
+        if (!element.Patterns.Grid.IsSupported)
+            throw new InvalidOperationException(
+                "The target element does not support the Grid pattern.");
+
+        var grid = element.Patterns.Grid.Pattern;
+        int rowCount = grid.RowCount;
+        int colCount = grid.ColumnCount;
+
+        int row = req.Index.Value;
+        int col = req.ColumnIndex.Value;
+
+        if (row < 0 || row >= rowCount)
+            throw new ArgumentException(
+                $"Row index {row} is out of range. Grid has {rowCount} row(s).");
+        if (col < 0 || col >= colCount)
+            throw new ArgumentException(
+                $"Column index {col} is out of range. Grid has {colCount} column(s).");
+
+        var cell = grid.GetItem(row, col);
+        if (cell == null)
+            throw new InvalidOperationException(
+                $"Grid cell at row {row}, column {col} could not be retrieved.");
+
+        if (cell.Patterns.Invoke.IsSupported)
+            cell.Patterns.Invoke.Pattern.Invoke();
+        else
+            cell.Click();
+
         return null;
     }
 
