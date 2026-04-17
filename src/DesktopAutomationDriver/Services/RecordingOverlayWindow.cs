@@ -558,7 +558,23 @@ public sealed class RecordingOverlayWindow : Form
             catch { /* best effort */ }
         }
 
+        AddCloseItem(menu);
         menu.Show(pt);
+    }
+
+    /// <summary>
+    /// Appends a separator and a "✕  Close" item that lets the user dismiss the context
+    /// menu without recording any action.
+    /// </summary>
+    private static void AddCloseItem(ContextMenuStrip menu)
+    {
+        menu.Items.Add(new ToolStripSeparator());
+        var closeItem = new ToolStripMenuItem("✕  Close")
+        {
+            ForeColor = Color.Gray
+        };
+        closeItem.Click += (_, _) => menu.Close(ToolStripDropDownCloseReason.ItemClicked);
+        menu.Items.Add(closeItem);
     }
 
     /// <summary>
