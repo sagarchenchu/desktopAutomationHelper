@@ -105,4 +105,18 @@ public class ModelTests
         Assert.Equal(string.Empty, resp.Token);
         Assert.Equal(string.Empty, resp.AuthorizationHeader);
     }
+
+    [Fact]
+    public void UiLocator_XPathPropertyDefaultsToNull()
+    {
+        var locator = new UiLocator();
+        Assert.Null(locator.XPath);
+    }
+
+    [Fact]
+    public void UiLocator_XPathPropertyCanBeSet()
+    {
+        var locator = new UiLocator { XPath = "//Button[@Name='Save']" };
+        Assert.Equal("//Button[@Name='Save']", locator.XPath);
+    }
 }
