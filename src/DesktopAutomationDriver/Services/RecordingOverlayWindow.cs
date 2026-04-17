@@ -527,35 +527,95 @@ public sealed class RecordingOverlayWindow : Form
                         var childInfo = BuildElementInfo(child);
                         var label = $"[{childInfo.ControlType}]  {childInfo.Name ?? childInfo.AutomationId ?? "(unnamed)"}";
                         var childItem = new ToolStripMenuItem(label);
-                        var capturedChild = child;
                         var capturedChildInfo = childInfo;
 
                         childItem.Click += (_, _) =>
                         {
-                            // Re-expand the parent so the list items are live before selecting.
+                            // Re-expand the parent so that fresh list items are materialised
+                            // in the UIA tree before we attempt to select one.  The item
+                            // reference captured during menu construction is stale once the
+                            // dropdown has been collapsed, so we re-locate it by name or
+                            // AutomationId after expanding.
                             try { element.Patterns.ExpandCollapse.PatternOrDefault?.Expand(); }
                             catch { /* best effort */ }
 
-                            try
+                            Thread.Sleep(200); // Allow items to materialise
+
+                            bool selected = false;
+                            if (_automation != null)
                             {
-                                capturedChild.Patterns.SelectionItem.Pattern.Select();
-                                // Collapse to commit the selection.
-                                element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+                                try
+                                {
+                                    var cf = _automation.ConditionFactory;
+
+                                    // Try to find a fresh reference by AutomationId first,
+                                    // then fall back to matching by Name.
+                                    AutomationElement? freshItem = null;
+                                    if (!string.IsNullOrEmpty(capturedChildInfo.AutomationId))
+                                        freshItem = element.FindFirstDescendant(
+                                            cf.ByAutomationId(capturedChildInfo.AutomationId));
+
+                                    if (freshItem == null && !string.IsNullOrEmpty(capturedChildInfo.Name))
+                                        freshItem = element.FindFirstDescendant(
+                                            cf.ByControlType(FlaUI.Core.Definitions.ControlType.ListItem)
+                                              .And(cf.ByName(capturedChildInfo.Name)));
+
+                                    if (freshItem != null)
+                                    {
+                                        freshItem.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
+                                        var selPat = freshItem.Patterns.SelectionItem.PatternOrDefault;
+                                        if (selPat != null)
+                                            selPat.Select();
+                                        else
+                                            freshItem.Click();
+
+                                        Thread.Sleep(100);
+                                        element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+                                        selected = true;
+                                    }
+                                }
+                                catch { /* best effort */ }
                             }
-                            catch { /* best effort */ }
+
+                            if (!selected)
+                            {
+                                // Last resort: use the (possibly stale) original reference.
+                                try
+                                {
+                                    var selPat = child.Patterns.SelectionItem.PatternOrDefault;
+                                    if (selPat != null)
+                                        selPat.Select();
+                                    else
+                                        child.Click();
+
+                                    Thread.Sleep(100);
+                                    element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+                                }
+                                catch { /* best effort */ }
+                            }
 
                             // Record against the parent element (e.g. the ComboBox) so the
                             // locator targets the container, not the transient list item.
+                            // Use AutomationId or ClassName to describe the parent combo box
+                            // because its Name may reflect the currently displayed value and
+                            // would be confusing in the recorded description.
                             var itemLabel = capturedChildInfo.Name ?? capturedChildInfo.AutomationId ?? "(item)";
+                            string parentLabel;
+                            if (!string.IsNullOrEmpty(elementInfo?.AutomationId))
+                                parentLabel = elementInfo.AutomationId;
+                            else if (!string.IsNullOrEmpty(elementInfo?.ClassName))
+                                parentLabel = elementInfo.ClassName;
+                            else
+                                parentLabel = ElementInfo.GetLabel(elementInfo);
                             _service.AddAction(new RecordedAction
                             {
                                 ActionType = ActionType.Select,
                                 Mode = RecordingMode.Assistive,
                                 Element = elementInfo,
                                 Value = capturedChildInfo.Name,
-                                Description = $"Select '{itemLabel}' from {ElementInfo.GetLabel(elementInfo)}"
+                                Description = $"Select '{itemLabel}' from {parentLabel}"
                             });
-                            UpdateStatusAfterAction($"Select '{itemLabel}' on [{elementInfo?.ControlType}] {ElementInfo.GetLabel(elementInfo)}");
+                            UpdateStatusAfterAction($"Select '{itemLabel}' on [{elementInfo?.ControlType}] {parentLabel}");
                         };
                         childrenMenu.DropDownItems.Add(childItem);
                     }
