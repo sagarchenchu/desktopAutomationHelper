@@ -668,6 +668,9 @@ public class UiService : IUiService
         }
 
         // Strategy 2: Expand the combo/list so that items become available.
+        // 300 ms allows the dropdown animation to complete and UIA child elements to
+        // materialise in the accessibility tree on typical hardware; faster machines
+        // will still pass since FindAllDescendants is called only after the sleep.
         element.Patterns.ExpandCollapse.PatternOrDefault?.Expand();
         Thread.Sleep(300);
 
@@ -734,6 +737,8 @@ public class UiService : IUiService
         var cf = RequireSession().Automation.ConditionFactory;
 
         // Expand the combo/list so that items become available.
+        // 300 ms allows the dropdown animation to complete and UIA child elements to
+        // materialise in the accessibility tree on typical hardware.
         element.Patterns.ExpandCollapse.PatternOrDefault?.Expand();
         Thread.Sleep(300);
 
@@ -777,21 +782,35 @@ public class UiService : IUiService
 
         var element = FindWithRetry(req);
 
+        // "Grid pattern not supported" is a bad-request condition (wrong element type),
+        // not a "not found", so ArgumentException gives the correct 400 status code.
         if (!element.Patterns.Grid.IsSupported)
-            throw new InvalidOperationException(
-                "The target element does not support the Grid pattern.");
+            throw new ArgumentException(
+                "The target element does not support the Grid pattern. " +
+                "Verify the locator targets the grid/table control itself, not a child row or cell.");
 
         var grid = element.Patterns.Grid.Pattern;
-        int rowCount = grid.RowCount;
-        int colCount = grid.ColumnCount;
-
         int row = req.Index.Value;
         int col = req.ColumnIndex.Value;
 
-        if (row < 0 || row >= rowCount)
+        // The explicit < 0 guards are intentionally kept separate from the upper-bound
+        // checks below: when RowCount/ColumnCount == 0 (virtualised grid) the upper-bound
+        // check is skipped, so negative indices would otherwise reach grid.GetItem unchecked.
+        if (row < 0)
+            throw new ArgumentException($"Row index {row} must be >= 0.");
+        if (col < 0)
+            throw new ArgumentException($"Column index {col} must be >= 0.");
+
+        // RowCount/ColumnCount report 0 for virtualised grids even when data is present;
+        // in that case skip the upper-bound check and let GetItem surface the error if
+        // the coordinates are truly out of range.
+        int rowCount = grid.RowCount;
+        int colCount = grid.ColumnCount;
+
+        if (rowCount > 0 && row >= rowCount)
             throw new ArgumentException(
                 $"Row index {row} is out of range. Grid has {rowCount} row(s).");
-        if (col < 0 || col >= colCount)
+        if (colCount > 0 && col >= colCount)
             throw new ArgumentException(
                 $"Column index {col} is out of range. Grid has {colCount} column(s).");
 

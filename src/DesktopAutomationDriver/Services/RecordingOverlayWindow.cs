@@ -539,7 +539,7 @@ public sealed class RecordingOverlayWindow : Form
                             try { element.Patterns.ExpandCollapse.PatternOrDefault?.Expand(); }
                             catch { /* best effort */ }
 
-                            Thread.Sleep(200); // Allow items to materialise
+                            Thread.Sleep(200); // 200 ms lets UIA child elements re-materialise after Expand()
 
                             bool selected = false;
                             if (_automation != null)
