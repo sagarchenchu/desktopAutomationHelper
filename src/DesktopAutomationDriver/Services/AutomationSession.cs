@@ -162,9 +162,10 @@ public class AutomationSession : IDisposable
         // CreateToolhelp32Snapshot so it can enumerate and kill those orphaned
         // children even when the parent has already exited; calling Kill() on the
         // exited parent itself is a safe no-op.
+        System.Diagnostics.Process? proc = null;
         try
         {
-            var proc = System.Diagnostics.Process.GetProcessById(Application.ProcessId);
+            proc = System.Diagnostics.Process.GetProcessById(Application.ProcessId);
             proc.Kill(entireProcessTree: true);
         }
         catch { /* best effort */ }
@@ -172,5 +173,9 @@ public class AutomationSession : IDisposable
         // Step 3: fallback via FlaUI's own kill helper (handles the case where the
         // process ID look-up above failed but the FlaUI handle is still valid).
         try { Application.Kill(); } catch { /* best effort */ }
+
+        // Step 4: wait for the process to fully exit so that callers can reliably
+        // determine that all windows are gone before returning.
+        try { proc?.WaitForExit(3000); } catch { /* best effort */ }
     }
 }
