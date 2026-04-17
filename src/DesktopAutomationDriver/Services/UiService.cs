@@ -86,6 +86,7 @@ public class UiService : IUiService
             // ----- Session & Window Management -----
             "launch"       => Launch(request),
             "close"        => Close(),
+            "quit"         => Close(),
             "maximize"     => Maximize(),
             "minimize"     => Minimize(),
             "switchwindow" => SwitchWindow(request),
@@ -647,20 +648,47 @@ public class UiService : IUiService
         var element = FindWithRetry(req);
         var cf = RequireSession().Automation.ConditionFactory;
 
-        // Expand the combo/list so that items become available.
+        // Strategy 1: For editable combo boxes the Value pattern lets us set the text
+        // directly without opening the dropdown, which is the most reliable approach.
+        if (req.Value != null
+            && element.Patterns.Value.IsSupported
+            && element.Patterns.Value.PatternOrDefault?.IsReadOnly == false)
+        {
+            try
+            {
+                element.Patterns.Value.Pattern.SetValue(req.Value);
+                return null;
+            }
+            catch
+            {
+                // The Value pattern sometimes reports IsReadOnly=false but still throws
+                // (e.g. a non-editable combo with a text renderer). Fall through to the
+                // expand-and-select strategy so the caller's request is still fulfilled.
+            }
+        }
+
+        // Strategy 2: Expand the combo/list so that items become available.
         element.Patterns.ExpandCollapse.PatternOrDefault?.Expand();
-        Thread.Sleep(200);
+        Thread.Sleep(300);
 
+        // Collect list items – some combo boxes nest items inside a List child rather
+        // than exposing them as direct descendants of the ComboBox element.
         var items = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
+        if (items.Length == 0)
+        {
+            var listChild = element.FindFirstDescendant(cf.ByControlType(ControlType.List));
+            if (listChild != null)
+                items = listChild.FindAllChildren();
+        }
 
+        AutomationElement? target;
         if (req.Value != null)
         {
-            var match = items.FirstOrDefault(i =>
+            target = items.FirstOrDefault(i =>
                 i.Name.Equals(req.Value, StringComparison.OrdinalIgnoreCase));
-            if (match == null)
+            if (target == null)
                 throw new InvalidOperationException(
                     $"ComboBox item '{req.Value}' not found.");
-            match.Patterns.SelectionItem.Pattern.Select();
         }
         else
         {
@@ -668,8 +696,27 @@ public class UiService : IUiService
             if (idx < 0 || idx >= items.Length)
                 throw new ArgumentException(
                     $"Index {idx} is out of range. ComboBox has {items.Length} item(s).");
-            items[idx].Patterns.SelectionItem.Pattern.Select();
+            target = items[idx];
         }
+
+        // Scroll the item into view so it is reachable, then select it.
+        target.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
+
+        var selectionItemPattern = target.Patterns.SelectionItem.PatternOrDefault;
+        if (selectionItemPattern != null)
+        {
+            selectionItemPattern.Select();
+        }
+        else
+        {
+            // Fallback: physically click the item when SelectionItem is not supported.
+            target.Click();
+        }
+
+        // Brief pause to allow the application to commit the selection before we
+        // collapse the dropdown; some implementations only persist the selected value
+        // once the list item's handler has run.
+        Thread.Sleep(100);
 
         // Collapse to commit the selection (some native ComboBox implementations only
         // persist the selected value once the dropdown is dismissed).
@@ -688,9 +735,16 @@ public class UiService : IUiService
 
         // Expand the combo/list so that items become available.
         element.Patterns.ExpandCollapse.PatternOrDefault?.Expand();
-        Thread.Sleep(200);
+        Thread.Sleep(300);
 
         var items = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
+        if (items.Length == 0)
+        {
+            var listChild = element.FindFirstDescendant(cf.ByControlType(ControlType.List));
+            if (listChild != null)
+                items = listChild.FindAllChildren();
+        }
+
         var match = items.FirstOrDefault(i =>
             i.AutomationId.Equals(req.Value, StringComparison.OrdinalIgnoreCase));
 
@@ -698,7 +752,15 @@ public class UiService : IUiService
             throw new InvalidOperationException(
                 $"ComboBox item with AutomationId '{req.Value}' not found.");
 
-        match.Patterns.SelectionItem.Pattern.Select();
+        match.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
+
+        var selectionItemPattern = match.Patterns.SelectionItem.PatternOrDefault;
+        if (selectionItemPattern != null)
+            selectionItemPattern.Select();
+        else
+            match.Click();
+
+        Thread.Sleep(100);
 
         // Collapse to commit the selection.
         element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
