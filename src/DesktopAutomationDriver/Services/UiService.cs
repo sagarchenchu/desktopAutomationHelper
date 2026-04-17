@@ -198,6 +198,11 @@ public class UiService : IUiService
             }
 
             session.ActiveWindow = match;
+            // Seed the handle so the auto-follow logic in GetWindowRoot does not
+            // immediately override this explicit switch on the very next operation.
+            var switchedHandle = SafeWindowHandle(match);
+            if (switchedHandle != IntPtr.Zero)
+                session.SeedWindowHandles([switchedHandle]);
             match.SetForeground();
             return new { title = match.Name };
         }
@@ -215,6 +220,11 @@ public class UiService : IUiService
                     $"No window with title containing '{req.Value}' was found.");
 
             session.ActiveWindow = match;
+            // Seed the handle so the auto-follow logic in GetWindowRoot does not
+            // immediately override this explicit switch on the very next operation.
+            var switchedHandle = SafeWindowHandle(match);
+            if (switchedHandle != IntPtr.Zero)
+                session.SeedWindowHandles([switchedHandle]);
             match.SetForeground();
             return new { title = match.Name };
         }
@@ -771,12 +781,24 @@ public class UiService : IUiService
     /// Returns true when the element is still accessible via UI Automation.
     /// Accessing a stale or destroyed element raises a COMException; this helper
     /// treats any such exception as "element is gone".
+    /// NativeWindowHandle is tried first; cross-process window elements may not
+    /// expose that property, so ProcessId is used as a reliable fallback.
     /// </summary>
     private static bool IsElementAlive(AutomationElement element)
     {
         try
         {
             _ = element.Properties.NativeWindowHandle.Value;
+            return true;
+        }
+        catch
+        {
+            // NativeWindowHandle is not available for all element types (e.g. cross-process
+            // windows may not expose it). Fall through to the ProcessId check below.
+        }
+        try
+        {
+            _ = element.Properties.ProcessId.Value;
             return true;
         }
         catch { return false; }
