@@ -131,6 +131,7 @@ public class UiService : IUiService
             "uncheck"     => Uncheck(request),
             "select"      => Select(request),
             "selectaid"   => SelectByAid(request),
+            "clickgridcell" => ClickGridCell(request),
 
             _ => throw new ArgumentException(
                 $"Unknown operation '{request.Operation}'. " +
@@ -553,7 +554,14 @@ public class UiService : IUiService
 
     private object? Click(UiRequest req)
     {
-        FindWithRetry(req).Click();
+        var element = FindWithRetry(req);
+        // Prefer the UIA Invoke pattern: it triggers the element's primary action
+        // synchronously on the application's UI thread with no mouse-movement
+        // overhead, which is significantly faster than a simulated mouse click.
+        if (element.Patterns.Invoke.IsSupported)
+            element.Patterns.Invoke.Pattern.Invoke();
+        else
+            element.Click();
         return null;
     }
 
@@ -641,7 +649,7 @@ public class UiService : IUiService
 
         // Expand the combo/list so that items become available.
         element.Patterns.ExpandCollapse.PatternOrDefault?.Expand();
-        Thread.Sleep(100);
+        Thread.Sleep(200);
 
         var items = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
 
@@ -663,6 +671,10 @@ public class UiService : IUiService
             items[idx].Patterns.SelectionItem.Pattern.Select();
         }
 
+        // Collapse to commit the selection (some native ComboBox implementations only
+        // persist the selected value once the dropdown is dismissed).
+        element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+
         return null;
     }
 
@@ -676,7 +688,7 @@ public class UiService : IUiService
 
         // Expand the combo/list so that items become available.
         element.Patterns.ExpandCollapse.PatternOrDefault?.Expand();
-        Thread.Sleep(100);
+        Thread.Sleep(200);
 
         var items = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
         var match = items.FirstOrDefault(i =>
@@ -687,6 +699,50 @@ public class UiService : IUiService
                 $"ComboBox item with AutomationId '{req.Value}' not found.");
 
         match.Patterns.SelectionItem.Pattern.Select();
+
+        // Collapse to commit the selection.
+        element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+
+        return null;
+    }
+
+    private object? ClickGridCell(UiRequest req)
+    {
+        if (req.Index == null)
+            throw new ArgumentException("'index' (row index) is required for 'clickgridcell'.");
+        if (req.ColumnIndex == null)
+            throw new ArgumentException("'columnIndex' is required for 'clickgridcell'.");
+
+        var element = FindWithRetry(req);
+
+        if (!element.Patterns.Grid.IsSupported)
+            throw new InvalidOperationException(
+                "The target element does not support the Grid pattern.");
+
+        var grid = element.Patterns.Grid.Pattern;
+        int rowCount = grid.RowCount;
+        int colCount = grid.ColumnCount;
+
+        int row = req.Index.Value;
+        int col = req.ColumnIndex.Value;
+
+        if (row < 0 || row >= rowCount)
+            throw new ArgumentException(
+                $"Row index {row} is out of range. Grid has {rowCount} row(s).");
+        if (col < 0 || col >= colCount)
+            throw new ArgumentException(
+                $"Column index {col} is out of range. Grid has {colCount} column(s).");
+
+        var cell = grid.GetItem(row, col);
+        if (cell == null)
+            throw new InvalidOperationException(
+                $"Grid cell at row {row}, column {col} could not be retrieved.");
+
+        if (cell.Patterns.Invoke.IsSupported)
+            cell.Patterns.Invoke.Pattern.Invoke();
+        else
+            cell.Click();
+
         return null;
     }
 

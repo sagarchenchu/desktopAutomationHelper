@@ -156,11 +156,16 @@ public class AutomationSession : IDisposable
 
         // Step 2: kill the process and its entire child-process tree so that any
         // windows not handled by the graceful close are forcefully terminated.
+        // NOTE: the HasExited guard is intentionally absent. When the graceful close
+        // (step 1) causes the parent process to exit first, child processes become
+        // orphaned but are still running. Kill(entireProcessTree: true) uses a
+        // CreateToolhelp32Snapshot so it can enumerate and kill those orphaned
+        // children even when the parent has already exited; calling Kill() on the
+        // exited parent itself is a safe no-op.
         try
         {
             var proc = System.Diagnostics.Process.GetProcessById(Application.ProcessId);
-            if (!proc.HasExited)
-                proc.Kill(entireProcessTree: true);
+            proc.Kill(entireProcessTree: true);
         }
         catch { /* best effort */ }
 
