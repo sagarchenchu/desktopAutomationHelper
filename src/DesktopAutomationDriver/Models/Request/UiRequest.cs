@@ -32,7 +32,13 @@ public class UiRequest
     public string? Value { get; set; }
 
     /// <summary>
-    /// Zero-based index used by the "select" operation to pick a ComboBox item by position.
+    /// Zero-based index used by the "select" operation to pick a ComboBox item by position,
+    /// and by "clickGridCell" to specify the row index.
     /// </summary>
     public int? Index { get; set; }
+
+    /// <summary>
+    /// Zero-based column index used by the "clickGridCell" operation.
+    /// </summary>
+    public int? ColumnIndex { get; set; }
 }
