@@ -553,7 +553,14 @@ public class UiService : IUiService
 
     private object? Click(UiRequest req)
     {
-        FindWithRetry(req).Click();
+        var element = FindWithRetry(req);
+        // Prefer the UIA Invoke pattern: it triggers the element's primary action
+        // synchronously on the application's UI thread with no mouse-movement
+        // overhead, which is significantly faster than a simulated mouse click.
+        if (element.Patterns.Invoke.IsSupported)
+            element.Patterns.Invoke.Pattern.Invoke();
+        else
+            element.Click();
         return null;
     }
 
