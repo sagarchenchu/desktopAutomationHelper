@@ -104,6 +104,9 @@ public sealed class RecordingOverlayWindow : Form
 
     private WinLabel _statusLabel = null!;
 
+    // Guard against showing multiple context menus simultaneously (e.g. rapid right-clicks).
+    private bool _menuOpen;
+
     // ── constructor ─────────────────────────────────────────────────────────
     public RecordingOverlayWindow(IRecordingService service, ILogger logger)
     {
@@ -324,10 +327,26 @@ public sealed class RecordingOverlayWindow : Form
     // ── Assistive mode: context menu ─────────────────────────────────────────
     private void ShowAssistiveContextMenu(System.Drawing.Point pt)
     {
+        // Ignore rapid right-clicks while a menu is already visible.
+        if (_menuOpen) return;
         if (_automation == null) return;
 
+        _menuOpen = true;
+        try
+        {
+            ShowAssistiveContextMenuCore(pt);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to show assistive context menu at {Pt}", pt);
+            _menuOpen = false;
+        }
+    }
+
+    private void ShowAssistiveContextMenuCore(System.Drawing.Point pt)
+    {
         AutomationElement? element = null;
-        try { element = _automation.FromPoint(pt); }
+        try { element = _automation!.FromPoint(pt); }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not get element at point {Pt} for assistive menu", pt);
@@ -342,6 +361,14 @@ public sealed class RecordingOverlayWindow : Form
 
         var menu = new ContextMenuStrip { ShowImageMargin = false };
         menu.Font = new Font("Segoe UI", 10f);
+
+        // Re-apply click-through styles when the menu closes so rapid right-clicks
+        // cannot leave the overlay in a non-transparent state.
+        menu.Closed += (_, _) =>
+        {
+            _menuOpen = false;
+            ReapplyClickThroughStyle();
+        };
 
         // ── Header (element details, not selectable) ────────────────────────
         var headerName = elementInfo?.Name ?? elementInfo?.AutomationId ?? "(no name)";
@@ -452,7 +479,7 @@ public sealed class RecordingOverlayWindow : Form
                 {
                     try { element.Patterns.ExpandCollapse.Pattern.Expand(); }
                     catch { /* best effort */ }
-                    Thread.Sleep(100); // brief pause so list items materialize
+                    Thread.Sleep(300); // brief pause so list items materialize
                 }
 
                 // For ComboBox elements, retrieve the ListItem descendants (the actual
@@ -463,9 +490,25 @@ public sealed class RecordingOverlayWindow : Form
                 if (element.ControlType == ControlType.ComboBox && _automation != null)
                 {
                     var cf = _automation.ConditionFactory;
+
+                    // First try: ListItem descendants directly under the ComboBox.
                     children = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
                     childrenMenuLabel = children.Length > 0 ? "Options ▶" : "Children ▶";
-                    // Fall back to immediate children when no list items are found
+
+                    if (children.Length == 0)
+                    {
+                        // Second try: find the List child and enumerate its children.
+                        // Many combo implementations nest items inside a List container.
+                        var listChild = element.FindFirstDescendant(cf.ByControlType(ControlType.List));
+                        if (listChild != null)
+                        {
+                            children = listChild.FindAllChildren();
+                            if (children.Length > 0)
+                                childrenMenuLabel = "Options ▶";
+                        }
+                    }
+
+                    // Last resort: immediate children of the ComboBox.
                     if (children.Length == 0)
                         children = element.FindAllChildren();
                 }
@@ -516,8 +559,27 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         menu.Show(pt);
-        menu.Disposed += (_, _) => menu.Items.Clear();
     }
+
+    /// <summary>
+    /// Re-applies the WS_EX_TRANSPARENT | WS_EX_LAYERED extended styles so that the
+    /// overlay stays click-through after a ContextMenuStrip is dismissed. Showing a
+    /// popup may cause Windows to recalculate window styles on the owner form.
+    /// </summary>
+    private void ReapplyClickThroughStyle()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        try
+        {
+            var style = GetWindowLong(Handle, GWL_EXSTYLE);
+            SetWindowLong(Handle, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to reapply click-through styles on recording overlay");
+        }
+    }
+
 
     private void AddActionItem(
         ContextMenuStrip menu,

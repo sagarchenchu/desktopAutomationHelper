@@ -150,6 +150,10 @@ public class AutomationSession : IDisposable
         }
         catch { /* best effort */ }
 
+        // Brief wait so the application can process WM_CLOSE and dismiss any
+        // "save changes?" dialogs before we force-terminate the process.
+        Thread.Sleep(500);
+
         // Step 2: kill the process and its entire child-process tree so that any
         // windows not handled by the graceful close are forcefully terminated.
         try
