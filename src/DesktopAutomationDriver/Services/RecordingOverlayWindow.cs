@@ -532,21 +532,30 @@ public sealed class RecordingOverlayWindow : Form
 
                         childItem.Click += (_, _) =>
                         {
+                            // Re-expand the parent so the list items are live before selecting.
+                            try { element.Patterns.ExpandCollapse.PatternOrDefault?.Expand(); }
+                            catch { /* best effort */ }
+
+                            try
+                            {
+                                capturedChild.Patterns.SelectionItem.Pattern.Select();
+                                // Collapse to commit the selection.
+                                element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+                            }
+                            catch { /* best effort */ }
+
+                            // Record against the parent element (e.g. the ComboBox) so the
+                            // locator targets the container, not the transient list item.
+                            var itemLabel = capturedChildInfo.Name ?? capturedChildInfo.AutomationId ?? "(item)";
                             _service.AddAction(new RecordedAction
                             {
                                 ActionType = ActionType.Select,
                                 Mode = RecordingMode.Assistive,
-                                Element = capturedChildInfo,
-                                Description = BuildDescription("Select", capturedChildInfo)
+                                Element = elementInfo,
+                                Value = capturedChildInfo.Name,
+                                Description = $"Select '{itemLabel}' from {ElementInfo.GetLabel(elementInfo)}"
                             });
-                            try
-                            {
-                                if (capturedChild.Patterns.SelectionItem.IsSupported)
-                                    capturedChild.Patterns.SelectionItem.Pattern.Select();
-                                else
-                                    capturedChild.Click();
-                            }
-                            catch { /* best effort */ }
+                            UpdateStatusAfterAction($"Select '{itemLabel}' on [{elementInfo?.ControlType}] {ElementInfo.GetLabel(elementInfo)}");
                         };
                         childrenMenu.DropDownItems.Add(childItem);
                     }
@@ -728,7 +737,6 @@ public sealed class RecordingOverlayWindow : Form
         ct == ControlType.MenuBar ||
         ct == ControlType.Tree ||
         ct == ControlType.Tab ||
-        ct == ControlType.ComboBox ||
         ct == ControlType.ToolBar;
 
     /// <summary>

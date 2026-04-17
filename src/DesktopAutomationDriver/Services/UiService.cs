@@ -649,7 +649,7 @@ public class UiService : IUiService
 
         // Expand the combo/list so that items become available.
         element.Patterns.ExpandCollapse.PatternOrDefault?.Expand();
-        Thread.Sleep(100);
+        Thread.Sleep(200);
 
         var items = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
 
@@ -671,6 +671,10 @@ public class UiService : IUiService
             items[idx].Patterns.SelectionItem.Pattern.Select();
         }
 
+        // Collapse to commit the selection (some native ComboBox implementations only
+        // persist the selected value once the dropdown is dismissed).
+        element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+
         return null;
     }
 
@@ -684,7 +688,7 @@ public class UiService : IUiService
 
         // Expand the combo/list so that items become available.
         element.Patterns.ExpandCollapse.PatternOrDefault?.Expand();
-        Thread.Sleep(100);
+        Thread.Sleep(200);
 
         var items = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
         var match = items.FirstOrDefault(i =>
@@ -695,15 +699,19 @@ public class UiService : IUiService
                 $"ComboBox item with AutomationId '{req.Value}' not found.");
 
         match.Patterns.SelectionItem.Pattern.Select();
+
+        // Collapse to commit the selection.
+        element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+
         return null;
     }
 
     private object? ClickGridCell(UiRequest req)
     {
         if (req.Index == null)
-            throw new ArgumentException("'index' (row index) is required for 'clickGridCell'.");
+            throw new ArgumentException("'index' (row index) is required for 'clickgridcell'.");
         if (req.ColumnIndex == null)
-            throw new ArgumentException("'columnIndex' is required for 'clickGridCell'.");
+            throw new ArgumentException("'columnIndex' is required for 'clickgridcell'.");
 
         var element = FindWithRetry(req);
 
