@@ -1215,11 +1215,11 @@ public class UiService : IUiService
                 if (c == '\'') { inSingle = true; continue; }
                 if (c == '"')  { inDouble = true; continue; }
 
-                if (i + 5 <= content.Length &&
+                if (i + 5 < content.Length &&
                     content[i..].StartsWith(" and ", StringComparison.OrdinalIgnoreCase))
                 {
                     result.Add(content[start..i]);
-                    i += 4; // skip " and " (loop will add 1 more)
+                    i += 4; // advance past " and " (the for-loop will add 1 more, landing on the next predicate)
                     start = i + 1;
                 }
             }
@@ -1233,8 +1233,9 @@ public class UiService : IUiService
 
     /// <summary>
     /// Builds a FlaUI condition from a single <see cref="XPathStep"/>.
-    /// When the step has no node-name filter and no attributes, a <see cref="TrueCondition"/>
-    /// is returned so that all elements are matched.
+    /// Only called when the step has at least one filter (node name or attribute);
+    /// wildcard steps with no attributes use the no-arg <c>FindAllDescendants</c>/
+    /// <c>FindAllChildren</c> overload in <see cref="FindByXPath"/> instead.
     /// </summary>
     private static ConditionBase BuildStepCondition(
         ConditionFactory cf, XPathStep step)
@@ -1257,6 +1258,11 @@ public class UiService : IUiService
                     "Supported: @Name, @AutomationId, @ClassName, @ControlType.")
             });
         }
+
+        if (conditions.Count == 0)
+            throw new InvalidOperationException(
+                "BuildStepCondition requires at least one filter; " +
+                "call FindAllDescendants()/FindAllChildren() directly for wildcard steps.");
 
         return conditions.Count == 1
                 ? conditions[0]
