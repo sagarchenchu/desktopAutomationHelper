@@ -170,6 +170,12 @@ public class UiService : IUiService
     /// otherwise a temporary <see cref="UIA3Automation"/> is created for the single lookup.
     /// Top-level desktop children are checked first for performance; nested child/owned
     /// windows (e.g. dialogs opened from a child window) are found via a descendant search.
+    ///
+    /// Close strategy (in priority order):
+    /// 1. Search for a Button with <c>AutomationId="Close"</c> and <c>Name="Close"</c>
+    ///    inside the matched window and invoke/click it.
+    /// 2. Fall back to the UIA Window pattern <c>Close()</c> method when no such button
+    ///    is present.
     /// </summary>
     private object? CloseWindowByTitle(UiRequest req)
     {
@@ -177,22 +183,29 @@ public class UiService : IUiService
             throw new ArgumentException("'value' must be a partial window title for 'closewindow'.");
 
         // Prefer the active session's automation so we avoid spinning up a second COM object.
+        // Use the session's application windows first so that windows opened through the driver
+        // are found before falling back to a full desktop scan.
         var session = _ctx.ActiveSession;
         if (session != null)
         {
             var cf = session.Automation.ConditionFactory;
-            var desktop = session.Automation.GetDesktop();
-            var match = FindWindowByTitle(desktop, cf, req.Value);
+            var match = FindWindowByTitle(session, req.Value);
+
+            if (match == null)
+            {
+                // Not among the session's own windows; widen the search to all desktop windows.
+                var desktop = session.Automation.GetDesktop();
+                match = FindWindowByTitle(desktop, cf, req.Value);
+            }
 
             if (match != null)
             {
-                CloseElement(match);
+                CloseWindowElement(match, cf);
                 return null;
             }
         }
 
-        // No active session, or the window was not found among the session app's windows:
-        // fall back to a temporary automation that searches all desktop windows.
+        // No active session, or the window was not found: fall back to a temporary automation.
         using var tempAutomation = new UIA3Automation();
         var tempCf = tempAutomation.ConditionFactory;
         var tempDesktop = tempAutomation.GetDesktop();
@@ -203,7 +216,7 @@ public class UiService : IUiService
                 $"No window with title containing '{SanitizeValue(req.Value)}' was found.");
 
         // Close is called inside the using block so the automation instance is still live.
-        CloseElement(tempMatch);
+        CloseWindowElement(tempMatch, tempCf);
         return null;
     }
 
@@ -227,6 +240,34 @@ public class UiService : IUiService
         // (e.g. a dialog opened from a child window).
         return root.FindAllDescendants(windowCondition)
             .FirstOrDefault(w => w.Name.Contains(title, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Closes <paramref name="window"/> by first searching for a Button element with
+    /// <c>AutomationId="Close"</c> and <c>Name="Close"</c> inside the window and
+    /// invoking/clicking it.  Falls back to <see cref="CloseElement"/> (UIA Window
+    /// pattern) when no such close button is found.
+    /// </summary>
+    private static void CloseWindowElement(AutomationElement window, ConditionFactory cf)
+    {
+        // Primary strategy: find the dedicated close button by its known AutomationId and Name.
+        var closeButton = window.FindFirstDescendant(
+            new AndCondition(
+                cf.ByControlType(ControlType.Button),
+                cf.ByAutomationId("Close"),
+                cf.ByName("Close")));
+
+        if (closeButton != null)
+        {
+            if (closeButton.Patterns.Invoke.IsSupported)
+                closeButton.Patterns.Invoke.Pattern.Invoke();
+            else
+                closeButton.Click();
+            return;
+        }
+
+        // Fallback: use the UIA Window pattern (or simulated title-bar click).
+        CloseElement(window);
     }
 
     /// <summary>
