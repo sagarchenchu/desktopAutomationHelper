@@ -202,6 +202,7 @@ static void LogStartupBanner(IDriverContext ctx, ILogger logger)
     sb.AppendLine("║  SIMPLE ENDPOINTS (require: Authorization: Bearer <token>)   ║");
     sb.AppendLine("║                                                              ║");
     sb.AppendLine($"║  POST http://127.0.0.1:{p}/launch");
+    sb.AppendLine($"║  POST http://127.0.0.1:{p}/close");
     sb.AppendLine($"║  POST http://127.0.0.1:{p}/listallwindows");
     sb.AppendLine($"║  POST http://127.0.0.1:{p}/switchwindow");
     sb.AppendLine($"║  POST http://127.0.0.1:{p}/maximize");
