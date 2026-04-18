@@ -87,6 +87,7 @@ public class UiService : IUiService
             "launch"       => Launch(request),
             "close"        => Close(),
             "quit"         => Close(),
+            "closewindow"  => CloseWindowByTitle(request),
             "maximize"     => Maximize(),
             "minimize"     => Minimize(),
             "switchwindow" => SwitchWindow(request),
@@ -160,6 +161,65 @@ public class UiService : IUiService
         RequireSession();
         _ctx.Close();
         return null;
+    }
+
+    /// <summary>
+    /// Finds the first top-level window whose title contains the value of
+    /// <c>req.Value</c> (case-insensitive) and closes it.  Works whether or not a
+    /// session is active: when a session exists its automation instance is reused;
+    /// otherwise a temporary <see cref="UIA3Automation"/> is created for the single lookup.
+    /// </summary>
+    private object? CloseWindowByTitle(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("'value' must be a partial window title for 'closewindow'.");
+
+        // Prefer the active session's automation so we avoid spinning up a second COM object.
+        var session = _ctx.ActiveSession;
+        if (session != null)
+        {
+            var cf = session.Automation.ConditionFactory;
+            var match = session.Automation.GetDesktop()
+                .FindAllChildren(cf.ByControlType(ControlType.Window))
+                .FirstOrDefault(w =>
+                    w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+
+            if (match != null)
+            {
+                CloseElement(match);
+                return null;
+            }
+        }
+
+        // No active session, or the window was not found among the session app's windows:
+        // fall back to a temporary automation that searches all desktop windows.
+        using var tempAutomation = new UIA3Automation();
+        var tempCf = tempAutomation.ConditionFactory;
+        var tempMatch = tempAutomation.GetDesktop()
+            .FindAllChildren(tempCf.ByControlType(ControlType.Window))
+            .FirstOrDefault(w =>
+                w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+
+        if (tempMatch == null)
+            throw new InvalidOperationException(
+                $"No window with title containing '{SanitizeValue(req.Value)}' was found.");
+
+        // Close is called inside the using block so the automation instance is still live.
+        CloseElement(tempMatch);
+        return null;
+    }
+
+    /// <summary>
+    /// Closes <paramref name="element"/> via the UIA Window pattern's Close method.
+    /// Falls back to simulating a click on the title-bar close button when the pattern
+    /// is not supported.
+    /// </summary>
+    private static void CloseElement(AutomationElement element)
+    {
+        if (element.Patterns.Window.IsSupported)
+            element.Patterns.Window.Pattern.Close();
+        else
+            element.AsWindow().Close();
     }
 
     private object? Maximize()
