@@ -802,7 +802,8 @@ public class UiService : IUiService
             catch { /* unable to walk tree; use the element as-is */ }
         }
 
-        // Focus the editable portion so keyboard input lands in the right control.
+        // Focus the Edit child (or the ComboBox itself if no Edit was found) so that
+        // keyboard input lands in the correct text-entry area.
         element.Focus();
 
         // Type the filter text. Prefer the Value pattern (instant, no side effects);
@@ -1561,7 +1562,7 @@ public class UiService : IUiService
                 for (int c = 0; c < colCount; c++)
                 {
                     var cell = grid.GetItem(r, c);
-                    row.Add(cell?.Name ?? string.Empty);
+                    row.Add(cell != null ? GetCellText(cell) : string.Empty);
                 }
                 rows.Add(row);
             }
