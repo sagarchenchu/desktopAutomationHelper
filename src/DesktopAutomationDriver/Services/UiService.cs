@@ -130,9 +130,10 @@ public class UiService : IUiService
             "scroll"      => Scroll(request),
             "check"       => Check(request),
             "uncheck"     => Uncheck(request),
-            "select"      => Select(request),
-            "selectaid"   => SelectByAid(request),
-            "clickgridcell" => ClickGridCell(request),
+            "select"          => Select(request),
+            "selectaid"       => SelectByAid(request),
+            "typeandselect"   => TypeAndSelect(request),
+            "clickgridcell"   => ClickGridCell(request),
 
             _ => throw new ArgumentException(
                 $"Unknown operation '{request.Operation}'. " +
@@ -497,14 +498,16 @@ public class UiService : IUiService
 
     private object? GetTable(UiRequest req)
     {
+        var session = RequireSession();
         var element = FindWithRetry(req);
-        return ReadTableData(element, headersOnly: false);
+        return ReadTableData(element, headersOnly: false, session);
     }
 
     private object? GetTableHeaders(UiRequest req)
     {
+        var session = RequireSession();
         var element = FindWithRetry(req);
-        return ReadTableData(element, headersOnly: true);
+        return ReadTableData(element, headersOnly: true, session);
     }
 
     // =========================================================================
@@ -769,6 +772,122 @@ public class UiService : IUiService
 
         // Collapse to commit the selection.
         element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+
+        return null;
+    }
+
+    private object? TypeAndSelect(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("'value' is required for 'typeandselect'.");
+
+        var element = FindWithRetry(req);
+        var session = RequireSession();
+        var cf = session.Automation.ConditionFactory;
+
+        // For the structure Group → ComboBox → Edit, the user may target either
+        // the ComboBox or its inner Edit child. Typing must go into the Edit, but
+        // the ListItem descendants and the ExpandCollapse pattern live on the ComboBox.
+        // If the located element is an Edit, walk up to find the parent ComboBox.
+        var comboElement = element;
+        if (element.ControlType == ControlType.Edit)
+        {
+            try
+            {
+                var walker = session.Automation.TreeWalkerFactory.GetControlViewWalker();
+                var parent = walker.GetParent(element);
+                if (parent?.ControlType == ControlType.ComboBox)
+                    comboElement = parent;
+            }
+            catch { /* unable to walk tree; use the element as-is */ }
+        }
+
+        // Focus the Edit child (or the ComboBox itself if no Edit was found) so that
+        // keyboard input lands in the correct text-entry area.
+        element.Focus();
+
+        // Type the filter text. Prefer the Value pattern (instant, no side effects);
+        // fall back to simulated keystrokes so that the control fires its change events.
+        bool typed = false;
+        if (element.Patterns.Value.IsSupported
+            && element.Patterns.Value.PatternOrDefault?.IsReadOnly == false)
+        {
+            try
+            {
+                element.Patterns.Value.Pattern.SetValue(req.Value);
+                typed = true;
+            }
+            catch
+            {
+                // Value pattern may report writable but still throw (e.g. some native
+                // combo hosts). Fall through to simulated keyboard input.
+            }
+        }
+
+        if (!typed)
+        {
+            // Clear any existing content first so the filter starts fresh.
+            try { element.Patterns.Value.PatternOrDefault?.SetValue(string.Empty); }
+            catch { }
+            Keyboard.Type(req.Value);
+        }
+
+        // Some editable comboboxes do not auto-expand when text is set programmatically.
+        // If no items appear within the first poll, explicitly try to expand the dropdown.
+        bool expandAttempted = false;
+
+        // Wait up to 5 s for filtered ListItems to materialise in the dropdown.
+        AutomationElement? target = null;
+        var deadline = DateTime.UtcNow + DefaultRetry;
+        while (true)
+        {
+            var items = comboElement.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
+            if (items.Length == 0)
+            {
+                // Some implementations nest items inside a List child.
+                var listChild = comboElement.FindFirstDescendant(cf.ByControlType(ControlType.List));
+                if (listChild != null)
+                    items = listChild.FindAllChildren();
+            }
+
+            if (items.Length > 0)
+            {
+                // Prefer an exact-name match; otherwise fall back to the first visible item.
+                target = items.FirstOrDefault(i =>
+                    i.Name.Equals(req.Value, StringComparison.OrdinalIgnoreCase))
+                    ?? items[0];
+                break;
+            }
+
+            if (!expandAttempted)
+            {
+                // Try to force the dropdown open; some combo implementations need this
+                // when the value is set programmatically rather than by keyboard events.
+                try { comboElement.Patterns.ExpandCollapse.PatternOrDefault?.Expand(); }
+                catch { /* best effort */ }
+                expandAttempted = true;
+            }
+
+            if (DateTime.UtcNow >= deadline)
+                throw new InvalidOperationException(
+                    $"No dropdown items appeared after typing '{SanitizeValue(req.Value)}' " +
+                    $"within {DefaultRetry.TotalSeconds}s.");
+
+            Thread.Sleep(RetryInterval);
+        }
+
+        target.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
+
+        var selectionItemPattern = target.Patterns.SelectionItem.PatternOrDefault;
+        if (selectionItemPattern != null)
+            selectionItemPattern.Select();
+        else
+            target.Click();
+
+        Thread.Sleep(100);
+
+        // Collapse to commit the selection.
+        comboElement.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
 
         return null;
     }
@@ -1303,9 +1422,9 @@ public class UiService : IUiService
             return ct;
         throw new ArgumentException(
             $"Unknown controlType '{value}'. " +
-            "Valid values: Button, CheckBox, ComboBox, DataGrid, DataItem, Edit, " +
-            "Group, List, ListItem, Menu, MenuItem, Pane, RadioButton, Slider, " +
-            "Spinner, Tab, TabItem, Table, Text, ToolBar, Tree, TreeItem, Window.");
+            "Valid values: Button, CheckBox, ComboBox, Custom, DataGrid, DataItem, Edit, " +
+            "Group, Header, HeaderItem, List, ListItem, Menu, MenuItem, Pane, RadioButton, " +
+            "Slider, Spinner, Tab, TabItem, Table, Text, ToolBar, Tree, TreeItem, Window.");
     }
 
     private static string DescribeLocator(UiLocator l)
@@ -1372,18 +1491,63 @@ public class UiService : IUiService
     }
 
     /// <summary>
-    /// Reads table/grid data from an element via the Grid and Table patterns.
+    /// Reads table/grid data from an element using multiple fallback strategies.
+    ///
+    /// Strategy 1 – Table/Grid UIA patterns (standard controls).
+    /// Strategy 2 – Direct descendant search for Header and DataItem control types.
+    /// Strategy 3 – Search Custom control descendants of <paramref name="element"/>
+    ///              and dig inside each one for Header/DataItem.
+    /// Strategy 4 – Window-level fallback: search the entire window for Custom
+    ///              control containers when the element itself yields no data.
     /// </summary>
-    private static object ReadTableData(AutomationElement element, bool headersOnly)
+    private object ReadTableData(AutomationElement element, bool headersOnly, AutomationSession session)
     {
+        var cf = session.Automation.ConditionFactory;
         var headers = new List<string>();
         var rows    = new List<List<string>>();
 
+        // ── Strategy 1: Standard Table / Grid UIA patterns ───────────────────
+        TableViaPatterns(element, headersOnly, headers, rows);
+
+        // ── Strategy 2: Direct Header / DataItem descendant search ───────────
+        if (headers.Count == 0)
+            HeadersFromDescendants(element, cf, headers);
+
+        if (!headersOnly && rows.Count == 0)
+            DataItemsFromDescendants(element, cf, rows);
+
+        // ── Strategy 3: Deep-dive into Custom control descendants ─────────────
+        if (headers.Count == 0 && (headersOnly || rows.Count == 0))
+            CustomControlDeepDive(element, headersOnly, cf, headers, rows);
+
+        // ── Strategy 4: Window-level Custom control fallback ─────────────────
+        if (headers.Count == 0 && (headersOnly || rows.Count == 0))
+        {
+            var windowRoot = GetWindowRoot(session);
+            if (!ReferenceEquals(element, windowRoot))
+                CustomControlDeepDive(windowRoot, headersOnly, cf, headers, rows);
+        }
+
+        if (headersOnly)
+            return new { headers };
+
+        return new { headers, rows };
+    }
+
+    /// <summary>
+    /// Strategy 1: extract column headers via the Table UIA pattern and rows via
+    /// the Grid UIA pattern. Only populates <paramref name="headers"/> and
+    /// <paramref name="rows"/> when the respective pattern is supported.
+    /// </summary>
+    private static void TableViaPatterns(
+        AutomationElement element, bool headersOnly,
+        List<string> headers, List<List<string>> rows)
+    {
         if (element.Patterns.Table.IsSupported)
         {
             var table = element.Patterns.Table.Pattern;
             foreach (var h in table.ColumnHeaders.Value)
-                headers.Add(h.Name);
+                headers.Add(h.Name ?? string.Empty);
         }
 
         if (!headersOnly && element.Patterns.Grid.IsSupported)
@@ -1398,16 +1562,99 @@ public class UiService : IUiService
                 for (int c = 0; c < colCount; c++)
                 {
                     var cell = grid.GetItem(r, c);
-                    row.Add(cell?.Name ?? string.Empty);
+                    row.Add(cell != null ? GetCellText(cell) : string.Empty);
                 }
                 rows.Add(row);
             }
         }
+    }
 
-        if (headersOnly)
-            return new { headers };
+    /// <summary>
+    /// Strategy 2: locate a Header control type among element's descendants and
+    /// add the names of its children (HeaderItem elements) to <paramref name="headers"/>.
+    /// </summary>
+    private static void HeadersFromDescendants(
+        AutomationElement element, ConditionFactory cf, List<string> headers)
+    {
+        var headerEl = element.FindFirstDescendant(cf.ByControlType(ControlType.Header));
+        if (headerEl == null) return;
 
-        return new { headers, rows };
+        foreach (var hi in headerEl.FindAllChildren())
+            headers.Add(hi.Name ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Strategy 2: locate all DataItem descendants and add each one's children
+    /// (the cells) as a row. Cell content is read via the Value UIA pattern first
+    /// (preferred for editable or text-displaying cell implementations), then falls
+    /// back to the element's Name property.
+    /// </summary>
+    private static void DataItemsFromDescendants(
+        AutomationElement element, ConditionFactory cf, List<List<string>> rows)
+    {
+        var dataItems = element.FindAllDescendants(cf.ByControlType(ControlType.DataItem));
+        foreach (var di in dataItems)
+        {
+            var cells = di.FindAllChildren();
+            rows.Add(cells.Select(GetCellText).ToList());
+        }
+    }
+
+    /// <summary>
+    /// Returns the best available text for a table cell element: tries the Value
+    /// UIA pattern first (covers Edit/text-display cells), then falls back to the
+    /// element's accessible Name, then AutomationId as a last resort.
+    /// </summary>
+    private static string GetCellText(AutomationElement cell)
+    {
+        try
+        {
+            if (cell.Patterns.Value.IsSupported)
+            {
+                var v = cell.Patterns.Value.Pattern.Value;
+                if (!string.IsNullOrEmpty(v)) return v;
+            }
+        }
+        catch { /* pattern unavailable or COM error */ }
+
+        return cell.Name ?? string.Empty;
+    }
+
+    /// <summary>
+    /// Strategy 3/4: find all Custom control type descendants of <paramref name="root"/>
+    /// and, for each, search inside for Header (column headers) and DataItem (rows).
+    /// Stops as soon as enough data has been gathered.
+    /// </summary>
+    private static void CustomControlDeepDive(
+        AutomationElement root, bool headersOnly, ConditionFactory cf,
+        List<string> headers, List<List<string>> rows)
+    {
+        AutomationElement[] customEls;
+        try
+        {
+            customEls = root.FindAllDescendants(cf.ByControlType(ControlType.Custom));
+        }
+        catch
+        {
+            return;
+        }
+
+        foreach (var custom in customEls)
+        {
+            try
+            {
+                if (headers.Count == 0)
+                    HeadersFromDescendants(custom, cf, headers);
+
+                if (!headersOnly && rows.Count == 0)
+                    DataItemsFromDescendants(custom, cf, rows);
+            }
+            catch { /* best effort */ }
+
+            // Stop early when we have what we need.
+            if (headers.Count > 0 && (headersOnly || rows.Count > 0))
+                return;
+        }
     }
 
     /// <summary>
