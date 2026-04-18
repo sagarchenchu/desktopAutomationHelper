@@ -15,6 +15,7 @@ namespace DesktopAutomationDriver.Controllers;
 /// POST /listallwindows
 /// POST /switchwindow
 /// POST /maximize
+/// POST /close
 /// POST /click/name
 /// POST /click/aid
 /// POST /click/advanced
@@ -50,6 +51,21 @@ public class SimpleAutomationController : ControllerBase
             return BadRequest(new { success = false, error = "'exePath' is required." });
 
         return RunOperation(new UiRequest { Operation = "launch", Value = req.ExePath });
+    }
+
+    /// <summary>
+    /// POST /close
+    /// Closes the first top-level window whose title contains the given string.
+    /// Request:  { "app": "Notepad" }
+    /// Response: { "success": true } or { "success": false, "error": "..." }
+    /// </summary>
+    [HttpPost("/close")]
+    public IActionResult CloseWindow([FromBody] CloseWindowRequest? req)
+    {
+        if (string.IsNullOrWhiteSpace(req?.App))
+            return BadRequest(new { success = false, error = "'app' is required." });
+
+        return RunOperation(new UiRequest { Operation = "closewindow", Value = req.App });
     }
 
     /// <summary>
