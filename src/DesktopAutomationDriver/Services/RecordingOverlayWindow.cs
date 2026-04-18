@@ -630,10 +630,19 @@ public sealed class RecordingOverlayWindow : Form
         {
             try
             {
-                // Always expand when the ExpandCollapse pattern is supported so that
-                // dropdown/popup children (e.g. ComboBox list items) become visible
-                // in the UIA tree before we query for children.
-                if (element.Patterns.ExpandCollapse.IsSupported)
+                // For ComboBox controls expand the dropdown to materialise list items,
+                // then collapse immediately so the user does not see the dropdown open
+                // while the context menu is being built.
+                // Do NOT expand MenuItem / Menu / MenuBar elements: expanding them
+                // opens the native submenu popup on the message-pump thread which causes
+                // a 10-15 s freeze and visual artefacts.  Their children are accessible
+                // via FindAllChildren() without expansion.
+                bool isComboBox = element.ControlType == ControlType.ComboBox;
+                bool isMenu = element.ControlType == ControlType.MenuItem
+                    || element.ControlType == ControlType.Menu
+                    || element.ControlType == ControlType.MenuBar;
+
+                if (isComboBox && element.Patterns.ExpandCollapse.IsSupported)
                 {
                     try { element.Patterns.ExpandCollapse.Pattern.Expand(); }
                     catch { /* best effort */ }
@@ -645,7 +654,7 @@ public sealed class RecordingOverlayWindow : Form
                 // (Edit, Button, List) which are not useful to the user.
                 AutomationElement[] children;
                 string childrenMenuLabel;
-                if (element.ControlType == ControlType.ComboBox && _automation != null)
+                if (isComboBox && _automation != null)
                 {
                     var cf = _automation.ConditionFactory;
 
@@ -669,6 +678,19 @@ public sealed class RecordingOverlayWindow : Form
                     // Last resort: immediate children of the ComboBox.
                     if (children.Length == 0)
                         children = element.FindAllChildren();
+
+                    // Collapse the dropdown so it does not remain open while the context
+                    // menu is visible (the user would see an expanded combo behind the menu).
+                    try { element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
+                    catch { /* best effort */ }
+                }
+                else if (isMenu && _automation != null)
+                {
+                    // For menu elements enumerate children without expanding so that no
+                    // submenu popup is opened.  The UIA tree exposes sub-items even while
+                    // the menu is visually collapsed.
+                    children = element.FindAllChildren();
+                    childrenMenuLabel = "Children ▶";
                 }
                 else
                 {
@@ -721,11 +743,12 @@ public sealed class RecordingOverlayWindow : Form
                                     if (freshItem != null)
                                     {
                                         freshItem.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
-                                        var selPat = freshItem.Patterns.SelectionItem.PatternOrDefault;
-                                        if (selPat != null)
-                                            selPat.Select();
-                                        else
-                                            freshItem.Click();
+                                        // Use Click() as the primary action: it reliably triggers
+                                        // ComboBox selection events and updates the displayed value.
+                                        // SelectionItem.Select() may not fire SelectedIndexChanged on
+                                        // some WinForms ComboBox implementations, leaving the
+                                        // displayed text unchanged.
+                                        freshItem.Click();
 
                                         Thread.Sleep(100);
                                         element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
@@ -740,11 +763,7 @@ public sealed class RecordingOverlayWindow : Form
                                 // Last resort: use the (possibly stale) original reference.
                                 try
                                 {
-                                    var selPat = child.Patterns.SelectionItem.PatternOrDefault;
-                                    if (selPat != null)
-                                        selPat.Select();
-                                    else
-                                        child.Click();
+                                    child.Click();
 
                                     Thread.Sleep(100);
                                     element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
@@ -786,7 +805,9 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         AddCloseItem(menu);
-        menu.Show(pt);
+        // Show the context menu relative to this overlay form so it inherits the form's
+        // topmost z-order and appears above the target application's window.
+        menu.Show(this, PointToClient(pt));
     }
 
     /// <summary>

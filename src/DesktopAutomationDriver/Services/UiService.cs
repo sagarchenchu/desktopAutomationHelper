@@ -134,6 +134,7 @@ public class UiService : IUiService
             "selectaid"       => SelectByAid(request),
             "typeandselect"   => TypeAndSelect(request),
             "clickgridcell"   => ClickGridCell(request),
+            "doubleclickgridcell" => DoubleClickGridCell(request),
 
             _ => throw new ArgumentException(
                 $"Unknown operation '{request.Operation}'. " +
@@ -894,56 +895,130 @@ public class UiService : IUiService
 
     private object? ClickGridCell(UiRequest req)
     {
+        PerformGridCellAction(req, doubleClick: false);
+        return null;
+    }
+
+    private object? DoubleClickGridCell(UiRequest req)
+    {
+        PerformGridCellAction(req, doubleClick: true);
+        return null;
+    }
+
+    /// <summary>
+    /// Locates the cell at <c>req.Index</c> (row) / <c>req.ColumnIndex</c> (column) and
+    /// performs either a single click or a double-click depending on <paramref name="doubleClick"/>.
+    ///
+    /// Two grid layouts are supported:
+    /// <list type="bullet">
+    ///   <item>
+    ///     <description>
+    ///       <b>Grid pattern</b> – the element exposes <c>IGridProvider</c> (e.g. WinForms
+    ///       DataGridView).  <c>IGridProvider.GetItem(row, col)</c> retrieves the cell directly.
+    ///     </description>
+    ///   </item>
+    ///   <item>
+    ///     <description>
+    ///       <b>DataItem rows</b> – the element does not expose the Grid pattern but its
+    ///       children are <c>ControlType.DataItem</c> (e.g. WPF DataGrid without Grid
+    ///       virtualization enabled).  The row is selected by index and the cell by child
+    ///       position within that row.
+    ///     </description>
+    ///   </item>
+    /// </list>
+    /// </summary>
+    private void PerformGridCellAction(UiRequest req, bool doubleClick)
+    {
         if (req.Index == null)
-            throw new ArgumentException("'index' (row index) is required for 'clickgridcell'.");
+            throw new ArgumentException("'index' (row index) is required for this operation.");
         if (req.ColumnIndex == null)
-            throw new ArgumentException("'columnIndex' is required for 'clickgridcell'.");
+            throw new ArgumentException("'columnIndex' is required for this operation.");
 
         var element = FindWithRetry(req);
 
-        // "Grid pattern not supported" is a bad-request condition (wrong element type),
-        // not a "not found", so ArgumentException gives the correct 400 status code.
-        if (!element.Patterns.Grid.IsSupported)
-            throw new ArgumentException(
-                "The target element does not support the Grid pattern. " +
-                "Verify the locator targets the grid/table control itself, not a child row or cell.");
-
-        var grid = element.Patterns.Grid.Pattern;
         int row = req.Index.Value;
         int col = req.ColumnIndex.Value;
 
-        // The explicit < 0 guards are intentionally kept separate from the upper-bound
-        // checks below: when RowCount/ColumnCount == 0 (virtualised grid) the upper-bound
-        // check is skipped, so negative indices would otherwise reach grid.GetItem unchecked.
         if (row < 0)
             throw new ArgumentException($"Row index {row} must be >= 0.");
         if (col < 0)
             throw new ArgumentException($"Column index {col} must be >= 0.");
 
-        // RowCount/ColumnCount report 0 for virtualised grids even when data is present;
-        // in that case skip the upper-bound check and let GetItem surface the error if
-        // the coordinates are truly out of range.
-        int rowCount = grid.RowCount;
-        int colCount = grid.ColumnCount;
+        // ── Strategy 1: Grid pattern (WinForms DataGridView, etc.) ──────────────
+        if (element.Patterns.Grid.IsSupported)
+        {
+            var grid = element.Patterns.Grid.Pattern;
 
-        if (rowCount > 0 && row >= rowCount)
-            throw new ArgumentException(
-                $"Row index {row} is out of range. Grid has {rowCount} row(s).");
-        if (colCount > 0 && col >= colCount)
-            throw new ArgumentException(
-                $"Column index {col} is out of range. Grid has {colCount} column(s).");
+            // RowCount/ColumnCount report 0 for virtualised grids even when data is present;
+            // skip the upper-bound check in that case.
+            int rowCount = grid.RowCount;
+            int colCount = grid.ColumnCount;
 
-        var cell = grid.GetItem(row, col);
-        if (cell == null)
-            throw new InvalidOperationException(
-                $"Grid cell at row {row}, column {col} could not be retrieved.");
+            if (rowCount > 0 && row >= rowCount)
+                throw new ArgumentException(
+                    $"Row index {row} is out of range. Grid has {rowCount} row(s).");
+            if (colCount > 0 && col >= colCount)
+                throw new ArgumentException(
+                    $"Column index {col} is out of range. Grid has {colCount} column(s).");
+
+            var cell = grid.GetItem(row, col);
+            if (cell == null)
+                throw new InvalidOperationException(
+                    $"Grid cell at row {row}, column {col} could not be retrieved.");
+
+            ActOnCell(cell, doubleClick);
+            return;
+        }
+
+        // ── Strategy 2: DataItem rows (WPF DataGrid, etc.) ──────────────────────
+        // When the Grid pattern is absent the rows are often DataItem elements.
+        // Navigate to the row by index, then to the cell by child position.
+        var session = RequireSession();
+        var cf = session.Automation.ConditionFactory;
+        var dataItems = element.FindAllChildren(cf.ByControlType(ControlType.DataItem));
+
+        if (dataItems.Length > 0)
+        {
+            if (row >= dataItems.Length)
+                throw new ArgumentException(
+                    $"Row index {row} is out of range. Grid has {dataItems.Length} row(s).");
+
+            ActOnDataItemCell(dataItems[row], col, doubleClick);
+            return;
+        }
+
+        throw new ArgumentException(
+            "The target element does not support the Grid pattern and has no DataItem rows. " +
+            "Verify the locator targets the grid/table control itself, not a child row or cell.");
+    }
+
+    /// <summary>Performs a click or double-click on a grid cell element.</summary>
+    private static void ActOnCell(AutomationElement cell, bool doubleClick)
+    {
+        if (doubleClick)
+        {
+            cell.DoubleClick();
+            return;
+        }
 
         if (cell.Patterns.Invoke.IsSupported)
             cell.Patterns.Invoke.Pattern.Invoke();
         else
             cell.Click();
+    }
 
-        return null;
+    /// <summary>
+    /// Locates the child of <paramref name="dataItem"/> at <paramref name="colIndex"/>
+    /// and performs a click or double-click.
+    /// </summary>
+    private static void ActOnDataItemCell(AutomationElement dataItem, int colIndex, bool doubleClick)
+    {
+        var children = dataItem.FindAllChildren();
+        if (colIndex >= children.Length)
+            throw new ArgumentException(
+                $"Column index {colIndex} is out of range. Row has {children.Length} cell(s).");
+
+        ActOnCell(children[colIndex], doubleClick);
     }
 
     // =========================================================================
