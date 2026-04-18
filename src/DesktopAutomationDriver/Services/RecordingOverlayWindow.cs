@@ -314,6 +314,38 @@ public sealed class RecordingOverlayWindow : Form
     private void RecordPassiveClick(System.Drawing.Point pt, ActionType actionType)
     {
         var info = _service.GetElementAtPoint(pt);
+
+        // When a ListItem is left-clicked, check whether it lives inside an editable
+        // ComboBox that already contains typed text — if so, record as TypeAndSelect
+        // rather than a plain click so the automation script can replay the filter+pick
+        // interaction correctly.
+        if (actionType == ActionType.Click
+            && info?.ControlType == "ListItem"
+            && _automation != null)
+        {
+            try
+            {
+                var element = _automation.FromPoint(pt);
+                if (element != null)
+                {
+                    var (comboInfo, typedText) = FindEditableComboBoxAncestor(element);
+                    if (comboInfo != null && !string.IsNullOrEmpty(typedText))
+                    {
+                        _service.AddAction(new RecordedAction
+                        {
+                            ActionType = ActionType.TypeAndSelect,
+                            Mode = RecordingMode.Passive,
+                            Element = comboInfo,
+                            Value = typedText,
+                            Description = $"Type and select '{info.Name ?? typedText}' in {ElementInfo.GetLabel(comboInfo)}"
+                        });
+                        return;
+                    }
+                }
+            }
+            catch { /* best effort */ }
+        }
+
         var actionLabel = actionType == ActionType.DoubleClick ? "Double Click" : "Click";
         _service.AddAction(new RecordedAction
         {
@@ -322,6 +354,50 @@ public sealed class RecordingOverlayWindow : Form
             Element = info,
             Description = BuildDescription(actionLabel, info)
         });
+    }
+
+    /// <summary>
+    /// Walks the UIA control tree upward from <paramref name="element"/> (up to 5 levels)
+    /// looking for an editable ComboBox ancestor that currently contains non-empty text.
+    /// Returns the ComboBox's <see cref="ElementInfo"/> and its current value, or
+    /// <c>(null, null)</c> when no such ancestor is found.
+    /// </summary>
+    private (ElementInfo? info, string? text) FindEditableComboBoxAncestor(AutomationElement element)
+    {
+        try
+        {
+            var walker = _automation!.TreeWalkerFactory.GetControlViewWalker();
+            var current = element;
+
+            for (int i = 0; i < 5; i++)
+            {
+                AutomationElement? parent;
+                try { parent = walker.GetParent(current); }
+                catch { break; }
+
+                if (parent == null) break;
+
+                try
+                {
+                    if (parent.ControlType == FlaUI.Core.Definitions.ControlType.ComboBox)
+                    {
+                        var valuePat = parent.Patterns.Value.PatternOrDefault;
+                        if (valuePat != null && !valuePat.IsReadOnly)
+                        {
+                            var text = valuePat.Value;
+                            if (!string.IsNullOrEmpty(text))
+                                return (BuildElementInfo(parent), text);
+                        }
+                    }
+                }
+                catch { /* ignore inaccessible element */ }
+
+                current = parent;
+            }
+        }
+        catch { /* best effort */ }
+
+        return (null, null);
     }
 
     // ── Assistive mode: context menu ─────────────────────────────────────────
@@ -465,6 +541,88 @@ public sealed class RecordingOverlayWindow : Form
                 UpdateStatusAfterAction($"Type into [{elementInfo?.ControlType}] {elementLabel}");
             };
             menu.Items.Add(typeItem);
+        }
+
+        // Type and Select — only for editable ComboBox controls (autocomplete / filter pattern)
+        if (element != null && element.ControlType == ControlType.ComboBox)
+        {
+            var valuePat = element.Patterns.Value.PatternOrDefault;
+            if (valuePat != null && !valuePat.IsReadOnly)
+            {
+                menu.Items.Add(new ToolStripSeparator());
+                var typeAndSelectItem = new ToolStripMenuItem("Type and Select…");
+                typeAndSelectItem.Click += (_, _) =>
+                {
+                    var text = ShowTypePrompt(elementInfo?.Name ?? elementInfo?.AutomationId ?? "ComboBox");
+                    if (text == null) return; // user cancelled
+
+                    var elementLabel = ElementInfo.GetLabel(elementInfo);
+                    try
+                    {
+                        // Focus the combo and type the filter text.
+                        element.Focus();
+                        try { valuePat.SetValue(text); }
+                        catch
+                        {
+                            // Value pattern may throw even when it reports writable;
+                            // fall back to simulated keystrokes.
+                            try { valuePat.SetValue(string.Empty); } catch { }
+                            System.Windows.Forms.SendKeys.SendWait(EscapeForSendKeys(text));
+                        }
+
+                        Thread.Sleep(500); // allow the dropdown to populate
+
+                        // Find and select the matching item.
+                        if (_automation != null)
+                        {
+                            var cf = _automation.ConditionFactory;
+                            var items = element.FindAllDescendants(
+                                cf.ByControlType(FlaUI.Core.Definitions.ControlType.ListItem));
+
+                            if (items.Length == 0)
+                            {
+                                var listChild = element.FindFirstDescendant(
+                                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.List));
+                                if (listChild != null)
+                                    items = listChild.FindAllChildren();
+                            }
+
+                            if (items.Length > 0)
+                            {
+                                var target = items.FirstOrDefault(i =>
+                                    i.Name.Equals(text, StringComparison.OrdinalIgnoreCase))
+                                    ?? items[0];
+
+                                target.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
+                                var selPat = target.Patterns.SelectionItem.PatternOrDefault;
+                                if (selPat != null)
+                                    selPat.Select();
+                                else
+                                    target.Click();
+
+                                Thread.Sleep(100);
+                                element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Type and Select failed for element \"{Label}\"", elementLabel);
+                    }
+
+                    var displayText = text.Replace("'", "\\'", StringComparison.Ordinal);
+                    _service.AddAction(new RecordedAction
+                    {
+                        ActionType = ActionType.TypeAndSelect,
+                        Mode = RecordingMode.Assistive,
+                        Element = elementInfo,
+                        Value = text,
+                        Description = $"Type and select '{displayText}' in {elementLabel}"
+                    });
+                    UpdateStatusAfterAction($"Type and select into [{elementInfo?.ControlType}] {elementLabel}");
+                };
+                menu.Items.Add(typeAndSelectItem);
+            }
         }
 
         // ── Children submenu (for container controls and expandable edit/combo fields) ───
