@@ -290,7 +290,68 @@ public class SimpleAutomationController : ControllerBase
         });
     }
 
+    // ── Alert / Dialog handling ──────────────────────────────────────────────
+
+    /// <summary>
+    /// POST /alert/ok
+    /// Finds the topmost modal dialog and clicks its OK or Yes button.
+    /// Succeeds silently (returns <c>{ "success": true }</c>) when no alert is present,
+    /// so callers can safely invoke this endpoint in flows where an alert may or may
+    /// not appear.
+    /// Request:  {} (body is optional / may be omitted)
+    /// Response: { "success": true }
+    /// </summary>
+    [HttpPost("/alert/ok")]
+    public IActionResult AlertOk()
+    {
+        return RunAlertOperation("alertok");
+    }
+
+    /// <summary>
+    /// POST /alert/cancel
+    /// Finds the topmost modal dialog and clicks its Cancel or No button.
+    /// Succeeds silently when no alert is present.
+    /// Request:  {} (body is optional / may be omitted)
+    /// Response: { "success": true }
+    /// </summary>
+    [HttpPost("/alert/cancel")]
+    public IActionResult AlertCancel()
+    {
+        return RunAlertOperation("alertcancel");
+    }
+
+    /// <summary>
+    /// POST /alert/close
+    /// Finds the topmost modal dialog and closes it via the Window pattern.
+    /// Succeeds silently when no alert is present.
+    /// Request:  {} (body is optional / may be omitted)
+    /// Response: { "success": true }
+    /// </summary>
+    [HttpPost("/alert/close")]
+    public IActionResult AlertClose()
+    {
+        return RunAlertOperation("alertclose");
+    }
+
     // ── Helper ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Executes an alert operation and always returns <c>{"success": true}</c>.
+    /// Alert operations are designed to be idempotent no-ops when no dialog is
+    /// present, so errors are swallowed and success is always reported.
+    /// </summary>
+    private IActionResult RunAlertOperation(string operation)
+    {
+        try
+        {
+            _uiService.Execute(new UiRequest { Operation = operation });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Alert operation '{Op}' failed or found no dialog (treated as no-op)", operation);
+        }
+        return Ok(new { success = true });
+    }
 
     /// <summary>
     /// Executes a <see cref="UiRequest"/> and wraps the result as

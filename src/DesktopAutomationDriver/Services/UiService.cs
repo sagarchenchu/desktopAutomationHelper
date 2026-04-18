@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Drawing.Imaging;
 using DesktopAutomationDriver.Models.Request;
+using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
 using FlaUI.Core.Definitions;
@@ -136,6 +137,11 @@ public class UiService : IUiService
             "typeandselect"   => TypeAndSelect(request),
             "clickgridcell"   => ClickGridCell(request),
             "doubleclickgridcell" => DoubleClickGridCell(request),
+
+            // ----- Alert / Dialog Handling -----
+            "alertok"     => AlertOk(request),
+            "alertcancel" => AlertCancel(request),
+            "alertclose"  => AlertClose(request),
 
             _ => throw new ArgumentException(
                 $"Unknown operation '{request.Operation}'. " +
@@ -1012,6 +1018,115 @@ public class UiService : IUiService
         comboElement.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
 
         return null;
+    }
+
+    // =========================================================================
+    // Alert / Dialog Handling
+    // =========================================================================
+
+    /// <summary>
+    /// Finds the topmost modal dialog and clicks its OK/Yes/Save button.
+    /// Returns success without error when no dialog is present.
+    /// </summary>
+    private object? AlertOk(UiRequest _)
+    {
+        HandleAlert(["OK", "Yes", "&OK", "&Yes", "Save"], closeOnly: false);
+        return new { success = true };
+    }
+
+    /// <summary>
+    /// Finds the topmost modal dialog and clicks its Cancel/No button.
+    /// Returns success without error when no dialog is present.
+    /// </summary>
+    private object? AlertCancel(UiRequest _)
+    {
+        HandleAlert(["Cancel", "No", "&Cancel", "&No"], closeOnly: false);
+        return new { success = true };
+    }
+
+    /// <summary>
+    /// Finds the topmost modal dialog and closes it via the Window pattern.
+    /// Returns success without error when no dialog is present.
+    /// </summary>
+    private object? AlertClose(UiRequest _)
+    {
+        HandleAlert([], closeOnly: true);
+        return new { success = true };
+    }
+
+    /// <summary>
+    /// Locates the first modal dialog window visible on the desktop and either
+    /// clicks a button whose name matches one of <paramref name="buttonNames"/> or
+    /// closes the window when <paramref name="closeOnly"/> is true.
+    /// Returns silently (without throwing) when no dialog is found so that
+    /// callers can treat a missing alert as a no-op.
+    /// </summary>
+    private void HandleAlert(string[] buttonNames, bool closeOnly)
+    {
+        try
+        {
+            var session = _ctx.ActiveSession;
+            if (session != null)
+                PerformHandleAlert(session.Automation, buttonNames, closeOnly);
+            else
+            {
+                using var tempAutomation = new UIA3Automation();
+                PerformHandleAlert(tempAutomation, buttonNames, closeOnly);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "HandleAlert: no alert found or action failed (treated as no-op)");
+        }
+    }
+
+    /// <summary>
+    /// Core alert-handling logic that operates on the supplied <paramref name="automation"/>
+    /// instance so it works both with an active session and with a temporary automation.
+    /// </summary>
+    private static void PerformHandleAlert(AutomationBase automation, string[] buttonNames, bool closeOnly)
+    {
+        var cf = automation.ConditionFactory;
+        var desktop = automation.GetDesktop();
+
+        // Find the first modal dialog among all top-level windows on the desktop.
+        var dialog = desktop
+            .FindAllChildren(cf.ByControlType(ControlType.Window))
+            .FirstOrDefault(IsModalDialog);
+
+        if (dialog == null) return;
+
+        if (!closeOnly && buttonNames.Length > 0)
+        {
+            // Look for a button whose name matches one of the candidate names.
+            var btn = dialog
+                .FindAllDescendants(cf.ByControlType(ControlType.Button))
+                .FirstOrDefault(b => buttonNames.Any(n =>
+                    string.Equals(b.Name, n, StringComparison.OrdinalIgnoreCase)));
+
+            if (btn != null)
+            {
+                if (btn.Patterns.Invoke.IsSupported)
+                    btn.Patterns.Invoke.Pattern.Invoke();
+                else
+                    btn.Click();
+                return;
+            }
+        }
+
+        // Close the dialog (fallback or alertclose).
+        CloseElement(dialog);
+    }
+
+    /// <summary>
+    /// Returns true when <paramref name="w"/> is a modal dialog window.
+    /// Any exception from accessing UIA properties (e.g. stale element reference or
+    /// COM error) is treated as "not a modal dialog" so the caller can continue safely.
+    /// </summary>
+    private static bool IsModalDialog(AutomationElement w)
+    {
+        try { return w.Patterns.Window.IsSupported && w.Patterns.Window.Pattern.IsModal; }
+        catch { return false; }
     }
 
     private object? ClickGridCell(UiRequest req)
