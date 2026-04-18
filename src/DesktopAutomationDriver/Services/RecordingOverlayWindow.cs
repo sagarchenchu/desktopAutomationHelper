@@ -638,7 +638,7 @@ public sealed class RecordingOverlayWindow : Form
                 // a 10-15 s freeze and visual artefacts.  Their children are accessible
                 // via FindAllChildren() without expansion.
                 bool isComboBox = element.ControlType == ControlType.ComboBox;
-                bool isMenu = element.ControlType == ControlType.MenuItem
+                bool isMenuRelated = element.ControlType == ControlType.MenuItem
                     || element.ControlType == ControlType.Menu
                     || element.ControlType == ControlType.MenuBar;
 
@@ -684,7 +684,7 @@ public sealed class RecordingOverlayWindow : Form
                     try { element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
                     catch { /* best effort */ }
                 }
-                else if (isMenu && _automation != null)
+                else if (isMenuRelated && _automation != null)
                 {
                     // For menu elements enumerate children without expanding so that no
                     // submenu popup is opened.  The UIA tree exposes sub-items even while
