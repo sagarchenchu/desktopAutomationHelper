@@ -28,6 +28,7 @@ public sealed class RecordingOverlayWindow : Form
     private const int WM_LBUTTONDOWN = 0x0201;
     private const int WM_LBUTTONDBLCLK = 0x0203;
     private const int WM_RBUTTONDOWN = 0x0204;
+    private const int WM_RBUTTONUP   = 0x0205;
 
     private const byte VK_CONTROL = 0x11;
     private const byte VK_P = 0x50;
@@ -106,6 +107,11 @@ public sealed class RecordingOverlayWindow : Form
 
     // Guard against showing multiple context menus simultaneously (e.g. rapid right-clicks).
     private bool _menuOpen;
+
+    // Set to true after we suppress WM_RBUTTONDOWN so we can also suppress the
+    // matching WM_RBUTTONUP (preventing the target app from receiving WM_CONTEXTMENU
+    // which would open the app's own context menu and immediately close ours).
+    private bool _suppressNextRButtonUp;
 
     // ── constructor ─────────────────────────────────────────────────────────
     public RecordingOverlayWindow(IRecordingService service, ILogger logger)
@@ -310,7 +316,13 @@ public sealed class RecordingOverlayWindow : Form
             {
                 var pt = ms.pt;
                 BeginInvoke(new Action(() => ShowAssistiveContextMenu(pt)));
+                _suppressNextRButtonUp = true;
                 return (IntPtr)1; // suppress the native right-click
+            }
+            if (wParam == (IntPtr)WM_RBUTTONUP && _suppressNextRButtonUp)
+            {
+                _suppressNextRButtonUp = false;
+                return (IntPtr)1; // suppress the matching RBUTTONUP so the target app doesn't open its own context menu
             }
         }
 
@@ -442,6 +454,21 @@ public sealed class RecordingOverlayWindow : Form
         // the parent instead of the specific child under the cursor. Drill down one level.
         if (element != null)
             element = DrillDownToElementAtPoint(element, pt);
+
+        // If FromPoint returned a structural child of a ComboBox (e.g. the inner Edit
+        // text-box or the dropdown Button), promote to the ComboBox parent so that
+        // the "Options ▶" submenu and "Type and Select…" items are available.
+        if (element != null &&
+            (element.ControlType == ControlType.Edit || element.ControlType == ControlType.Button))
+        {
+            try
+            {
+                var parent = element.Parent;
+                if (parent?.ControlType == ControlType.ComboBox)
+                    element = parent;
+            }
+            catch { /* best effort */ }
+        }
 
         var elementInfo = element != null ? BuildElementInfo(element) : null;
 
