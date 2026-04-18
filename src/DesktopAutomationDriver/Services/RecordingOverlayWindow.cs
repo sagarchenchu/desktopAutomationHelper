@@ -289,12 +289,19 @@ public sealed class RecordingOverlayWindow : Form
             if (wParam == (IntPtr)WM_LBUTTONDOWN)
             {
                 var pt = ms.pt;
-                BeginInvoke(new Action(() => RecordPassiveClick(pt, ActionType.Click)));
+                // Capture element info eagerly in the hook callback, before the hook
+                // returns and the application processes the click (which may close a
+                // dialog before BeginInvoke executes, e.g. a Save As "Save"/"Cancel" button).
+                ElementInfo? eagerInfo = null;
+                try { eagerInfo = _service.GetElementAtPoint(pt); } catch { /* best effort */ }
+                BeginInvoke(new Action(() => RecordPassiveClick(pt, eagerInfo, ActionType.Click)));
             }
             else if (wParam == (IntPtr)WM_LBUTTONDBLCLK)
             {
                 var pt = ms.pt;
-                BeginInvoke(new Action(() => RecordPassiveClick(pt, ActionType.DoubleClick)));
+                ElementInfo? eagerInfo = null;
+                try { eagerInfo = _service.GetElementAtPoint(pt); } catch { /* best effort */ }
+                BeginInvoke(new Action(() => RecordPassiveClick(pt, eagerInfo, ActionType.DoubleClick)));
             }
         }
         else if (_service.CurrentMode == RecordingMode.Assistive)
@@ -311,9 +318,12 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     // ── Passive recording helpers ────────────────────────────────────────────
-    private void RecordPassiveClick(System.Drawing.Point pt, ActionType actionType)
+    private void RecordPassiveClick(System.Drawing.Point pt, ElementInfo? eagerInfo, ActionType actionType)
     {
-        var info = _service.GetElementAtPoint(pt);
+        // Prefer the eagerly captured info (grabbed in the hook callback while the
+        // element was still on screen, before the application processed the click).
+        // Fall back to a fresh point-lookup in case the eager capture failed.
+        var info = eagerInfo ?? _service.GetElementAtPoint(pt);
 
         // When a ListItem is left-clicked, check whether it lives inside an editable
         // ComboBox that already contains typed text — if so, record as TypeAndSelect
@@ -678,6 +688,23 @@ public sealed class RecordingOverlayWindow : Form
                     // Last resort: immediate children of the ComboBox.
                     if (children.Length == 0)
                         children = element.FindAllChildren();
+
+                    // Deduplicate: some ComboBox UIA implementations expose the same
+                    // logical option at multiple levels of the accessibility tree
+                    // (e.g. once as a ListItem descendant and again as a child of a
+                    // nested List container). Remove subsequent occurrences of any
+                    // (Name, AutomationId) pair so the menu shows each option once.
+                    // Use ordinal (case-sensitive) comparison to preserve distinct
+                    // options whose names differ only in letter case.
+                    if (children.Length > 0)
+                    {
+                        var seen = new HashSet<(string, string)>();
+                        children = children.Where(c =>
+                        {
+                            var key = (c.Name ?? string.Empty, c.AutomationId ?? string.Empty);
+                            return seen.Add(key);
+                        }).ToArray();
+                    }
 
                     // Collapse the dropdown so it does not remain open while the context
                     // menu is visible (the user would see an expanded combo behind the menu).
