@@ -10,6 +10,7 @@ public enum ActionType
     Hover,
     Select,
     Type,
+    TypeAndSelect,
     IsVisible,
     IsClickable,
     IsEnabled,
