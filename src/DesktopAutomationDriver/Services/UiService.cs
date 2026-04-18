@@ -785,7 +785,24 @@ public class UiService : IUiService
         var session = RequireSession();
         var cf = session.Automation.ConditionFactory;
 
-        // Focus the element so keyboard input lands in the right control.
+        // For the structure Group → ComboBox → Edit, the user may target either
+        // the ComboBox or its inner Edit child. Typing must go into the Edit, but
+        // the ListItem descendants and the ExpandCollapse pattern live on the ComboBox.
+        // If the located element is an Edit, walk up to find the parent ComboBox.
+        var comboElement = element;
+        if (element.ControlType == ControlType.Edit)
+        {
+            try
+            {
+                var walker = session.Automation.TreeWalkerFactory.GetControlViewWalker();
+                var parent = walker.GetParent(element);
+                if (parent?.ControlType == ControlType.ComboBox)
+                    comboElement = parent;
+            }
+            catch { /* unable to walk tree; use the element as-is */ }
+        }
+
+        // Focus the editable portion so keyboard input lands in the right control.
         element.Focus();
 
         // Type the filter text. Prefer the Value pattern (instant, no side effects);
@@ -814,16 +831,20 @@ public class UiService : IUiService
             Keyboard.Type(req.Value);
         }
 
+        // Some editable comboboxes do not auto-expand when text is set programmatically.
+        // If no items appear within the first poll, explicitly try to expand the dropdown.
+        bool expandAttempted = false;
+
         // Wait up to 5 s for filtered ListItems to materialise in the dropdown.
         AutomationElement? target = null;
         var deadline = DateTime.UtcNow + DefaultRetry;
         while (true)
         {
-            var items = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
+            var items = comboElement.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
             if (items.Length == 0)
             {
                 // Some implementations nest items inside a List child.
-                var listChild = element.FindFirstDescendant(cf.ByControlType(ControlType.List));
+                var listChild = comboElement.FindFirstDescendant(cf.ByControlType(ControlType.List));
                 if (listChild != null)
                     items = listChild.FindAllChildren();
             }
@@ -835,6 +856,15 @@ public class UiService : IUiService
                     i.Name.Equals(req.Value, StringComparison.OrdinalIgnoreCase))
                     ?? items[0];
                 break;
+            }
+
+            if (!expandAttempted)
+            {
+                // Try to force the dropdown open; some combo implementations need this
+                // when the value is set programmatically rather than by keyboard events.
+                try { comboElement.Patterns.ExpandCollapse.PatternOrDefault?.Expand(); }
+                catch { /* best effort */ }
+                expandAttempted = true;
             }
 
             if (DateTime.UtcNow >= deadline)
@@ -856,7 +886,7 @@ public class UiService : IUiService
         Thread.Sleep(100);
 
         // Collapse to commit the selection.
-        element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+        comboElement.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
 
         return null;
     }
@@ -1554,7 +1584,9 @@ public class UiService : IUiService
 
     /// <summary>
     /// Strategy 2: locate all DataItem descendants and add each one's children
-    /// (the cells) as a row.
+    /// (the cells) as a row. Cell content is read via the Value UIA pattern first
+    /// (preferred for editable or text-displaying cell implementations), then falls
+    /// back to the element's Name property.
     /// </summary>
     private static void DataItemsFromDescendants(
         AutomationElement element, ConditionFactory cf, List<List<string>> rows)
@@ -1563,8 +1595,28 @@ public class UiService : IUiService
         foreach (var di in dataItems)
         {
             var cells = di.FindAllChildren();
-            rows.Add(cells.Select(c => c.Name ?? string.Empty).ToList());
+            rows.Add(cells.Select(GetCellText).ToList());
         }
+    }
+
+    /// <summary>
+    /// Returns the best available text for a table cell element: tries the Value
+    /// UIA pattern first (covers Edit/text-display cells), then falls back to the
+    /// element's accessible Name, then AutomationId as a last resort.
+    /// </summary>
+    private static string GetCellText(AutomationElement cell)
+    {
+        try
+        {
+            if (cell.Patterns.Value.IsSupported)
+            {
+                var v = cell.Patterns.Value.Pattern.Value;
+                if (!string.IsNullOrEmpty(v)) return v;
+            }
+        }
+        catch { /* pattern unavailable or COM error */ }
+
+        return cell.Name ?? string.Empty;
     }
 
     /// <summary>
