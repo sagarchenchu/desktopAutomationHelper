@@ -164,10 +164,12 @@ public class UiService : IUiService
     }
 
     /// <summary>
-    /// Finds the first top-level window whose title contains the value of
-    /// <c>req.Value</c> (case-insensitive) and closes it.  Works whether or not a
+    /// Finds the first window (at any level in the UIA tree) whose title contains the
+    /// value of <c>req.Value</c> (case-insensitive) and closes it.  Works whether or not a
     /// session is active: when a session exists its automation instance is reused;
     /// otherwise a temporary <see cref="UIA3Automation"/> is created for the single lookup.
+    /// Top-level desktop children are checked first for performance; nested child/owned
+    /// windows (e.g. dialogs opened from a child window) are found via a descendant search.
     /// </summary>
     private object? CloseWindowByTitle(UiRequest req)
     {
@@ -179,10 +181,8 @@ public class UiService : IUiService
         if (session != null)
         {
             var cf = session.Automation.ConditionFactory;
-            var match = session.Automation.GetDesktop()
-                .FindAllChildren(cf.ByControlType(ControlType.Window))
-                .FirstOrDefault(w =>
-                    w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+            var desktop = session.Automation.GetDesktop();
+            var match = FindWindowByTitle(desktop, cf, req.Value);
 
             if (match != null)
             {
@@ -195,10 +195,8 @@ public class UiService : IUiService
         // fall back to a temporary automation that searches all desktop windows.
         using var tempAutomation = new UIA3Automation();
         var tempCf = tempAutomation.ConditionFactory;
-        var tempMatch = tempAutomation.GetDesktop()
-            .FindAllChildren(tempCf.ByControlType(ControlType.Window))
-            .FirstOrDefault(w =>
-                w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+        var tempDesktop = tempAutomation.GetDesktop();
+        var tempMatch = FindWindowByTitle(tempDesktop, tempCf, req.Value);
 
         if (tempMatch == null)
             throw new InvalidOperationException(
@@ -207,6 +205,28 @@ public class UiService : IUiService
         // Close is called inside the using block so the automation instance is still live.
         CloseElement(tempMatch);
         return null;
+    }
+
+    /// <summary>
+    /// Finds the first Window element whose Name contains <paramref name="title"/>
+    /// (case-insensitive) by first checking direct children of <paramref name="root"/>
+    /// (fast path for top-level windows) and then falling back to a full descendant
+    /// search that also finds nested child/owned windows in multi-level hierarchies.
+    /// </summary>
+    private static AutomationElement? FindWindowByTitle(
+        AutomationElement root, ConditionFactory cf, string title)
+    {
+        var windowCondition = cf.ByControlType(ControlType.Window);
+
+        // Fast path: top-level windows are direct children of the Desktop.
+        var topLevel = root.FindAllChildren(windowCondition)
+            .FirstOrDefault(w => w.Name.Contains(title, StringComparison.OrdinalIgnoreCase));
+        if (topLevel != null) return topLevel;
+
+        // Fallback: owned/child windows may be nested beneath their parent in the UIA tree
+        // (e.g. a dialog opened from a child window).
+        return root.FindAllDescendants(windowCondition)
+            .FirstOrDefault(w => w.Name.Contains(title, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -1044,6 +1064,21 @@ public class UiService : IUiService
                     $"Row index {row} is out of range. Grid has {dataItems.Length} row(s).");
 
             ActOnDataItemCell(dataItems[row], col, doubleClick);
+            return;
+        }
+
+        // ── Strategy 2b: locator resolved to a DataItem row instead of the container ──
+        // When the locator targets controlType=DataItem, FindFirstDescendant returns the
+        // first DataItem row (not the grid container).  Navigate up to the parent and
+        // collect all sibling DataItem rows from there.
+        if (element.ControlType == ControlType.DataItem && element.Parent != null)
+        {
+            var siblingItems = element.Parent.FindAllChildren(cf.ByControlType(ControlType.DataItem));
+            if (row >= siblingItems.Length)
+                throw new ArgumentException(
+                    $"Row index {row} is out of range. Grid has {siblingItems.Length} row(s).");
+
+            ActOnDataItemCell(siblingItems[row], col, doubleClick);
             return;
         }
 
