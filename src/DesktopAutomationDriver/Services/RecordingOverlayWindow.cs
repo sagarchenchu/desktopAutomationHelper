@@ -83,6 +83,15 @@ public sealed class RecordingOverlayWindow : Form
     /// <summary>Maximum number of child elements shown in the "Children ▶" submenu.</summary>
     private const int MaxChildrenToDisplay = 30;
 
+    /// <summary>
+    /// Delay in milliseconds between intercepting a right-click and showing the assistive
+    /// context menu.  A one-tick timer is used instead of BeginInvoke so that any
+    /// window-activation or native-menu-dismissal messages triggered by the right-click
+    /// are fully processed before the menu is built, ensuring the correct UIA element is
+    /// identified on the first right-click over MenuBar / MenuItem elements.
+    /// </summary>
+    private const int ContextMenuDelayMs = 1;
+
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
@@ -315,7 +324,20 @@ public sealed class RecordingOverlayWindow : Form
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
                 var pt = ms.pt;
-                BeginInvoke(new Action(() => ShowAssistiveContextMenu(pt)));
+                // Use a one-tick timer instead of BeginInvoke so that any native
+                // menu dismissal or window-activation messages triggered by the
+                // right-click are fully processed before we build and show the
+                // assistive context menu.  This ensures the correct element is
+                // identified on the first right-click over MenuBar / MenuItem
+                // elements where the native menu may still be transitioning.
+                var timer = new System.Windows.Forms.Timer { Interval = ContextMenuDelayMs };
+                timer.Tick += (_, _) =>
+                {
+                    timer.Stop();
+                    timer.Dispose();
+                    ShowAssistiveContextMenu(pt);
+                };
+                timer.Start();
                 _suppressNextRButtonUp = true;
                 return (IntPtr)1; // suppress the native right-click
             }
@@ -456,16 +478,31 @@ public sealed class RecordingOverlayWindow : Form
             element = DrillDownToElementAtPoint(element, pt);
 
         // If FromPoint returned a structural child of a ComboBox (e.g. the inner Edit
-        // text-box or the dropdown Button), promote to the ComboBox parent so that
-        // the "Options ▶" submenu and "Type and Select…" items are available.
+        // text-box, the dropdown Button, or a ListItem / List from the expanded dropdown),
+        // promote to the ComboBox parent so that the "Options ▶" submenu and
+        // "Type and Select…" items are available.
+        // A ListItem may be nested two levels deep: ComboBox → List → ListItem, so walk
+        // up to 3 levels to find the ComboBox ancestor.
         if (element != null &&
-            (element.ControlType == ControlType.Edit || element.ControlType == ControlType.Button))
+            (element.ControlType == ControlType.Edit ||
+             element.ControlType == ControlType.Button ||
+             element.ControlType == ControlType.ListItem ||
+             element.ControlType == ControlType.List))
         {
             try
             {
-                var parent = element.Parent;
-                if (parent?.ControlType == ControlType.ComboBox)
-                    element = parent;
+                var current = element;
+                for (int i = 0; i < 3; i++)
+                {
+                    var parent = current.Parent;
+                    if (parent == null) break;
+                    if (parent.ControlType == ControlType.ComboBox)
+                    {
+                        element = parent;
+                        break;
+                    }
+                    current = parent;
+                }
             }
             catch { /* best effort */ }
         }
