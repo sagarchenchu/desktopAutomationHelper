@@ -850,8 +850,6 @@ public sealed class RecordingOverlayWindow : Form
                                         catch { /* best effort */ }
 
                                         Thread.Sleep(100);
-                                        try { element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
-                                        catch { /* best effort */ }
                                         selected = true;
                                     }
                                 }
@@ -870,23 +868,26 @@ public sealed class RecordingOverlayWindow : Form
                                         child.Click();
 
                                     Thread.Sleep(100);
-                                    try { element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
-                                    catch { /* best effort */ }
                                     selected = true;
                                 }
                                 catch
                                 {
                                     // Last resort: click the stale reference.
-                                    try { child.Click(); }
+                                    try
+                                    {
+                                        child.Click();
+                                        selected = true;
+                                    }
                                     catch { /* best effort */ }
                                 }
                             }
 
-                            // Final fallback: if the ComboBox supports the Value pattern,
-                            // write the selected item's name directly into the displayed
-                            // value. This covers custom / owner-drawn combos where neither
-                            // Click() nor SelectionItem.Select() update the text.
-                            if (isComboBox && !string.IsNullOrEmpty(capturedChildInfo.Name))
+                            // Final fallback: if the ComboBox supports the Value pattern
+                            // and no prior strategy confirmed success, write the selected
+                            // item's name directly into the displayed value. This covers
+                            // custom / owner-drawn combos where neither Click() nor
+                            // SelectionItem.Select() update the text.
+                            if (!selected && isComboBox && !string.IsNullOrEmpty(capturedChildInfo.Name))
                             {
                                 try
                                 {
