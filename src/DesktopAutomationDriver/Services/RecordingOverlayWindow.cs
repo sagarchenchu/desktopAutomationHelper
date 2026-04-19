@@ -700,6 +700,9 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         // ── Children submenu (for container controls and expandable edit/combo fields) ───
+        // Note: ComboBox is checked explicitly here rather than being added to IsContainer()
+        // because IsContainer() is also used by DrillDownToElementAtPoint() — drilling into
+        // a ComboBox's structural children (Edit, Button, List) would break element identification.
         if (element != null && (IsContainer(element.ControlType) || element.ControlType == ControlType.ComboBox || element.Patterns.ExpandCollapse.IsSupported))
         {
             try
