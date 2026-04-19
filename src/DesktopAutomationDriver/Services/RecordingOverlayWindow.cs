@@ -699,6 +699,72 @@ public sealed class RecordingOverlayWindow : Form
             }
         }
 
+        // Get Table Headers — only for HeaderItem controls (column headers inside a DataGrid / Table)
+        if (element != null && element.ControlType == ControlType.HeaderItem)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            var getHeadersItem = new ToolStripMenuItem("Get Table Headers");
+            getHeadersItem.Click += (_, _) =>
+            {
+                // Walk up the tree to find the parent DataGrid / Table / Header element
+                // so the recorded action targets the table container, not the individual
+                // header cell.
+                AutomationElement tableElement = element;
+                ElementInfo? tableInfo = elementInfo;
+                try
+                {
+                    var current = element;
+                    for (int i = 0; i < 5; i++)
+                    {
+                        var parent = current.Parent;
+                        if (parent == null) break;
+                        if (parent.ControlType == ControlType.DataGrid ||
+                            parent.ControlType == ControlType.Table)
+                        {
+                            tableElement = parent;
+                            tableInfo = BuildElementInfo(parent);
+                            break;
+                        }
+                        current = parent;
+                    }
+                }
+                catch { /* best effort – fall back to the header item itself */ }
+
+                var tableLabel = ElementInfo.GetLabel(tableInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.GetTableHeaders,
+                    Mode = RecordingMode.Assistive,
+                    Element = tableInfo,
+                    Description = $"Get table headers from {tableLabel}"
+                });
+                UpdateStatusAfterAction($"Get Table Headers on [{tableInfo?.ControlType}] {tableLabel}");
+            };
+            menu.Items.Add(getHeadersItem);
+        }
+
+        // Assert — only for Text controls (static text labels)
+        if (element != null && element.ControlType == ControlType.Text)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            var assertItem = new ToolStripMenuItem("Assert");
+            assertItem.Click += (_, _) =>
+            {
+                var textValue = element.Name ?? string.Empty;
+                var elementLabel = ElementInfo.GetLabel(elementInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Assert,
+                    Mode = RecordingMode.Assistive,
+                    Element = elementInfo,
+                    Value = textValue,
+                    Description = $"Assert text '{textValue}' on {elementLabel}"
+                });
+                UpdateStatusAfterAction($"Assert '{textValue}' on [{elementInfo?.ControlType}] {elementLabel}");
+            };
+            menu.Items.Add(assertItem);
+        }
+
         // ── Children submenu (for container controls and expandable edit/combo fields) ───
         // Note: ComboBox is checked explicitly here rather than being added to IsContainer()
         // because IsContainer() is also used by DrillDownToElementAtPoint() — drilling into
