@@ -82,6 +82,7 @@ public sealed class RecordingOverlayWindow : Form
 
     /// <summary>Maximum number of child elements shown in the "Children ▶" submenu.</summary>
     private const int MaxChildrenToDisplay = 30;
+    private const int MaxTableAncestorDepth = 5;
 
     /// <summary>
     /// Delay in milliseconds between intercepting a right-click and showing the assistive
@@ -699,8 +700,99 @@ public sealed class RecordingOverlayWindow : Form
             }
         }
 
+        // Get Table Headers — only for HeaderItem controls (column headers inside a DataGrid / Table)
+        if (element != null && element.ControlType == ControlType.HeaderItem)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            var getHeadersItem = new ToolStripMenuItem("Get Table Headers");
+            getHeadersItem.Click += (_, _) =>
+            {
+                // Walk up the tree to find the parent DataGrid / Table / Header element
+                // so the recorded action targets the table container, not the individual
+                // header cell.
+                AutomationElement tableElement = element;
+                ElementInfo? tableInfo = elementInfo;
+                try
+                {
+                    var current = element;
+                    for (int i = 0; i < MaxTableAncestorDepth; i++)
+                    {
+                        var parent = current.Parent;
+                        if (parent == null) break;
+                        if (parent.ControlType == ControlType.DataGrid ||
+                            parent.ControlType == ControlType.Table)
+                        {
+                            tableElement = parent;
+                            tableInfo = BuildElementInfo(parent);
+                            break;
+                        }
+                        current = parent;
+                    }
+                }
+                catch { /* best effort – fall back to the header item itself */ }
+
+                var tableLabel = ElementInfo.GetLabel(tableInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.GetTableHeaders,
+                    Mode = RecordingMode.Assistive,
+                    Element = tableInfo,
+                    Description = $"Get table headers from {tableLabel}"
+                });
+                UpdateStatusAfterAction($"Get Table Headers on [{tableInfo?.ControlType}] {tableLabel}");
+            };
+            menu.Items.Add(getHeadersItem);
+        }
+
+        // Is Checked / Select — only for CheckBox controls
+        if (element != null && element.ControlType == ControlType.CheckBox)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            AddQueryItem(menu, "Is Checked", element, elementInfo, ActionType.IsChecked,
+                () => element.Patterns.Toggle.IsSupported &&
+                      element.Patterns.Toggle.Pattern.ToggleState == FlaUI.Core.Definitions.ToggleState.On);
+            AddActionItem(menu, "Select", element, elementInfo, ActionType.SelectCheckBox,
+                () =>
+                {
+                    if (element.Patterns.Toggle.IsSupported &&
+                        element.Patterns.Toggle.Pattern.ToggleState != FlaUI.Core.Definitions.ToggleState.On)
+                    {
+                        element.Patterns.Toggle.Pattern.Toggle();
+                    }
+                    else if (!element.Patterns.Toggle.IsSupported)
+                    {
+                        element.Click();
+                    }
+                });
+        }
+
+        // Assert — only for Text controls (static text labels)
+        if (element != null && element.ControlType == ControlType.Text)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            var assertItem = new ToolStripMenuItem("Assert");
+            assertItem.Click += (_, _) =>
+            {
+                var textValue = element.Name ?? string.Empty;
+                var elementLabel = ElementInfo.GetLabel(elementInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Assert,
+                    Mode = RecordingMode.Assistive,
+                    Element = elementInfo,
+                    Value = textValue,
+                    Description = $"Assert text '{textValue}' on {elementLabel}"
+                });
+                UpdateStatusAfterAction($"Assert '{textValue}' on [{elementInfo?.ControlType}] {elementLabel}");
+            };
+            menu.Items.Add(assertItem);
+        }
+
         // ── Children submenu (for container controls and expandable edit/combo fields) ───
-        if (element != null && (IsContainer(element.ControlType) || element.Patterns.ExpandCollapse.IsSupported))
+        // Note: ComboBox is checked explicitly here rather than being added to IsContainer()
+        // because IsContainer() is also used by DrillDownToElementAtPoint() — drilling into
+        // a ComboBox's structural children (Edit, Button, List) would break element identification.
+        if (element != null && (IsContainer(element.ControlType) || element.ControlType == ControlType.ComboBox || element.Patterns.ExpandCollapse.IsSupported))
         {
             try
             {
@@ -834,15 +926,19 @@ public sealed class RecordingOverlayWindow : Form
                                     if (freshItem != null)
                                     {
                                         freshItem.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
-                                        // Use Click() as the primary action: it reliably triggers
-                                        // ComboBox selection events and updates the displayed value.
-                                        // SelectionItem.Select() may not fire SelectedIndexChanged on
-                                        // some WinForms ComboBox implementations, leaving the
-                                        // displayed text unchanged.
+
+                                        // Strategy 1: Click() — reliably triggers ComboBox
+                                        // selection events and updates the displayed value.
                                         freshItem.Click();
 
+                                        // Strategy 2: Also call SelectionItem.Select() to
+                                        // ensure the selection state is committed in case
+                                        // Click() alone did not fully populate the ComboBox
+                                        // (e.g. WPF or custom combo implementations).
+                                        try { freshItem.Patterns.SelectionItem.PatternOrDefault?.Select(); }
+                                        catch { /* best effort */ }
+
                                         Thread.Sleep(100);
-                                        element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
                                         selected = true;
                                     }
                                 }
@@ -851,16 +947,49 @@ public sealed class RecordingOverlayWindow : Form
 
                             if (!selected)
                             {
-                                // Last resort: use the (possibly stale) original reference.
+                                // Fallback: use the (possibly stale) original reference.
                                 try
                                 {
-                                    child.Click();
+                                    // Try SelectionItem.Select() first on the original ref.
+                                    if (child.Patterns.SelectionItem.IsSupported)
+                                        child.Patterns.SelectionItem.Pattern.Select();
+                                    else
+                                        child.Click();
 
                                     Thread.Sleep(100);
-                                    element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+                                    selected = true;
                                 }
-                                catch { /* best effort */ }
+                                catch
+                                {
+                                    // Last resort: click the stale reference.
+                                    try
+                                    {
+                                        child.Click();
+                                        selected = true;
+                                    }
+                                    catch { /* best effort */ }
+                                }
                             }
+
+                            // Final fallback: if the ComboBox supports the Value pattern
+                            // and no prior strategy confirmed success, write the selected
+                            // item's name directly into the displayed value. This covers
+                            // custom / owner-drawn combos where neither Click() nor
+                            // SelectionItem.Select() update the text.
+                            if (!selected && isComboBox && !string.IsNullOrEmpty(capturedChildInfo.Name))
+                            {
+                                try
+                                {
+                                    var valuePattern = element.Patterns.Value.PatternOrDefault;
+                                    if (valuePattern != null && !valuePattern.IsReadOnly.Value)
+                                        valuePattern.SetValue(capturedChildInfo.Name);
+                                }
+                                catch { /* best effort — Value pattern may not be writable */ }
+                            }
+
+                            // Ensure the dropdown is collapsed regardless of the path taken.
+                            try { element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
+                            catch { /* best effort */ }
 
                             // Record against the parent element (e.g. the ComboBox) so the
                             // locator targets the container, not the transient list item.
