@@ -837,15 +837,21 @@ public sealed class RecordingOverlayWindow : Form
                                     if (freshItem != null)
                                     {
                                         freshItem.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
-                                        // Use Click() as the primary action: it reliably triggers
-                                        // ComboBox selection events and updates the displayed value.
-                                        // SelectionItem.Select() may not fire SelectedIndexChanged on
-                                        // some WinForms ComboBox implementations, leaving the
-                                        // displayed text unchanged.
+
+                                        // Strategy 1: Click() — reliably triggers ComboBox
+                                        // selection events and updates the displayed value.
                                         freshItem.Click();
 
+                                        // Strategy 2: Also call SelectionItem.Select() to
+                                        // ensure the selection state is committed in case
+                                        // Click() alone did not fully populate the ComboBox
+                                        // (e.g. WPF or custom combo implementations).
+                                        try { freshItem.Patterns.SelectionItem.PatternOrDefault?.Select(); }
+                                        catch { /* best effort */ }
+
                                         Thread.Sleep(100);
-                                        element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+                                        try { element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
+                                        catch { /* best effort */ }
                                         selected = true;
                                     }
                                 }
@@ -854,16 +860,46 @@ public sealed class RecordingOverlayWindow : Form
 
                             if (!selected)
                             {
-                                // Last resort: use the (possibly stale) original reference.
+                                // Fallback: use the (possibly stale) original reference.
                                 try
                                 {
-                                    child.Click();
+                                    // Try SelectionItem.Select() first on the original ref.
+                                    if (child.Patterns.SelectionItem.IsSupported)
+                                        child.Patterns.SelectionItem.Pattern.Select();
+                                    else
+                                        child.Click();
 
                                     Thread.Sleep(100);
-                                    element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+                                    try { element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
+                                    catch { /* best effort */ }
+                                    selected = true;
                                 }
-                                catch { /* best effort */ }
+                                catch
+                                {
+                                    // Last resort: click the stale reference.
+                                    try { child.Click(); }
+                                    catch { /* best effort */ }
+                                }
                             }
+
+                            // Final fallback: if the ComboBox supports the Value pattern,
+                            // write the selected item's name directly into the displayed
+                            // value. This covers custom / owner-drawn combos where neither
+                            // Click() nor SelectionItem.Select() update the text.
+                            if (isComboBox && !string.IsNullOrEmpty(capturedChildInfo.Name))
+                            {
+                                try
+                                {
+                                    var valuePattern = element.Patterns.Value.PatternOrDefault;
+                                    if (valuePattern != null && !valuePattern.IsReadOnly.Value)
+                                        valuePattern.SetValue(capturedChildInfo.Name);
+                                }
+                                catch { /* best effort — Value pattern may not be writable */ }
+                            }
+
+                            // Ensure the dropdown is collapsed regardless of the path taken.
+                            try { element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
+                            catch { /* best effort */ }
 
                             // Record against the parent element (e.g. the ComboBox) so the
                             // locator targets the container, not the transient list item.
