@@ -529,21 +529,6 @@ public sealed class RecordingOverlayWindow : Form
             ForeColor = Color.DimGray
         };
         menu.Items.Add(header);
-
-        // ── Details submenu (element properties for automation scripting) ────
-        if (elementInfo != null)
-        {
-            var detailsMenu = new ToolStripMenuItem("Details ▶");
-            AddDetailItem(detailsMenu, "Name", elementInfo.Name);
-            AddDetailItem(detailsMenu, "AutomationId", elementInfo.AutomationId);
-            AddDetailItem(detailsMenu, "ClassName", elementInfo.ClassName);
-            AddDetailItem(detailsMenu, "ControlType", elementInfo.ControlType);
-            AddDetailItem(detailsMenu, "BoundingRect", elementInfo.BoundingRectangle);
-            AddDetailItem(detailsMenu, "SuggestedXPath", elementInfo.SuggestedXPath);
-            if (detailsMenu.DropDownItems.Count > 0)
-                menu.Items.Add(detailsMenu);
-        }
-
         menu.Items.Add(new ToolStripSeparator());
 
         // ── Interactive actions ──────────────────────────────────────────────
@@ -715,7 +700,7 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         // ── Children submenu (for container controls and expandable edit/combo fields) ───
-        if (element != null && (IsContainer(element.ControlType) || element.Patterns.ExpandCollapse.IsSupported))
+        if (element != null && (IsContainer(element.ControlType) || element.ControlType == ControlType.ComboBox || element.Patterns.ExpandCollapse.IsSupported))
         {
             try
             {
@@ -950,20 +935,6 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
-
-    /// <summary>
-    /// Adds a read-only detail item (e.g. AutomationId, ClassName) to the Details submenu.
-    /// Skips items whose value is null or empty so the menu stays concise.
-    /// </summary>
-    private static void AddDetailItem(ToolStripMenuItem parent, string label, string? value)
-    {
-        if (string.IsNullOrEmpty(value)) return;
-        parent.DropDownItems.Add(new ToolStripMenuItem($"{label}: {value}")
-        {
-            Enabled = false,
-            ForeColor = Color.DimGray
-        });
-    }
 
     private void AddActionItem(
         ContextMenuStrip menu,
