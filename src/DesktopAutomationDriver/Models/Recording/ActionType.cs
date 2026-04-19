@@ -17,5 +17,7 @@ public enum ActionType
     IsDisabled,
     IsEditable,
     GetTableHeaders,
-    Assert
+    Assert,
+    IsChecked,
+    SelectCheckBox
 }

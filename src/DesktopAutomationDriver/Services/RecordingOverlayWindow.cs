@@ -744,6 +744,28 @@ public sealed class RecordingOverlayWindow : Form
             menu.Items.Add(getHeadersItem);
         }
 
+        // Is Checked / Select — only for CheckBox controls
+        if (element != null && element.ControlType == ControlType.CheckBox)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            AddQueryItem(menu, "Is Checked", element, elementInfo, ActionType.IsChecked,
+                () => element.Patterns.Toggle.IsSupported &&
+                      element.Patterns.Toggle.Pattern.ToggleState == FlaUI.Core.Definitions.ToggleState.On);
+            AddActionItem(menu, "Select", element, elementInfo, ActionType.SelectCheckBox,
+                () =>
+                {
+                    if (element.Patterns.Toggle.IsSupported &&
+                        element.Patterns.Toggle.Pattern.ToggleState != FlaUI.Core.Definitions.ToggleState.On)
+                    {
+                        element.Patterns.Toggle.Pattern.Toggle();
+                    }
+                    else if (!element.Patterns.Toggle.IsSupported)
+                    {
+                        element.Click();
+                    }
+                });
+        }
+
         // Assert — only for Text controls (static text labels)
         if (element != null && element.ControlType == ControlType.Text)
         {
