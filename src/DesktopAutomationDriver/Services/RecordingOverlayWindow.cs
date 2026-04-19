@@ -82,6 +82,7 @@ public sealed class RecordingOverlayWindow : Form
 
     /// <summary>Maximum number of child elements shown in the "Children ▶" submenu.</summary>
     private const int MaxChildrenToDisplay = 30;
+    private const int MaxTableAncestorDepth = 5;
 
     /// <summary>
     /// Delay in milliseconds between intercepting a right-click and showing the assistive
@@ -714,7 +715,7 @@ public sealed class RecordingOverlayWindow : Form
                 try
                 {
                     var current = element;
-                    for (int i = 0; i < 5; i++)
+                    for (int i = 0; i < MaxTableAncestorDepth; i++)
                     {
                         var parent = current.Parent;
                         if (parent == null) break;
