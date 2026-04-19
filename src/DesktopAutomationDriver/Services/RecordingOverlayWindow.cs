@@ -539,7 +539,7 @@ public sealed class RecordingOverlayWindow : Form
             AddDetailItem(detailsMenu, "ClassName", elementInfo.ClassName);
             AddDetailItem(detailsMenu, "ControlType", elementInfo.ControlType);
             AddDetailItem(detailsMenu, "BoundingRect", elementInfo.BoundingRectangle);
-            AddDetailItem(detailsMenu, "XPath", elementInfo.SuggestedXPath);
+            AddDetailItem(detailsMenu, "SuggestedXPath", elementInfo.SuggestedXPath);
             if (detailsMenu.DropDownItems.Count > 0)
                 menu.Items.Add(detailsMenu);
         }
