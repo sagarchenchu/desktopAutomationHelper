@@ -17,7 +17,17 @@ public enum ActionType
     IsDisabled,
     IsEditable,
     GetTableHeaders,
+    GetTableData,
     Assert,
     IsChecked,
-    SelectCheckBox
+    SelectCheckBox,
+    ClearText,
+    GetValue,
+    Expand,
+    Collapse,
+    Maximize,
+    Minimize,
+    CloseWindow,
+    SetValue,
+    Scroll,
 }

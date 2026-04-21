@@ -637,6 +637,32 @@ public sealed class RecordingOverlayWindow : Form
                 UpdateStatusAfterAction($"Type into [{editTargetInfo?.ControlType}] {elementLabel}");
             };
             menu.Items.Add(typeItem);
+
+            // Clear — only for writable Edit controls
+            if (editTarget.Patterns.Value.IsSupported &&
+                editTarget.Patterns.Value.PatternOrDefault?.IsReadOnly == false)
+            {
+                AddActionItem(menu, "Clear", editTarget, editTargetInfo, ActionType.ClearText,
+                    () =>
+                    {
+                        var valuePat = editTarget.Patterns.Value.PatternOrDefault;
+                        valuePat?.SetValue(string.Empty);
+                    });
+            }
+
+            // Get Text — read the current text / value of the Edit field
+            AddQueryItem(menu, "Get Text", editTarget, editTargetInfo, ActionType.GetValue,
+                () =>
+                {
+                    try
+                    {
+                        var valuePat = editTarget.Patterns.Value.PatternOrDefault;
+                        if (valuePat != null)
+                            return !string.IsNullOrEmpty(valuePat.Value);
+                    }
+                    catch { /* best effort */ }
+                    return false;
+                });
         }
 
         // Type and Select — only for editable ComboBox controls (autocomplete / filter pattern)
@@ -719,6 +745,25 @@ public sealed class RecordingOverlayWindow : Form
                 };
                 menu.Items.Add(typeAndSelectItem);
             }
+
+            // Get Selected Value — read the currently selected / displayed value of the ComboBox
+            menu.Items.Add(new ToolStripSeparator());
+            AddQueryItem(menu, "Get Selected Value", element, elementInfo, ActionType.GetValue,
+                () =>
+                {
+                    try
+                    {
+                        if (element.Patterns.Value.IsSupported)
+                            return !string.IsNullOrEmpty(element.Patterns.Value.Pattern.Value);
+                        if (element.Patterns.Selection.IsSupported)
+                        {
+                            var sel = element.Patterns.Selection.Pattern.Selection.Value;
+                            return sel.Length > 0;
+                        }
+                    }
+                    catch { /* best effort */ }
+                    return false;
+                });
         }
 
         // Get Table Headers — only for HeaderItem controls (column headers inside a DataGrid / Table)
@@ -763,6 +808,43 @@ public sealed class RecordingOverlayWindow : Form
                 UpdateStatusAfterAction($"Get Table Headers on [{tableInfo?.ControlType}] {tableLabel}");
             };
             menu.Items.Add(getHeadersItem);
+        }
+
+        // Get Table Headers + Get Table Data — directly on DataGrid / Table elements
+        if (element != null &&
+            (element.ControlType == ControlType.DataGrid ||
+             element.ControlType == ControlType.Table))
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            var directHeadersItem = new ToolStripMenuItem("Get Table Headers");
+            directHeadersItem.Click += (_, _) =>
+            {
+                var label = ElementInfo.GetLabel(elementInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.GetTableHeaders,
+                    Mode = RecordingMode.Assistive,
+                    Element = elementInfo,
+                    Description = $"Get table headers from {label}"
+                });
+                UpdateStatusAfterAction($"Get Table Headers on [{elementInfo?.ControlType}] {label}");
+            };
+            menu.Items.Add(directHeadersItem);
+
+            var tableDataItem = new ToolStripMenuItem("Get Table Data");
+            tableDataItem.Click += (_, _) =>
+            {
+                var label = ElementInfo.GetLabel(elementInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.GetTableData,
+                    Mode = RecordingMode.Assistive,
+                    Element = elementInfo,
+                    Description = $"Get table data from {label}"
+                });
+                UpdateStatusAfterAction($"Get Table Data on [{elementInfo?.ControlType}] {label}");
+            };
+            menu.Items.Add(tableDataItem);
         }
 
         // Is Checked / Check / Uncheck — only for CheckBox controls
@@ -825,6 +907,93 @@ public sealed class RecordingOverlayWindow : Form
                 UpdateStatusAfterAction($"Assert '{textValue}' on [{elementInfo?.ControlType}] {elementLabel}");
             };
             menu.Items.Add(assertItem);
+        }
+
+        // Window operations — only for Window controls
+        if (element != null && element.ControlType == ControlType.Window &&
+            element.Patterns.Window.IsSupported)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            AddActionItem(menu, "Maximize", element, elementInfo, ActionType.Maximize,
+                () => element.Patterns.Window.Pattern.SetWindowVisualState(
+                    FlaUI.Core.Definitions.WindowVisualState.Maximized));
+            AddActionItem(menu, "Minimize", element, elementInfo, ActionType.Minimize,
+                () => element.Patterns.Window.Pattern.SetWindowVisualState(
+                    FlaUI.Core.Definitions.WindowVisualState.Minimized));
+            AddActionItem(menu, "Close Window", element, elementInfo, ActionType.CloseWindow,
+                () => element.Patterns.Window.Pattern.Close());
+        }
+
+        // Expand / Collapse — for TreeItem, Tree children, MenuItem with submenus, and any
+        // element with ExpandCollapsePattern (excluding ComboBox, which is handled by Options ▶).
+        if (element != null &&
+            element.ControlType != ControlType.ComboBox &&
+            element.Patterns.ExpandCollapse.IsSupported)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            AddActionItem(menu, "Expand", element, elementInfo, ActionType.Expand,
+                () => element.Patterns.ExpandCollapse.Pattern.Expand());
+            AddActionItem(menu, "Collapse", element, elementInfo, ActionType.Collapse,
+                () => element.Patterns.ExpandCollapse.Pattern.Collapse());
+        }
+
+        // RangeValue controls (Slider, ProgressBar, ScrollBar, Spinner)
+        if (element != null && element.Patterns.RangeValue.IsSupported)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+
+            // Get Numeric Value — reads the current numeric value; always available when the pattern is supported
+            AddQueryItem(menu, "Get Numeric Value", element, elementInfo, ActionType.GetValue,
+                () => true);
+
+            // Set Value — prompts the user for a numeric value (only for writable controls)
+            if (!element.Patterns.RangeValue.Pattern.IsReadOnly)
+            {
+                var setValueItem = new ToolStripMenuItem("Set Value…");
+                setValueItem.Click += (_, _) =>
+                {
+                    var elemLabel = ElementInfo.GetLabel(elementInfo);
+                    var input = ShowValuePrompt(elemLabel,
+                        element.Patterns.RangeValue.Pattern.Minimum,
+                        element.Patterns.RangeValue.Pattern.Maximum);
+                    if (input == null) return; // user cancelled
+
+                    try
+                    {
+                        if (double.TryParse(input, out var val))
+                            element.Patterns.RangeValue.Pattern.SetValue(val);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Set Value failed for element \"{Label}\"", elemLabel);
+                    }
+
+                    _service.AddAction(new RecordedAction
+                    {
+                        ActionType = ActionType.SetValue,
+                        Mode = RecordingMode.Assistive,
+                        Element = elementInfo,
+                        Value = input,
+                        Description = $"Set value to '{input}' on {elemLabel}"
+                    });
+                    UpdateStatusAfterAction($"Set Value '{input}' on [{elementInfo?.ControlType}] {elemLabel}");
+                };
+                menu.Items.Add(setValueItem);
+            }
+        }
+
+        // Scroll — for elements that support the Scroll pattern (List, ScrollBar, etc.)
+        if (element != null && element.Patterns.Scroll.IsSupported)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            AddActionItem(menu, "Scroll Up", element, elementInfo, ActionType.Scroll,
+                () => element.Patterns.Scroll.Pattern.Scroll(
+                    FlaUI.Core.Definitions.ScrollAmount.NoAmount,
+                    FlaUI.Core.Definitions.ScrollAmount.SmallDecrement));
+            AddActionItem(menu, "Scroll Down", element, elementInfo, ActionType.Scroll,
+                () => element.Patterns.Scroll.Pattern.Scroll(
+                    FlaUI.Core.Definitions.ScrollAmount.NoAmount,
+                    FlaUI.Core.Definitions.ScrollAmount.SmallIncrement));
         }
 
         // ── Children submenu (for container controls and expandable edit/combo fields) ───
@@ -1315,6 +1484,71 @@ public sealed class RecordingOverlayWindow : Form
         var label = new WinLabel
         {
             Text = $"Text to type into \"{elementLabel}\":",
+            Left = 12,
+            Top = 12,
+            Width = 350,
+            AutoSize = true
+        };
+
+        var textBox = new System.Windows.Forms.TextBox
+        {
+            Left = 12,
+            Top = 35,
+            Width = 340
+        };
+
+        var okBtn = new System.Windows.Forms.Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Left = 192,
+            Top = 68,
+            Width = 80
+        };
+
+        var cancelBtn = new System.Windows.Forms.Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Left = 278,
+            Top = 68,
+            Width = 80
+        };
+
+        form.AcceptButton = okBtn;
+        form.CancelButton = cancelBtn;
+        form.Controls.AddRange([label, textBox, okBtn, cancelBtn]);
+
+        if (form.ShowDialog() == DialogResult.OK)
+            result = textBox.Text;
+
+        return result;
+    }
+
+    /// <summary>
+    /// Shows a small modal input dialog prompting the user to enter a numeric value to
+    /// set on the focused element (e.g. a Slider or Spinner).
+    /// Returns the entered text, or <c>null</c> if the user cancelled.
+    /// </summary>
+    private static string? ShowValuePrompt(string elementLabel, double minimum, double maximum)
+    {
+        string? result = null;
+
+        using var form = new Form
+        {
+            Text = "Set value",
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterScreen,
+            Width = 380,
+            Height = 145,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            TopMost = true
+        };
+
+        var label = new WinLabel
+        {
+            Text = $"Numeric value for \"{elementLabel}\" (min {minimum}, max {maximum}):",
             Left = 12,
             Top = 12,
             Width = 350,
