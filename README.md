@@ -172,6 +172,193 @@ Full API reference: see [Controllers/ElementController.cs](src/DesktopAutomation
 
 ---
 
+## POST /ui — Unified Automation Endpoint
+
+All desktop automation operations are exposed through a single endpoint:
+
+```
+POST http://127.0.0.1:{user-port}/ui
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+**Request envelope:**
+
+```json
+{
+  "operation": "<operation-name>",
+  "locator":  { "automationId": "...", "name": "...", "className": "...", "controlType": "...", "xpath": "..." },
+  "locator2": { "automationId": "...", "name": "...", "className": "...", "controlType": "...", "xpath": "..." },
+  "value": "...",
+  "index": 0,
+  "columnIndex": 0
+}
+```
+
+All fields except `operation` are optional and depend on the operation being used.
+
+**Success response:**
+
+```json
+{ "status": 0, "value": { ... } }
+```
+
+**Error response:**
+
+```json
+{ "status": 400, "value": { "error": "...", "message": "..." } }
+```
+
+---
+
+### Session & Window Management
+
+| Operation | Required fields | Description | Response `value` |
+|---|---|---|---|
+| `launch` | `value` (exe path) | Launch an application and start a session | `{ "sessionId": "...", "app": "..." }` |
+| `close` / `quit` | — | Close the active application and session | `null` |
+| `closewindow` | `value` (partial title) | Close a window by partial title match | `null` |
+| `maximize` | — | Maximize the active window | `null` |
+| `minimize` | — | Minimize the active window | `null` |
+| `switchwindow` | `value` (partial title) | Focus a window by partial title match | `null` |
+| `refresh` | — | Re-attach to the main window of the active application | `null` |
+| `screenshot` | `value` (optional file path) | Take a screenshot; returns Base64 PNG or saves to file | `{ "screenshot": "<base64>" }` |
+| `listelements` | `locator` | List all matching elements and their properties | `{ "elements": [ ... ] }` |
+| `listwindows` | — | List all top-level windows visible on the desktop | `{ "windows": [ ... ] }` |
+
+**Example — launch:**
+
+```json
+{ "operation": "launch", "value": "C:\\Windows\\System32\\notepad.exe" }
+```
+
+---
+
+### Element Query
+
+| Operation | Required fields | Description | Response `value` |
+|---|---|---|---|
+| `exists` | `locator` | Check if an element exists (no wait) | `{ "exists": true/false }` |
+| `waitfor` | `locator`, `value` (timeout seconds) | Wait up to N seconds for an element to appear | `{ "found": true/false }` |
+| `isenabled` | `locator` | Check whether the element is enabled | `{ "isEnabled": true/false }` |
+| `isvisible` | `locator` | Check whether the element is visible | `{ "isVisible": true/false }` |
+| `isclickable` | `locator` | Check whether the element is enabled and visible | `{ "isClickable": true/false }` |
+| `ischecked` | `locator` | Check the toggle/check state of an element | `{ "isChecked": true/false }` |
+| `getvalue` | `locator` | Get the Value pattern value (e.g. text in an Edit) | `{ "value": "..." }` |
+| `gettext` | `locator` | Get the visible text of an element | `{ "text": "..." }` |
+| `getname` | `locator` | Get the UIA Name property | `{ "name": "..." }` |
+| `getcontroltype` | `locator` | Get the UIA ControlType string | `{ "controlType": "Button" }` |
+| `getselected` | `locator` | Get the currently selected item from a combo or list | `{ "selected": "..." }` |
+| `gettable` / `gettabledata` | `locator` | Read all rows and headers from a grid/table | `{ "headers": [...], "rows": [[...], ...] }` |
+| `gettableheaders` | `locator` | Read only the column headers from a grid/table | `{ "headers": [...] }` |
+
+---
+
+### Position Comparison
+
+These operations require **both** `locator` and `locator2`.
+
+| Operation | Description | Response `value` |
+|---|---|---|
+| `isrightof` | Whether element 1 is to the right of element 2 | `{ "isRightOf": true/false }` |
+| `isleftof` | Whether element 1 is to the left of element 2 | `{ "isLeftOf": true/false }` |
+| `isabove` | Whether element 1 is above element 2 | `{ "isAbove": true/false }` |
+| `isbelow` | Whether element 1 is below element 2 | `{ "isBelow": true/false }` |
+| `getposition` | Bounding rectangles + all four relative positions | `{ "element1": {...}, "element2": {...}, "isRightOf": ..., ... }` |
+
+---
+
+### Element Actions
+
+| Operation | Required fields | Description | Response `value` |
+|---|---|---|---|
+| `click` | `locator` | Click the element (Invoke pattern or mouse click) | `null` |
+| `doubleclick` | `locator` | Double-click the element | `null` |
+| `rightclick` | `locator` | Right-click the element | `null` |
+| `hover` | `locator` | Move the mouse pointer over the element | `null` |
+| `focus` | `locator` | Give keyboard focus to the element | `null` |
+| `type` | `locator`, `value` | Type text into the element | `null` |
+| `clear` | `locator` | Clear the text content of an Edit element | `null` |
+| `sendkeys` | `locator`, `value` | Send key sequences, e.g. `{ENTER}`, `{TAB}`, `{F5}` | `null` |
+| `scroll` | `locator` | Scroll the element into view | `null` |
+| `check` | `locator` | Set a toggle/checkbox element to the checked state | `null` |
+| `uncheck` | `locator` | Set a toggle/checkbox element to the unchecked state | `null` |
+| `select` | `locator`, `value` or `index` | Select a ComboBox item by name or zero-based index | `null` |
+| `selectaid` | `locator`, `value` (AutomationId) | Select a ComboBox item by AutomationId | `null` |
+| `typeandselect` | `locator`, `value` | Type a filter string and select the first matching dropdown item | `null` |
+| `clickgridcell` | `locator`, `index` (row), `columnIndex` (col) | Click a grid cell at the given row/column | `null` |
+| `doubleclickgridcell` | `locator`, `index` (row), `columnIndex` (col) | Double-click a grid cell at the given row/column | `null` |
+| `dragAndDrop` | `locator` (source), `locator2` (target) | Drag the source element and drop it onto the target element | `null` |
+
+#### dragAndDrop — request example
+
+```json
+{
+  "operation": "dragAndDrop",
+  "locator":  { "automationId": "sourceId",  "controlType": "ListItem" },
+  "locator2": { "automationId": "targetId",  "controlType": "List" }
+}
+```
+
+#### sendkeys — supported key tokens
+
+Key tokens are wrapped in braces inside the `value` string, e.g. `"Hello{ENTER}"`.
+
+| Token | Key |
+|---|---|
+| `{ENTER}` / `{RETURN}` | Enter / Return |
+| `{TAB}` | Tab |
+| `{ESC}` / `{ESCAPE}` | Escape |
+| `{BACKSPACE}` / `{BS}` | Backspace |
+| `{DELETE}` / `{DEL}` | Delete |
+| `{INSERT}` / `{INS}` | Insert |
+| `{HOME}` | Home |
+| `{END}` | End |
+| `{UP}` | Arrow Up |
+| `{DOWN}` | Arrow Down |
+| `{LEFT}` | Arrow Left |
+| `{RIGHT}` | Arrow Right |
+| `{PGUP}` / `{PAGEUP}` | Page Up |
+| `{PGDN}` / `{PAGEDOWN}` | Page Down |
+| `{SPACE}` | Space |
+| `{F1}`–`{F12}` | Function keys |
+
+---
+
+### Alert / Dialog Handling
+
+| Operation | Required fields | Description | Response `value` |
+|---|---|---|---|
+| `alertok` | — | Click the OK / Yes / Save button of the topmost modal dialog | `{ "success": true }` |
+| `alertcancel` | — | Click the Cancel / No button of the topmost modal dialog | `{ "success": true }` |
+| `alertclose` | — | Close the topmost modal dialog via the Window pattern | `{ "success": true }` |
+
+---
+
+### Locator reference
+
+All `locator` and `locator2` objects support the following properties (combined with AND logic):
+
+| Property | Description |
+|---|---|
+| `automationId` | UIA AutomationId property |
+| `name` | UIA Name property (exact match) |
+| `className` | UIA ClassName property |
+| `controlType` | UIA control type string, e.g. `Button`, `Edit`, `ComboBox` |
+| `xpath` | XPath-style expression (overrides all other properties when set) |
+
+**XPath syntax examples:**
+
+```
+//Button[@Name='OK']
+//*[@AutomationId='myId']
+//ComboBox[@Name='Status']/ListItem[@Name='Active']
+//Edit[@AutomationId='search' and @Name='Search']
+//ListItem[@Name='Item'][2]
+```
+
+---
+
 ## Example: Automating Notepad (Python)
 
 ```python
