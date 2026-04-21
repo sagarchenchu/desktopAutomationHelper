@@ -137,6 +137,7 @@ public class UiService : IUiService
             "typeandselect"   => TypeAndSelect(request),
             "clickgridcell"   => ClickGridCell(request),
             "doubleclickgridcell" => DoubleClickGridCell(request),
+            "draganddrop"     => DragAndDrop(request),
 
             // ----- Alert / Dialog Handling -----
             "alertok"     => AlertOk(request),
@@ -1016,6 +1017,27 @@ public class UiService : IUiService
 
         // Collapse to commit the selection.
         comboElement.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+
+        return null;
+    }
+
+    private object? DragAndDrop(UiRequest req)
+    {
+        if (req.Locator == null)
+            throw new ArgumentException("'locator' (source element) is required for 'dragAndDrop'.");
+        if (req.Locator2 == null)
+            throw new ArgumentException("'locator2' (target element) is required for 'dragAndDrop'.");
+
+        var session = RequireSession();
+        var root = GetWindowRoot(session);
+
+        var source = FindLocatorWithRetry(session, root, req.Locator);
+        var target = FindLocatorWithRetry(session, root, req.Locator2);
+
+        var srcPt = source.GetClickablePoint();
+        var dstPt = target.GetClickablePoint();
+
+        Mouse.Drag(srcPt, dstPt);
 
         return null;
     }
