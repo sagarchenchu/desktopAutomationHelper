@@ -478,6 +478,11 @@ public sealed class RecordingOverlayWindow : Form
         if (element != null)
             element = DrillDownToElementAtPoint(element, pt);
 
+        // Save the original element before any promotion so that the "Type…" and
+        // "Is Editable" menu items are still available when an inner Edit control is
+        // promoted to its parent ComboBox (e.g. a username/password field with history).
+        var originalElement = element;
+
         // If FromPoint returned a structural child of a ComboBox (e.g. the inner Edit
         // text-box, the dropdown Button, or a ListItem / List from the expanded dropdown),
         // promote to the ComboBox parent so that the "Options ▶" submenu and
@@ -509,6 +514,15 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         var elementInfo = element != null ? BuildElementInfo(element) : null;
+
+        // When an inner Edit was promoted to its parent ComboBox, keep a reference to the
+        // original Edit so "Type…" and "Is Editable" can still target the actual text field.
+        var innerEditElement = (originalElement != null &&
+                                !ReferenceEquals(originalElement, element) &&
+                                originalElement.ControlType == ControlType.Edit)
+            ? originalElement
+            : null;
+        var innerEditInfo = innerEditElement != null ? BuildElementInfo(innerEditElement) : null;
 
         var menu = new ContextMenuStrip { ShowImageMargin = false };
         menu.Font = new Font("Segoe UI", 10f);
@@ -570,31 +584,38 @@ public sealed class RecordingOverlayWindow : Form
         AddQueryItem(menu, "Is Disabled", element, elementInfo, ActionType.IsDisabled,
             () => element != null && !element.IsEnabled);
 
-        // Is Editable — only for Edit controls (text boxes)
-        if (element != null && element.ControlType == ControlType.Edit)
+        // Resolve the Edit element to use for "Is Editable" and "Type…":
+        // - if the resolved element is itself an Edit, use it directly;
+        // - otherwise fall back to innerEditElement (the original Edit that was promoted
+        //   to its parent ComboBox, e.g. a username/password field with credential history).
+        var editTarget = (element?.ControlType == ControlType.Edit) ? element : innerEditElement;
+        var editTargetInfo = (element?.ControlType == ControlType.Edit) ? elementInfo : innerEditInfo;
+
+        // Is Editable — for Edit controls (text boxes), or the inner Edit of a promoted ComboBox.
+        if (editTarget != null)
         {
-            AddQueryItem(menu, "Is Editable", element, elementInfo, ActionType.IsEditable,
-                () => element.Patterns.Value.IsSupported && element.Patterns.Value.Pattern?.IsReadOnly == false);
+            AddQueryItem(menu, "Is Editable", editTarget, editTargetInfo, ActionType.IsEditable,
+                () => editTarget.Patterns.Value.IsSupported && editTarget.Patterns.Value.Pattern?.IsReadOnly == false);
         }
 
-        // Type — only for Edit controls (text boxes)
-        if (element != null && element.ControlType == ControlType.Edit)
+        // Type — for Edit controls (text boxes), or the inner Edit of a promoted ComboBox.
+        if (editTarget != null)
         {
             menu.Items.Add(new ToolStripSeparator());
             var typeItem = new ToolStripMenuItem("Type…");
             typeItem.Click += (_, _) =>
             {
-                var text = ShowTypePrompt(elementInfo?.Name ?? elementInfo?.AutomationId ?? "element");
+                var text = ShowTypePrompt(editTargetInfo?.Name ?? editTargetInfo?.AutomationId ?? "element");
                 if (text == null) return; // user cancelled
 
-                var elementLabel = ElementInfo.GetLabel(elementInfo);
+                var elementLabel = ElementInfo.GetLabel(editTargetInfo);
                 try
                 {
-                    if (element.Patterns.Value.IsSupported)
-                        element.Patterns.Value.Pattern.SetValue(text);
+                    if (editTarget.Patterns.Value.IsSupported)
+                        editTarget.Patterns.Value.Pattern.SetValue(text);
                     else
                     {
-                        element.Focus();
+                        editTarget.Focus();
                         System.Windows.Forms.SendKeys.SendWait(EscapeForSendKeys(text));
                     }
                 }
@@ -609,11 +630,11 @@ public sealed class RecordingOverlayWindow : Form
                 {
                     ActionType = ActionType.Type,
                     Mode = RecordingMode.Assistive,
-                    Element = elementInfo,
+                    Element = editTargetInfo,
                     Value = text,
                     Description = $"Type '{displayText}' into {elementLabel}"
                 });
-                UpdateStatusAfterAction($"Type into [{elementInfo?.ControlType}] {elementLabel}");
+                UpdateStatusAfterAction($"Type into [{editTargetInfo?.ControlType}] {elementLabel}");
             };
             menu.Items.Add(typeItem);
         }
