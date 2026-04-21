@@ -288,13 +288,13 @@ These operations require **both** `locator` and `locator2`.
 | `typeandselect` | `locator`, `value` | Type a filter string and select the first matching dropdown item | `null` |
 | `clickgridcell` | `locator`, `index` (row), `columnIndex` (col) | Click a grid cell at the given row/column | `null` |
 | `doubleclickgridcell` | `locator`, `index` (row), `columnIndex` (col) | Double-click a grid cell at the given row/column | `null` |
-| `dragAndDrop` | `locator` (source), `locator2` (target) | Drag the source element and drop it onto the target element | `null` |
+| `draganddrop` | `locator` (source), `locator2` (target) | Drag the source element and drop it onto the target element | `null` |
 
-#### dragAndDrop — request example
+#### draganddrop — request example
 
 ```json
 {
-  "operation": "dragAndDrop",
+  "operation": "draganddrop",
   "locator":  { "automationId": "sourceId",  "controlType": "ListItem" },
   "locator2": { "automationId": "targetId",  "controlType": "List" }
 }
