@@ -765,22 +765,40 @@ public sealed class RecordingOverlayWindow : Form
             menu.Items.Add(getHeadersItem);
         }
 
-        // Is Checked / Select — only for CheckBox controls
+        // Is Checked / Check / Uncheck — only for CheckBox controls
         if (element != null && element.ControlType == ControlType.CheckBox)
         {
             menu.Items.Add(new ToolStripSeparator());
             AddQueryItem(menu, "Is Checked", element, elementInfo, ActionType.IsChecked,
                 () => element.Patterns.Toggle.IsSupported &&
                       element.Patterns.Toggle.Pattern.ToggleState == FlaUI.Core.Definitions.ToggleState.On);
-            AddActionItem(menu, "Select", element, elementInfo, ActionType.SelectCheckBox,
+
+            // Determine the current checked state so the label reflects what will happen.
+            bool currentlyChecked = false;
+            try
+            {
+                currentlyChecked = element.Patterns.Toggle.IsSupported &&
+                    element.Patterns.Toggle.Pattern.ToggleState == FlaUI.Core.Definitions.ToggleState.On;
+            }
+            catch { /* best effort; default to showing "Check" */ }
+
+            var checkActionLabel = currentlyChecked ? "Uncheck" : "Check";
+            // Capture the desired state as a bool so the action lambda doesn't depend
+            // on the label text (avoids coupling UI copy to control-flow logic).
+            bool wantChecked = !currentlyChecked;
+            AddActionItem(menu, checkActionLabel, element, elementInfo, ActionType.SelectCheckBox,
                 () =>
                 {
-                    if (element.Patterns.Toggle.IsSupported &&
-                        element.Patterns.Toggle.Pattern.ToggleState != FlaUI.Core.Definitions.ToggleState.On)
+                    if (element.Patterns.Toggle.IsSupported)
                     {
-                        element.Patterns.Toggle.Pattern.Toggle();
+                        var state = element.Patterns.Toggle.Pattern.ToggleState;
+                        if ((wantChecked && state != FlaUI.Core.Definitions.ToggleState.On) ||
+                            (!wantChecked && state == FlaUI.Core.Definitions.ToggleState.On))
+                        {
+                            element.Patterns.Toggle.Pattern.Toggle();
+                        }
                     }
-                    else if (!element.Patterns.Toggle.IsSupported)
+                    else
                     {
                         element.Click();
                     }

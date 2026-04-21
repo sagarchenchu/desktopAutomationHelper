@@ -55,21 +55,31 @@ public class UiController : ControllerBase
         {
             _logger.LogWarning(ex, "Invalid argument for operation '{Op}'",
                 SanitizeOp(request.Operation));
-            return BadRequest(UiResponse.Fail(ex.Message));
+            var screenshot = _uiService.TakeFailureScreenshot(FailureScreenshotDirectory);
+            return BadRequest(UiResponse.Fail(ex.Message, screenshot));
         }
         catch (InvalidOperationException ex)
         {
             _logger.LogWarning(ex, "Operation failed: '{Op}'",
                 SanitizeOp(request.Operation));
-            return NotFound(UiResponse.Fail(ex.Message));
+            var screenshot = _uiService.TakeFailureScreenshot(FailureScreenshotDirectory);
+            return NotFound(UiResponse.Fail(ex.Message, screenshot));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Unexpected error for operation '{Op}'",
                 SanitizeOp(request.Operation));
-            return StatusCode(500, UiResponse.Fail(ex.Message));
+            var screenshot = _uiService.TakeFailureScreenshot(FailureScreenshotDirectory);
+            return StatusCode(500, UiResponse.Fail(ex.Message, screenshot));
         }
     }
+
+    /// <summary>
+    /// Directory where failure screenshots are automatically saved.
+    /// Resolves to <c>test/resources</c> relative to the current working directory.
+    /// </summary>
+    private static readonly string FailureScreenshotDirectory =
+        Path.Combine(Directory.GetCurrentDirectory(), "test", "resources");
 
     /// <summary>
     /// Strips control characters from operation names before logging

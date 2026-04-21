@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Windows.Forms;
 using DesktopAutomationDriver.Models.Request;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
@@ -437,6 +438,58 @@ public class UiService : IUiService
 
         bitmap.Save(filePath, ImageFormat.Png);
         return new { path = filePath };
+    }
+
+    /// <inheritdoc/>
+    public string? TakeFailureScreenshot(string directory)
+    {
+        try
+        {
+            Directory.CreateDirectory(directory);
+
+            var filePath = Path.Combine(directory,
+                $"failure_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}.png");
+
+            // When a session is active, capture only the application window.
+            // Fall back to the full primary screen when no session exists.
+            var session = _ctx.ActiveSession;
+            if (session != null)
+            {
+                try
+                {
+                    var root = GetWindowRoot(session);
+                    var rect = root.BoundingRectangle;
+                    if (rect.Width > 0 && rect.Height > 0)
+                    {
+                        using var bmp = new Bitmap(rect.Width, rect.Height, PixelFormat.Format32bppArgb);
+                        using var g = Graphics.FromImage(bmp);
+                        g.CopyFromScreen(rect.Left, rect.Top, 0, 0, new Size(rect.Width, rect.Height));
+                        bmp.Save(filePath, ImageFormat.Png);
+                        return filePath;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "TakeFailureScreenshot: window capture failed, falling back to primary screen");
+                }
+            }
+
+            // Full primary-screen fallback.
+            // SystemInformation.VirtualScreen covers all monitors; fall back to PrimaryScreen
+            // bounds and finally to the virtual-screen extent reported by System.Windows.Forms.
+            var screen = System.Windows.Forms.Screen.PrimaryScreen?.Bounds
+                ?? System.Windows.Forms.SystemInformation.VirtualScreen;
+            using var screenBmp = new Bitmap(screen.Width, screen.Height, PixelFormat.Format32bppArgb);
+            using var screenG = Graphics.FromImage(screenBmp);
+            screenG.CopyFromScreen(screen.Left, screen.Top, 0, 0, new Size(screen.Width, screen.Height));
+            screenBmp.Save(filePath, ImageFormat.Png);
+            return filePath;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "TakeFailureScreenshot failed; screenshot was not saved");
+            return null;
+        }
     }
 
     private object? ListElements(UiRequest req)
