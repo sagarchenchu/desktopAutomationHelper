@@ -475,8 +475,8 @@ public class UiService : IUiService
             }
 
             // Full primary-screen fallback.
-            // SystemInformation.VirtualScreen covers all monitors; fall back to PrimaryScreen
-            // bounds and finally to the virtual-screen extent reported by System.Windows.Forms.
+            // Prefer PrimaryScreen bounds; fall back to SystemInformation.VirtualScreen
+            // (which covers all monitors) when PrimaryScreen is unavailable.
             var screen = System.Windows.Forms.Screen.PrimaryScreen?.Bounds
                 ?? System.Windows.Forms.SystemInformation.VirtualScreen;
             using var screenBmp = new Bitmap(screen.Width, screen.Height, PixelFormat.Format32bppArgb);
