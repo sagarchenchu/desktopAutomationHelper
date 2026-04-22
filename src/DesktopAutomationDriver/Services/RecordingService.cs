@@ -185,6 +185,31 @@ public sealed class RecordingService : IRecordingService, IDisposable
             action.ActionType, action.Element?.ControlType ?? "?");
     }
 
+    public void ReplaceLastAction(RecordedAction replacement)
+    {
+        replacement.Timestamp = DateTimeOffset.UtcNow;
+        replacement.Mode = _currentMode;
+
+        if (string.IsNullOrEmpty(replacement.Description))
+        {
+            var elementLabel = ElementInfo.GetLabel(replacement.Element);
+            replacement.Description = $"{replacement.ActionType} on {elementLabel}";
+        }
+
+        lock (_lock)
+        {
+            if (_actions.Count > 0)
+                _actions[^1] = replacement;
+            else
+                _actions.Add(replacement);
+        }
+
+        _logger.LogDebug("Replaced last action with: {Type} [{Source}] → [{Target}]",
+            replacement.ActionType,
+            replacement.Element?.ControlType ?? "?",
+            replacement.TargetElement?.ControlType ?? "?");
+    }
+
     public ElementInfo? GetElementAtPoint(System.Drawing.Point point)
     {
         if (_automation == null) return null;

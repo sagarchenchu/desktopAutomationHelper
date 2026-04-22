@@ -20,6 +20,12 @@ public class UiResponse
     /// </summary>
     public string? Error { get; set; }
 
+    /// <summary>
+    /// Path to an automatically captured failure screenshot.
+    /// Only present when Success is false and a screenshot could be taken.
+    /// </summary>
+    public string? ScreenshotPath { get; set; }
+
     /// <summary>Creates a successful response with an optional value payload.</summary>
     public static UiResponse Ok(object? value = null) =>
         new() { Success = true, Value = value };
@@ -27,4 +33,8 @@ public class UiResponse
     /// <summary>Creates a failed response with an error message.</summary>
     public static UiResponse Fail(string error) =>
         new() { Success = false, Error = error };
+
+    /// <summary>Creates a failed response with an error message and a screenshot path.</summary>
+    public static UiResponse Fail(string error, string? screenshotPath) =>
+        new() { Success = false, Error = error, ScreenshotPath = screenshotPath };
 }

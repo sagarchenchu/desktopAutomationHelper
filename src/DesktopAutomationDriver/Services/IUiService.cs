@@ -20,4 +20,13 @@ public interface IUiService
     /// Returns null for void operations (click, type, etc.).
     /// </returns>
     object? Execute(UiRequest request);
+
+    /// <summary>
+    /// Captures a screenshot of the active application window (if a session is open)
+    /// or the primary screen (if no session is active), saves it as a PNG file inside
+    /// <paramref name="directory"/>, and returns the full path to the saved file.
+    /// Returns <c>null</c> when the screenshot cannot be captured.
+    /// </summary>
+    /// <param name="directory">Directory where the screenshot file will be created.</param>
+    string? TakeFailureScreenshot(string directory);
 }
