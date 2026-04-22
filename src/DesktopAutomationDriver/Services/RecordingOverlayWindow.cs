@@ -26,9 +26,11 @@ public sealed class RecordingOverlayWindow : Form
     private const int WM_KEYDOWN = 0x0100;
     private const int WM_SYSKEYDOWN = 0x0104;
     private const int WM_LBUTTONDOWN = 0x0201;
+    private const int WM_LBUTTONUP = 0x0202;
     private const int WM_LBUTTONDBLCLK = 0x0203;
     private const int WM_RBUTTONDOWN = 0x0204;
     private const int WM_RBUTTONUP   = 0x0205;
+    private const int WM_MOUSEMOVE = 0x0200;
 
     private const byte VK_CONTROL = 0x11;
     private const byte VK_P = 0x50;
@@ -85,6 +87,17 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxTableAncestorDepth = 5;
 
     /// <summary>
+    /// Minimum pixel distance the mouse must travel while the left button is held before a
+    /// mouse-down + mouse-up sequence is classified as a drag rather than a click.
+    /// 8 px is large enough to ignore normal hand tremor and sub-pixel high-DPI jitter
+    /// while still being small enough to catch deliberate short drags.
+    /// </summary>
+    private const int DragThresholdPixels = 8;
+
+    /// <summary>Pre-computed squared threshold to avoid a multiplication on every WM_LBUTTONUP.</summary>
+    private const int DragThresholdPixelsSq = DragThresholdPixels * DragThresholdPixels;
+
+    /// <summary>
     /// Delay in milliseconds between intercepting a right-click and showing the assistive
     /// context menu.  A one-tick timer is used instead of BeginInvoke so that any
     /// window-activation or native-menu-dismissal messages triggered by the right-click
@@ -122,6 +135,31 @@ public sealed class RecordingOverlayWindow : Form
     // matching WM_RBUTTONUP (preventing the target app from receiving WM_CONTEXTMENU
     // which would open the app's own context menu and immediately close ours).
     private bool _suppressNextRButtonUp;
+
+    // ── Passive mode drag detection state ────────────────────────────────────
+    // Set on WM_LBUTTONDOWN; cleared on WM_LBUTTONUP or WM_LBUTTONDBLCLK.
+    private bool _leftButtonDown;
+    private System.Drawing.Point _mouseDownPoint;
+    private ElementInfo? _mouseDownEagerInfo;
+    // Squared maximum distance (avoids a sqrt per MOUSEMOVE event).
+    private int _maxDragDistanceSq;
+
+    // ── Assistive-mode drag-and-drop two-step selection state ─────────────────
+    // When true the user has picked a drag source and the next right-click selects the target.
+    private bool _awaitingDragTarget;
+    private ElementInfo? _dragSourceInfo;
+
+    // ── Drag-tracking helpers ────────────────────────────────────────────────
+    /// <summary>
+    /// Initialises passive-mode drag-detection state for a new left-button-down event.
+    /// </summary>
+    private void BeginDragTracking(System.Drawing.Point pt, ElementInfo? eagerInfo)
+    {
+        _mouseDownPoint = pt;
+        _mouseDownEagerInfo = eagerInfo;
+        _leftButtonDown = true;
+        _maxDragDistanceSq = 0;
+    }
 
     // ── constructor ─────────────────────────────────────────────────────────
     public RecordingOverlayWindow(IRecordingService service, ILogger logger)
@@ -280,6 +318,11 @@ public sealed class RecordingOverlayWindow : Form
 
     private void ActivateMode(RecordingMode mode)
     {
+        // Reset drag-related state so stale captures from the previous mode are discarded.
+        _leftButtonDown = false;
+        _awaitingDragTarget = false;
+        _dragSourceInfo = null;
+
         _service.SetMode(mode);
         var label = mode == RecordingMode.Passive
             ? "● PASSIVE  Recording clicks & keys  S=Stop"
@@ -310,14 +353,47 @@ public sealed class RecordingOverlayWindow : Form
                 // dialog before BeginInvoke executes, e.g. a Save As "Save"/"Cancel" button).
                 ElementInfo? eagerInfo = null;
                 try { eagerInfo = _service.GetElementAtPoint(pt); } catch { /* best effort */ }
+
+                // Store state for drag detection. The click is recorded now; if the
+                // mouse moves beyond DragThresholdPixels before button-up, the click
+                // action will be replaced by a DragAndDrop action.
+                BeginDragTracking(pt, eagerInfo);
+
                 BeginInvoke(new Action(() => RecordPassiveClick(pt, eagerInfo, ActionType.Click)));
             }
             else if (wParam == (IntPtr)WM_LBUTTONDBLCLK)
             {
+                // Cancel drag tracking — the button-up for a double-click should not
+                // trigger drag detection since WM_LBUTTONDBLCLK already recorded the action.
+                _leftButtonDown = false;
                 var pt = ms.pt;
                 ElementInfo? eagerInfo = null;
                 try { eagerInfo = _service.GetElementAtPoint(pt); } catch { /* best effort */ }
                 BeginInvoke(new Action(() => RecordPassiveClick(pt, eagerInfo, ActionType.DoubleClick)));
+            }
+            else if (wParam == (IntPtr)WM_MOUSEMOVE && _leftButtonDown)
+            {
+                // Accumulate the maximum squared distance from the mouse-down point.
+                // Using squared distance avoids a sqrt on every mouse-move event.
+                var dx = ms.pt.X - _mouseDownPoint.X;
+                var dy = ms.pt.Y - _mouseDownPoint.Y;
+                var distSq = dx * dx + dy * dy;
+                if (distSq > _maxDragDistanceSq)
+                    _maxDragDistanceSq = distSq;
+            }
+            else if (wParam == (IntPtr)WM_LBUTTONUP && _leftButtonDown)
+            {
+                _leftButtonDown = false;
+                if (_maxDragDistanceSq >= DragThresholdPixelsSq)
+                {
+                    // Significant movement: upgrade the earlier Click to a DragAndDrop.
+                    var upPt = ms.pt;
+                    var sourceInfo = _mouseDownEagerInfo;
+                    ElementInfo? targetInfo = null;
+                    try { targetInfo = _service.GetElementAtPoint(upPt); } catch { /* best effort */ }
+                    BeginInvoke(new Action(() => RecordPassiveDrag(sourceInfo, targetInfo)));
+                }
+                // Small movement: the Click already recorded on mouse-down is correct; nothing to do.
             }
         }
         else if (_service.CurrentMode == RecordingMode.Assistive)
@@ -325,20 +401,44 @@ public sealed class RecordingOverlayWindow : Form
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
                 var pt = ms.pt;
-                // Use a one-tick timer instead of BeginInvoke so that any native
-                // menu dismissal or window-activation messages triggered by the
-                // right-click are fully processed before we build and show the
-                // assistive context menu.  This ensures the correct element is
-                // identified on the first right-click over MenuBar / MenuItem
-                // elements where the native menu may still be transitioning.
-                var timer = new System.Windows.Forms.Timer { Interval = ContextMenuDelayMs };
-                timer.Tick += (_, _) =>
+
+                if (_awaitingDragTarget)
                 {
-                    timer.Stop();
-                    timer.Dispose();
-                    ShowAssistiveContextMenu(pt);
-                };
-                timer.Start();
+                    // Second step of assistive drag: the user right-clicked the drop target.
+                    _awaitingDragTarget = false;
+                    var sourceInfo = _dragSourceInfo;
+                    _dragSourceInfo = null;
+
+                    // Use a one-tick timer for the same reason as normal right-click handling
+                    // (let native menu/activation messages settle before accessing the UIA tree).
+                    var timer = new System.Windows.Forms.Timer { Interval = ContextMenuDelayMs };
+                    timer.Tick += (_, _) =>
+                    {
+                        timer.Stop();
+                        timer.Dispose();
+                        RecordAssistiveDragTarget(pt, sourceInfo);
+                    };
+                    timer.Start();
+                }
+                else
+                {
+                    // Normal: show the assistive context menu.
+                    // Use a one-tick timer instead of BeginInvoke so that any native
+                    // menu dismissal or window-activation messages triggered by the
+                    // right-click are fully processed before we build and show the
+                    // assistive context menu.  This ensures the correct element is
+                    // identified on the first right-click over MenuBar / MenuItem
+                    // elements where the native menu may still be transitioning.
+                    var timer = new System.Windows.Forms.Timer { Interval = ContextMenuDelayMs };
+                    timer.Tick += (_, _) =>
+                    {
+                        timer.Stop();
+                        timer.Dispose();
+                        ShowAssistiveContextMenu(pt);
+                    };
+                    timer.Start();
+                }
+
                 _suppressNextRButtonUp = true;
                 return (IntPtr)1; // suppress the native right-click
             }
@@ -399,6 +499,59 @@ public sealed class RecordingOverlayWindow : Form
             Element = info,
             Description = BuildDescription(actionLabel, info)
         });
+    }
+
+    /// <summary>
+    /// Called (via BeginInvoke) when passive-mode drag detection determines that the left
+    /// button was held and the cursor moved at least <see cref="DragThresholdPixels"/> pixels.
+    /// Replaces the Click that was optimistically recorded on mouse-down with a DragAndDrop.
+    /// </summary>
+    private void RecordPassiveDrag(ElementInfo? sourceInfo, ElementInfo? targetInfo)
+    {
+        var sourceLabel = ElementInfo.GetLabel(sourceInfo);
+        var targetLabel = ElementInfo.GetLabel(targetInfo);
+        _service.ReplaceLastAction(new RecordedAction
+        {
+            ActionType = ActionType.DragAndDrop,
+            Element = sourceInfo,
+            TargetElement = targetInfo,
+            Description = $"Drag from {sourceLabel} to {targetLabel}"
+        });
+    }
+
+    /// <summary>
+    /// Called (via a one-tick timer) when the user right-clicks the drop target while the
+    /// assistive-mode drag-source selection is pending (<see cref="_awaitingDragTarget"/> was true).
+    /// Identifies the element at <paramref name="pt"/> and records the DragAndDrop action.
+    /// </summary>
+    private void RecordAssistiveDragTarget(System.Drawing.Point pt, ElementInfo? sourceInfo)
+    {
+        if (_automation == null) return;
+
+        ElementInfo? targetInfo = null;
+        try
+        {
+            var element = _automation.FromPoint(pt);
+            if (element != null)
+                targetInfo = BuildElementInfo(element);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not get drop-target element at point {Pt}", pt);
+        }
+
+        var sourceLabel = ElementInfo.GetLabel(sourceInfo);
+        var targetLabel = ElementInfo.GetLabel(targetInfo);
+        _service.AddAction(new RecordedAction
+        {
+            ActionType = ActionType.DragAndDrop,
+            Mode = RecordingMode.Assistive,
+            Element = sourceInfo,
+            TargetElement = targetInfo,
+            Description = $"Drag from {sourceLabel} to {targetLabel}"
+        });
+        UpdateStatusAfterAction(
+            $"Drag [{sourceInfo?.ControlType}] {sourceLabel} → [{targetInfo?.ControlType}] {targetLabel}");
     }
 
     /// <summary>
@@ -570,6 +723,18 @@ public sealed class RecordingOverlayWindow : Form
                     catch { element.Click(); }
                 });
         }
+
+        // Drag and Drop — available for every element, regardless of control type.
+        // Selecting this item sets the current element as the drag source; the user then
+        // right-clicks the drop target to complete the recorded action.
+        var dragDropItem = new ToolStripMenuItem("Drag and Drop…");
+        dragDropItem.Click += (_, _) =>
+        {
+            _awaitingDragTarget = true;
+            _dragSourceInfo = elementInfo;
+            _statusLabel.Text = "  ● Drag source set — Right-click the drop target element  ";
+        };
+        menu.Items.Add(dragDropItem);
 
         menu.Items.Add(new ToolStripSeparator());
 

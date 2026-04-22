@@ -42,6 +42,14 @@ public interface IRecordingService
     void AddAction(RecordedAction action);
 
     /// <summary>
+    /// Replaces the most recently recorded action with <paramref name="replacement"/>.
+    /// Used by passive-mode drag detection to upgrade a prematurely recorded Click into a
+    /// DragAndDrop action once a significant mouse movement has been observed.
+    /// If the action log is empty the replacement is appended instead.
+    /// </summary>
+    void ReplaceLastAction(RecordedAction replacement);
+
+    /// <summary>
     /// Uses UI Automation to identify the element at the given screen point.
     /// Must be called from an STA thread.
     /// </summary>

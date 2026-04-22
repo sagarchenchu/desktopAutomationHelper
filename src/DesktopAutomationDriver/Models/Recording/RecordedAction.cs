@@ -35,4 +35,11 @@ public class RecordedAction
     /// Null for actions that do not carry a value.
     /// </summary>
     public string? Value { get; set; }
+
+    /// <summary>
+    /// The drop-target element for a <see cref="ActionType.DragAndDrop"/> action.
+    /// <see cref="Element"/> holds the drag source; this property holds the drop destination.
+    /// Null for all other action types.
+    /// </summary>
+    public ElementInfo? TargetElement { get; set; }
 }
