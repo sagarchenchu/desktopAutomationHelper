@@ -30,4 +30,5 @@ public enum ActionType
     CloseWindow,
     SetValue,
     Scroll,
+    DragAndDrop,
 }
