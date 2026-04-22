@@ -29,11 +29,21 @@ public class UiController : ControllerBase
 {
     private readonly IUiService _uiService;
     private readonly ILogger<UiController> _logger;
+    private readonly string _failureScreenshotDirectory;
 
-    public UiController(IUiService uiService, ILogger<UiController> logger)
+    public UiController(IUiService uiService, ILogger<UiController> logger, IConfiguration configuration)
     {
         _uiService = uiService;
         _logger = logger;
+
+        // Directory is configurable via appsettings.json ("FailureScreenshotDirectory").
+        // Defaults to <cwd>/test/resources when not specified.
+        var configPath = configuration["FailureScreenshotDirectory"];
+        _failureScreenshotDirectory = string.IsNullOrWhiteSpace(configPath)
+            ? Path.Combine(Directory.GetCurrentDirectory(), "test", "resources")
+            : Path.IsPathRooted(configPath)
+                ? configPath
+                : Path.Combine(Directory.GetCurrentDirectory(), configPath);
     }
 
     /// <summary>
@@ -55,19 +65,22 @@ public class UiController : ControllerBase
         {
             _logger.LogWarning(ex, "Invalid argument for operation '{Op}'",
                 SanitizeOp(request.Operation));
-            return BadRequest(UiResponse.Fail(ex.Message));
+            var screenshot = _uiService.TakeFailureScreenshot(_failureScreenshotDirectory);
+            return BadRequest(UiResponse.Fail(ex.Message, screenshot));
         }
         catch (InvalidOperationException ex)
         {
             _logger.LogWarning(ex, "Operation failed: '{Op}'",
                 SanitizeOp(request.Operation));
-            return NotFound(UiResponse.Fail(ex.Message));
+            var screenshot = _uiService.TakeFailureScreenshot(_failureScreenshotDirectory);
+            return NotFound(UiResponse.Fail(ex.Message, screenshot));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Unexpected error for operation '{Op}'",
                 SanitizeOp(request.Operation));
-            return StatusCode(500, UiResponse.Fail(ex.Message));
+            var screenshot = _uiService.TakeFailureScreenshot(_failureScreenshotDirectory);
+            return StatusCode(500, UiResponse.Fail(ex.Message, screenshot));
         }
     }
 

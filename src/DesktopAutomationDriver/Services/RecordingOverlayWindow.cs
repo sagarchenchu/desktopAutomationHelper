@@ -26,9 +26,11 @@ public sealed class RecordingOverlayWindow : Form
     private const int WM_KEYDOWN = 0x0100;
     private const int WM_SYSKEYDOWN = 0x0104;
     private const int WM_LBUTTONDOWN = 0x0201;
+    private const int WM_LBUTTONUP = 0x0202;
     private const int WM_LBUTTONDBLCLK = 0x0203;
     private const int WM_RBUTTONDOWN = 0x0204;
     private const int WM_RBUTTONUP   = 0x0205;
+    private const int WM_MOUSEMOVE = 0x0200;
 
     private const byte VK_CONTROL = 0x11;
     private const byte VK_P = 0x50;
@@ -85,6 +87,17 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxTableAncestorDepth = 5;
 
     /// <summary>
+    /// Minimum pixel distance the mouse must travel while the left button is held before a
+    /// mouse-down + mouse-up sequence is classified as a drag rather than a click.
+    /// 8 px is large enough to ignore normal hand tremor and sub-pixel high-DPI jitter
+    /// while still being small enough to catch deliberate short drags.
+    /// </summary>
+    private const int DragThresholdPixels = 8;
+
+    /// <summary>Pre-computed squared threshold to avoid a multiplication on every WM_LBUTTONUP.</summary>
+    private const int DragThresholdPixelsSq = DragThresholdPixels * DragThresholdPixels;
+
+    /// <summary>
     /// Delay in milliseconds between intercepting a right-click and showing the assistive
     /// context menu.  A one-tick timer is used instead of BeginInvoke so that any
     /// window-activation or native-menu-dismissal messages triggered by the right-click
@@ -122,6 +135,31 @@ public sealed class RecordingOverlayWindow : Form
     // matching WM_RBUTTONUP (preventing the target app from receiving WM_CONTEXTMENU
     // which would open the app's own context menu and immediately close ours).
     private bool _suppressNextRButtonUp;
+
+    // ── Passive mode drag detection state ────────────────────────────────────
+    // Set on WM_LBUTTONDOWN; cleared on WM_LBUTTONUP or WM_LBUTTONDBLCLK.
+    private bool _leftButtonDown;
+    private System.Drawing.Point _mouseDownPoint;
+    private ElementInfo? _mouseDownEagerInfo;
+    // Squared maximum distance (avoids a sqrt per MOUSEMOVE event).
+    private int _maxDragDistanceSq;
+
+    // ── Assistive-mode drag-and-drop two-step selection state ─────────────────
+    // When true the user has picked a drag source and the next right-click selects the target.
+    private bool _awaitingDragTarget;
+    private ElementInfo? _dragSourceInfo;
+
+    // ── Drag-tracking helpers ────────────────────────────────────────────────
+    /// <summary>
+    /// Initialises passive-mode drag-detection state for a new left-button-down event.
+    /// </summary>
+    private void BeginDragTracking(System.Drawing.Point pt, ElementInfo? eagerInfo)
+    {
+        _mouseDownPoint = pt;
+        _mouseDownEagerInfo = eagerInfo;
+        _leftButtonDown = true;
+        _maxDragDistanceSq = 0;
+    }
 
     // ── constructor ─────────────────────────────────────────────────────────
     public RecordingOverlayWindow(IRecordingService service, ILogger logger)
@@ -280,6 +318,11 @@ public sealed class RecordingOverlayWindow : Form
 
     private void ActivateMode(RecordingMode mode)
     {
+        // Reset drag-related state so stale captures from the previous mode are discarded.
+        _leftButtonDown = false;
+        _awaitingDragTarget = false;
+        _dragSourceInfo = null;
+
         _service.SetMode(mode);
         var label = mode == RecordingMode.Passive
             ? "● PASSIVE  Recording clicks & keys  S=Stop"
@@ -310,14 +353,47 @@ public sealed class RecordingOverlayWindow : Form
                 // dialog before BeginInvoke executes, e.g. a Save As "Save"/"Cancel" button).
                 ElementInfo? eagerInfo = null;
                 try { eagerInfo = _service.GetElementAtPoint(pt); } catch { /* best effort */ }
+
+                // Store state for drag detection. The click is recorded now; if the
+                // mouse moves beyond DragThresholdPixels before button-up, the click
+                // action will be replaced by a DragAndDrop action.
+                BeginDragTracking(pt, eagerInfo);
+
                 BeginInvoke(new Action(() => RecordPassiveClick(pt, eagerInfo, ActionType.Click)));
             }
             else if (wParam == (IntPtr)WM_LBUTTONDBLCLK)
             {
+                // Cancel drag tracking — the button-up for a double-click should not
+                // trigger drag detection since WM_LBUTTONDBLCLK already recorded the action.
+                _leftButtonDown = false;
                 var pt = ms.pt;
                 ElementInfo? eagerInfo = null;
                 try { eagerInfo = _service.GetElementAtPoint(pt); } catch { /* best effort */ }
                 BeginInvoke(new Action(() => RecordPassiveClick(pt, eagerInfo, ActionType.DoubleClick)));
+            }
+            else if (wParam == (IntPtr)WM_MOUSEMOVE && _leftButtonDown)
+            {
+                // Accumulate the maximum squared distance from the mouse-down point.
+                // Using squared distance avoids a sqrt on every mouse-move event.
+                var dx = ms.pt.X - _mouseDownPoint.X;
+                var dy = ms.pt.Y - _mouseDownPoint.Y;
+                var distSq = dx * dx + dy * dy;
+                if (distSq > _maxDragDistanceSq)
+                    _maxDragDistanceSq = distSq;
+            }
+            else if (wParam == (IntPtr)WM_LBUTTONUP && _leftButtonDown)
+            {
+                _leftButtonDown = false;
+                if (_maxDragDistanceSq >= DragThresholdPixelsSq)
+                {
+                    // Significant movement: upgrade the earlier Click to a DragAndDrop.
+                    var upPt = ms.pt;
+                    var sourceInfo = _mouseDownEagerInfo;
+                    ElementInfo? targetInfo = null;
+                    try { targetInfo = _service.GetElementAtPoint(upPt); } catch { /* best effort */ }
+                    BeginInvoke(new Action(() => RecordPassiveDrag(sourceInfo, targetInfo)));
+                }
+                // Small movement: the Click already recorded on mouse-down is correct; nothing to do.
             }
         }
         else if (_service.CurrentMode == RecordingMode.Assistive)
@@ -325,20 +401,44 @@ public sealed class RecordingOverlayWindow : Form
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
                 var pt = ms.pt;
-                // Use a one-tick timer instead of BeginInvoke so that any native
-                // menu dismissal or window-activation messages triggered by the
-                // right-click are fully processed before we build and show the
-                // assistive context menu.  This ensures the correct element is
-                // identified on the first right-click over MenuBar / MenuItem
-                // elements where the native menu may still be transitioning.
-                var timer = new System.Windows.Forms.Timer { Interval = ContextMenuDelayMs };
-                timer.Tick += (_, _) =>
+
+                if (_awaitingDragTarget)
                 {
-                    timer.Stop();
-                    timer.Dispose();
-                    ShowAssistiveContextMenu(pt);
-                };
-                timer.Start();
+                    // Second step of assistive drag: the user right-clicked the drop target.
+                    _awaitingDragTarget = false;
+                    var sourceInfo = _dragSourceInfo;
+                    _dragSourceInfo = null;
+
+                    // Use a one-tick timer for the same reason as normal right-click handling
+                    // (let native menu/activation messages settle before accessing the UIA tree).
+                    var timer = new System.Windows.Forms.Timer { Interval = ContextMenuDelayMs };
+                    timer.Tick += (_, _) =>
+                    {
+                        timer.Stop();
+                        timer.Dispose();
+                        RecordAssistiveDragTarget(pt, sourceInfo);
+                    };
+                    timer.Start();
+                }
+                else
+                {
+                    // Normal: show the assistive context menu.
+                    // Use a one-tick timer instead of BeginInvoke so that any native
+                    // menu dismissal or window-activation messages triggered by the
+                    // right-click are fully processed before we build and show the
+                    // assistive context menu.  This ensures the correct element is
+                    // identified on the first right-click over MenuBar / MenuItem
+                    // elements where the native menu may still be transitioning.
+                    var timer = new System.Windows.Forms.Timer { Interval = ContextMenuDelayMs };
+                    timer.Tick += (_, _) =>
+                    {
+                        timer.Stop();
+                        timer.Dispose();
+                        ShowAssistiveContextMenu(pt);
+                    };
+                    timer.Start();
+                }
+
                 _suppressNextRButtonUp = true;
                 return (IntPtr)1; // suppress the native right-click
             }
@@ -399,6 +499,59 @@ public sealed class RecordingOverlayWindow : Form
             Element = info,
             Description = BuildDescription(actionLabel, info)
         });
+    }
+
+    /// <summary>
+    /// Called (via BeginInvoke) when passive-mode drag detection determines that the left
+    /// button was held and the cursor moved at least <see cref="DragThresholdPixels"/> pixels.
+    /// Replaces the Click that was optimistically recorded on mouse-down with a DragAndDrop.
+    /// </summary>
+    private void RecordPassiveDrag(ElementInfo? sourceInfo, ElementInfo? targetInfo)
+    {
+        var sourceLabel = ElementInfo.GetLabel(sourceInfo);
+        var targetLabel = ElementInfo.GetLabel(targetInfo);
+        _service.ReplaceLastAction(new RecordedAction
+        {
+            ActionType = ActionType.DragAndDrop,
+            Element = sourceInfo,
+            TargetElement = targetInfo,
+            Description = $"Drag from {sourceLabel} to {targetLabel}"
+        });
+    }
+
+    /// <summary>
+    /// Called (via a one-tick timer) when the user right-clicks the drop target while the
+    /// assistive-mode drag-source selection is pending (<see cref="_awaitingDragTarget"/> was true).
+    /// Identifies the element at <paramref name="pt"/> and records the DragAndDrop action.
+    /// </summary>
+    private void RecordAssistiveDragTarget(System.Drawing.Point pt, ElementInfo? sourceInfo)
+    {
+        if (_automation == null) return;
+
+        ElementInfo? targetInfo = null;
+        try
+        {
+            var element = _automation.FromPoint(pt);
+            if (element != null)
+                targetInfo = BuildElementInfo(element);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not get drop-target element at point {Pt}", pt);
+        }
+
+        var sourceLabel = ElementInfo.GetLabel(sourceInfo);
+        var targetLabel = ElementInfo.GetLabel(targetInfo);
+        _service.AddAction(new RecordedAction
+        {
+            ActionType = ActionType.DragAndDrop,
+            Mode = RecordingMode.Assistive,
+            Element = sourceInfo,
+            TargetElement = targetInfo,
+            Description = $"Drag from {sourceLabel} to {targetLabel}"
+        });
+        UpdateStatusAfterAction(
+            $"Drag [{sourceInfo?.ControlType}] {sourceLabel} → [{targetInfo?.ControlType}] {targetLabel}");
     }
 
     /// <summary>
@@ -478,6 +631,11 @@ public sealed class RecordingOverlayWindow : Form
         if (element != null)
             element = DrillDownToElementAtPoint(element, pt);
 
+        // Save the original element before any promotion so that the "Type…" and
+        // "Is Editable" menu items are still available when an inner Edit control is
+        // promoted to its parent ComboBox (e.g. a username/password field with history).
+        var originalElement = element;
+
         // If FromPoint returned a structural child of a ComboBox (e.g. the inner Edit
         // text-box, the dropdown Button, or a ListItem / List from the expanded dropdown),
         // promote to the ComboBox parent so that the "Options ▶" submenu and
@@ -509,6 +667,15 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         var elementInfo = element != null ? BuildElementInfo(element) : null;
+
+        // When an inner Edit was promoted to its parent ComboBox, keep a reference to the
+        // original Edit so "Type…" and "Is Editable" can still target the actual text field.
+        var innerEditElement = (originalElement != null &&
+                                !ReferenceEquals(originalElement, element) &&
+                                originalElement.ControlType == ControlType.Edit)
+            ? originalElement
+            : null;
+        var innerEditInfo = innerEditElement != null ? BuildElementInfo(innerEditElement) : null;
 
         var menu = new ContextMenuStrip { ShowImageMargin = false };
         menu.Font = new Font("Segoe UI", 10f);
@@ -557,6 +724,18 @@ public sealed class RecordingOverlayWindow : Form
                 });
         }
 
+        // Drag and Drop — available for every element, regardless of control type.
+        // Selecting this item sets the current element as the drag source; the user then
+        // right-clicks the drop target to complete the recorded action.
+        var dragDropItem = new ToolStripMenuItem("Drag and Drop…");
+        dragDropItem.Click += (_, _) =>
+        {
+            _awaitingDragTarget = true;
+            _dragSourceInfo = elementInfo;
+            _statusLabel.Text = "  ● Drag source set — Right-click the drop target element  ";
+        };
+        menu.Items.Add(dragDropItem);
+
         menu.Items.Add(new ToolStripSeparator());
 
         // ── Query actions ────────────────────────────────────────────────────
@@ -570,31 +749,38 @@ public sealed class RecordingOverlayWindow : Form
         AddQueryItem(menu, "Is Disabled", element, elementInfo, ActionType.IsDisabled,
             () => element != null && !element.IsEnabled);
 
-        // Is Editable — only for Edit controls (text boxes)
-        if (element != null && element.ControlType == ControlType.Edit)
+        // Resolve the Edit element to use for "Is Editable" and "Type…":
+        // - if the resolved element is itself an Edit, use it directly;
+        // - otherwise fall back to innerEditElement (the original Edit that was promoted
+        //   to its parent ComboBox, e.g. a username/password field with credential history).
+        var editTarget = (element?.ControlType == ControlType.Edit) ? element : innerEditElement;
+        var editTargetInfo = (element?.ControlType == ControlType.Edit) ? elementInfo : innerEditInfo;
+
+        // Is Editable — for Edit controls (text boxes), or the inner Edit of a promoted ComboBox.
+        if (editTarget != null)
         {
-            AddQueryItem(menu, "Is Editable", element, elementInfo, ActionType.IsEditable,
-                () => element.Patterns.Value.IsSupported && element.Patterns.Value.Pattern?.IsReadOnly == false);
+            AddQueryItem(menu, "Is Editable", editTarget, editTargetInfo, ActionType.IsEditable,
+                () => editTarget.Patterns.Value.IsSupported && editTarget.Patterns.Value.Pattern?.IsReadOnly == false);
         }
 
-        // Type — only for Edit controls (text boxes)
-        if (element != null && element.ControlType == ControlType.Edit)
+        // Type — for Edit controls (text boxes), or the inner Edit of a promoted ComboBox.
+        if (editTarget != null)
         {
             menu.Items.Add(new ToolStripSeparator());
             var typeItem = new ToolStripMenuItem("Type…");
             typeItem.Click += (_, _) =>
             {
-                var text = ShowTypePrompt(elementInfo?.Name ?? elementInfo?.AutomationId ?? "element");
+                var text = ShowTypePrompt(editTargetInfo?.Name ?? editTargetInfo?.AutomationId ?? "element");
                 if (text == null) return; // user cancelled
 
-                var elementLabel = ElementInfo.GetLabel(elementInfo);
+                var elementLabel = ElementInfo.GetLabel(editTargetInfo);
                 try
                 {
-                    if (element.Patterns.Value.IsSupported)
-                        element.Patterns.Value.Pattern.SetValue(text);
+                    if (editTarget.Patterns.Value.IsSupported)
+                        editTarget.Patterns.Value.Pattern.SetValue(text);
                     else
                     {
-                        element.Focus();
+                        editTarget.Focus();
                         System.Windows.Forms.SendKeys.SendWait(EscapeForSendKeys(text));
                     }
                 }
@@ -609,13 +795,39 @@ public sealed class RecordingOverlayWindow : Form
                 {
                     ActionType = ActionType.Type,
                     Mode = RecordingMode.Assistive,
-                    Element = elementInfo,
+                    Element = editTargetInfo,
                     Value = text,
                     Description = $"Type '{displayText}' into {elementLabel}"
                 });
-                UpdateStatusAfterAction($"Type into [{elementInfo?.ControlType}] {elementLabel}");
+                UpdateStatusAfterAction($"Type into [{editTargetInfo?.ControlType}] {elementLabel}");
             };
             menu.Items.Add(typeItem);
+
+            // Clear — only for writable Edit controls
+            if (editTarget.Patterns.Value.IsSupported &&
+                editTarget.Patterns.Value.PatternOrDefault?.IsReadOnly == false)
+            {
+                AddActionItem(menu, "Clear", editTarget, editTargetInfo, ActionType.ClearText,
+                    () =>
+                    {
+                        var valuePat = editTarget.Patterns.Value.PatternOrDefault;
+                        valuePat?.SetValue(string.Empty);
+                    });
+            }
+
+            // Get Text — read the current text / value of the Edit field
+            AddQueryItem(menu, "Get Text", editTarget, editTargetInfo, ActionType.GetValue,
+                () =>
+                {
+                    try
+                    {
+                        var valuePat = editTarget.Patterns.Value.PatternOrDefault;
+                        if (valuePat != null)
+                            return !string.IsNullOrEmpty(valuePat.Value);
+                    }
+                    catch { /* best effort */ }
+                    return false;
+                });
         }
 
         // Type and Select — only for editable ComboBox controls (autocomplete / filter pattern)
@@ -698,6 +910,25 @@ public sealed class RecordingOverlayWindow : Form
                 };
                 menu.Items.Add(typeAndSelectItem);
             }
+
+            // Get Selected Value — read the currently selected / displayed value of the ComboBox
+            menu.Items.Add(new ToolStripSeparator());
+            AddQueryItem(menu, "Get Selected Value", element, elementInfo, ActionType.GetValue,
+                () =>
+                {
+                    try
+                    {
+                        if (element.Patterns.Value.IsSupported)
+                            return !string.IsNullOrEmpty(element.Patterns.Value.Pattern.Value);
+                        if (element.Patterns.Selection.IsSupported)
+                        {
+                            var sel = element.Patterns.Selection.Pattern.Selection.Value;
+                            return sel.Length > 0;
+                        }
+                    }
+                    catch { /* best effort */ }
+                    return false;
+                });
         }
 
         // Get Table Headers — only for HeaderItem controls (column headers inside a DataGrid / Table)
@@ -744,22 +975,77 @@ public sealed class RecordingOverlayWindow : Form
             menu.Items.Add(getHeadersItem);
         }
 
-        // Is Checked / Select — only for CheckBox controls
+        // Get Table Headers + Get Table Data — directly on DataGrid / Table elements
+        if (element != null &&
+            (element.ControlType == ControlType.DataGrid ||
+             element.ControlType == ControlType.Table))
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            var directHeadersItem = new ToolStripMenuItem("Get Table Headers");
+            directHeadersItem.Click += (_, _) =>
+            {
+                var label = ElementInfo.GetLabel(elementInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.GetTableHeaders,
+                    Mode = RecordingMode.Assistive,
+                    Element = elementInfo,
+                    Description = $"Get table headers from {label}"
+                });
+                UpdateStatusAfterAction($"Get Table Headers on [{elementInfo?.ControlType}] {label}");
+            };
+            menu.Items.Add(directHeadersItem);
+
+            var tableDataItem = new ToolStripMenuItem("Get Table Data");
+            tableDataItem.Click += (_, _) =>
+            {
+                var label = ElementInfo.GetLabel(elementInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.GetTableData,
+                    Mode = RecordingMode.Assistive,
+                    Element = elementInfo,
+                    Description = $"Get table data from {label}"
+                });
+                UpdateStatusAfterAction($"Get Table Data on [{elementInfo?.ControlType}] {label}");
+            };
+            menu.Items.Add(tableDataItem);
+        }
+
+        // Is Checked / Check / Uncheck — only for CheckBox controls
         if (element != null && element.ControlType == ControlType.CheckBox)
         {
             menu.Items.Add(new ToolStripSeparator());
             AddQueryItem(menu, "Is Checked", element, elementInfo, ActionType.IsChecked,
                 () => element.Patterns.Toggle.IsSupported &&
                       element.Patterns.Toggle.Pattern.ToggleState == FlaUI.Core.Definitions.ToggleState.On);
-            AddActionItem(menu, "Select", element, elementInfo, ActionType.SelectCheckBox,
+
+            // Determine the current checked state so the label reflects what will happen.
+            bool currentlyChecked = false;
+            try
+            {
+                currentlyChecked = element.Patterns.Toggle.IsSupported &&
+                    element.Patterns.Toggle.Pattern.ToggleState == FlaUI.Core.Definitions.ToggleState.On;
+            }
+            catch { /* best effort; default to showing "Check" */ }
+
+            var checkActionLabel = currentlyChecked ? "Uncheck" : "Check";
+            // Capture the desired state as a bool so the action lambda doesn't depend
+            // on the label text (avoids coupling UI copy to control-flow logic).
+            bool wantChecked = !currentlyChecked;
+            AddActionItem(menu, checkActionLabel, element, elementInfo, ActionType.SelectCheckBox,
                 () =>
                 {
-                    if (element.Patterns.Toggle.IsSupported &&
-                        element.Patterns.Toggle.Pattern.ToggleState != FlaUI.Core.Definitions.ToggleState.On)
+                    if (element.Patterns.Toggle.IsSupported)
                     {
-                        element.Patterns.Toggle.Pattern.Toggle();
+                        var state = element.Patterns.Toggle.Pattern.ToggleState;
+                        if ((wantChecked && state != FlaUI.Core.Definitions.ToggleState.On) ||
+                            (!wantChecked && state == FlaUI.Core.Definitions.ToggleState.On))
+                        {
+                            element.Patterns.Toggle.Pattern.Toggle();
+                        }
                     }
-                    else if (!element.Patterns.Toggle.IsSupported)
+                    else
                     {
                         element.Click();
                     }
@@ -786,6 +1072,93 @@ public sealed class RecordingOverlayWindow : Form
                 UpdateStatusAfterAction($"Assert '{textValue}' on [{elementInfo?.ControlType}] {elementLabel}");
             };
             menu.Items.Add(assertItem);
+        }
+
+        // Window operations — only for Window controls
+        if (element != null && element.ControlType == ControlType.Window &&
+            element.Patterns.Window.IsSupported)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            AddActionItem(menu, "Maximize", element, elementInfo, ActionType.Maximize,
+                () => element.Patterns.Window.Pattern.SetWindowVisualState(
+                    FlaUI.Core.Definitions.WindowVisualState.Maximized));
+            AddActionItem(menu, "Minimize", element, elementInfo, ActionType.Minimize,
+                () => element.Patterns.Window.Pattern.SetWindowVisualState(
+                    FlaUI.Core.Definitions.WindowVisualState.Minimized));
+            AddActionItem(menu, "Close Window", element, elementInfo, ActionType.CloseWindow,
+                () => element.Patterns.Window.Pattern.Close());
+        }
+
+        // Expand / Collapse — for TreeItem, Tree children, MenuItem with submenus, and any
+        // element with ExpandCollapsePattern (excluding ComboBox, which is handled by Options ▶).
+        if (element != null &&
+            element.ControlType != ControlType.ComboBox &&
+            element.Patterns.ExpandCollapse.IsSupported)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            AddActionItem(menu, "Expand", element, elementInfo, ActionType.Expand,
+                () => element.Patterns.ExpandCollapse.Pattern.Expand());
+            AddActionItem(menu, "Collapse", element, elementInfo, ActionType.Collapse,
+                () => element.Patterns.ExpandCollapse.Pattern.Collapse());
+        }
+
+        // RangeValue controls (Slider, ProgressBar, ScrollBar, Spinner)
+        if (element != null && element.Patterns.RangeValue.IsSupported)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+
+            // Get Numeric Value — reads the current numeric value; always available when the pattern is supported
+            AddQueryItem(menu, "Get Numeric Value", element, elementInfo, ActionType.GetValue,
+                () => true);
+
+            // Set Value — prompts the user for a numeric value (only for writable controls)
+            if (!element.Patterns.RangeValue.Pattern.IsReadOnly)
+            {
+                var setValueItem = new ToolStripMenuItem("Set Value…");
+                setValueItem.Click += (_, _) =>
+                {
+                    var elemLabel = ElementInfo.GetLabel(elementInfo);
+                    var input = ShowValuePrompt(elemLabel,
+                        element.Patterns.RangeValue.Pattern.Minimum,
+                        element.Patterns.RangeValue.Pattern.Maximum);
+                    if (input == null) return; // user cancelled
+
+                    try
+                    {
+                        if (double.TryParse(input, out var val))
+                            element.Patterns.RangeValue.Pattern.SetValue(val);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Set Value failed for element \"{Label}\"", elemLabel);
+                    }
+
+                    _service.AddAction(new RecordedAction
+                    {
+                        ActionType = ActionType.SetValue,
+                        Mode = RecordingMode.Assistive,
+                        Element = elementInfo,
+                        Value = input,
+                        Description = $"Set value to '{input}' on {elemLabel}"
+                    });
+                    UpdateStatusAfterAction($"Set Value '{input}' on [{elementInfo?.ControlType}] {elemLabel}");
+                };
+                menu.Items.Add(setValueItem);
+            }
+        }
+
+        // Scroll — for elements that support the Scroll pattern (List, ScrollBar, etc.)
+        if (element != null && element.Patterns.Scroll.IsSupported)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            AddActionItem(menu, "Scroll Up", element, elementInfo, ActionType.Scroll,
+                () => element.Patterns.Scroll.Pattern.Scroll(
+                    FlaUI.Core.Definitions.ScrollAmount.NoAmount,
+                    FlaUI.Core.Definitions.ScrollAmount.SmallDecrement));
+            AddActionItem(menu, "Scroll Down", element, elementInfo, ActionType.Scroll,
+                () => element.Patterns.Scroll.Pattern.Scroll(
+                    FlaUI.Core.Definitions.ScrollAmount.NoAmount,
+                    FlaUI.Core.Definitions.ScrollAmount.SmallIncrement));
         }
 
         // ── Children submenu (for container controls and expandable edit/combo fields) ───
@@ -1276,6 +1649,71 @@ public sealed class RecordingOverlayWindow : Form
         var label = new WinLabel
         {
             Text = $"Text to type into \"{elementLabel}\":",
+            Left = 12,
+            Top = 12,
+            Width = 350,
+            AutoSize = true
+        };
+
+        var textBox = new System.Windows.Forms.TextBox
+        {
+            Left = 12,
+            Top = 35,
+            Width = 340
+        };
+
+        var okBtn = new System.Windows.Forms.Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Left = 192,
+            Top = 68,
+            Width = 80
+        };
+
+        var cancelBtn = new System.Windows.Forms.Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Left = 278,
+            Top = 68,
+            Width = 80
+        };
+
+        form.AcceptButton = okBtn;
+        form.CancelButton = cancelBtn;
+        form.Controls.AddRange([label, textBox, okBtn, cancelBtn]);
+
+        if (form.ShowDialog() == DialogResult.OK)
+            result = textBox.Text;
+
+        return result;
+    }
+
+    /// <summary>
+    /// Shows a small modal input dialog prompting the user to enter a numeric value to
+    /// set on the focused element (e.g. a Slider or Spinner).
+    /// Returns the entered text, or <c>null</c> if the user cancelled.
+    /// </summary>
+    private static string? ShowValuePrompt(string elementLabel, double minimum, double maximum)
+    {
+        string? result = null;
+
+        using var form = new Form
+        {
+            Text = "Set value",
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterScreen,
+            Width = 380,
+            Height = 145,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            TopMost = true
+        };
+
+        var label = new WinLabel
+        {
+            Text = $"Numeric value for \"{elementLabel}\" (min {minimum}, max {maximum}):",
             Left = 12,
             Top = 12,
             Width = 350,
