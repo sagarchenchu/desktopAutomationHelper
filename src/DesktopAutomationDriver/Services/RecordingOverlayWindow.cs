@@ -704,9 +704,18 @@ public sealed class RecordingOverlayWindow : Form
             () =>
             {
                 if (element?.Patterns.Invoke.IsSupported == true)
+                {
                     element.Patterns.Invoke.Pattern.Invoke();
+                }
                 else
+                {
+                    // Focus the element's window first so that the physical click lands in the
+                    // correct window even when multiple overlapping windows are visible (e.g.
+                    // IntelliJ tool windows that may have lost focus while the recording
+                    // context menu was open).
+                    try { element?.Focus(); } catch { /* best effort */ }
                     element?.Click();
+                }
             });
         AddActionItem(menu, "Double Click", element, elementInfo, ActionType.DoubleClick,
             () => element?.DoubleClick());
@@ -750,11 +759,39 @@ public sealed class RecordingOverlayWindow : Form
             () => element != null && !element.IsEnabled);
 
         // Resolve the Edit element to use for "Is Editable" and "Type…":
-        // - if the resolved element is itself an Edit, use it directly;
+        // - if the resolved element is itself an Edit or Document, use it directly;
+        // - if it exposes a writable Value pattern (covers custom/Java text fields that do
+        //   not use ControlType.Edit, e.g. IntelliJ Swing components via Java Access Bridge),
+        //   use it directly;
         // - otherwise fall back to innerEditElement (the original Edit that was promoted
         //   to its parent ComboBox, e.g. a username/password field with credential history).
-        var editTarget = (element?.ControlType == ControlType.Edit) ? element : innerEditElement;
-        var editTargetInfo = (element?.ControlType == ControlType.Edit) ? elementInfo : innerEditInfo;
+        bool isDirectlyEditable = element != null &&
+            (element.ControlType == ControlType.Edit ||
+             element.ControlType == ControlType.Document ||
+             (element.Patterns.Value.IsSupported &&
+              element.Patterns.Value.PatternOrDefault?.IsReadOnly == false));
+        var editTarget = isDirectlyEditable ? element : innerEditElement;
+        var editTargetInfo = isDirectlyEditable ? elementInfo : innerEditInfo;
+
+        // Final fallback: if no editable target was found yet, look for an Edit or Document
+        // child of the current element.  FromPoint() in some frameworks (e.g. Java Access
+        // Bridge used by IntelliJ) returns the outer wrapper Pane/Group rather than the
+        // inner text-input control, so we drill down one level here.
+        if (editTarget == null && element != null && _automation != null)
+        {
+            try
+            {
+                var cf = _automation.ConditionFactory;
+                var editChild = element.FindFirstDescendant(cf.ByControlType(ControlType.Edit));
+                editChild ??= element.FindFirstDescendant(cf.ByControlType(ControlType.Document));
+                if (editChild != null)
+                {
+                    editTarget = editChild;
+                    editTargetInfo = BuildElementInfo(editChild);
+                }
+            }
+            catch { /* best effort */ }
+        }
 
         // Is Editable — for Edit controls (text boxes), or the inner Edit of a promoted ComboBox.
         if (editTarget != null)
