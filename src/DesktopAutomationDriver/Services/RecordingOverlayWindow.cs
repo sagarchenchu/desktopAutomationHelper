@@ -112,6 +112,20 @@ public sealed class RecordingOverlayWindow : Form
     [DllImport("user32.dll")]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
 
+    // ── foreground-window P/Invokes ─────────────────────────────────────────
+    /// <summary>
+    /// Walks up the HWND tree to the root (top-level) window.
+    /// GA_ROOT (2) returns the root window that doesn't have a parent.
+    /// </summary>
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+    private const uint GA_ROOT = 2;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
     // ── fields ──────────────────────────────────────────────────────────────
     private readonly IRecordingService _service;
     private readonly ILogger _logger;
@@ -709,16 +723,25 @@ public sealed class RecordingOverlayWindow : Form
                 }
                 else
                 {
-                    // Focus the element's window first so that the physical click lands in the
-                    // correct window even when multiple overlapping windows are visible (e.g.
-                    // IntelliJ tool windows that may have lost focus while the recording
-                    // context menu was open).
+                    // Bring the element's root window to the foreground via Win32
+                    // SetForegroundWindow before firing a physical mouse click.
+                    // This is more reliable than UIA element.Focus() alone: when the
+                    // assistive context menu is dismissed, Windows can hand focus back
+                    // to IntelliJ (the process that launched the driver) before the
+                    // action handler executes — causing the click to land on IntelliJ.
+                    // The driver process still holds the foreground lock immediately
+                    // after the menu closes, so SetForegroundWindow is allowed here.
+                    BringElementWindowToForeground(element);
                     try { element?.Focus(); } catch { /* best effort */ }
                     element?.Click();
                 }
             });
         AddActionItem(menu, "Double Click", element, elementInfo, ActionType.DoubleClick,
-            () => element?.DoubleClick());
+            () =>
+            {
+                BringElementWindowToForeground(element);
+                element?.DoubleClick();
+            });
         AddActionItem(menu, "Hover", element, elementInfo, ActionType.Hover,
             () => { /* cursor is already there */ });
 
@@ -1636,6 +1659,32 @@ public sealed class RecordingOverlayWindow : Form
         }
         catch { /* best effort */ }
         return element;
+    }
+
+    /// <summary>
+    /// Brings the top-level window that contains <paramref name="element"/> to the foreground
+    /// using Win32 <c>SetForegroundWindow</c>.  This is more reliable than UIA
+    /// <c>element.Focus()</c> when the recording context menu dismissal allows another
+    /// application (e.g. IntelliJ) to reclaim the foreground before a physical click fires.
+    ///
+    /// The driver process is allowed to call <c>SetForegroundWindow</c> while it still
+    /// holds the foreground lock (immediately after the context-menu closes).
+    /// </summary>
+    private static void BringElementWindowToForeground(AutomationElement? element)
+    {
+        if (element == null) return;
+        try
+        {
+            var hwnd = element.Properties.NativeWindowHandle.Value;
+            if (hwnd == IntPtr.Zero) return;
+
+            // Walk up to the root top-level window so we never activate a child HWND
+            // (child HWNDs do not become foreground windows; only top-level ones do).
+            var root = GetAncestor(hwnd, GA_ROOT);
+            if (root != IntPtr.Zero)
+                SetForegroundWindow(root);
+        }
+        catch { /* best effort — never fail a click because of a focus hint */ }
     }
 
     /// <summary>
