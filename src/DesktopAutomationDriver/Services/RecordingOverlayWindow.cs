@@ -782,8 +782,8 @@ public sealed class RecordingOverlayWindow : Form
             try
             {
                 var cf = _automation.ConditionFactory;
-                var editChild = element.FindFirstDescendant(cf.ByControlType(ControlType.Edit));
-                editChild ??= element.FindFirstDescendant(cf.ByControlType(ControlType.Document));
+                var editChild = element.FindFirstDescendant(
+                    cf.ByControlType(ControlType.Edit).Or(cf.ByControlType(ControlType.Document)));
                 if (editChild != null)
                 {
                     editTarget = editChild;
