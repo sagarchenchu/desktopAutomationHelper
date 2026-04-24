@@ -66,4 +66,12 @@ public interface IRecordingService
     /// Triggers JSON export if not already done.
     /// </summary>
     void OnOverlayClosed();
+
+    /// <summary>
+    /// Attempts to bring the active session's application window to the foreground
+    /// so that elements in that window are at the top of the z-order and can be
+    /// correctly identified via UIA <c>FromPoint</c>.
+    /// Safe to call when no session is active (no-op).
+    /// </summary>
+    void BringApplicationWindowToFront();
 }

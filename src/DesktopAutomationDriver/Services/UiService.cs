@@ -25,6 +25,12 @@ public class UiService : IUiService
     private static readonly TimeSpan DefaultRetry = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RetryInterval = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>
+    /// Milliseconds to wait after bringing a window to the foreground before sending
+    /// keyboard or mouse input, to allow the OS to finish the window-activation sequence.
+    /// </summary>
+    private const int WindowActivationDelayMs = 100;
+
     // Named keys for the "sendkeys" operation (AutoIt / keyboard-shorthand format).
     private static readonly Dictionary<string, VirtualKeyShort> NamedKeys =
         new(StringComparer.OrdinalIgnoreCase)
@@ -144,6 +150,7 @@ public class UiService : IUiService
             "alertok"     => AlertOk(request),
             "alertcancel" => AlertCancel(request),
             "alertclose"  => AlertClose(request),
+            "popupok"     => PopUpOk(request),
 
             _ => throw new ArgumentException(
                 $"Unknown operation '{request.Operation}'. " +
@@ -1191,6 +1198,73 @@ public class UiService : IUiService
 
         // Close the dialog (fallback or alertclose).
         CloseElement(dialog);
+    }
+
+    /// <summary>
+    /// Finds the popup / non-modal window whose title contains <c>req.Value</c>,
+    /// brings it to the foreground, sends a single Enter key-press to dismiss it
+    /// (accepting the default button), and then waits up to <see cref="DefaultRetry"/>
+    /// for the window to disappear.
+    ///
+    /// Use this operation for popup dialogs where <c>alertok</c> cannot dismiss the
+    /// window because it is not detected as a modal dialog (e.g. <c>IsModal</c> is false).
+    /// The <c>value</c> field must contain a partial window title (case-insensitive).
+    /// </summary>
+    private object? PopUpOk(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("'value' must be a partial window title for 'popupok'.");
+
+        // Resolve the automation instance to use.
+        var session = _ctx.ActiveSession;
+        AutomationBase automation;
+        UIA3Automation? tempAutomation = null;
+
+        if (session != null)
+            automation = session.Automation;
+        else
+        {
+            tempAutomation = new UIA3Automation();
+            automation = tempAutomation;
+        }
+
+        try
+        {
+            var cf = automation.ConditionFactory;
+            var desktop = automation.GetDesktop();
+
+            // Find the target popup window.
+            var window = FindWindowByTitle(desktop, cf, req.Value);
+            if (window == null)
+                throw new InvalidOperationException(
+                    $"No window with title containing '{SanitizeValue(req.Value)}' was found.");
+
+            // Bring the popup to the foreground and send Enter to dismiss it.
+            window.SetForeground();
+            Thread.Sleep(WindowActivationDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+
+            // Poll until the window is gone or we time out.
+            var deadline = DateTime.UtcNow + DefaultRetry;
+            while (DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(RetryInterval);
+                if (FindWindowByTitle(desktop, cf, req.Value) == null)
+                    return new { success = true };
+            }
+
+            // Final check after the retry loop.
+            if (FindWindowByTitle(desktop, cf, req.Value) == null)
+                return new { success = true };
+
+            throw new InvalidOperationException(
+                $"Window '{SanitizeValue(req.Value)}' did not close after pressing Enter " +
+                $"within {DefaultRetry.TotalSeconds}s.");
+        }
+        finally
+        {
+            tempAutomation?.Dispose();
+        }
     }
 
     /// <summary>

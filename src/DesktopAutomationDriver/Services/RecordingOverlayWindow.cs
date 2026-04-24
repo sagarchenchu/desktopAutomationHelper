@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using DesktopAutomationDriver.Models.Recording;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
+using FlaUI.Core.Input;
 using FlaUI.UIA3;
 
 // Aliases to resolve ambiguity with identically-named FlaUI types
@@ -106,11 +107,33 @@ public sealed class RecordingOverlayWindow : Form
     /// </summary>
     private const int ContextMenuDelayMs = 1;
 
+    /// <summary>
+    /// Delay in milliseconds inserted after <c>SetForegroundWindow</c> to let the OS
+    /// finish window activation before firing a physical mouse click.  Without this
+    /// pause, the click can land on whatever window still holds the input focus
+    /// (typically the IDE that launched the driver) rather than the target window.
+    /// </summary>
+    private const int WindowActivationDelayMs = 100;
+
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
     [DllImport("user32.dll")]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    // ── foreground-window P/Invokes ─────────────────────────────────────────
+    /// <summary>
+    /// Walks up the HWND tree to the root (top-level) window.
+    /// GA_ROOT (2) returns the root window that doesn't have a parent.
+    /// </summary>
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+    private const uint GA_ROOT = 2;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     // ── fields ──────────────────────────────────────────────────────────────
     private readonly IRecordingService _service;
@@ -324,6 +347,13 @@ public sealed class RecordingOverlayWindow : Form
         _dragSourceInfo = null;
 
         _service.SetMode(mode);
+
+        // When switching to Assistive mode, bring the session's application window to
+        // the foreground so that UIA FromPoint returns elements from the target app
+        // (not from IntelliJ or another IDE that may be behind/overlapping it).
+        if (mode == RecordingMode.Assistive)
+            _service.BringApplicationWindowToFront();
+
         var label = mode == RecordingMode.Passive
             ? "● PASSIVE  Recording clicks & keys  S=Stop"
             : "● ASSISTIVE  Right-click element  S=Stop";
@@ -704,12 +734,41 @@ public sealed class RecordingOverlayWindow : Form
             () =>
             {
                 if (element?.Patterns.Invoke.IsSupported == true)
+                {
                     element.Patterns.Invoke.Pattern.Invoke();
+                }
                 else
-                    element?.Click();
+                {
+                    // Bring the element's root window to the foreground via Win32
+                    // SetForegroundWindow before firing a physical mouse click.
+                    // This is more reliable than UIA element.Focus() alone: when the
+                    // assistive context menu is dismissed, Windows can hand focus back
+                    // to IntelliJ (the process that launched the driver) before the
+                    // action handler executes — causing the click to land on IntelliJ.
+                    // The driver process still holds the foreground lock immediately
+                    // after the menu closes, so SetForegroundWindow is allowed here.
+                    BringElementWindowToForeground(element);
+                    // Brief pause to let the window activation take effect before
+                    // the physical mouse click fires; without this, Windows may not
+                    // have finished processing the SetForegroundWindow call and the
+                    // click can still land on the previously-focused application.
+                    Thread.Sleep(WindowActivationDelayMs);
+                    // Click at the exact point the user right-clicked rather than
+                    // re-querying GetClickablePoint() from the element.  This is
+                    // essential for Unknown-framework elements (e.g. Java Swing top-level
+                    // MenuItems) whose UIA BoundingRectangle / ClickablePoint can be the
+                    // full menu-bar row rather than the specific item under the cursor,
+                    // causing clicks to land at the wrong position.
+                    Mouse.Click(pt);
+                }
             });
         AddActionItem(menu, "Double Click", element, elementInfo, ActionType.DoubleClick,
-            () => element?.DoubleClick());
+            () =>
+            {
+                BringElementWindowToForeground(element);
+                Thread.Sleep(WindowActivationDelayMs);
+                Mouse.DoubleClick(pt);
+            });
         AddActionItem(menu, "Hover", element, elementInfo, ActionType.Hover,
             () => { /* cursor is already there */ });
 
@@ -750,11 +809,39 @@ public sealed class RecordingOverlayWindow : Form
             () => element != null && !element.IsEnabled);
 
         // Resolve the Edit element to use for "Is Editable" and "Type…":
-        // - if the resolved element is itself an Edit, use it directly;
+        // - if the resolved element is itself an Edit or Document, use it directly;
+        // - if it exposes a writable Value pattern (covers custom/Java text fields that do
+        //   not use ControlType.Edit, e.g. IntelliJ Swing components via Java Access Bridge),
+        //   use it directly;
         // - otherwise fall back to innerEditElement (the original Edit that was promoted
         //   to its parent ComboBox, e.g. a username/password field with credential history).
-        var editTarget = (element?.ControlType == ControlType.Edit) ? element : innerEditElement;
-        var editTargetInfo = (element?.ControlType == ControlType.Edit) ? elementInfo : innerEditInfo;
+        bool isDirectlyEditable = element != null &&
+            (element.ControlType == ControlType.Edit ||
+             element.ControlType == ControlType.Document ||
+             (element.Patterns.Value.IsSupported &&
+              element.Patterns.Value.PatternOrDefault?.IsReadOnly == false));
+        var editTarget = isDirectlyEditable ? element : innerEditElement;
+        var editTargetInfo = isDirectlyEditable ? elementInfo : innerEditInfo;
+
+        // Final fallback: if no editable target was found yet, look for an Edit or Document
+        // child of the current element.  FromPoint() in some frameworks (e.g. Java Access
+        // Bridge used by IntelliJ) returns the outer wrapper Pane/Group rather than the
+        // inner text-input control, so we drill down one level here.
+        if (editTarget == null && element != null && _automation != null)
+        {
+            try
+            {
+                var cf = _automation.ConditionFactory;
+                var editChild = element.FindFirstDescendant(
+                    cf.ByControlType(ControlType.Edit).Or(cf.ByControlType(ControlType.Document)));
+                if (editChild != null)
+                {
+                    editTarget = editChild;
+                    editTargetInfo = BuildElementInfo(editChild);
+                }
+            }
+            catch { /* best effort */ }
+        }
 
         // Is Editable — for Edit controls (text boxes), or the inner Edit of a promoted ComboBox.
         if (editTarget != null)
@@ -1599,6 +1686,54 @@ public sealed class RecordingOverlayWindow : Form
         }
         catch { /* best effort */ }
         return element;
+    }
+
+    /// <summary>
+    /// Brings the top-level window that contains <paramref name="element"/> to the foreground
+    /// using Win32 <c>SetForegroundWindow</c>.  This is more reliable than UIA
+    /// <c>element.Focus()</c> when the recording context menu dismissal allows another
+    /// application (e.g. IntelliJ) to reclaim the foreground before a physical click fires.
+    ///
+    /// The driver process is allowed to call <c>SetForegroundWindow</c> while it still
+    /// holds the foreground lock (immediately after the context-menu closes).
+    ///
+    /// For virtual-element frameworks (e.g. Java Swing via Java Access Bridge) where
+    /// <c>NativeWindowHandle</c> is zero, falls back to the process's main window handle.
+    /// </summary>
+    private static void BringElementWindowToForeground(AutomationElement? element)
+    {
+        if (element == null) return;
+
+        // Primary path: resolve the HWND from the element.
+        bool activated = false;
+        try
+        {
+            var hwnd = element.Properties.NativeWindowHandle.Value;
+            if (hwnd != IntPtr.Zero)
+            {
+                // Walk up to the root top-level window so we never activate a child HWND
+                // (child HWNDs do not become foreground windows; only top-level ones do).
+                var root = GetAncestor(hwnd, GA_ROOT);
+                if (root != IntPtr.Zero)
+                    activated = SetForegroundWindow(root);
+            }
+        }
+        catch { /* best effort */ }
+
+        if (activated) return;
+
+        // Fallback for virtual-element frameworks (e.g. Java Swing via Java Access Bridge)
+        // where UIA elements do not have their own HWND, or when SetForegroundWindow failed.
+        // Resolve the owning process and bring its main window to the foreground.
+        try
+        {
+            var pid = element.Properties.ProcessId.Value;
+            var proc = System.Diagnostics.Process.GetProcessById(pid);
+            var mainHwnd = proc.MainWindowHandle;
+            if (mainHwnd != IntPtr.Zero)
+                SetForegroundWindow(mainHwnd);
+        }
+        catch { /* best effort — never fail a click because of a focus hint */ }
     }
 
     /// <summary>
