@@ -106,6 +106,14 @@ public sealed class RecordingOverlayWindow : Form
     /// </summary>
     private const int ContextMenuDelayMs = 1;
 
+    /// <summary>
+    /// Delay in milliseconds inserted after <c>SetForegroundWindow</c> to let the OS
+    /// finish window activation before firing a physical mouse click.  Without this
+    /// pause, the click can land on whatever window still holds the input focus
+    /// (typically the IDE that launched the driver) rather than the target window.
+    /// </summary>
+    private const int WindowActivationDelayMs = 100;
+
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
@@ -338,6 +346,13 @@ public sealed class RecordingOverlayWindow : Form
         _dragSourceInfo = null;
 
         _service.SetMode(mode);
+
+        // When switching to Assistive mode, bring the session's application window to
+        // the foreground so that UIA FromPoint returns elements from the target app
+        // (not from IntelliJ or another IDE that may be behind/overlapping it).
+        if (mode == RecordingMode.Assistive)
+            _service.BringApplicationWindowToFront();
+
         var label = mode == RecordingMode.Passive
             ? "● PASSIVE  Recording clicks & keys  S=Stop"
             : "● ASSISTIVE  Right-click element  S=Stop";
@@ -732,6 +747,11 @@ public sealed class RecordingOverlayWindow : Form
                     // The driver process still holds the foreground lock immediately
                     // after the menu closes, so SetForegroundWindow is allowed here.
                     BringElementWindowToForeground(element);
+                    // Brief pause to let the window activation take effect before
+                    // the physical mouse click fires; without this, Windows may not
+                    // have finished processing the SetForegroundWindow call and the
+                    // click can still land on the previously-focused application.
+                    Thread.Sleep(WindowActivationDelayMs);
                     try { element?.Focus(); } catch { /* best effort */ }
                     element?.Click();
                 }
@@ -740,6 +760,7 @@ public sealed class RecordingOverlayWindow : Form
             () =>
             {
                 BringElementWindowToForeground(element);
+                Thread.Sleep(WindowActivationDelayMs);
                 element?.DoubleClick();
             });
         AddActionItem(menu, "Hover", element, elementInfo, ActionType.Hover,

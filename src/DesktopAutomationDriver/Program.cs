@@ -187,7 +187,8 @@ static void LogStartupBanner(IDriverContext ctx, ILogger logger)
     sb.AppendLine("║    getcontroltype, getselected, gettabledata, gettableheaders, ║");
     sb.AppendLine("║    isrightof, isleftof, isabove, isbelow, getposition,       ║");
     sb.AppendLine("║    click, doubleclick, rightclick, hover, focus, type,       ║");
-    sb.AppendLine("║    clear, sendkeys, scroll, check, uncheck, select           ║");
+    sb.AppendLine("║    clear, sendkeys, scroll, check, uncheck, select,          ║");
+    sb.AppendLine("║    alertok, alertcancel, alertclose, popupok                 ║");
     sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
     sb.AppendLine("║  OTHER ENDPOINTS (require: Authorization: Bearer <token>)    ║");
     sb.AppendLine("║                                                              ║");

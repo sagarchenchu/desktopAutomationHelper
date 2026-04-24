@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -19,6 +20,11 @@ namespace DesktopAutomationDriver.Services;
 public sealed class RecordingService : IRecordingService, IDisposable
 {
     private readonly ILogger<RecordingService> _logger;
+    private readonly IUiSessionContext _sessionContext;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     private readonly List<RecordedAction> _actions = [];
     private readonly object _lock = new();
@@ -51,9 +57,10 @@ public sealed class RecordingService : IRecordingService, IDisposable
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
-    public RecordingService(ILogger<RecordingService> logger)
+    public RecordingService(ILogger<RecordingService> logger, IUiSessionContext sessionContext)
     {
         _logger = logger;
+        _sessionContext = sessionContext;
     }
 
     // ── IRecordingService ────────────────────────────────────────────────────
@@ -277,6 +284,23 @@ public sealed class RecordingService : IRecordingService, IDisposable
         _autoStopTimer = null;
         CloseOverlayIfOpen();
         _automation?.Dispose();
+    }
+
+    /// <inheritdoc/>
+    public void BringApplicationWindowToFront()
+    {
+        try
+        {
+            var session = _sessionContext.ActiveSession;
+            if (session == null) return;
+
+            var pid = session.Application.ProcessId;
+            var proc = Process.GetProcessById(pid);
+            var hwnd = proc.MainWindowHandle;
+            if (hwnd != IntPtr.Zero)
+                SetForegroundWindow(hwnd);
+        }
+        catch { /* best effort — never fail recording because of a focus hint */ }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
