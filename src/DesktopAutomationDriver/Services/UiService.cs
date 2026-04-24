@@ -25,6 +25,12 @@ public class UiService : IUiService
     private static readonly TimeSpan DefaultRetry = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RetryInterval = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>
+    /// Milliseconds to wait after bringing a window to the foreground before sending
+    /// keyboard or mouse input, to allow the OS to finish the window-activation sequence.
+    /// </summary>
+    private const int WindowActivationDelayMs = 100;
+
     // Named keys for the "sendkeys" operation (AutoIt / keyboard-shorthand format).
     private static readonly Dictionary<string, VirtualKeyShort> NamedKeys =
         new(StringComparer.OrdinalIgnoreCase)
@@ -1235,7 +1241,7 @@ public class UiService : IUiService
 
             // Bring the popup to the foreground and send Enter to dismiss it.
             window.SetForeground();
-            Thread.Sleep(100); // allow window activation to complete
+            Thread.Sleep(WindowActivationDelayMs);
             Keyboard.Press(VirtualKeyShort.RETURN);
 
             // Poll until the window is gone or we time out.

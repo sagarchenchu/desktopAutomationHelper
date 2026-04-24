@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using DesktopAutomationDriver.Models.Recording;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
+using FlaUI.Core.Input;
 using FlaUI.UIA3;
 
 // Aliases to resolve ambiguity with identically-named FlaUI types
@@ -752,8 +753,13 @@ public sealed class RecordingOverlayWindow : Form
                     // have finished processing the SetForegroundWindow call and the
                     // click can still land on the previously-focused application.
                     Thread.Sleep(WindowActivationDelayMs);
-                    try { element?.Focus(); } catch { /* best effort */ }
-                    element?.Click();
+                    // Click at the exact point the user right-clicked rather than
+                    // re-querying GetClickablePoint() from the element.  This is
+                    // essential for Unknown-framework elements (e.g. Java Swing top-level
+                    // MenuItems) whose UIA BoundingRectangle / ClickablePoint can be the
+                    // full menu-bar row rather than the specific item under the cursor,
+                    // causing clicks to land at the wrong position.
+                    Mouse.Click(pt);
                 }
             });
         AddActionItem(menu, "Double Click", element, elementInfo, ActionType.DoubleClick,
@@ -761,7 +767,7 @@ public sealed class RecordingOverlayWindow : Form
             {
                 BringElementWindowToForeground(element);
                 Thread.Sleep(WindowActivationDelayMs);
-                element?.DoubleClick();
+                Mouse.DoubleClick(pt);
             });
         AddActionItem(menu, "Hover", element, elementInfo, ActionType.Hover,
             () => { /* cursor is already there */ });
@@ -1690,20 +1696,42 @@ public sealed class RecordingOverlayWindow : Form
     ///
     /// The driver process is allowed to call <c>SetForegroundWindow</c> while it still
     /// holds the foreground lock (immediately after the context-menu closes).
+    ///
+    /// For virtual-element frameworks (e.g. Java Swing via Java Access Bridge) where
+    /// <c>NativeWindowHandle</c> is zero, falls back to the process's main window handle.
     /// </summary>
     private static void BringElementWindowToForeground(AutomationElement? element)
     {
         if (element == null) return;
+
+        // Primary path: resolve the HWND from the element.
+        bool activated = false;
         try
         {
             var hwnd = element.Properties.NativeWindowHandle.Value;
-            if (hwnd == IntPtr.Zero) return;
+            if (hwnd != IntPtr.Zero)
+            {
+                // Walk up to the root top-level window so we never activate a child HWND
+                // (child HWNDs do not become foreground windows; only top-level ones do).
+                var root = GetAncestor(hwnd, GA_ROOT);
+                if (root != IntPtr.Zero)
+                    activated = SetForegroundWindow(root);
+            }
+        }
+        catch { /* best effort */ }
 
-            // Walk up to the root top-level window so we never activate a child HWND
-            // (child HWNDs do not become foreground windows; only top-level ones do).
-            var root = GetAncestor(hwnd, GA_ROOT);
-            if (root != IntPtr.Zero)
-                SetForegroundWindow(root);
+        if (activated) return;
+
+        // Fallback for virtual-element frameworks (e.g. Java Swing via Java Access Bridge)
+        // where UIA elements do not have their own HWND, or when SetForegroundWindow failed.
+        // Resolve the owning process and bring its main window to the foreground.
+        try
+        {
+            var pid = element.Properties.ProcessId.Value;
+            var proc = System.Diagnostics.Process.GetProcessById(pid);
+            var mainHwnd = proc.MainWindowHandle;
+            if (mainHwnd != IntPtr.Zero)
+                SetForegroundWindow(mainHwnd);
         }
         catch { /* best effort — never fail a click because of a focus hint */ }
     }
