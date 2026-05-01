@@ -159,6 +159,11 @@ public sealed class RecordingOverlayWindow : Form
     // which would open the app's own context menu and immediately close ours).
     private bool _suppressNextRButtonUp;
 
+    // Set to true by the Assistive-mode "Right Click" action item just before it calls
+    // Mouse.RightClick().  The next WM_RBUTTONDOWN from the hook is then passed through
+    // rather than intercepted so that the simulated click reaches the target window.
+    private bool _suppressNextRButtonDown;
+
     // ── Passive mode drag detection state ────────────────────────────────────
     // Set on WM_LBUTTONDOWN; cleared on WM_LBUTTONUP or WM_LBUTTONDBLCLK.
     private bool _leftButtonDown;
@@ -425,12 +430,30 @@ public sealed class RecordingOverlayWindow : Form
                 }
                 // Small movement: the Click already recorded on mouse-down is correct; nothing to do.
             }
+            else if (wParam == (IntPtr)WM_RBUTTONDOWN)
+            {
+                var pt = ms.pt;
+                // Capture element info eagerly before the hook returns (same reason as left-click).
+                ElementInfo? eagerInfo = null;
+                try { eagerInfo = _service.GetElementAtPoint(pt); } catch { /* best effort */ }
+                BeginInvoke(new Action(() => RecordPassiveRightClick(pt, eagerInfo)));
+                // Intentionally NOT suppressed — the native right-click is passed through so
+                // the application can display its own context menu if it has one.
+            }
         }
         else if (_service.CurrentMode == RecordingMode.Assistive)
         {
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
                 var pt = ms.pt;
+
+                // A simulated right-click fired by the "Right Click" action item sets
+                // _suppressNextRButtonDown so the hook does not intercept it.
+                if (_suppressNextRButtonDown)
+                {
+                    _suppressNextRButtonDown = false;
+                    return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+                }
 
                 if (_awaitingDragTarget)
                 {
@@ -546,6 +569,23 @@ public sealed class RecordingOverlayWindow : Form
             Element = sourceInfo,
             TargetElement = targetInfo,
             Description = $"Drag from {sourceLabel} to {targetLabel}"
+        });
+    }
+
+    /// <summary>
+    /// Called (via BeginInvoke) when a right-button-down event is observed in Passive mode.
+    /// Records the action without suppressing the event so the application can still display
+    /// its own context menu if it has one.
+    /// </summary>
+    private void RecordPassiveRightClick(System.Drawing.Point pt, ElementInfo? eagerInfo)
+    {
+        var info = eagerInfo ?? _service.GetElementAtPoint(pt);
+        _service.AddAction(new RecordedAction
+        {
+            ActionType = ActionType.RightClick,
+            Mode = RecordingMode.Passive,
+            Element = info,
+            Description = BuildDescription("Right Click", info)
         });
     }
 
@@ -768,6 +808,16 @@ public sealed class RecordingOverlayWindow : Form
                 BringElementWindowToForeground(element);
                 Thread.Sleep(WindowActivationDelayMs);
                 Mouse.DoubleClick(pt);
+            });
+        AddActionItem(menu, "Right Click", element, elementInfo, ActionType.RightClick,
+            () =>
+            {
+                BringElementWindowToForeground(element);
+                Thread.Sleep(WindowActivationDelayMs);
+                // Set the flag so the global hook does not intercept this simulated
+                // right-click and show the assistive context menu a second time.
+                _suppressNextRButtonDown = true;
+                Mouse.RightClick(pt);
             });
         AddActionItem(menu, "Hover", element, elementInfo, ActionType.Hover,
             () => { /* cursor is already there */ });
