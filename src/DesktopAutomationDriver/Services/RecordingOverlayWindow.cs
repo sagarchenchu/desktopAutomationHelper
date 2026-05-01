@@ -86,6 +86,7 @@ public sealed class RecordingOverlayWindow : Form
     /// <summary>Maximum number of child elements shown in the "Children ▶" submenu.</summary>
     private const int MaxChildrenToDisplay = 30;
     private const int MaxTableAncestorDepth = 5;
+    private const int MaxWindowSearchDepth = 5;
 
     /// <summary>
     /// Minimum pixel distance the mouse must travel while the left button is held before a
@@ -901,7 +902,17 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         // Type — for Edit controls (text boxes), or the inner Edit of a promoted ComboBox.
-        if (editTarget != null)
+        // Exception: do not show "Type" when the target is a disabled Edit control.
+        bool isDisabledEdit = false;
+        try
+        {
+            isDisabledEdit = editTarget != null &&
+                             editTarget.ControlType == ControlType.Edit &&
+                             !editTarget.IsEnabled;
+        }
+        catch { /* best effort; if we can't determine, show Type */ }
+
+        if (editTarget != null && !isDisabledEdit)
         {
             menu.Items.Add(new ToolStripSeparator());
             var typeItem = new ToolStripMenuItem("Type…");
@@ -1224,6 +1235,54 @@ public sealed class RecordingOverlayWindow : Form
                     FlaUI.Core.Definitions.WindowVisualState.Minimized));
             AddActionItem(menu, "Close Window", element, elementInfo, ActionType.CloseWindow,
                 () => element.Patterns.Window.Pattern.Close());
+        }
+
+        // Switch Window — available when right-clicking a TitleBar element.
+        // Walks up the UIA tree to locate the parent Window so its title can be used.
+        if (element != null && element.ControlType == ControlType.TitleBar)
+        {
+            // Find the parent Window element (at most 5 levels up).
+            AutomationElement? windowElement = null;
+            ElementInfo? windowInfo = null;
+            try
+            {
+                var current = element;
+                for (int i = 0; i < MaxWindowSearchDepth; i++)
+                {
+                    var parent = current.Parent;
+                    if (parent == null) break;
+                    if (parent.ControlType == ControlType.Window)
+                    {
+                        windowElement = parent;
+                        windowInfo = BuildElementInfo(parent);
+                        break;
+                    }
+                    current = parent;
+                }
+            }
+            catch { /* best effort */ }
+
+            // Fall back to the TitleBar itself if no Window parent was found.
+            var switchTarget = windowElement ?? element;
+            var switchInfo = windowInfo ?? elementInfo;
+            var windowTitle = switchInfo?.Name ?? string.Empty;
+
+            menu.Items.Add(new ToolStripSeparator());
+            var switchItem = new ToolStripMenuItem("Switch Window");
+            switchItem.Click += (_, _) =>
+            {
+                var label = ElementInfo.GetLabel(switchInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.SwitchWindow,
+                    Mode = RecordingMode.Assistive,
+                    Element = switchInfo,
+                    Value = windowTitle,
+                    Description = $"Switch window to '{windowTitle}'"
+                });
+                UpdateStatusAfterAction($"Switch Window [{switchInfo?.ControlType}] {label}");
+            };
+            menu.Items.Add(switchItem);
         }
 
         // Expand / Collapse — for TreeItem, Tree children, MenuItem with submenus, and any
