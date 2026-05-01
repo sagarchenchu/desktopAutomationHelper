@@ -151,15 +151,18 @@ public class UiSessionContext : IUiSessionContext, IDisposable
         }
         catch { /* best effort – auto-follow will still work, just may pick up existing windows once */ }
 
-        // Also seed all currently open windows on the desktop from any process.
-        // This prevents cross-process windows that are already open when the session
-        // starts from being falsely detected as new popup windows later.
+        // Also seed all currently open windows on the desktop from any process,
+        // including owned dialog windows that appear as descendants of their owning
+        // window in the UIA virtual tree (not as direct children of the desktop).
+        // Using FindAllDescendants ensures that pre-existing owned dialogs
+        // (ControlType=Window, LocalizedControlType="dialog") are seeded and
+        // will not be falsely detected as new popup windows later.
         try
         {
             var cf = session.Automation.ConditionFactory;
-            var desktopWindows = session.Automation.GetDesktop()
-                .FindAllChildren(cf.ByControlType(ControlType.Window));
-            session.SeedWindowHandles(desktopWindows
+            var desktopDescendants = session.Automation.GetDesktop()
+                .FindAllDescendants(cf.ByControlType(ControlType.Window));
+            session.SeedWindowHandles(desktopDescendants
                 .Select(w =>
                 {
                     try { return w.Properties.NativeWindowHandle.Value; }
