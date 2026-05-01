@@ -87,6 +87,7 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxChildrenToDisplay = 30;
     private const int MaxTableAncestorDepth = 5;
     private const int MaxWindowSearchDepth = 5;
+    private const int MaxMenuAncestorDepth = 10;
 
     /// <summary>
     /// Minimum pixel distance the mouse must travel while the left button is held before a
@@ -115,6 +116,13 @@ public sealed class RecordingOverlayWindow : Form
     /// (typically the IDE that launched the driver) rather than the target window.
     /// </summary>
     private const int WindowActivationDelayMs = 100;
+
+    /// <summary>
+    /// Delay in milliseconds inserted between each step when re-navigating a menu
+    /// hierarchy for a popup sub-MenuItem click.  Allows time for each intermediate
+    /// dropdown to materialise in the UIA tree before the next item is searched.
+    /// </summary>
+    private const int MenuNavigationDelayMs = 300;
 
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
@@ -739,6 +747,55 @@ public sealed class RecordingOverlayWindow : Form
 
         var elementInfo = element != null ? BuildElementInfo(element) : null;
 
+        // For sub-MenuItems that live inside a ToolStripDropDown popup: showing the
+        // assistive ContextMenuStrip steals focus from the application, which causes
+        // WinForms to destroy the popup HWND.  The captured 'element' reference then
+        // points to a destroyed UIA element, so Invoke() / Click() on it fail silently.
+        // Build a re-navigation path right now (while the popup is still open) so the
+        // Click handler can re-open the menu chain and locate fresh UIA elements.
+        AutomationElement? popupMenuBarRef = null;
+        var popupMenuPath = new List<string>(); // top-down MenuItem names, e.g. ["QA", "Level 1"]
+        if (element?.ControlType == ControlType.MenuItem)
+        {
+            try
+            {
+                var pathNames = new List<string>();
+                bool insidePopup = false;
+                var cur = element;
+                for (int depth = 0; depth < MaxMenuAncestorDepth; depth++)
+                {
+                    if (cur.ControlType == ControlType.MenuItem)
+                    {
+                        // Only include items with a non-empty name; nameless items
+                        // cannot be reliably re-located by FindFirstDescendant(ByName).
+                        var itemName = cur.Name ?? string.Empty;
+                        if (!string.IsNullOrEmpty(itemName))
+                            pathNames.Add(itemName);
+                    }
+                    else if (cur.ControlType == ControlType.Menu)
+                        insidePopup = true;
+                    else if (cur.ControlType == ControlType.MenuBar)
+                    {
+                        // Paths with only one entry are top-level MenuItems (direct children
+                        // of the MenuBar) — their element reference stays valid and the normal
+                        // Invoke() path works fine.  Re-navigation is only needed for items
+                        // that are two or more levels deep (inside a popup dropdown).
+                        if (insidePopup && pathNames.Count > 1)
+                        {
+                            popupMenuBarRef = cur;
+                            pathNames.Reverse(); // collected bottom-up; reverse to top-down
+                            popupMenuPath = pathNames;
+                        }
+                        break;
+                    }
+                    var par = cur.Parent;
+                    if (par == null) break;
+                    cur = par;
+                }
+            }
+            catch { /* best effort */ }
+        }
+
         // When an inner Edit was promoted to its parent ComboBox, keep a reference to the
         // original Edit so "Type…" and "Is Editable" can still target the actual text field.
         var innerEditElement = (originalElement != null &&
@@ -774,7 +831,52 @@ public sealed class RecordingOverlayWindow : Form
         AddActionItem(menu, "Click", element, elementInfo, ActionType.Click,
             () =>
             {
-                if (element?.Patterns.Invoke.IsSupported == true)
+                if (popupMenuBarRef != null && popupMenuPath.Count > 1)
+                {
+                    // The element is a sub-MenuItem inside a popup/dropdown that has
+                    // already collapsed (focus moved to this assistive context menu).
+                    // Re-navigate the menu chain from the stable MenuBar reference,
+                    // finding fresh UIA elements at each level.
+                    BringElementWindowToForeground(popupMenuBarRef);
+                    Thread.Sleep(WindowActivationDelayMs);
+
+                    AutomationElement? stepAnchor = popupMenuBarRef;
+                    for (int i = 0; i < popupMenuPath.Count; i++)
+                    {
+                        var stepName = popupMenuPath[i];
+                        if (stepAnchor == null) break;
+
+                        AutomationElement? stepItem = null;
+                        try
+                        {
+                            var cf = _automation!.ConditionFactory;
+                            stepItem = stepAnchor.FindFirstDescendant(
+                                cf.ByControlType(ControlType.MenuItem).And(cf.ByName(stepName)));
+                        }
+                        catch { break; }
+
+                        if (stepItem == null) break;
+
+                        bool isLast = i == popupMenuPath.Count - 1;
+                        try
+                        {
+                            if (stepItem.Patterns.Invoke.IsSupported)
+                                stepItem.Patterns.Invoke.Pattern.Invoke();
+                            else
+                                stepItem.Click();
+                        }
+                        catch { break; }
+
+                        if (!isLast)
+                        {
+                            // Wait for the intermediate dropdown to materialise before
+                            // searching for the next item.
+                            Thread.Sleep(MenuNavigationDelayMs);
+                            stepAnchor = stepItem;
+                        }
+                    }
+                }
+                else if (element?.Patterns.Invoke.IsSupported == true)
                 {
                     element.Patterns.Invoke.Pattern.Invoke();
                 }
