@@ -29,6 +29,7 @@ public enum ActionType
     Maximize,
     Minimize,
     CloseWindow,
+    SwitchWindow,
     SetValue,
     Scroll,
     DragAndDrop,
