@@ -1269,12 +1269,23 @@ public class UiService : IUiService
 
     /// <summary>
     /// Returns true when <paramref name="w"/> is a modal dialog window.
+    /// Also recognises standard Win32 dialogs (window class <c>#32770</c>) that are
+    /// functionally modal but do not always report <c>IsModal = true</c> via UIA.
     /// Any exception from accessing UIA properties (e.g. stale element reference or
     /// COM error) is treated as "not a modal dialog" so the caller can continue safely.
     /// </summary>
     private static bool IsModalDialog(AutomationElement w)
     {
-        try { return w.Patterns.Window.IsSupported && w.Patterns.Window.Pattern.IsModal; }
+        try
+        {
+            if (w.Patterns.Window.IsSupported && w.Patterns.Window.Pattern.IsModal)
+                return true;
+        }
+        catch { /* stale element or COM error — fall through to #32770 check */ }
+
+        // Win32 standard dialog class — many Win32 dialogs do not set IsModal correctly
+        // but their HWND class name is always "#32770".
+        try { return string.Equals(w.ClassName, "#32770", StringComparison.Ordinal); }
         catch { return false; }
     }
 

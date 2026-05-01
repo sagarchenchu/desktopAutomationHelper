@@ -7,6 +7,7 @@ public enum ActionType
 {
     Click,
     DoubleClick,
+    RightClick,
     Hover,
     Select,
     Type,
@@ -28,6 +29,7 @@ public enum ActionType
     Maximize,
     Minimize,
     CloseWindow,
+    SwitchWindow,
     SetValue,
     Scroll,
     DragAndDrop,
