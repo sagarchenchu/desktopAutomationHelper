@@ -1486,39 +1486,52 @@ public class UiService : IUiService
                 }
                 else
                 {
-                    // No new window in the application's own process.  Check the full
-                    // desktop for new popup/dialog windows from other processes — for
-                    // example, system authentication dialogs, OS security prompts, or
-                    // any owned window hosted in a different process.  Without this
-                    // check, element searches fall back to the main application window
-                    // and may resolve the wrong element (e.g. a MenuItem instead of
-                    // the popup's button or title bar).
-                    try
+                    // GetAllTopLevelWindows only scans direct children of the desktop UIA
+                    // element filtered by the application's PID.  Owned dialog windows
+                    // (ControlType=Window, LocalizedControlType="dialog") that are spawned
+                    // by the application are often nested as descendants of the owning window
+                    // in the UIA virtual tree, not as direct desktop children, so they are
+                    // invisible to GetAllTopLevelWindows.
+                    //
+                    // Additionally, some popup windows run in a different process entirely
+                    // (e.g. Windows credential dialogs, COM-hosted security prompts).
+                    //
+                    // Both cases are handled by scanning all Window-type descendants of the
+                    // desktop, filtering to visible windows only, and letting ClaimFirstNewWindow
+                    // identify any that have not been seen before.
+                    //
+                    // The scan is throttled to run at most once per DesktopScanThrottle interval
+                    // (default 2 s) so that rapid successive operations (e.g. typing into a form)
+                    // do not pay the cost of a full desktop traversal on every call.
+                    if (DateTime.UtcNow - session.LastDesktopScan >= AutomationSession.DesktopScanThrottle)
                     {
-                        var cf = session.Automation.ConditionFactory;
-                        var allDesktopWindows = session.Automation.GetDesktop()
-                            .FindAllChildren(cf.ByControlType(ControlType.Window));
-                        int appPid = session.Application.ProcessId;
-                        var crossProcessWindows = allDesktopWindows
-                            .Where(w =>
-                            {
-                                try { return w.Properties.ProcessId.Value != appPid && !w.IsOffscreen; }
-                                catch { return false; }
-                            })
-                            .ToArray();
-                        var newPopup = session.ClaimFirstNewWindow(crossProcessWindows);
-                        if (newPopup != null)
+                        session.LastDesktopScan = DateTime.UtcNow;
+                        try
                         {
-                            session.ActiveWindow = newPopup;
-                            _logger.LogInformation(
-                                "Auto-followed cross-process popup window: '{Title}'",
-                                SanitizeValue(newPopup.Name));
+                            var cf = session.Automation.ConditionFactory;
+                            var allDesktopDescendants = session.Automation.GetDesktop()
+                                .FindAllDescendants(cf.ByControlType(ControlType.Window));
+                            var newVisibleWindows = allDesktopDescendants
+                                .Where(w =>
+                                {
+                                    try { return !w.IsOffscreen; }
+                                    catch { return false; }
+                                })
+                                .ToArray();
+                            var newPopup = session.ClaimFirstNewWindow(newVisibleWindows);
+                            if (newPopup != null)
+                            {
+                                session.ActiveWindow = newPopup;
+                                _logger.LogInformation(
+                                    "Auto-followed popup/dialog window: '{Title}'",
+                                    SanitizeValue(newPopup.Name));
+                            }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogDebug(ex,
-                            "Cross-process popup check failed; continuing with current active window.");
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug(ex,
+                                "Popup/dialog window check failed; continuing with current active window.");
+                        }
                     }
                 }
 
