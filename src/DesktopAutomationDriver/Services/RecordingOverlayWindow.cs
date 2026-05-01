@@ -86,6 +86,8 @@ public sealed class RecordingOverlayWindow : Form
     /// <summary>Maximum number of child elements shown in the "Children ▶" submenu.</summary>
     private const int MaxChildrenToDisplay = 30;
     private const int MaxTableAncestorDepth = 5;
+    private const int MaxWindowSearchDepth = 5;
+    private const int MaxMenuAncestorDepth = 10;
 
     /// <summary>
     /// Minimum pixel distance the mouse must travel while the left button is held before a
@@ -114,6 +116,13 @@ public sealed class RecordingOverlayWindow : Form
     /// (typically the IDE that launched the driver) rather than the target window.
     /// </summary>
     private const int WindowActivationDelayMs = 100;
+
+    /// <summary>
+    /// Delay in milliseconds inserted between each step when re-navigating a menu
+    /// hierarchy for a popup sub-MenuItem click.  Allows time for each intermediate
+    /// dropdown to materialise in the UIA tree before the next item is searched.
+    /// </summary>
+    private const int MenuNavigationDelayMs = 300;
 
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
@@ -158,6 +167,11 @@ public sealed class RecordingOverlayWindow : Form
     // matching WM_RBUTTONUP (preventing the target app from receiving WM_CONTEXTMENU
     // which would open the app's own context menu and immediately close ours).
     private bool _suppressNextRButtonUp;
+
+    // Set to true by the Assistive-mode "Right Click" action item just before it calls
+    // Mouse.RightClick().  The next WM_RBUTTONDOWN from the hook is then passed through
+    // rather than intercepted so that the simulated click reaches the target window.
+    private bool _suppressNextRButtonDown;
 
     // ── Passive mode drag detection state ────────────────────────────────────
     // Set on WM_LBUTTONDOWN; cleared on WM_LBUTTONUP or WM_LBUTTONDBLCLK.
@@ -425,12 +439,30 @@ public sealed class RecordingOverlayWindow : Form
                 }
                 // Small movement: the Click already recorded on mouse-down is correct; nothing to do.
             }
+            else if (wParam == (IntPtr)WM_RBUTTONDOWN)
+            {
+                var pt = ms.pt;
+                // Capture element info eagerly before the hook returns (same reason as left-click).
+                ElementInfo? eagerInfo = null;
+                try { eagerInfo = _service.GetElementAtPoint(pt); } catch { /* best effort */ }
+                BeginInvoke(new Action(() => RecordPassiveRightClick(pt, eagerInfo)));
+                // Intentionally NOT suppressed — the native right-click is passed through so
+                // the application can display its own context menu if it has one.
+            }
         }
         else if (_service.CurrentMode == RecordingMode.Assistive)
         {
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
                 var pt = ms.pt;
+
+                // A simulated right-click fired by the "Right Click" action item sets
+                // _suppressNextRButtonDown so the hook does not intercept it.
+                if (_suppressNextRButtonDown)
+                {
+                    _suppressNextRButtonDown = false;
+                    return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+                }
 
                 if (_awaitingDragTarget)
                 {
@@ -546,6 +578,23 @@ public sealed class RecordingOverlayWindow : Form
             Element = sourceInfo,
             TargetElement = targetInfo,
             Description = $"Drag from {sourceLabel} to {targetLabel}"
+        });
+    }
+
+    /// <summary>
+    /// Called (via BeginInvoke) when a right-button-down event is observed in Passive mode.
+    /// Records the action without suppressing the event so the application can still display
+    /// its own context menu if it has one.
+    /// </summary>
+    private void RecordPassiveRightClick(System.Drawing.Point pt, ElementInfo? eagerInfo)
+    {
+        var info = eagerInfo ?? _service.GetElementAtPoint(pt);
+        _service.AddAction(new RecordedAction
+        {
+            ActionType = ActionType.RightClick,
+            Mode = RecordingMode.Passive,
+            Element = info,
+            Description = BuildDescription("Right Click", info)
         });
     }
 
@@ -698,6 +747,55 @@ public sealed class RecordingOverlayWindow : Form
 
         var elementInfo = element != null ? BuildElementInfo(element) : null;
 
+        // For sub-MenuItems that live inside a ToolStripDropDown popup: showing the
+        // assistive ContextMenuStrip steals focus from the application, which causes
+        // WinForms to destroy the popup HWND.  The captured 'element' reference then
+        // points to a destroyed UIA element, so Invoke() / Click() on it fail silently.
+        // Build a re-navigation path right now (while the popup is still open) so the
+        // Click handler can re-open the menu chain and locate fresh UIA elements.
+        AutomationElement? popupMenuBarRef = null;
+        var popupMenuPath = new List<string>(); // top-down MenuItem names, e.g. ["QA", "Level 1"]
+        if (element?.ControlType == ControlType.MenuItem)
+        {
+            try
+            {
+                var pathNames = new List<string>();
+                bool insidePopup = false;
+                var cur = element;
+                for (int depth = 0; depth < MaxMenuAncestorDepth; depth++)
+                {
+                    if (cur.ControlType == ControlType.MenuItem)
+                    {
+                        // Only include items with a non-empty name; nameless items
+                        // cannot be reliably re-located by FindFirstDescendant(ByName).
+                        var itemName = cur.Name ?? string.Empty;
+                        if (!string.IsNullOrEmpty(itemName))
+                            pathNames.Add(itemName);
+                    }
+                    else if (cur.ControlType == ControlType.Menu)
+                        insidePopup = true;
+                    else if (cur.ControlType == ControlType.MenuBar)
+                    {
+                        // Paths with only one entry are top-level MenuItems (direct children
+                        // of the MenuBar) — their element reference stays valid and the normal
+                        // Invoke() path works fine.  Re-navigation is only needed for items
+                        // that are two or more levels deep (inside a popup dropdown).
+                        if (insidePopup && pathNames.Count > 1)
+                        {
+                            popupMenuBarRef = cur;
+                            pathNames.Reverse(); // collected bottom-up; reverse to top-down
+                            popupMenuPath = pathNames;
+                        }
+                        break;
+                    }
+                    var par = cur.Parent;
+                    if (par == null) break;
+                    cur = par;
+                }
+            }
+            catch { /* best effort */ }
+        }
+
         // When an inner Edit was promoted to its parent ComboBox, keep a reference to the
         // original Edit so "Type…" and "Is Editable" can still target the actual text field.
         var innerEditElement = (originalElement != null &&
@@ -733,7 +831,52 @@ public sealed class RecordingOverlayWindow : Form
         AddActionItem(menu, "Click", element, elementInfo, ActionType.Click,
             () =>
             {
-                if (element?.Patterns.Invoke.IsSupported == true)
+                if (popupMenuBarRef != null && popupMenuPath.Count > 1)
+                {
+                    // The element is a sub-MenuItem inside a popup/dropdown that has
+                    // already collapsed (focus moved to this assistive context menu).
+                    // Re-navigate the menu chain from the stable MenuBar reference,
+                    // finding fresh UIA elements at each level.
+                    BringElementWindowToForeground(popupMenuBarRef);
+                    Thread.Sleep(WindowActivationDelayMs);
+
+                    AutomationElement? stepAnchor = popupMenuBarRef;
+                    for (int i = 0; i < popupMenuPath.Count; i++)
+                    {
+                        var stepName = popupMenuPath[i];
+                        if (stepAnchor == null) break;
+
+                        AutomationElement? stepItem = null;
+                        try
+                        {
+                            var cf = _automation!.ConditionFactory;
+                            stepItem = stepAnchor.FindFirstDescendant(
+                                cf.ByControlType(ControlType.MenuItem).And(cf.ByName(stepName)));
+                        }
+                        catch { break; }
+
+                        if (stepItem == null) break;
+
+                        bool isLast = i == popupMenuPath.Count - 1;
+                        try
+                        {
+                            if (stepItem.Patterns.Invoke.IsSupported)
+                                stepItem.Patterns.Invoke.Pattern.Invoke();
+                            else
+                                stepItem.Click();
+                        }
+                        catch { break; }
+
+                        if (!isLast)
+                        {
+                            // Wait for the intermediate dropdown to materialise before
+                            // searching for the next item.
+                            Thread.Sleep(MenuNavigationDelayMs);
+                            stepAnchor = stepItem;
+                        }
+                    }
+                }
+                else if (element?.Patterns.Invoke.IsSupported == true)
                 {
                     element.Patterns.Invoke.Pattern.Invoke();
                 }
@@ -768,6 +911,16 @@ public sealed class RecordingOverlayWindow : Form
                 BringElementWindowToForeground(element);
                 Thread.Sleep(WindowActivationDelayMs);
                 Mouse.DoubleClick(pt);
+            });
+        AddActionItem(menu, "Right Click", element, elementInfo, ActionType.RightClick,
+            () =>
+            {
+                BringElementWindowToForeground(element);
+                Thread.Sleep(WindowActivationDelayMs);
+                // Set the flag so the global hook does not intercept this simulated
+                // right-click and show the assistive context menu a second time.
+                _suppressNextRButtonDown = true;
+                Mouse.RightClick(pt);
             });
         AddActionItem(menu, "Hover", element, elementInfo, ActionType.Hover,
             () => { /* cursor is already there */ });
@@ -851,7 +1004,17 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         // Type — for Edit controls (text boxes), or the inner Edit of a promoted ComboBox.
-        if (editTarget != null)
+        // Exception: do not show "Type" when the target is a disabled Edit control.
+        bool isDisabledEdit = false;
+        try
+        {
+            isDisabledEdit = editTarget != null &&
+                             editTarget.ControlType == ControlType.Edit &&
+                             !editTarget.IsEnabled;
+        }
+        catch { /* best effort; if we can't determine, show Type */ }
+
+        if (editTarget != null && !isDisabledEdit)
         {
             menu.Items.Add(new ToolStripSeparator());
             var typeItem = new ToolStripMenuItem("Type…");
@@ -1174,6 +1337,54 @@ public sealed class RecordingOverlayWindow : Form
                     FlaUI.Core.Definitions.WindowVisualState.Minimized));
             AddActionItem(menu, "Close Window", element, elementInfo, ActionType.CloseWindow,
                 () => element.Patterns.Window.Pattern.Close());
+        }
+
+        // Switch Window — available when right-clicking a TitleBar element.
+        // Walks up the UIA tree to locate the parent Window so its title can be used.
+        if (element != null && element.ControlType == ControlType.TitleBar)
+        {
+            // Find the parent Window element (at most 5 levels up).
+            AutomationElement? windowElement = null;
+            ElementInfo? windowInfo = null;
+            try
+            {
+                var current = element;
+                for (int i = 0; i < MaxWindowSearchDepth; i++)
+                {
+                    var parent = current.Parent;
+                    if (parent == null) break;
+                    if (parent.ControlType == ControlType.Window)
+                    {
+                        windowElement = parent;
+                        windowInfo = BuildElementInfo(parent);
+                        break;
+                    }
+                    current = parent;
+                }
+            }
+            catch { /* best effort */ }
+
+            // Fall back to the TitleBar itself if no Window parent was found.
+            var switchTarget = windowElement ?? element;
+            var switchInfo = windowInfo ?? elementInfo;
+            var windowTitle = switchInfo?.Name ?? string.Empty;
+
+            menu.Items.Add(new ToolStripSeparator());
+            var switchItem = new ToolStripMenuItem("Switch Window");
+            switchItem.Click += (_, _) =>
+            {
+                var label = ElementInfo.GetLabel(switchInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.SwitchWindow,
+                    Mode = RecordingMode.Assistive,
+                    Element = switchInfo,
+                    Value = windowTitle,
+                    Description = $"Switch window to '{windowTitle}'"
+                });
+                UpdateStatusAfterAction($"Switch Window [{switchInfo?.ControlType}] {label}");
+            };
+            menu.Items.Add(switchItem);
         }
 
         // Expand / Collapse — for TreeItem, Tree children, MenuItem with submenus, and any
