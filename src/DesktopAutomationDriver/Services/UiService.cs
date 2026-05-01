@@ -1171,10 +1171,21 @@ public class UiService : IUiService
         var cf = automation.ConditionFactory;
         var desktop = automation.GetDesktop();
 
-        // Find the first modal dialog among all top-level windows on the desktop.
+        // Fast path: check direct desktop children first.
         var dialog = desktop
             .FindAllChildren(cf.ByControlType(ControlType.Window))
             .FirstOrDefault(IsModalDialog);
+
+        // Fallback: owned/child modal dialogs are often nested as descendants of
+        // their owning application window in the UIA tree rather than as direct
+        // children of the desktop node. A full descendant scan is required to
+        // find them.
+        if (dialog == null)
+        {
+            dialog = desktop
+                .FindAllDescendants(cf.ByControlType(ControlType.Window))
+                .FirstOrDefault(IsModalDialog);
+        }
 
         if (dialog == null) return;
 
@@ -1608,13 +1619,37 @@ public class UiService : IUiService
 
     /// <summary>
     /// Finds an element using a locator with up to 5 s retry (500 ms interval).
+    /// <para>
+    /// The window root is re-evaluated on every retry iteration so that newly
+    /// opened dialogs (e.g. a modal confirmation dialog that appears after
+    /// clicking OK) are picked up by the auto-follow logic inside
+    /// <see cref="GetWindowRoot"/> and subsequent retries search the correct
+    /// window rather than the stale previous root.
+    /// </para>
     /// </summary>
     private AutomationElement FindWithRetry(UiRequest req)
     {
         var locator = RequireLocator(req);
         var session = RequireSession();
-        var root = GetWindowRoot(session);
-        return FindLocatorWithRetry(session, root, locator);
+
+        var deadline = DateTime.UtcNow + DefaultRetry;
+        while (true)
+        {
+            // Re-query the root on every iteration: if a new dialog opened since
+            // the last attempt, GetWindowRoot will auto-follow it and return the
+            // dialog as the new root, allowing the element search to succeed.
+            var root = GetWindowRoot(session);
+            var element = TryFindElement(root, session, locator);
+            if (element != null)
+                return element;
+
+            if (DateTime.UtcNow >= deadline)
+                throw new InvalidOperationException(
+                    $"Element not found within {DefaultRetry.TotalSeconds}s: " +
+                    DescribeLocator(locator));
+
+            Thread.Sleep(RetryInterval);
+        }
     }
 
     /// <summary>
