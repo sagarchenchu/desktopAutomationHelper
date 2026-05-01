@@ -7,6 +7,7 @@ public enum ActionType
 {
     Click,
     DoubleClick,
+    RightClick,
     Hover,
     Select,
     Type,
