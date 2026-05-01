@@ -1464,6 +1464,8 @@ public class UiService : IUiService
     /// automatically switches to any top-level window that has opened in the application
     /// since the session started (or since the last explicit window switch), and clears
     /// a stale <see cref="AutomationSession.ActiveWindow"/> if the window has closed.
+    /// Also detects popup/dialog windows from other processes (e.g. system authentication
+    /// dialogs, OS security prompts) that appear as a result of application actions.
     /// Falls back to the application's main window when no active window is set.
     /// </summary>
     private AutomationElement GetWindowRoot(AutomationSession session)
@@ -1482,6 +1484,43 @@ public class UiService : IUiService
                     _logger.LogInformation(
                         "Auto-followed new window: '{Title}'", SanitizeValue(newWindow.Name));
                 }
+                else
+                {
+                    // No new window in the application's own process.  Check the full
+                    // desktop for new popup/dialog windows from other processes — for
+                    // example, system authentication dialogs, OS security prompts, or
+                    // any owned window hosted in a different process.  Without this
+                    // check, element searches fall back to the main application window
+                    // and may resolve the wrong element (e.g. a MenuItem instead of
+                    // the popup's button or title bar).
+                    try
+                    {
+                        var cf = session.Automation.ConditionFactory;
+                        var allDesktopWindows = session.Automation.GetDesktop()
+                            .FindAllChildren(cf.ByControlType(ControlType.Window));
+                        int appPid = session.Application.ProcessId;
+                        var crossProcessWindows = allDesktopWindows
+                            .Where(w =>
+                            {
+                                try { return w.Properties.ProcessId.Value != appPid && !w.IsOffscreen; }
+                                catch { return false; }
+                            })
+                            .ToArray();
+                        var newPopup = session.ClaimFirstNewWindow(crossProcessWindows);
+                        if (newPopup != null)
+                        {
+                            session.ActiveWindow = newPopup;
+                            _logger.LogInformation(
+                                "Auto-followed cross-process popup window: '{Title}'",
+                                SanitizeValue(newPopup.Name));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex,
+                            "Cross-process popup check failed; continuing with current active window.");
+                    }
+                }
 
                 // Validate that the current ActiveWindow is still open; clear it if closed.
                 if (session.ActiveWindow != null)
@@ -1497,7 +1536,8 @@ public class UiService : IUiService
                     else if (!allWindows.Any(w => SafeWindowHandle(w) == activeHandle))
                     {
                         // Handle not in this session's process — could be a cross-process window
-                        // set by SwitchWindow. Only clear if the element is truly inaccessible.
+                        // set by SwitchWindow or the cross-process popup detection above.
+                        // Only clear if the element is truly inaccessible.
                         if (!IsElementAlive(session.ActiveWindow))
                         {
                             _logger.LogInformation(
