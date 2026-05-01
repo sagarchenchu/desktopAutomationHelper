@@ -755,6 +755,11 @@ public sealed class RecordingOverlayWindow : Form
         // Click handler can re-open the menu chain and locate fresh UIA elements.
         AutomationElement? popupMenuBarRef = null;
         var popupMenuPath = new List<string>(); // top-down MenuItem names, e.g. ["QA", "Level 1"]
+        // When the element is a MenuItem whose ancestry reaches a Window *before* any
+        // MenuBar, it lives inside a real Window dialog (e.g. a ToolStripDropDown-based
+        // dialog whose buttons are typed as MenuItem by UIA).  Store the Window so we can
+        // offer "Switch Window" and use the correct HWND for SetForegroundWindow.
+        AutomationElement? menuItemWindowAncestor = null;
         if (element?.ControlType == ControlType.MenuItem)
         {
             try
@@ -786,6 +791,14 @@ public sealed class RecordingOverlayWindow : Form
                             pathNames.Reverse(); // collected bottom-up; reverse to top-down
                             popupMenuPath = pathNames;
                         }
+                        break;
+                    }
+                    else if (cur.ControlType == ControlType.Window)
+                    {
+                        // The element is inside a real Window dialog (no MenuBar found yet).
+                        // Do not set popupMenuBarRef — use direct interaction instead.
+                        // Store the Window ancestor so Switch Window can be offered below.
+                        menuItemWindowAncestor = cur;
                         break;
                     }
                     var par = cur.Parent;
@@ -841,6 +854,7 @@ public sealed class RecordingOverlayWindow : Form
                     Thread.Sleep(WindowActivationDelayMs);
 
                     AutomationElement? stepAnchor = popupMenuBarRef;
+                    bool navigationSucceeded = false;
                     for (int i = 0; i < popupMenuPath.Count; i++)
                     {
                         var stepName = popupMenuPath[i];
@@ -874,6 +888,23 @@ public sealed class RecordingOverlayWindow : Form
                             Thread.Sleep(MenuNavigationDelayMs);
                             stepAnchor = stepItem;
                         }
+                        else
+                        {
+                            navigationSucceeded = true;
+                        }
+                    }
+
+                    if (!navigationSucceeded)
+                    {
+                        // Re-navigation failed — the popup may be a persistent Window dialog
+                        // whose elements are typed as MenuItem by UIA rather than a transient
+                        // dropdown that can be re-opened via menu traversal.  Fall back to a
+                        // direct physical click; BringElementWindowToForeground walks up the
+                        // UIA parent chain to find the correct host window HWND so the click
+                        // lands on the right window even when the element has no own HWND.
+                        BringElementWindowToForeground(element);
+                        Thread.Sleep(WindowActivationDelayMs);
+                        Mouse.Click(pt);
                     }
                 }
                 else if (element?.Patterns.Invoke.IsSupported == true)
@@ -926,7 +957,9 @@ public sealed class RecordingOverlayWindow : Form
             () => { /* cursor is already there */ });
 
         // Select — only for selectable elements
-        if (element != null && IsSelectable(element))
+        bool isSelectable = false;
+        try { isSelectable = element != null && IsSelectable(element); } catch { /* best effort */ }
+        if (isSelectable)
         {
             AddActionItem(menu, "Select", element, elementInfo, ActionType.Select,
                 () =>
@@ -968,11 +1001,16 @@ public sealed class RecordingOverlayWindow : Form
         //   use it directly;
         // - otherwise fall back to innerEditElement (the original Edit that was promoted
         //   to its parent ComboBox, e.g. a username/password field with credential history).
-        bool isDirectlyEditable = element != null &&
-            (element.ControlType == ControlType.Edit ||
-             element.ControlType == ControlType.Document ||
-             (element.Patterns.Value.IsSupported &&
-              element.Patterns.Value.PatternOrDefault?.IsReadOnly == false));
+        bool isDirectlyEditable = false;
+        try
+        {
+            isDirectlyEditable = element != null &&
+                (element.ControlType == ControlType.Edit ||
+                 element.ControlType == ControlType.Document ||
+                 (element.Patterns.Value.IsSupported &&
+                  element.Patterns.Value.PatternOrDefault?.IsReadOnly == false));
+        }
+        catch { /* best effort */ }
         var editTarget = isDirectlyEditable ? element : innerEditElement;
         var editTargetInfo = isDirectlyEditable ? elementInfo : innerEditInfo;
 
@@ -1054,8 +1092,9 @@ public sealed class RecordingOverlayWindow : Form
             menu.Items.Add(typeItem);
 
             // Clear — only for writable Edit controls
-            if (editTarget.Patterns.Value.IsSupported &&
-                editTarget.Patterns.Value.PatternOrDefault?.IsReadOnly == false)
+            bool showClear = false;
+            try { showClear = editTarget.Patterns.Value.IsSupported && editTarget.Patterns.Value.PatternOrDefault?.IsReadOnly == false; } catch { /* best effort */ }
+            if (showClear)
             {
                 AddActionItem(menu, "Clear", editTarget, editTargetInfo, ActionType.ClearText,
                     () =>
@@ -1325,8 +1364,9 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         // Window operations — only for Window controls
-        if (element != null && element.ControlType == ControlType.Window &&
-            element.Patterns.Window.IsSupported)
+        bool hasWindowPattern = false;
+        try { hasWindowPattern = element?.Patterns.Window.IsSupported ?? false; } catch { /* best effort */ }
+        if (element != null && element.ControlType == ControlType.Window && hasWindowPattern)
         {
             menu.Items.Add(new ToolStripSeparator());
             AddActionItem(menu, "Maximize", element, elementInfo, ActionType.Maximize,
@@ -1387,11 +1427,37 @@ public sealed class RecordingOverlayWindow : Form
             menu.Items.Add(switchItem);
         }
 
+        // Switch Window — also available for MenuItem elements that are inside a real Window
+        // dialog (menuItemWindowAncestor is set when the ancestor walk hit a Window before any
+        // MenuBar, meaning the element lives in a dialog whose buttons are typed as MenuItem).
+        if (menuItemWindowAncestor != null)
+        {
+            var windowInfo = BuildElementInfo(menuItemWindowAncestor);
+            var windowTitle = windowInfo.Name ?? string.Empty;
+
+            menu.Items.Add(new ToolStripSeparator());
+            var switchItem = new ToolStripMenuItem("Switch Window");
+            switchItem.Click += (_, _) =>
+            {
+                var label = ElementInfo.GetLabel(windowInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.SwitchWindow,
+                    Mode = RecordingMode.Assistive,
+                    Element = windowInfo,
+                    Value = windowTitle,
+                    Description = $"Switch window to '{windowTitle}'"
+                });
+                UpdateStatusAfterAction($"Switch Window [{windowInfo.ControlType}] {label}");
+            };
+            menu.Items.Add(switchItem);
+        }
+
         // Expand / Collapse — for TreeItem, Tree children, MenuItem with submenus, and any
         // element with ExpandCollapsePattern (excluding ComboBox, which is handled by Options ▶).
-        if (element != null &&
-            element.ControlType != ControlType.ComboBox &&
-            element.Patterns.ExpandCollapse.IsSupported)
+        bool hasExpandCollapse = false;
+        try { hasExpandCollapse = element != null && element.ControlType != ControlType.ComboBox && element.Patterns.ExpandCollapse.IsSupported; } catch { /* best effort */ }
+        if (hasExpandCollapse)
         {
             menu.Items.Add(new ToolStripSeparator());
             AddActionItem(menu, "Expand", element, elementInfo, ActionType.Expand,
@@ -1401,7 +1467,9 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         // RangeValue controls (Slider, ProgressBar, ScrollBar, Spinner)
-        if (element != null && element.Patterns.RangeValue.IsSupported)
+        bool hasRangeValue = false;
+        try { hasRangeValue = element?.Patterns.RangeValue.IsSupported ?? false; } catch { /* best effort */ }
+        if (hasRangeValue)
         {
             menu.Items.Add(new ToolStripSeparator());
 
@@ -1446,7 +1514,9 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         // Scroll — for elements that support the Scroll pattern (List, ScrollBar, etc.)
-        if (element != null && element.Patterns.Scroll.IsSupported)
+        bool hasScroll = false;
+        try { hasScroll = element?.Patterns.Scroll.IsSupported ?? false; } catch { /* best effort */ }
+        if (hasScroll)
         {
             menu.Items.Add(new ToolStripSeparator());
             AddActionItem(menu, "Scroll Up", element, elementInfo, ActionType.Scroll,
@@ -1463,7 +1533,9 @@ public sealed class RecordingOverlayWindow : Form
         // Note: ComboBox is checked explicitly here rather than being added to IsContainer()
         // because IsContainer() is also used by DrillDownToElementAtPoint() — drilling into
         // a ComboBox's structural children (Edit, Button, List) would break element identification.
-        if (element != null && (IsContainer(element.ControlType) || element.ControlType == ControlType.ComboBox || element.Patterns.ExpandCollapse.IsSupported))
+        bool showChildrenMenu = false;
+        try { showChildrenMenu = element != null && (IsContainer(element.ControlType) || element.ControlType == ControlType.ComboBox || element.Patterns.ExpandCollapse.IsSupported); } catch { /* best effort */ }
+        if (showChildrenMenu)
         {
             try
             {
@@ -1927,6 +1999,40 @@ public sealed class RecordingOverlayWindow : Form
                 var root = GetAncestor(hwnd, GA_ROOT);
                 if (root != IntPtr.Zero)
                     activated = SetForegroundWindow(root);
+            }
+        }
+        catch { /* best effort */ }
+
+        if (activated) return;
+
+        // Second path: walk up the UIA parent chain to find the nearest ancestor with a
+        // non-zero HWND.  This handles elements such as MenuItems in a ToolStripDropDown or
+        // buttons in a popup dialog that are typed as MenuItem — they carry no HWND of their
+        // own, but their parent Window element does.  Using the correct HWND ensures the
+        // popup dialog is brought to the foreground rather than the process main window.
+        try
+        {
+            var current = element;
+            for (int depth = 0; depth < MaxWindowSearchDepth; depth++)
+            {
+                AutomationElement? parent;
+                try { parent = current.Parent; }
+                catch { break; }
+                if (parent == null) break;
+
+                try
+                {
+                    var parentHwnd = parent.Properties.NativeWindowHandle.Value;
+                    if (parentHwnd != IntPtr.Zero)
+                    {
+                        var root = GetAncestor(parentHwnd, GA_ROOT);
+                        activated = SetForegroundWindow(root != IntPtr.Zero ? root : parentHwnd);
+                        break;
+                    }
+                }
+                catch { /* best effort — skip this ancestor */ }
+
+                current = parent;
             }
         }
         catch { /* best effort */ }
