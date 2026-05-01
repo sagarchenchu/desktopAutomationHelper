@@ -72,6 +72,20 @@ public class AutomationSession : IDisposable
     private readonly object _windowLock = new();
 
     /// <summary>
+    /// Timestamp of the last full desktop-descendant scan in <c>GetWindowRoot</c>.
+    /// Used to throttle the expensive scan so it runs at most once per
+    /// <see cref="DesktopScanThrottle"/> interval.
+    /// </summary>
+    internal DateTime LastDesktopScan { get; set; } = DateTime.MinValue;
+
+    /// <summary>
+    /// Minimum interval between consecutive full desktop-descendant scans.
+    /// The scan covers all Window-type descendants across all processes and is
+    /// throttled to avoid overhead during rapid successive operations.
+    /// </summary>
+    internal static readonly TimeSpan DesktopScanThrottle = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// Seeds the set of known window handles with the initial application windows,
     /// so that windows already open at launch are not treated as "new" later.
     /// </summary>

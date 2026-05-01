@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using FlaUI.Core.Definitions;
 using FlaUI.UIA3;
 
 // Alias to avoid ambiguity with System.Windows.Forms.Application
@@ -129,8 +130,11 @@ public class UiSessionContext : IUiSessionContext, IDisposable
 
     /// <summary>
     /// Populates the session's set of known window handles from the application's
-    /// current top-level windows, so those windows are not treated as "new" by the
-    /// auto-follow logic.
+    /// current top-level windows AND all currently open windows on the desktop (from
+    /// any process), so that neither are treated as "new" by the auto-follow logic.
+    /// Seeding desktop-wide windows prevents pre-existing cross-process windows (e.g.
+    /// system dialogs already open at session start) from being mistakenly detected as
+    /// new popup windows during subsequent operations.
     /// </summary>
     private static void SeedKnownWindows(AutomationSession session)
     {
@@ -146,5 +150,26 @@ public class UiSessionContext : IUiSessionContext, IDisposable
                 .Where(h => h != IntPtr.Zero));
         }
         catch { /* best effort – auto-follow will still work, just may pick up existing windows once */ }
+
+        // Also seed all currently open windows on the desktop from any process,
+        // including owned dialog windows that appear as descendants of their owning
+        // window in the UIA virtual tree (not as direct children of the desktop).
+        // Using FindAllDescendants ensures that pre-existing owned dialogs
+        // (ControlType=Window, LocalizedControlType="dialog") are seeded and
+        // will not be falsely detected as new popup windows later.
+        try
+        {
+            var cf = session.Automation.ConditionFactory;
+            var desktopDescendants = session.Automation.GetDesktop()
+                .FindAllDescendants(cf.ByControlType(ControlType.Window));
+            session.SeedWindowHandles(desktopDescendants
+                .Select(w =>
+                {
+                    try { return w.Properties.NativeWindowHandle.Value; }
+                    catch { return IntPtr.Zero; }
+                })
+                .Where(h => h != IntPtr.Zero));
+        }
+        catch { /* best effort */ }
     }
 }

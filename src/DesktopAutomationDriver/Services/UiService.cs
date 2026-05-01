@@ -1464,6 +1464,8 @@ public class UiService : IUiService
     /// automatically switches to any top-level window that has opened in the application
     /// since the session started (or since the last explicit window switch), and clears
     /// a stale <see cref="AutomationSession.ActiveWindow"/> if the window has closed.
+    /// Also detects popup/dialog windows from other processes (e.g. system authentication
+    /// dialogs, OS security prompts) that appear as a result of application actions.
     /// Falls back to the application's main window when no active window is set.
     /// </summary>
     private AutomationElement GetWindowRoot(AutomationSession session)
@@ -1482,6 +1484,56 @@ public class UiService : IUiService
                     _logger.LogInformation(
                         "Auto-followed new window: '{Title}'", SanitizeValue(newWindow.Name));
                 }
+                else
+                {
+                    // GetAllTopLevelWindows only scans direct children of the desktop UIA
+                    // element filtered by the application's PID.  Owned dialog windows
+                    // (ControlType=Window, LocalizedControlType="dialog") that are spawned
+                    // by the application are often nested as descendants of the owning window
+                    // in the UIA virtual tree, not as direct desktop children, so they are
+                    // invisible to GetAllTopLevelWindows.
+                    //
+                    // Additionally, some popup windows run in a different process entirely
+                    // (e.g. Windows credential dialogs, COM-hosted security prompts).
+                    //
+                    // Both cases are handled by scanning all Window-type descendants of the
+                    // desktop, filtering to visible windows only, and letting ClaimFirstNewWindow
+                    // identify any that have not been seen before.
+                    //
+                    // The scan is throttled to run at most once per DesktopScanThrottle interval
+                    // (default 2 s) so that rapid successive operations (e.g. typing into a form)
+                    // do not pay the cost of a full desktop traversal on every call.
+                    if (DateTime.UtcNow - session.LastDesktopScan >= AutomationSession.DesktopScanThrottle)
+                    {
+                        session.LastDesktopScan = DateTime.UtcNow;
+                        try
+                        {
+                            var cf = session.Automation.ConditionFactory;
+                            var allDesktopDescendants = session.Automation.GetDesktop()
+                                .FindAllDescendants(cf.ByControlType(ControlType.Window));
+                            var newVisibleWindows = allDesktopDescendants
+                                .Where(w =>
+                                {
+                                    try { return !w.IsOffscreen; }
+                                    catch { return false; }
+                                })
+                                .ToArray();
+                            var newPopup = session.ClaimFirstNewWindow(newVisibleWindows);
+                            if (newPopup != null)
+                            {
+                                session.ActiveWindow = newPopup;
+                                _logger.LogInformation(
+                                    "Auto-followed popup/dialog window: '{Title}'",
+                                    SanitizeValue(newPopup.Name));
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug(ex,
+                                "Popup/dialog window check failed; continuing with current active window.");
+                        }
+                    }
+                }
 
                 // Validate that the current ActiveWindow is still open; clear it if closed.
                 if (session.ActiveWindow != null)
@@ -1497,7 +1549,8 @@ public class UiService : IUiService
                     else if (!allWindows.Any(w => SafeWindowHandle(w) == activeHandle))
                     {
                         // Handle not in this session's process — could be a cross-process window
-                        // set by SwitchWindow. Only clear if the element is truly inaccessible.
+                        // set by SwitchWindow or the cross-process popup detection above.
+                        // Only clear if the element is truly inaccessible.
                         if (!IsElementAlive(session.ActiveWindow))
                         {
                             _logger.LogInformation(
