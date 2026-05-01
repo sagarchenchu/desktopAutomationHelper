@@ -948,6 +948,146 @@ public sealed class RecordingOverlayWindow : Form
         };
         menu.Items.Add(dragDropItem);
 
+        // Sub-Menu Items — when the right-clicked element is a MenuItem that has child
+        // MenuItems in the UIA tree (e.g. "QA" with children "1", "2", "3").
+        //
+        // Background: clicking a top-level MenuItem (e.g. "QA") causes WinForms to create a
+        // floating ControlType=Menu element ("QADropDown") at the desktop level.  That element
+        // has no UIA children — the sub-MenuItems remain children of "QA" in the UIA tree — but
+        // the dynamically-created popup makes it hard to click sub-items via a second right-click.
+        //
+        // This flyout lets the user pick the sub-item directly from the assistive context menu
+        // shown on the *first* right-click (on the parent "QA" item), before any popup appears.
+        // The click handler navigates the full path from the stable MenuBar anchor, re-fetching
+        // fresh UIA elements at each step — the same approach used by the existing top-level
+        // Click action for deep sub-menu paths (popupMenuBarRef / popupMenuPath).
+        if (element?.ControlType == ControlType.MenuItem && _automation != null)
+        {
+            try
+            {
+                var cf = _automation.ConditionFactory;
+                var subItems = element.FindAllChildren(cf.ByControlType(ControlType.MenuItem));
+
+                if (subItems.Length > 0)
+                {
+                    // Walk up from element to the MenuBar to build a stable anchor and a
+                    // top-down path of MenuItem names (e.g. element="QA" → ["QA"]).
+                    AutomationElement? subMenuBarRef = null;
+                    var parentMenuPath = new List<string>();
+                    try
+                    {
+                        var pathNames = new List<string>();
+                        var cur = element;
+                        for (int d = 0; d < MaxMenuAncestorDepth; d++)
+                        {
+                            if (cur.ControlType == ControlType.MenuItem)
+                            {
+                                var n = cur.Name ?? string.Empty;
+                                if (!string.IsNullOrEmpty(n))
+                                    pathNames.Add(n);
+                            }
+                            else if (cur.ControlType == ControlType.MenuBar)
+                            {
+                                subMenuBarRef = cur;
+                                pathNames.Reverse(); // collected bottom-up; reverse to top-down
+                                parentMenuPath = pathNames;
+                                break;
+                            }
+                            var par = cur.Parent;
+                            if (par == null) break;
+                            cur = par;
+                        }
+                    }
+                    catch { /* best effort */ }
+
+                    // Only offer the flyout when we have a valid MenuBar anchor; without it
+                    // we cannot re-locate fresh elements after the popup closes.
+                    if (subMenuBarRef != null)
+                    {
+                        var capturedMenuBarRef = subMenuBarRef;
+                        var capturedParentMenuPath = parentMenuPath;
+
+                        var subMenuFlyout = new ToolStripMenuItem("Sub-Menu Items ▶");
+                        foreach (var subItem in subItems.Take(MaxChildrenToDisplay))
+                        {
+                            var subItemInfo = BuildElementInfo(subItem);
+                            var subItemName = subItemInfo.Name ?? subItemInfo.AutomationId ?? "(unnamed)";
+                            var subItemEntry = new ToolStripMenuItem(subItemName);
+                            var capturedSubItemInfo = subItemInfo;
+                            var capturedSubItemName = subItemName;
+
+                            subItemEntry.Click += (_, _) =>
+                            {
+                                // Navigate: click each ancestor MenuItem to expand the chain,
+                                // then click the target sub-item.  Re-fetch fresh UIA elements
+                                // at every step so stale references never cause silent failures.
+                                BringElementWindowToForeground(capturedMenuBarRef);
+                                Thread.Sleep(WindowActivationDelayMs);
+
+                                // Full path from MenuBar anchor to sub-item, e.g. ["QA", "1"].
+                                var fullPath = new List<string>(capturedParentMenuPath) { capturedSubItemName };
+
+                                AutomationElement? stepAnchor = capturedMenuBarRef;
+                                for (int i = 0; i < fullPath.Count; i++)
+                                {
+                                    var stepName = fullPath[i];
+                                    if (stepAnchor == null) break;
+
+                                    AutomationElement? stepItem = null;
+                                    try
+                                    {
+                                        var cf2 = _automation!.ConditionFactory;
+                                        stepItem = stepAnchor.FindFirstDescendant(
+                                            cf2.ByControlType(ControlType.MenuItem).And(cf2.ByName(stepName)));
+                                    }
+                                    catch { break; }
+
+                                    if (stepItem == null) break;
+
+                                    bool isLast = i == fullPath.Count - 1;
+                                    try
+                                    {
+                                        if (stepItem.Patterns.Invoke.IsSupported)
+                                            stepItem.Patterns.Invoke.Pattern.Invoke();
+                                        else
+                                            stepItem.Click();
+                                    }
+                                    catch { break; }
+
+                                    if (!isLast)
+                                    {
+                                        // Wait for the intermediate dropdown to materialise
+                                        // before searching for the next item in the chain.
+                                        Thread.Sleep(MenuNavigationDelayMs);
+                                        stepAnchor = stepItem;
+                                    }
+                                }
+
+                                // Record the action targeting the sub-item element.
+                                var parentLabel = ElementInfo.GetLabel(elementInfo);
+                                _service.AddAction(new RecordedAction
+                                {
+                                    ActionType = ActionType.Click,
+                                    Mode = RecordingMode.Assistive,
+                                    Element = capturedSubItemInfo,
+                                    Description = $"Click sub-menu item '{capturedSubItemName}' under {parentLabel}"
+                                });
+                                UpdateStatusAfterAction($"Click [{capturedSubItemInfo.ControlType}] {capturedSubItemName}");
+                            };
+                            subMenuFlyout.DropDownItems.Add(subItemEntry);
+                        }
+
+                        if (subItems.Length > MaxChildrenToDisplay)
+                            subMenuFlyout.DropDownItems.Add(
+                                new ToolStripMenuItem($"… and {subItems.Length - MaxChildrenToDisplay} more") { Enabled = false });
+
+                        menu.Items.Add(subMenuFlyout);
+                    }
+                }
+            }
+            catch { /* best effort */ }
+        }
+
         menu.Items.Add(new ToolStripSeparator());
 
         // ── Query actions ────────────────────────────────────────────────────
