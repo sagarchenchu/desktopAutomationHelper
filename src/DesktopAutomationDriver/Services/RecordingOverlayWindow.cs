@@ -3,6 +3,7 @@ using DesktopAutomationDriver.Models.Recording;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
 using FlaUI.Core.Input;
+using FlaUI.Core.WindowsAPI;
 using FlaUI.UIA3;
 
 // Aliases to resolve ambiguity with identically-named FlaUI types
@@ -144,6 +145,9 @@ public sealed class RecordingOverlayWindow : Form
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
 
     // ── fields ──────────────────────────────────────────────────────────────
     private readonly IRecordingService _service;
@@ -2104,58 +2108,116 @@ public sealed class RecordingOverlayWindow : Form
     /// </summary>
     private void ShowWindowContextMenuCore(System.Drawing.Point pt)
     {
-        // ── Locate the target window ────────────────────────────────────────
-        AutomationElement? element = null;
-        try { element = _automation!.FromPoint(pt); }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Could not get element at point {Pt} for window context menu", pt);
-        }
+        if (_automation == null) return;
 
-        // Walk up the UIA tree to find the nearest Window ancestor (or self).
+        // ── Priority 1: use GetForegroundWindow to detect popup/dialog ──────
+        // This is more reliable than FromPoint(pt) which can return TitleBar,
+        // MenuBar, or MenuItem "System" when a modal popup has grabbed focus.
+        var foregroundHwnd = GetForegroundWindow();
+        var mainHwnd = _service.GetApplicationMainWindowHandle();
+
+        bool isPopupMode = false;
         AutomationElement? windowElement = null;
-        try
-        {
-            var current = element;
-            for (int _ = 0; _ < MaxWindowSearchDepth && current != null; _++)
-            {
-                if (current.ControlType == ControlType.Window)
-                {
-                    windowElement = current;
-                    break;
-                }
-                current = current.Parent;
-            }
-        }
-        catch { /* best effort */ }
 
-        // Fall back to the element itself if no Window parent was found.
-        windowElement ??= element;
-
-        // Prefer the innermost child Window that contains the cursor point.
-        // This handles embedded/child dialogs (e.g. a "Working Environment" popup that
-        // appears as a Window child inside the main application window after clicking OK).
-        // FromPoint may return an element that belongs to the outer frame when the cursor
-        // is near the parent window's border rather than strictly inside the child window.
-        if (windowElement != null && _automation != null)
+        if (foregroundHwnd != IntPtr.Zero &&
+            mainHwnd != IntPtr.Zero &&
+            foregroundHwnd != mainHwnd)
         {
+            // The foreground window differs from the application's main window:
+            // treat it as a popup / dialog.
             try
             {
-                var cf = _automation.ConditionFactory;
-                var childWindows = windowElement.FindAllChildren(cf.ByControlType(ControlType.Window));
-                var innerWindow = childWindows.FirstOrDefault(w =>
+                var foregroundElement = _automation.FromHandle(foregroundHwnd);
+                if (foregroundElement != null)
                 {
-                    try
+                    // Walk up to the Window ancestor if FromHandle returned a child.
+                    var cur = foregroundElement;
+                    for (int d = 0; d < MaxWindowSearchDepth && cur != null; d++)
                     {
-                        var bounds = w.BoundingRectangle;
-                        return !bounds.IsEmpty && bounds.Contains(pt.X, pt.Y);
+                        if (cur.ControlType == ControlType.Window)
+                        {
+                            windowElement = cur;
+                            break;
+                        }
+                        cur = cur.Parent;
                     }
-                    catch { return false; }
-                });
-                if (innerWindow != null)
-                    windowElement = innerWindow;
+                    windowElement ??= foregroundElement;
+                    isPopupMode = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not resolve foreground window HWND 0x{Hwnd:X}", foregroundHwnd);
+            }
+        }
+
+        // ── Priority 2: fall back to FromPoint if no popup was detected ─────
+        if (windowElement == null)
+        {
+            AutomationElement? element = null;
+            try { element = _automation.FromPoint(pt); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not get element at point {Pt} for window context menu", pt);
+            }
+
+            // Walk up the UIA tree to find the nearest Window ancestor (or self).
+            try
+            {
+                var current = element;
+                for (int _ = 0; _ < MaxWindowSearchDepth && current != null; _++)
+                {
+                    if (current.ControlType == ControlType.Window)
+                    {
+                        windowElement = current;
+                        break;
+                    }
+                    current = current.Parent;
+                }
             }
             catch { /* best effort */ }
+
+            // Fall back to the element itself if no Window parent was found.
+            windowElement ??= element;
+
+            // Priority 2a: if FromPoint returned an element inside the window chrome
+            // (TitleBar / MenuBar / MenuItem / System menu), the cursor may be near a
+            // popup window border.  Try to locate a child popup window as a fallback.
+            if (element != null && AssistivePopupResolver.IsInsideChromeOrSystemMenu(element) && windowElement != null)
+            {
+                var childPopup = AssistivePopupResolver.DetectChildPopupWindow(windowElement, _automation);
+                if (childPopup != null)
+                {
+                    windowElement = childPopup;
+                    isPopupMode = true;
+                }
+            }
+
+            // Priority 2b: prefer the innermost child Window that contains the cursor.
+            // This handles embedded/child dialogs (e.g. a "Working Environment" popup that
+            // appears as a Window child inside the main application window after clicking OK).
+            // FromPoint may return an element that belongs to the outer frame when the cursor
+            // is near the parent window's border rather than strictly inside the child window.
+            if (!isPopupMode && windowElement != null)
+            {
+                try
+                {
+                    var cf = _automation.ConditionFactory;
+                    var childWindows = windowElement.FindAllChildren(cf.ByControlType(ControlType.Window));
+                    var innerWindow = childWindows.FirstOrDefault(w =>
+                    {
+                        try
+                        {
+                            var bounds = w.BoundingRectangle;
+                            return !bounds.IsEmpty && bounds.Contains(pt.X, pt.Y);
+                        }
+                        catch { return false; }
+                    });
+                    if (innerWindow != null)
+                        windowElement = innerWindow;
+                }
+                catch { /* best effort */ }
+            }
         }
 
         var windowInfo = windowElement != null ? BuildElementInfo(windowElement) : null;
@@ -2189,6 +2251,215 @@ public sealed class RecordingOverlayWindow : Form
             _menuOpen = false;
             ReapplyClickThroughStyle();
         };
+
+        // ── Popup-mode: focused header + popup-specific action items ─────────
+        if (isPopupMode && windowElement != null)
+        {
+            var popupHandle = AssistivePopupResolver.SafeWindowHandle(windowElement);
+            var handleHex = popupHandle != IntPtr.Zero
+                ? $"0x{popupHandle.ToInt64():X}"
+                : "(unknown handle)";
+
+            // Header (not selectable)
+            var popupHeader = new ToolStripMenuItem($"[Popup]  {windowTitle}")
+            {
+                Enabled = false,
+                ForeColor = Color.DimGray
+            };
+            menu.Items.Add(popupHeader);
+
+            var handleHeader = new ToolStripMenuItem($"Handle: {handleHex}")
+            {
+                Enabled = false,
+                ForeColor = Color.DimGray
+            };
+            menu.Items.Add(handleHeader);
+            menu.Items.Add(new ToolStripSeparator());
+
+            // Click OK — find the OK button and invoke it.
+            var capturedPopupWindow = windowElement;
+            var capturedPopupInfo = windowInfo;
+            var clickOkItem = new ToolStripMenuItem("Click OK");
+            clickOkItem.Click += (_, _) =>
+            {
+                if (_automation == null) return;
+
+                if (capturedHwnd != IntPtr.Zero)
+                    SetForegroundWindow(capturedHwnd);
+
+                try
+                {
+                    var cf = _automation.ConditionFactory;
+                    var okBtn = AssistivePopupResolver.FindOkButton(capturedPopupWindow.AsWindow()!, cf);
+                    if (okBtn != null)
+                    {
+                        var okInfo = BuildElementInfo(okBtn);
+                        AssistivePopupResolver.InvokeOrClick(okBtn);
+                        _service.AddAction(new RecordedAction
+                        {
+                            ActionType = ActionType.Click,
+                            Mode = RecordingMode.Assistive,
+                            Element = okInfo,
+                            Description = $"Click OK on '{windowTitle}'"
+                        });
+                        UpdateStatusAfterAction($"Click OK on [Popup] {windowTitle}");
+                    }
+                    else
+                    {
+                        System.Windows.Forms.SendKeys.SendWait("{ENTER}");
+                        _service.AddAction(new RecordedAction
+                        {
+                            ActionType = ActionType.Click,
+                            Mode = RecordingMode.Assistive,
+                            Element = capturedPopupInfo,
+                            Description = $"Press Enter on '{windowTitle}' (OK button not found)"
+                        });
+                        UpdateStatusAfterAction($"Press Enter on [Popup] {windowTitle}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Click OK failed for popup '{Title}'", windowTitle);
+                }
+            };
+            menu.Items.Add(clickOkItem);
+
+            // Press Enter
+            var pressEnterItem = new ToolStripMenuItem("Press ↵ Enter");
+            pressEnterItem.Click += (_, _) =>
+            {
+                if (capturedHwnd != IntPtr.Zero)
+                    SetForegroundWindow(capturedHwnd);
+                System.Windows.Forms.SendKeys.SendWait("{ENTER}");
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Type,
+                    Mode = RecordingMode.Assistive,
+                    Element = capturedPopupInfo,
+                    Value = "{ENTER}",
+                    Description = $"Press Enter on '{windowTitle}'"
+                });
+                UpdateStatusAfterAction($"Press Enter on [Popup] {windowTitle}");
+            };
+            menu.Items.Add(pressEnterItem);
+
+            // Press Esc
+            var pressEscItem = new ToolStripMenuItem("Press Esc");
+            pressEscItem.Click += (_, _) =>
+            {
+                if (capturedHwnd != IntPtr.Zero)
+                    SetForegroundWindow(capturedHwnd);
+                System.Windows.Forms.SendKeys.SendWait("{ESC}");
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Type,
+                    Mode = RecordingMode.Assistive,
+                    Element = capturedPopupInfo,
+                    Value = "{ESC}",
+                    Description = $"Press Esc on '{windowTitle}'"
+                });
+                UpdateStatusAfterAction($"Press Esc on [Popup] {windowTitle}");
+            };
+            menu.Items.Add(pressEscItem);
+
+            menu.Items.Add(new ToolStripSeparator());
+
+            // Close Popup
+            var closePopupItem = new ToolStripMenuItem("Close Popup");
+            closePopupItem.Click += (_, _) =>
+            {
+                try
+                {
+                    if (capturedPopupWindow.Patterns.Window.IsSupported)
+                        capturedPopupWindow.Patterns.Window.Pattern.Close();
+                    else
+                    {
+                        if (capturedHwnd != IntPtr.Zero)
+                            SetForegroundWindow(capturedHwnd);
+                        System.Windows.Forms.SendKeys.SendWait("%{F4}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Close Popup failed for '{Title}'", windowTitle);
+                }
+
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.CloseWindow,
+                    Mode = RecordingMode.Assistive,
+                    Element = capturedPopupInfo,
+                    Description = $"Close popup '{windowTitle}'"
+                });
+                UpdateStatusAfterAction($"Close Popup [Window] {windowTitle}");
+            };
+            menu.Items.Add(closePopupItem);
+
+            // Inspect Popup Controls — flyout of all popup elements
+            if (_automation != null)
+            {
+                try
+                {
+                    var cf = _automation.ConditionFactory;
+                    var allElements = capturedPopupWindow
+                        .FindAllDescendants()
+                        .Where(e =>
+                        {
+                            try { return !AssistivePopupResolver.IsInsideChromeOrSystemMenu(e); }
+                            catch { return false; }
+                        })
+                        .ToList();
+
+                    if (allElements.Count > 0)
+                    {
+                        var inspectFlyout = new ToolStripMenuItem("Inspect Popup Controls ▶");
+
+                        foreach (var e in allElements.Take(MaxChildrenToDisplay))
+                        {
+                            var eInfo = BuildElementInfo(e);
+                            var eLabel = $"[{eInfo.ControlType}]  {eInfo.Name ?? eInfo.AutomationId ?? "(unnamed)"}";
+                            var eItem = new ToolStripMenuItem(eLabel) { Enabled = false };
+                            inspectFlyout.DropDownItems.Add(eItem);
+                        }
+
+                        if (allElements.Count > MaxChildrenToDisplay)
+                            inspectFlyout.DropDownItems.Add(
+                                new ToolStripMenuItem(
+                                    $"… and {allElements.Count - MaxChildrenToDisplay} more")
+                                { Enabled = false });
+
+                        menu.Items.Add(inspectFlyout);
+                    }
+                }
+                catch { /* best effort */ }
+            }
+
+            menu.Items.Add(new ToolStripSeparator());
+
+            // Make This Current Window — records a SwitchWindow action so the automation
+            // script will target this popup window on subsequent operations.
+            var makeCurrentItem = new ToolStripMenuItem("Make This Current Window");
+            makeCurrentItem.Click += (_, _) =>
+            {
+                var label = ElementInfo.GetLabel(capturedPopupInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.SwitchWindow,
+                    Mode = RecordingMode.Assistive,
+                    Element = capturedPopupInfo,
+                    Value = windowTitle,
+                    Description = $"Switch window to '{windowTitle}'"
+                });
+                UpdateStatusAfterAction($"Make Current Window [Window] {label}");
+            };
+            menu.Items.Add(makeCurrentItem);
+
+            AddCloseItem(menu);
+            menu.Show(this, PointToClient(pt));
+            return;
+        }
+
+        // ── Normal-mode: existing window context menu ─────────────────────────
 
         // Header (not selectable)
         var headerName = windowInfo?.Name ?? windowInfo?.AutomationId ?? "(no name)";
