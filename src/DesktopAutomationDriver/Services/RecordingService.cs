@@ -303,6 +303,24 @@ public sealed class RecordingService : IRecordingService, IDisposable
         catch { /* best effort — never fail recording because of a focus hint */ }
     }
 
+    /// <inheritdoc/>
+    public IntPtr GetApplicationMainWindowHandle()
+    {
+        try
+        {
+            var session = _sessionContext.ActiveSession;
+            if (session == null) return IntPtr.Zero;
+
+            var pid = session.Application.ProcessId;
+            var proc = Process.GetProcessById(pid);
+            return proc.MainWindowHandle;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     private void CloseOverlayIfOpen()
