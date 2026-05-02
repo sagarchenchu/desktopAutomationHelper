@@ -92,6 +92,15 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxWindowSearchDepth = 5;
     private const int MaxMenuAncestorDepth = 10;
 
+    /// <summary>Interval in milliseconds between popup-probe timer ticks after an assistive click.</summary>
+    private const int PopupProbeIntervalMs = 100;
+
+    /// <summary>Maximum number of probe timer ticks before the probe is abandoned (2 seconds total).</summary>
+    private const int MaxPopupProbeAttempts = PopupProbeTimeoutMs / PopupProbeIntervalMs;
+
+    /// <summary>Total duration in milliseconds for the post-click popup probe.</summary>
+    private const int PopupProbeTimeoutMs = 2000;
+
     /// <summary>
     /// Minimum pixel distance the mouse must travel while the left button is held before a
     /// mouse-down + mouse-up sequence is classified as a drag rather than a click.
@@ -196,6 +205,11 @@ public sealed class RecordingOverlayWindow : Form
     // When true the user has picked a drag source and the next right-click selects the target.
     private bool _awaitingDragTarget;
     private ElementInfo? _dragSourceInfo;
+
+    // ── Assistive-mode popup detection cache ──────────────────────────────────
+    private AutomationElement? _lastDetectedPopupWindow;
+    private IntPtr _lastDetectedPopupHwnd = IntPtr.Zero;
+    private DateTime _lastPopupDetectionUtc = DateTime.MinValue;
 
     // ── Drag-tracking helpers ────────────────────────────────────────────────
     /// <summary>
@@ -321,6 +335,30 @@ public sealed class RecordingOverlayWindow : Form
     private void OnCursorTimerTick(object? sender, EventArgs e)
     {
         if (_service.CurrentMode != RecordingMode.Assistive) return;
+
+        // Proactively scan for a child popup window so the overlay updates without
+        // requiring the user to move the mouse over the popup first.
+        var popup = DetectActivePopupWindow();
+        if (popup != null)
+        {
+            _lastDetectedPopupWindow = popup;
+            _lastDetectedPopupHwnd = AssistivePopupResolver.SafeWindowHandle(popup);
+            _lastPopupDetectionUtc = DateTime.UtcNow;
+
+            var popupName = popup.Name ?? popup.AutomationId ?? "popup";
+            var popupText = $"● [Popup] {popupName}  Right-click = Popup Actions";
+
+            if (_statusLabel.Text != popupText)
+            {
+                _statusLabel.Text = popupText;
+                _logger.LogInformation(
+                    "Overlay popup status updated: {Name}, hwnd=0x{Hwnd:X}",
+                    popupName,
+                    _lastDetectedPopupHwnd.ToInt64());
+            }
+
+            return;
+        }
 
         var pt = Cursor.Position;
         var info = _service.GetElementAtPoint(pt);
@@ -2152,6 +2190,30 @@ public sealed class RecordingOverlayWindow : Form
     {
         if (_automation == null) return;
 
+        bool isPopupMode = false;
+        AutomationElement? windowElement = null;
+
+        // ── Priority 0: use recently detected popup cache ────────────────────
+        // This avoids waiting for mouse movement / FromPoint refresh.
+        if (_lastDetectedPopupWindow != null &&
+            _lastDetectedPopupHwnd != IntPtr.Zero &&
+            DateTime.UtcNow - _lastPopupDetectionUtc < TimeSpan.FromSeconds(5))
+        {
+            try
+            {
+                if (!_lastDetectedPopupWindow.IsOffscreen)
+                {
+                    windowElement = _lastDetectedPopupWindow;
+                    isPopupMode = true;
+                }
+            }
+            catch
+            {
+                _lastDetectedPopupWindow = null;
+                _lastDetectedPopupHwnd = IntPtr.Zero;
+            }
+        }
+
         // ── Priority 1: use GetForegroundWindow to detect popup/dialog ──────
         // This is more reliable than FromPoint(pt) which can return TitleBar,
         // MenuBar, or MenuItem "System" when a modal popup has grabbed focus.
@@ -2163,10 +2225,8 @@ public sealed class RecordingOverlayWindow : Form
             foregroundHwnd,
             mainHwnd);
 
-        bool isPopupMode = false;
-        AutomationElement? windowElement = null;
-
-        if (foregroundHwnd != IntPtr.Zero &&
+        if (windowElement == null &&
+            foregroundHwnd != IntPtr.Zero &&
             mainHwnd != IntPtr.Zero &&
             foregroundHwnd != mainHwnd)
         {
@@ -2350,6 +2410,7 @@ public sealed class RecordingOverlayWindow : Form
                             Description = $"Click OK on '{windowTitle}'"
                         });
                         UpdateStatusAfterAction($"Click OK on [Popup] {windowTitle}");
+                        StartPopupProbeAfterAction();
                     }
                     else
                     {
@@ -2362,6 +2423,7 @@ public sealed class RecordingOverlayWindow : Form
                             Description = $"Press Enter on '{windowTitle}' (OK button not found)"
                         });
                         UpdateStatusAfterAction($"Press Enter on [Popup] {windowTitle}");
+                        StartPopupProbeAfterAction();
                     }
                 }
                 catch (Exception ex)
@@ -2682,18 +2744,26 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     /// <summary>
-    /// Returns <c>true</c> when the current foreground window differs from the
-    /// application's main window, indicating a popup or dialog is currently active.
+    /// Returns <c>true</c> when an active popup or child dialog window is detected,
+    /// updating the popup cache fields on success.
+    /// Uses <see cref="DetectActivePopupWindow"/> for stronger detection that covers
+    /// child windows of the main window (not only foreground HWND comparison).
     /// </summary>
     private bool IsPopupCurrentlyActive()
     {
         try
         {
-            var foregroundHwnd = GetForegroundWindow();
-            var mainHwnd = _service.GetApplicationMainWindowHandle();
-            if (foregroundHwnd == IntPtr.Zero || mainHwnd == IntPtr.Zero)
-                return false;
-            return foregroundHwnd != mainHwnd;
+            var popup = DetectActivePopupWindow();
+
+            if (popup != null)
+            {
+                _lastDetectedPopupWindow = popup;
+                _lastDetectedPopupHwnd = AssistivePopupResolver.SafeWindowHandle(popup);
+                _lastPopupDetectionUtc = DateTime.UtcNow;
+                return true;
+            }
+
+            return false;
         }
         catch (Exception ex)
         {
@@ -2703,9 +2773,195 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     /// <summary>
-    /// Ensures the overlay is topmost and focused so that context menus rendered by
-    /// this form appear above the target application's windows (including modal popups).
+    /// Attempts to locate an active popup or child dialog window using three strategies:
+    /// <list type="number">
+    ///   <item>Foreground window differs from the main application window.</item>
+    ///   <item>A visible, named child Window exists under the main application window
+    ///         (covers popups that appear as child windows of the main HWND).</item>
+    ///   <item>The element under the current cursor position belongs to a window other
+    ///         than the main application window.</item>
+    /// </list>
+    /// Returns the first matched <see cref="AutomationElement"/>, or <c>null</c> if no
+    /// popup is found.
     /// </summary>
+    private AutomationElement? DetectActivePopupWindow()
+    {
+        if (_automation == null)
+            return null;
+
+        var mainHwnd = _service.GetApplicationMainWindowHandle();
+        var foregroundHwnd = GetForegroundWindow();
+
+        // 1. Strongest signal: foreground window is different from main window.
+        if (foregroundHwnd != IntPtr.Zero &&
+            mainHwnd != IntPtr.Zero &&
+            foregroundHwnd != mainHwnd)
+        {
+            try
+            {
+                var foregroundElement = _automation.FromHandle(foregroundHwnd);
+
+                if (foregroundElement != null)
+                {
+                    var win = FindWindowAncestorOrSelf(foregroundElement);
+
+                    if (win != null)
+                    {
+                        _logger.LogInformation(
+                            "Popup detected: name={Name}, hwnd=0x{Hwnd:X}",
+                            win.Name,
+                            AssistivePopupResolver.SafeWindowHandle(win).ToInt64());
+                        return win;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not resolve foreground popup hwnd 0x{Hwnd:X}", foregroundHwnd);
+            }
+        }
+
+        // 2. Important for this app:
+        // Popup appears as a child Window under LoginForm, while foreground can still be main window.
+        try
+        {
+            AutomationElement? mainWindow = null;
+
+            if (mainHwnd != IntPtr.Zero)
+                mainWindow = _automation.FromHandle(mainHwnd);
+
+            if (mainWindow != null)
+            {
+                var childPopup = AssistivePopupResolver.DetectChildPopupWindow(mainWindow, _automation);
+
+                if (childPopup != null)
+                {
+                    _logger.LogInformation(
+                        "Popup detected: name={Name}, hwnd=0x{Hwnd:X}",
+                        childPopup.Name,
+                        AssistivePopupResolver.SafeWindowHandle(childPopup).ToInt64());
+                    return childPopup;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not detect child popup under main window");
+        }
+
+        // 3. Last fallback:
+        // If current mouse point is inside a child Window, treat that child as popup.
+        try
+        {
+            var pt = Cursor.Position;
+            var element = _automation.FromPoint(pt);
+
+            if (element != null)
+            {
+                var win = FindWindowAncestorOrSelf(element);
+
+                if (win != null)
+                {
+                    var winHwnd = AssistivePopupResolver.SafeWindowHandle(win);
+
+                    if (winHwnd != IntPtr.Zero &&
+                        mainHwnd != IntPtr.Zero &&
+                        winHwnd != mainHwnd)
+                    {
+                        _logger.LogInformation(
+                            "Popup detected: name={Name}, hwnd=0x{Hwnd:X}",
+                            win.Name,
+                            winHwnd.ToInt64());
+                        return win;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not detect popup from cursor point");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Walks up the UIA ancestor chain looking for a <see cref="ControlType.Window"/>
+    /// element, returning the first one found or <c>null</c> if none is found within
+    /// <see cref="MaxWindowSearchDepth"/> steps.
+    /// </summary>
+    private static AutomationElement? FindWindowAncestorOrSelf(AutomationElement element)
+    {
+        try
+        {
+            var current = element;
+
+            for (int i = 0; i < MaxWindowSearchDepth && current != null; i++)
+            {
+                if (current.ControlType == ControlType.Window)
+                    return current;
+
+                current = current.Parent;
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Starts a short-lived probe timer that polls for a new popup window for up to
+    /// 2 seconds after an assistive click action that may open a popup.
+    /// Updates the overlay status label and popup cache when a popup is found.
+    /// </summary>
+    private void StartPopupProbeAfterAction()
+    {
+        if (_automation == null)
+            return;
+
+        var attempts = 0;
+        var probeTimer = new System.Windows.Forms.Timer { Interval = PopupProbeIntervalMs };
+
+        probeTimer.Tick += (_, _) =>
+        {
+            attempts++;
+
+            try
+            {
+                var popup = DetectActivePopupWindow();
+
+                if (popup != null)
+                {
+                    _lastDetectedPopupWindow = popup;
+                    _lastDetectedPopupHwnd = AssistivePopupResolver.SafeWindowHandle(popup);
+                    _lastPopupDetectionUtc = DateTime.UtcNow;
+
+                    var popupName = popup.Name ?? popup.AutomationId ?? "popup";
+                    _statusLabel.Text = $"● [Popup] {popupName}  Right-click = Popup Actions";
+
+                    probeTimer.Stop();
+                    probeTimer.Dispose();
+                    return;
+                }
+            }
+            catch
+            {
+                // best effort
+            }
+
+            if (attempts >= MaxPopupProbeAttempts)
+            {
+                probeTimer.Stop();
+                probeTimer.Dispose();
+            }
+        };
+
+        probeTimer.Start();
+    }
+
     private void EnsureOverlayVisible()
     {
         TopMost = true;
@@ -2790,6 +3046,11 @@ public sealed class RecordingOverlayWindow : Form
                 Description = BuildDescription(label, info)
             });
             UpdateStatusAfterAction($"{label} on [{info?.ControlType}] {info?.Name ?? "(element)"}");
+
+            // After a Click action, start a short probe to detect any popup that may
+            // have opened as a result (e.g. clicking the login OK button).
+            if (actionType == ActionType.Click)
+                StartPopupProbeAfterAction();
         };
         menu.Items.Add(item);
     }
@@ -2904,6 +3165,7 @@ public sealed class RecordingOverlayWindow : Form
                 Description = $"Click on {buttonLabel}"
             });
             UpdateStatusAfterAction($"Click [Button] {buttonInfo.Name ?? "(button)"}");
+            StartPopupProbeAfterAction();
         };
         return item;
     }
