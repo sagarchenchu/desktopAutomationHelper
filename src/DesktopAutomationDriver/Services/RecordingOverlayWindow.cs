@@ -38,6 +38,7 @@ public sealed class RecordingOverlayWindow : Form
     private const byte VK_P = 0x50;
     private const byte VK_A = 0x41;
     private const byte VK_S = 0x53;
+    private const byte VK_W = 0x57;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct KBDLLHOOKSTRUCT
@@ -361,6 +362,25 @@ public sealed class RecordingOverlayWindow : Form
                     BeginInvoke(new Action(RequestStop));
                     return (IntPtr)1; // suppress
                 }
+                if (kbStruct.vkCode == VK_W &&
+                    _service.CurrentMode == RecordingMode.Assistive)
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        var pt = Cursor.Position;
+                        _statusLabel.Text = $"CTRL+W popup menu at {pt.X},{pt.Y}";
+                        try
+                        {
+                            ShowWindowContextMenu(pt);
+                        }
+                        catch (Exception ex)
+                        {
+                            _statusLabel.Text = "CTRL+W popup menu failed: " + ex.Message;
+                            _logger.LogError(ex, "CTRL+W popup menu failed");
+                        }
+                    }));
+                    return (IntPtr)1; // suppress
+                }
             }
         }
 
@@ -470,19 +490,28 @@ public sealed class RecordingOverlayWindow : Form
             {
                 var pt = ms.pt;
 
-                // Ctrl+Right Click → show the window-level context menu instead of
-                // the normal element context menu.
+                // Ctrl+Right Click OR normal right-click when a popup is active →
+                // show the window-level context menu instead of the normal element context menu.
                 bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-                if (ctrlHeld)
+                bool popupActive = IsPopupCurrentlyActive();
+                if (ctrlHeld || popupActive)
                 {
-                    var timer = new System.Windows.Forms.Timer { Interval = ContextMenuDelayMs };
-                    timer.Tick += (_, _) =>
+                    BeginInvoke(new Action(() =>
                     {
-                        timer.Stop();
-                        timer.Dispose();
-                        ShowWindowContextMenu(pt);
-                    };
-                    timer.Start();
+                        if (popupActive)
+                            _statusLabel.Text = $"Popup detected — showing popup actions at {pt.X},{pt.Y}";
+                        else
+                            _statusLabel.Text = $"CTRL+RC captured at {pt.X},{pt.Y}";
+                        try
+                        {
+                            ShowWindowContextMenu(pt);
+                        }
+                        catch (Exception ex)
+                        {
+                            _statusLabel.Text = "Popup/window menu failed: " + ex.Message;
+                            _logger.LogError(ex, "Popup/window context menu failed");
+                        }
+                    }));
                     _suppressNextRButtonUp = true;
                     return (IntPtr)1; // suppress the native right-click
                 }
@@ -2060,9 +2089,11 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         AddCloseItem(menu);
-        // Show the context menu relative to this overlay form so it inherits the form's
-        // topmost z-order and appears above the target application's window.
-        menu.Show(this, PointToClient(pt));
+        // Show using screen coordinates so the menu appears at the correct position
+        // regardless of the overlay window's location, and ensure the overlay is
+        // topmost so the menu renders above the target application's windows.
+        EnsureOverlayVisible();
+        menu.Show(pt);
     }
 
     // ── Assistive mode: Ctrl+Right Click window context menu ─────────────────
@@ -2073,8 +2104,17 @@ public sealed class RecordingOverlayWindow : Form
     /// </summary>
     private void ShowWindowContextMenu(System.Drawing.Point pt)
     {
-        if (_menuOpen) return;
-        if (_automation == null) return;
+        if (_menuOpen)
+        {
+            _statusLabel.Text = "Window menu blocked: _menuOpen=true. Resetting.";
+            _logger.LogWarning("ShowWindowContextMenu called while _menuOpen=true; resetting flag to allow new menu");
+            _menuOpen = false;
+        }
+        if (_automation == null)
+        {
+            _statusLabel.Text = "Window menu blocked: _automation=null";
+            return;
+        }
 
         _menuOpen = true;
 
@@ -2084,10 +2124,12 @@ public sealed class RecordingOverlayWindow : Form
 
         try
         {
+            _statusLabel.Text = $"Opening window/popup menu at {pt.X},{pt.Y}";
             ShowWindowContextMenuCore(pt);
         }
         catch (Exception ex)
         {
+            _statusLabel.Text = "Window/popup menu failed: " + ex.Message;
             _logger.LogWarning(ex, "Failed to show window context menu at {Pt}", pt);
             _menuOpen = false;
         }
@@ -2115,6 +2157,11 @@ public sealed class RecordingOverlayWindow : Form
         // MenuBar, or MenuItem "System" when a modal popup has grabbed focus.
         var foregroundHwnd = GetForegroundWindow();
         var mainHwnd = _service.GetApplicationMainWindowHandle();
+
+        _logger.LogInformation(
+            "Assistive window menu: foreground={ForegroundHwnd}, main={MainHwnd}",
+            foregroundHwnd,
+            mainHwnd);
 
         bool isPopupMode = false;
         AutomationElement? windowElement = null;
@@ -2455,7 +2502,8 @@ public sealed class RecordingOverlayWindow : Form
             menu.Items.Add(makeCurrentItem);
 
             AddCloseItem(menu);
-            menu.Show(this, PointToClient(pt));
+            EnsureOverlayVisible();
+            menu.Show(pt);
             return;
         }
 
@@ -2614,7 +2662,8 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         AddCloseItem(menu);
-        menu.Show(this, PointToClient(pt));
+        EnsureOverlayVisible();
+        menu.Show(pt);
     }
 
     /// <summary>
@@ -2630,6 +2679,38 @@ public sealed class RecordingOverlayWindow : Form
         };
         closeItem.Click += (_, _) => menu.Close(ToolStripDropDownCloseReason.ItemClicked);
         menu.Items.Add(closeItem);
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when the current foreground window differs from the
+    /// application's main window, indicating a popup or dialog is currently active.
+    /// </summary>
+    private bool IsPopupCurrentlyActive()
+    {
+        try
+        {
+            var foregroundHwnd = GetForegroundWindow();
+            var mainHwnd = _service.GetApplicationMainWindowHandle();
+            if (foregroundHwnd == IntPtr.Zero || mainHwnd == IntPtr.Zero)
+                return false;
+            return foregroundHwnd != mainHwnd;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "IsPopupCurrentlyActive check failed; assuming no popup");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Ensures the overlay is topmost and focused so that context menus rendered by
+    /// this form appear above the target application's windows (including modal popups).
+    /// </summary>
+    private void EnsureOverlayVisible()
+    {
+        TopMost = true;
+        Activate();
+        BringToFront();
     }
 
     /// <summary>
