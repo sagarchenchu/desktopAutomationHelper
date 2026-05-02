@@ -2725,13 +2725,18 @@ public sealed class RecordingOverlayWindow : Form
     /// holds the foreground lock (immediately after the context-menu closes).
     ///
     /// For virtual-element frameworks (e.g. Java Swing via Java Access Bridge) where
-    /// <c>NativeWindowHandle</c> is zero, falls back to the process's main window handle.
+    /// <c>NativeWindowHandle</c> is zero, the method walks up the UIA parent tree to find
+    /// the nearest ancestor Window element that does carry a valid HWND (e.g. a popup child
+    /// window with its own HWND that is distinct from the main window).  This correctly
+    /// targets a popup dialog (e.g. a login password dialog) rather than the root main
+    /// window, preventing SendKeys from landing on the wrong control.  Only when the UIA
+    /// tree walk also fails does it fall back to the process's main window handle.
     /// </summary>
     private static void BringElementWindowToForeground(AutomationElement? element)
     {
         if (element == null) return;
 
-        // Primary path: resolve the HWND from the element.
+        // Primary path: resolve the HWND directly from the element.
         bool activated = false;
         try
         {
@@ -2749,8 +2754,54 @@ public sealed class RecordingOverlayWindow : Form
 
         if (activated) return;
 
-        // Fallback for virtual-element frameworks (e.g. Java Swing via Java Access Bridge)
-        // where UIA elements do not have their own HWND, or when SetForegroundWindow failed.
+        // Secondary path: walk up the UIA parent tree to find the nearest Window ancestor
+        // that has a valid NativeWindowHandle.  This handles the case where an element is
+        // a virtual node (NativeWindowHandle == 0) inside a popup child window that has its
+        // own HWND distinct from the application's main window.
+        //
+        // Example: a password textbox inside a login-popup window.
+        //   - element.NativeWindowHandle == 0  (virtual UIA element, no own HWND)
+        //   - parent Window (popup) NativeWindowHandle == 0x001B00C2
+        //   - root Window (main)   NativeWindowHandle == 0x0009061E
+        // Without this walk the fallback below would activate the main window, causing
+        // SendKeys to land on the previously-focused control in the main window (e.g. the
+        // username field) rather than the password field in the popup.
+        try
+        {
+            var cur = element;
+            for (int i = 0; i < MaxWindowSearchDepth; i++)
+            {
+                AutomationElement? parent;
+                try { parent = cur.Parent; }
+                catch { break; }
+                if (parent == null) break;
+
+                try
+                {
+                    if (parent.ControlType == ControlType.Window)
+                    {
+                        var hwnd = parent.Properties.NativeWindowHandle.Value;
+                        if (hwnd != IntPtr.Zero)
+                        {
+                            // Use this popup/dialog window HWND directly.  It is already a
+                            // top-level (WS_POPUP or WS_OVERLAPPED) window so GetAncestor
+                            // would return itself; calling SetForegroundWindow on it is safe.
+                            activated = SetForegroundWindow(hwnd);
+                            if (activated) return;
+                        }
+                    }
+                }
+                catch { /* skip inaccessible ancestor */ }
+
+                cur = parent;
+            }
+        }
+        catch { /* best effort */ }
+
+        if (activated) return;
+
+        // Tertiary fallback for virtual-element frameworks (e.g. Java Swing via Java Access
+        // Bridge) where neither the element nor any UIA Window ancestor carries an HWND.
         // Resolve the owning process and bring its main window to the foreground.
         try
         {
