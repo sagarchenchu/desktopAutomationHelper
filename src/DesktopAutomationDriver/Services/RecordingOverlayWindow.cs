@@ -2013,62 +2013,8 @@ public sealed class RecordingOverlayWindow : Form
                                     var btnInfo = BuildElementInfo(btn);
                                     var btnMenuLabel =
                                         $"[Button]  {btnInfo.Name ?? btnInfo.AutomationId ?? "(unnamed)"}";
-                                    var btnEntry = new ToolStripMenuItem(btnMenuLabel);
-                                    var capturedBtnInfo = btnInfo;
-                                    btnEntry.Click += (_, _) =>
-                                    {
-                                        BringElementWindowToForeground(capturedSibWin);
-                                        Thread.Sleep(WindowActivationDelayMs);
-
-                                        try
-                                        {
-                                            AutomationElement? freshBtn = null;
-                                            if (_automation != null)
-                                            {
-                                                var cf3 = _automation.ConditionFactory;
-                                                if (!string.IsNullOrEmpty(capturedBtnInfo.AutomationId))
-                                                    freshBtn = capturedSibWin.FindFirstDescendant(
-                                                        cf3.ByAutomationId(capturedBtnInfo.AutomationId));
-                                                if (freshBtn == null && !string.IsNullOrEmpty(capturedBtnInfo.Name))
-                                                    freshBtn = capturedSibWin.FindFirstDescendant(
-                                                        cf3.ByControlType(ControlType.Button)
-                                                           .And(cf3.ByName(capturedBtnInfo.Name)));
-                                            }
-
-                                            if (freshBtn != null)
-                                            {
-                                                if (freshBtn.Patterns.Invoke.IsSupported)
-                                                    freshBtn.Patterns.Invoke.Pattern.Invoke();
-                                                else
-                                                    freshBtn.Click();
-                                            }
-                                            else
-                                            {
-                                                if (btn.Patterns.Invoke.IsSupported)
-                                                    btn.Patterns.Invoke.Pattern.Invoke();
-                                                else
-                                                    btn.Click();
-                                            }
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            _logger.LogWarning(ex,
-                                                "Popup window button click failed for '{Label}'",
-                                                capturedBtnInfo.Name);
-                                        }
-
-                                        var elemLabel2 = ElementInfo.GetLabel(capturedBtnInfo);
-                                        _service.AddAction(new RecordedAction
-                                        {
-                                            ActionType = ActionType.Click,
-                                            Mode = RecordingMode.Assistive,
-                                            Element = capturedBtnInfo,
-                                            Description = $"Click on {elemLabel2}"
-                                        });
-                                        UpdateStatusAfterAction(
-                                            $"Click [Button] {capturedBtnInfo.Name ?? "(button)"}");
-                                    };
-                                    sibBtnFlyout.DropDownItems.Add(btnEntry);
+                                    sibBtnFlyout.DropDownItems.Add(
+                                        CreateWindowButtonMenuItem(btnMenuLabel, capturedSibWin, btnInfo, btn));
                                 }
 
                                 if (sibButtons.Length > MaxChildrenToDisplay)
@@ -2288,69 +2234,9 @@ public sealed class RecordingOverlayWindow : Form
                     foreach (var btn in buttons.Take(MaxChildrenToDisplay))
                     {
                         var btnInfo = BuildElementInfo(btn);
-                        var btnLabel = $"[Button]  {btnInfo.Name ?? btnInfo.AutomationId ?? "(unnamed)"}";
-                        var btnItem = new ToolStripMenuItem(btnLabel);
-                        var capturedBtnInfo = btnInfo;
-                        var capturedBtnWindowHwnd = capturedHwnd;
-
-                        btnItem.Click += (_, _) =>
-                        {
-                            // Re-locate a fresh reference to the button so that the click
-                            // is not fired on a stale element (the menu interaction may have
-                            // shifted focus away from the window).
-                            if (capturedBtnWindowHwnd != IntPtr.Zero)
-                                SetForegroundWindow(capturedBtnWindowHwnd);
-                            else
-                                BringElementWindowToForeground(windowElement);
-                            Thread.Sleep(WindowActivationDelayMs);
-
-                            try
-                            {
-                                AutomationElement? freshBtn = null;
-                                if (_automation != null)
-                                {
-                                    var cf2 = _automation.ConditionFactory;
-                                    if (!string.IsNullOrEmpty(capturedBtnInfo.AutomationId))
-                                        freshBtn = windowElement.FindFirstDescendant(
-                                            cf2.ByAutomationId(capturedBtnInfo.AutomationId));
-                                    if (freshBtn == null && !string.IsNullOrEmpty(capturedBtnInfo.Name))
-                                        freshBtn = windowElement.FindFirstDescendant(
-                                            cf2.ByControlType(ControlType.Button)
-                                               .And(cf2.ByName(capturedBtnInfo.Name)));
-                                }
-
-                                if (freshBtn != null)
-                                {
-                                    if (freshBtn.Patterns.Invoke.IsSupported)
-                                        freshBtn.Patterns.Invoke.Pattern.Invoke();
-                                    else
-                                        freshBtn.Click();
-                                }
-                                else
-                                {
-                                    // Fall back to invoking the (possibly stale) original reference.
-                                    if (btn.Patterns.Invoke.IsSupported)
-                                        btn.Patterns.Invoke.Pattern.Invoke();
-                                    else
-                                        btn.Click();
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogWarning(ex, "Window button click failed for '{Label}'", capturedBtnInfo.Name);
-                            }
-
-                            var elemLabel = ElementInfo.GetLabel(capturedBtnInfo);
-                            _service.AddAction(new RecordedAction
-                            {
-                                ActionType = ActionType.Click,
-                                Mode = RecordingMode.Assistive,
-                                Element = capturedBtnInfo,
-                                Description = $"Click on {elemLabel}"
-                            });
-                            UpdateStatusAfterAction($"Click [Button] {capturedBtnInfo.Name ?? "(button)"}");
-                        };
-
+                        var btnMenuLabel = $"[Button]  {btnInfo.Name ?? btnInfo.AutomationId ?? "(unnamed)"}";
+                        var btnItem = CreateWindowButtonMenuItem(
+                            btnMenuLabel, windowElement, btnInfo, btn, capturedHwnd);
                         buttonsFlyout.DropDownItems.Add(btnItem);
                     }
 
@@ -2413,67 +2299,9 @@ public sealed class RecordingOverlayWindow : Form
                                 foreach (var btn in childButtons.Take(MaxChildrenToDisplay))
                                 {
                                     var btnInfo = BuildElementInfo(btn);
-                                    var btnLabel = $"[Button]  {btnInfo.Name ?? btnInfo.AutomationId ?? "(unnamed)"}";
-                                    var btnEntry = new ToolStripMenuItem(btnLabel);
-                                    var capturedBtnInfo = btnInfo;
-                                    btnEntry.Click += (_, _) =>
-                                    {
-                                        // Bring the child window to the foreground before clicking.
-                                        BringElementWindowToForeground(capturedChildWin);
-                                        Thread.Sleep(WindowActivationDelayMs);
-
-                                        try
-                                        {
-                                            // Re-locate a fresh reference so the click is not fired
-                                            // on a stale element (the menu interaction may have
-                                            // shifted focus away from the window).
-                                            AutomationElement? freshBtn = null;
-                                            if (_automation != null)
-                                            {
-                                                var cf3 = _automation.ConditionFactory;
-                                                if (!string.IsNullOrEmpty(capturedBtnInfo.AutomationId))
-                                                    freshBtn = capturedChildWin.FindFirstDescendant(
-                                                        cf3.ByAutomationId(capturedBtnInfo.AutomationId));
-                                                if (freshBtn == null && !string.IsNullOrEmpty(capturedBtnInfo.Name))
-                                                    freshBtn = capturedChildWin.FindFirstDescendant(
-                                                        cf3.ByControlType(ControlType.Button)
-                                                           .And(cf3.ByName(capturedBtnInfo.Name)));
-                                            }
-
-                                            if (freshBtn != null)
-                                            {
-                                                if (freshBtn.Patterns.Invoke.IsSupported)
-                                                    freshBtn.Patterns.Invoke.Pattern.Invoke();
-                                                else
-                                                    freshBtn.Click();
-                                            }
-                                            else
-                                            {
-                                                if (btn.Patterns.Invoke.IsSupported)
-                                                    btn.Patterns.Invoke.Pattern.Invoke();
-                                                else
-                                                    btn.Click();
-                                            }
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            _logger.LogWarning(ex,
-                                                "Child window button click failed for '{Label}'",
-                                                capturedBtnInfo.Name);
-                                        }
-
-                                        var elemLabel = ElementInfo.GetLabel(capturedBtnInfo);
-                                        _service.AddAction(new RecordedAction
-                                        {
-                                            ActionType = ActionType.Click,
-                                            Mode = RecordingMode.Assistive,
-                                            Element = capturedBtnInfo,
-                                            Description = $"Click on {elemLabel}"
-                                        });
-                                        UpdateStatusAfterAction(
-                                            $"Click [Button] {capturedBtnInfo.Name ?? "(button)"}");
-                                    };
-                                    btnSubFlyout.DropDownItems.Add(btnEntry);
+                                    var btnMenuLabel = $"[Button]  {btnInfo.Name ?? btnInfo.AutomationId ?? "(unnamed)"}";
+                                    btnSubFlyout.DropDownItems.Add(
+                                        CreateWindowButtonMenuItem(btnMenuLabel, capturedChildWin, btnInfo, btn));
                                 }
 
                                 if (childButtons.Length > MaxChildrenToDisplay)
@@ -2628,6 +2456,92 @@ public sealed class RecordingOverlayWindow : Form
             UpdateStatusAfterAction($"{label}: {result}  │  [{info?.ControlType}] {info?.Name ?? "(element)"}");
         };
         menu.Items.Add(item);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="ToolStripMenuItem"/> whose click handler brings
+    /// <paramref name="searchRoot"/> to the foreground, re-locates a fresh reference
+    /// to the button by AutomationId / Name, invokes it, and records a
+    /// <see cref="ActionType.Click"/> action.
+    ///
+    /// Used by the <em>Window Buttons ▶</em>, <em>Child Windows ▶</em>, and
+    /// <em>Popup Windows ▶</em> menus which share identical button-invocation logic.
+    /// </summary>
+    /// <param name="menuLabel">Label shown in the menu.</param>
+    /// <param name="searchRoot">Window element used to search for a fresh button reference.</param>
+    /// <param name="buttonInfo">Captured element info for the button (AutomationId / Name used for re-location).</param>
+    /// <param name="originalButton">Stale-fallback button reference when re-location fails.</param>
+    /// <param name="preferredHwnd">
+    ///   If non-zero, <c>SetForegroundWindow</c> is called with this HWND before the click
+    ///   (faster than walking the UIA tree to the root window).
+    ///   Pass <c>IntPtr.Zero</c> (default) to use <see cref="BringElementWindowToForeground"/>.
+    /// </param>
+    private ToolStripMenuItem CreateWindowButtonMenuItem(
+        string menuLabel,
+        AutomationElement searchRoot,
+        ElementInfo buttonInfo,
+        AutomationElement originalButton,
+        IntPtr preferredHwnd = default)
+    {
+        var item = new ToolStripMenuItem(menuLabel);
+        item.Click += (_, _) =>
+        {
+            // Bring the window to the foreground before firing the click so it lands
+            // on the correct window rather than whatever currently has focus.
+            if (preferredHwnd != IntPtr.Zero)
+                SetForegroundWindow(preferredHwnd);
+            else
+                BringElementWindowToForeground(searchRoot);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            try
+            {
+                // Re-locate a fresh button reference so that the click is not fired on a
+                // stale element (the menu interaction may have shifted focus away from the
+                // window, potentially invalidating the captured reference).
+                AutomationElement? freshBtn = null;
+                if (_automation != null)
+                {
+                    var cf = _automation.ConditionFactory;
+                    if (!string.IsNullOrEmpty(buttonInfo.AutomationId))
+                        freshBtn = searchRoot.FindFirstDescendant(cf.ByAutomationId(buttonInfo.AutomationId));
+                    if (freshBtn == null && !string.IsNullOrEmpty(buttonInfo.Name))
+                        freshBtn = searchRoot.FindFirstDescendant(
+                            cf.ByControlType(ControlType.Button).And(cf.ByName(buttonInfo.Name)));
+                }
+
+                if (freshBtn != null)
+                {
+                    if (freshBtn.Patterns.Invoke.IsSupported)
+                        freshBtn.Patterns.Invoke.Pattern.Invoke();
+                    else
+                        freshBtn.Click();
+                }
+                else
+                {
+                    // Fall back to the (possibly stale) original reference.
+                    if (originalButton.Patterns.Invoke.IsSupported)
+                        originalButton.Patterns.Invoke.Pattern.Invoke();
+                    else
+                        originalButton.Click();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Window button click failed for '{Label}'", buttonInfo.Name);
+            }
+
+            var buttonLabel = ElementInfo.GetLabel(buttonInfo);
+            _service.AddAction(new RecordedAction
+            {
+                ActionType = ActionType.Click,
+                Mode = RecordingMode.Assistive,
+                Element = buttonInfo,
+                Description = $"Click on {buttonLabel}"
+            });
+            UpdateStatusAfterAction($"Click [Button] {buttonInfo.Name ?? "(button)"}");
+        };
+        return item;
     }
 
     private void UpdateStatusAfterAction(string detail)
