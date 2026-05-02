@@ -74,4 +74,13 @@ public interface IRecordingService
     /// Safe to call when no session is active (no-op).
     /// </summary>
     void BringApplicationWindowToFront();
+
+    /// <summary>
+    /// Returns the native window handle (HWND) of the active session's application
+    /// main window, or <see cref="IntPtr.Zero"/> when no session is active or the
+    /// handle cannot be obtained.
+    /// Used by the Assistive-mode Ctrl+Right-Click handler to distinguish a
+    /// foreground popup window from the application's own main window.
+    /// </summary>
+    IntPtr GetApplicationMainWindowHandle();
 }
