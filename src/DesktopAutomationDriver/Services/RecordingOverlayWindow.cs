@@ -1190,14 +1190,26 @@ public sealed class RecordingOverlayWindow : Form
                                     }
                                 }
 
-                                // Record the action targeting the sub-item element.
+                                // Record two Click actions: one for the parent MenuItem that
+                                // was right-clicked (e.g. "QA"), and one for the child item
+                                // that was selected from the flyout (e.g. "Level 35").
+                                // This mirrors the two-step navigation needed for automation
+                                // (expand parent, then click child) and makes the exported
+                                // JSON self-contained and replay-friendly.
                                 var parentLabel = ElementInfo.GetLabel(elementInfo);
                                 _service.AddAction(new RecordedAction
                                 {
                                     ActionType = ActionType.Click,
                                     Mode = RecordingMode.Assistive,
+                                    Element = elementInfo,
+                                    Description = $"Click on {parentLabel}"
+                                });
+                                _service.AddAction(new RecordedAction
+                                {
+                                    ActionType = ActionType.Click,
+                                    Mode = RecordingMode.Assistive,
                                     Element = capturedSubItemInfo,
-                                    Description = $"Click sub-menu item '{capturedSubItemName}' under {parentLabel}"
+                                    Description = $"Click on {ElementInfo.GetLabel(capturedSubItemInfo)}"
                                 });
                                 UpdateStatusAfterAction($"Click [{capturedSubItemInfo.ControlType}] {capturedSubItemName}");
                             };
