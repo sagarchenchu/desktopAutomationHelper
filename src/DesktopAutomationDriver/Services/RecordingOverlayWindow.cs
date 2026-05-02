@@ -82,6 +82,7 @@ public sealed class RecordingOverlayWindow : Form
     private const int WS_EX_LAYERED = 0x00080000;
     private const int WS_EX_TOPMOST = 0x00000008;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
+    private const int WS_EX_NOACTIVATE = 0x08000000;
 
     /// <summary>Maximum number of child elements shown in the "Children ▶" submenu.</summary>
     private const int MaxChildrenToDisplay = 30;
@@ -747,12 +748,38 @@ public sealed class RecordingOverlayWindow : Form
 
         var elementInfo = element != null ? BuildElementInfo(element) : null;
 
-        // For sub-MenuItems that live inside a ToolStripDropDown popup: showing the
-        // assistive ContextMenuStrip steals focus from the application, which causes
-        // WinForms to destroy the popup HWND.  The captured 'element' reference then
-        // points to a destroyed UIA element, so Invoke() / Click() on it fail silently.
-        // Build a re-navigation path right now (while the popup is still open) so the
-        // Click handler can re-open the menu chain and locate fresh UIA elements.
+        // Capture the element's top-level window HWND before the assistive context menu
+        // is shown.  NoActivateContextMenuStrip (WS_EX_NOACTIVATE) prevents
+        // activation-based dismissal of modal popup windows (IsModal = true), but some
+        // popups also close on click-based dismissal (e.g. WPF Popup with
+        // StaysOpen = False).  Using the pre-captured HWND in the Right Click handler
+        // avoids stale-element exceptions when the element's properties are queried
+        // after the popup has closed.
+        IntPtr capturedHwnd = IntPtr.Zero;
+        if (element != null)
+        {
+            try
+            {
+                var hwnd = element.Properties.NativeWindowHandle.Value;
+                if (hwnd != IntPtr.Zero)
+                {
+                    var root = GetAncestor(hwnd, GA_ROOT);
+                    capturedHwnd = root != IntPtr.Zero ? root : hwnd;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not capture HWND for element at {Pt}; Right Click will fall back to element reference", pt);
+            }
+        }
+
+        // For sub-MenuItems that live inside a ToolStripDropDown popup: even with
+        // NoActivateContextMenuStrip preventing activation-based dismissal, some
+        // WinForms popups may still collapse when focus is redirected.  The captured
+        // 'element' reference then points to a destroyed UIA element, so Invoke() /
+        // Click() on it fail silently.  Build a re-navigation path right now (while
+        // the popup is still open) so the Click handler can re-open the menu chain
+        // and locate fresh UIA elements.
         AutomationElement? popupMenuBarRef = null;
         var popupMenuPath = new List<string>(); // top-down MenuItem names, e.g. ["QA", "Level 1"]
         if (element?.ControlType == ControlType.MenuItem)
@@ -805,7 +832,7 @@ public sealed class RecordingOverlayWindow : Form
             : null;
         var innerEditInfo = innerEditElement != null ? BuildElementInfo(innerEditElement) : null;
 
-        var menu = new ContextMenuStrip { ShowImageMargin = false };
+        var menu = new NoActivateContextMenuStrip { ShowImageMargin = false };
         menu.Font = new Font("Segoe UI", 10f);
 
         // Re-apply click-through styles when the menu closes so rapid right-clicks
@@ -915,7 +942,14 @@ public sealed class RecordingOverlayWindow : Form
         AddActionItem(menu, "Right Click", element, elementInfo, ActionType.RightClick,
             () =>
             {
-                BringElementWindowToForeground(element);
+                // Prefer the HWND captured before the menu appeared so that the correct
+                // window receives focus even when the element becomes stale (e.g. a
+                // modal popup closed on click-based dismissal).  Fall back to the
+                // standard BringElementWindowToForeground when no HWND was captured.
+                if (capturedHwnd != IntPtr.Zero)
+                    SetForegroundWindow(capturedHwnd);
+                else
+                    BringElementWindowToForeground(element);
                 Thread.Sleep(WindowActivationDelayMs);
                 // Set the flag so the global hook does not intercept this simulated
                 // right-click and show the assistive context menu a second time.
@@ -2239,5 +2273,37 @@ public sealed class RecordingOverlayWindow : Form
             result = textBox.Text;
 
         return result;
+    }
+
+    /// <summary>
+    /// A <see cref="ContextMenuStrip"/> that carries the <c>WS_EX_NOACTIVATE</c>
+    /// extended window style so that showing it does not steal input focus from the
+    /// currently active window.
+    ///
+    /// <para>
+    /// Without this, displaying the assistive context menu over a modal popup window
+    /// (UIA <c>IsModal = true</c>) sends <c>WM_ACTIVATE(WA_INACTIVE)</c> to the popup,
+    /// causing light-dismiss popups to close before the user can select an action.
+    /// With <c>WS_EX_NOACTIVATE</c> the previously active window retains focus, so
+    /// the popup stays open and the simulated right-click (or click) reaches it.
+    /// </para>
+    ///
+    /// <para>
+    /// Mouse clicks on menu items are still delivered based on hit-testing and are
+    /// unaffected by the lack of activation; keyboard navigation of the menu is not
+    /// supported, but the assistive overlay is a mouse-driven tool.
+    /// </para>
+    /// </summary>
+    private sealed class NoActivateContextMenuStrip : ContextMenuStrip
+    {
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ExStyle |= WS_EX_NOACTIVATE;
+                return cp;
+            }
+        }
     }
 }
