@@ -164,6 +164,11 @@ public sealed class RecordingOverlayWindow : Form
     // Guard against showing multiple context menus simultaneously (e.g. rapid right-clicks).
     private bool _menuOpen;
 
+    // One-shot 10 s fallback timer started whenever _menuOpen is set to true.
+    // Disposed/stopped in ReapplyClickThroughStyle() (called from every menu.Closed handler)
+    // so it does not outlive the menu it guards.
+    private System.Windows.Forms.Timer? _menuSafetyTimer;
+
     // Set to true after we suppress WM_RBUTTONDOWN so we can also suppress the
     // matching WM_RBUTTONUP (preventing the target app from receiving WM_CONTEXTMENU
     // which would open the app's own context menu and immediately close ours).
@@ -284,6 +289,10 @@ public sealed class RecordingOverlayWindow : Form
     {
         _cursorTimer?.Stop();
         _cursorTimer?.Dispose();
+
+        _menuSafetyTimer?.Stop();
+        _menuSafetyTimer?.Dispose();
+        _menuSafetyTimer = null;
 
         if (_keyboardHook != IntPtr.Zero)
         {
@@ -703,6 +712,11 @@ public sealed class RecordingOverlayWindow : Form
         if (_automation == null) return;
 
         _menuOpen = true;
+
+        // Safety fallback: reset _menuOpen after 10 s in case the menu's Closed event
+        // never fires (e.g. edge-case focus or disposal race).
+        StartMenuSafetyTimer();
+
         try
         {
             ShowAssistiveContextMenuCore(pt);
@@ -764,6 +778,44 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         var elementInfo = element != null ? BuildElementInfo(element) : null;
+
+        // Walk up to the nearest Window ancestor so we can later scan for child popup
+        // windows (used for both post-action detection and the "Popup Windows ▶" menu).
+        AutomationElement? windowAncestor = null;
+        if (element != null && _automation != null)
+        {
+            try
+            {
+                var cur = element;
+                for (int depth = 0; depth < MaxWindowSearchDepth && cur != null; depth++)
+                {
+                    if (cur.ControlType == ControlType.Window)
+                    {
+                        windowAncestor = cur;
+                        break;
+                    }
+                    cur = cur.Parent;
+                }
+            }
+            catch { /* best effort */ }
+        }
+
+        // Snapshot the current child Window names so we can detect newly opened popup
+        // windows once the context menu is dismissed (popup-detection notification).
+        var preActionChildWindowTitles = new HashSet<string>(StringComparer.Ordinal);
+        if (windowAncestor != null && _automation != null)
+        {
+            try
+            {
+                var cf = _automation.ConditionFactory;
+                foreach (var childWindow in windowAncestor.FindAllChildren(cf.ByControlType(ControlType.Window)))
+                {
+                    try { preActionChildWindowTitles.Add(childWindow.Name ?? string.Empty); }
+                    catch { /* best effort */ }
+                }
+            }
+            catch { /* best effort */ }
+        }
 
         // Capture the element's top-level window HWND before the assistive context menu
         // is shown.  NoActivateContextMenuStrip (WS_EX_NOACTIVATE) prevents
@@ -858,6 +910,30 @@ public sealed class RecordingOverlayWindow : Form
         {
             _menuOpen = false;
             ReapplyClickThroughStyle();
+
+            // After the menu closes, check if a new child Window has appeared under the
+            // same window ancestor (e.g. a "Working Environment" popup opened because
+            // the user clicked OK).  If so, nudge the user via the status label.
+            if (windowAncestor != null && _automation != null)
+            {
+                try
+                {
+                    var cf = _automation.ConditionFactory;
+                    var currentChildWindows = windowAncestor.FindAllChildren(
+                        cf.ByControlType(ControlType.Window));
+                    var newTitles = currentChildWindows
+                        .Select(w => { try { return w.Name ?? string.Empty; } catch { return string.Empty; } })
+                        .Where(t => !preActionChildWindowTitles.Contains(t))
+                        .ToList();
+                    if (newTitles.Count > 0)
+                    {
+                        var newTitle = newTitles[0];
+                        _statusLabel.Text =
+                            $"  ⚡ New window: '{newTitle}'  — Ctrl+Right-click to target it  ";
+                    }
+                }
+                catch { /* best effort */ }
+            }
         };
 
         // ── Header (element details, not selectable) ────────────────────────
@@ -1114,14 +1190,26 @@ public sealed class RecordingOverlayWindow : Form
                                     }
                                 }
 
-                                // Record the action targeting the sub-item element.
+                                // Record two Click actions: one for the parent MenuItem that
+                                // was right-clicked (e.g. "QA"), and one for the child item
+                                // that was selected from the flyout (e.g. "Level 35").
+                                // This mirrors the two-step navigation needed for automation
+                                // (expand parent, then click child) and makes the exported
+                                // JSON self-contained and replay-friendly.
                                 var parentLabel = ElementInfo.GetLabel(elementInfo);
                                 _service.AddAction(new RecordedAction
                                 {
                                     ActionType = ActionType.Click,
                                     Mode = RecordingMode.Assistive,
+                                    Element = elementInfo,
+                                    Description = $"Click on {parentLabel}"
+                                });
+                                _service.AddAction(new RecordedAction
+                                {
+                                    ActionType = ActionType.Click,
+                                    Mode = RecordingMode.Assistive,
                                     Element = capturedSubItemInfo,
-                                    Description = $"Click sub-menu item '{capturedSubItemName}' under {parentLabel}"
+                                    Description = $"Click on {ElementInfo.GetLabel(capturedSubItemInfo)}"
                                 });
                                 UpdateStatusAfterAction($"Click [{capturedSubItemInfo.ControlType}] {capturedSubItemName}");
                             };
@@ -1886,6 +1974,87 @@ public sealed class RecordingOverlayWindow : Form
             catch { /* best effort */ }
         }
 
+        // ── Popup Windows ▶ — sibling child Window elements of the current window ─────
+        // This section is always shown when child Window siblings exist (e.g. a "Working
+        // Environment" dialog that opened inside the parent "Login" window after the user
+        // clicked OK).  It offers a "Switch Window" action for each sibling window and a
+        // "Buttons ▶" sub-flyout so the user can directly interact with its buttons.
+        if (windowAncestor != null && _automation != null)
+        {
+            try
+            {
+                var cf = _automation.ConditionFactory;
+                var siblingWindows = windowAncestor.FindAllChildren(cf.ByControlType(ControlType.Window));
+                if (siblingWindows.Length > 0)
+                {
+                    menu.Items.Add(new ToolStripSeparator());
+                    var popupWindowsFlyout = new ToolStripMenuItem("Popup Windows ▶");
+
+                    foreach (var sibWin in siblingWindows.Take(MaxChildrenToDisplay))
+                    {
+                        var sibWinInfo = BuildElementInfo(sibWin);
+                        var sibWinTitle = sibWinInfo.Name ?? sibWinInfo.AutomationId ?? "(unnamed)";
+                        var sibWinItem = new ToolStripMenuItem($"[Window]  {sibWinTitle}");
+
+                        var capturedSibWinInfo = sibWinInfo;
+                        var capturedSibWinTitle = sibWinTitle;
+                        var capturedSibWin = sibWin;
+                        sibWinItem.Click += (_, _) =>
+                        {
+                            _service.AddAction(new RecordedAction
+                            {
+                                ActionType = ActionType.SwitchWindow,
+                                Mode = RecordingMode.Assistive,
+                                Element = capturedSibWinInfo,
+                                Value = capturedSibWinTitle,
+                                Description = $"Switch window to '{capturedSibWinTitle}'"
+                            });
+                            UpdateStatusAfterAction($"Switch Window [Window] {capturedSibWinTitle}");
+                        };
+
+                        // Add "Buttons ▶" sub-flyout for the child window's buttons.
+                        try
+                        {
+                            var cf2 = _automation.ConditionFactory;
+                            var sibButtons = sibWin.FindAllDescendants(cf2.ByControlType(ControlType.Button));
+                            if (sibButtons.Length > 0)
+                            {
+                                var sibBtnFlyout = new ToolStripMenuItem("Buttons ▶");
+                                foreach (var btn in sibButtons.Take(MaxChildrenToDisplay))
+                                {
+                                    var btnInfo = BuildElementInfo(btn);
+                                    var btnMenuLabel =
+                                        $"[Button]  {btnInfo.Name ?? btnInfo.AutomationId ?? "(unnamed)"}";
+                                    sibBtnFlyout.DropDownItems.Add(
+                                        CreateWindowButtonMenuItem(btnMenuLabel, capturedSibWin, btnInfo, btn));
+                                }
+
+                                if (sibButtons.Length > MaxChildrenToDisplay)
+                                    sibBtnFlyout.DropDownItems.Add(
+                                        new ToolStripMenuItem(
+                                            $"… and {sibButtons.Length - MaxChildrenToDisplay} more")
+                                        { Enabled = false });
+
+                                sibWinItem.DropDownItems.Add(sibBtnFlyout);
+                            }
+                        }
+                        catch { /* best effort */ }
+
+                        popupWindowsFlyout.DropDownItems.Add(sibWinItem);
+                    }
+
+                    if (siblingWindows.Length > MaxChildrenToDisplay)
+                        popupWindowsFlyout.DropDownItems.Add(
+                            new ToolStripMenuItem(
+                                $"… and {siblingWindows.Length - MaxChildrenToDisplay} more")
+                            { Enabled = false });
+
+                    menu.Items.Add(popupWindowsFlyout);
+                }
+            }
+            catch { /* best effort */ }
+        }
+
         AddCloseItem(menu);
         // Show the context menu relative to this overlay form so it inherits the form's
         // topmost z-order and appears above the target application's window.
@@ -1904,6 +2073,11 @@ public sealed class RecordingOverlayWindow : Form
         if (_automation == null) return;
 
         _menuOpen = true;
+
+        // Safety fallback: reset _menuOpen after 10 s in case the menu's Closed event
+        // never fires (e.g. edge-case focus or disposal race).
+        StartMenuSafetyTimer();
+
         try
         {
             ShowWindowContextMenuCore(pt);
@@ -1957,6 +2131,32 @@ public sealed class RecordingOverlayWindow : Form
 
         // Fall back to the element itself if no Window parent was found.
         windowElement ??= element;
+
+        // Prefer the innermost child Window that contains the cursor point.
+        // This handles embedded/child dialogs (e.g. a "Working Environment" popup that
+        // appears as a Window child inside the main application window after clicking OK).
+        // FromPoint may return an element that belongs to the outer frame when the cursor
+        // is near the parent window's border rather than strictly inside the child window.
+        if (windowElement != null && _automation != null)
+        {
+            try
+            {
+                var cf = _automation.ConditionFactory;
+                var childWindows = windowElement.FindAllChildren(cf.ByControlType(ControlType.Window));
+                var innerWindow = childWindows.FirstOrDefault(w =>
+                {
+                    try
+                    {
+                        var bounds = w.BoundingRectangle;
+                        return !bounds.IsEmpty && bounds.Contains(pt.X, pt.Y);
+                    }
+                    catch { return false; }
+                });
+                if (innerWindow != null)
+                    windowElement = innerWindow;
+            }
+            catch { /* best effort */ }
+        }
 
         var windowInfo = windowElement != null ? BuildElementInfo(windowElement) : null;
         var windowTitle = windowInfo?.Name ?? string.Empty;
@@ -2046,69 +2246,9 @@ public sealed class RecordingOverlayWindow : Form
                     foreach (var btn in buttons.Take(MaxChildrenToDisplay))
                     {
                         var btnInfo = BuildElementInfo(btn);
-                        var btnLabel = $"[Button]  {btnInfo.Name ?? btnInfo.AutomationId ?? "(unnamed)"}";
-                        var btnItem = new ToolStripMenuItem(btnLabel);
-                        var capturedBtnInfo = btnInfo;
-                        var capturedBtnWindowHwnd = capturedHwnd;
-
-                        btnItem.Click += (_, _) =>
-                        {
-                            // Re-locate a fresh reference to the button so that the click
-                            // is not fired on a stale element (the menu interaction may have
-                            // shifted focus away from the window).
-                            if (capturedBtnWindowHwnd != IntPtr.Zero)
-                                SetForegroundWindow(capturedBtnWindowHwnd);
-                            else
-                                BringElementWindowToForeground(windowElement);
-                            Thread.Sleep(WindowActivationDelayMs);
-
-                            try
-                            {
-                                AutomationElement? freshBtn = null;
-                                if (_automation != null)
-                                {
-                                    var cf2 = _automation.ConditionFactory;
-                                    if (!string.IsNullOrEmpty(capturedBtnInfo.AutomationId))
-                                        freshBtn = windowElement.FindFirstDescendant(
-                                            cf2.ByAutomationId(capturedBtnInfo.AutomationId));
-                                    if (freshBtn == null && !string.IsNullOrEmpty(capturedBtnInfo.Name))
-                                        freshBtn = windowElement.FindFirstDescendant(
-                                            cf2.ByControlType(ControlType.Button)
-                                               .And(cf2.ByName(capturedBtnInfo.Name)));
-                                }
-
-                                if (freshBtn != null)
-                                {
-                                    if (freshBtn.Patterns.Invoke.IsSupported)
-                                        freshBtn.Patterns.Invoke.Pattern.Invoke();
-                                    else
-                                        freshBtn.Click();
-                                }
-                                else
-                                {
-                                    // Fall back to invoking the (possibly stale) original reference.
-                                    if (btn.Patterns.Invoke.IsSupported)
-                                        btn.Patterns.Invoke.Pattern.Invoke();
-                                    else
-                                        btn.Click();
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogWarning(ex, "Window button click failed for '{Label}'", capturedBtnInfo.Name);
-                            }
-
-                            var elemLabel = ElementInfo.GetLabel(capturedBtnInfo);
-                            _service.AddAction(new RecordedAction
-                            {
-                                ActionType = ActionType.Click,
-                                Mode = RecordingMode.Assistive,
-                                Element = capturedBtnInfo,
-                                Description = $"Click on {elemLabel}"
-                            });
-                            UpdateStatusAfterAction($"Click [Button] {capturedBtnInfo.Name ?? "(button)"}");
-                        };
-
+                        var btnMenuLabel = $"[Button]  {btnInfo.Name ?? btnInfo.AutomationId ?? "(unnamed)"}";
+                        var btnItem = CreateWindowButtonMenuItem(
+                            btnMenuLabel, windowElement, btnInfo, btn, capturedHwnd);
                         buttonsFlyout.DropDownItems.Add(btnItem);
                     }
 
@@ -2117,6 +2257,86 @@ public sealed class RecordingOverlayWindow : Form
                             new ToolStripMenuItem($"… and {buttons.Length - MaxChildrenToDisplay} more") { Enabled = false });
 
                     menu.Items.Add(buttonsFlyout);
+                }
+            }
+            catch { /* best effort */ }
+        }
+
+        // Child Windows flyout — Window children of the located window (e.g. embedded
+        // dialogs such as "Working Environment" that appear as child Window UIA elements
+        // inside the parent window after a user action like clicking OK).
+        if (windowElement != null && _automation != null)
+        {
+            try
+            {
+                var cf = _automation.ConditionFactory;
+                var childWindows = windowElement.FindAllChildren(cf.ByControlType(ControlType.Window));
+
+                if (childWindows.Length > 0)
+                {
+                    menu.Items.Add(new ToolStripSeparator());
+                    var childWindowsFlyout = new ToolStripMenuItem("Child Windows ▶");
+
+                    foreach (var childWin in childWindows.Take(MaxChildrenToDisplay))
+                    {
+                        var childWinInfo = BuildElementInfo(childWin);
+                        var childWinTitle = childWinInfo.Name ?? childWinInfo.AutomationId ?? "(unnamed)";
+                        var childWinItem = new ToolStripMenuItem($"[Window]  {childWinTitle}");
+
+                        // Clicking the child window entry records a SwitchWindow action.
+                        var capturedChildWinInfo = childWinInfo;
+                        var capturedChildWinTitle = childWinTitle;
+                        var capturedChildWin = childWin;
+                        childWinItem.Click += (_, _) =>
+                        {
+                            _service.AddAction(new RecordedAction
+                            {
+                                ActionType = ActionType.SwitchWindow,
+                                Mode = RecordingMode.Assistive,
+                                Element = capturedChildWinInfo,
+                                Value = capturedChildWinTitle,
+                                Description = $"Switch window to '{capturedChildWinTitle}'"
+                            });
+                            UpdateStatusAfterAction($"Switch Window [Window] {capturedChildWinTitle}");
+                        };
+
+                        // Build a "Buttons ▶" sub-flyout for this child window's Button descendants.
+                        try
+                        {
+                            var cf2 = _automation.ConditionFactory;
+                            var childButtons = childWin.FindAllDescendants(cf2.ByControlType(ControlType.Button));
+                            if (childButtons.Length > 0)
+                            {
+                                var btnSubFlyout = new ToolStripMenuItem("Buttons ▶");
+                                foreach (var btn in childButtons.Take(MaxChildrenToDisplay))
+                                {
+                                    var btnInfo = BuildElementInfo(btn);
+                                    var btnMenuLabel = $"[Button]  {btnInfo.Name ?? btnInfo.AutomationId ?? "(unnamed)"}";
+                                    btnSubFlyout.DropDownItems.Add(
+                                        CreateWindowButtonMenuItem(btnMenuLabel, capturedChildWin, btnInfo, btn));
+                                }
+
+                                if (childButtons.Length > MaxChildrenToDisplay)
+                                    btnSubFlyout.DropDownItems.Add(
+                                        new ToolStripMenuItem(
+                                            $"… and {childButtons.Length - MaxChildrenToDisplay} more")
+                                        { Enabled = false });
+
+                                childWinItem.DropDownItems.Add(btnSubFlyout);
+                            }
+                        }
+                        catch { /* best effort */ }
+
+                        childWindowsFlyout.DropDownItems.Add(childWinItem);
+                    }
+
+                    if (childWindows.Length > MaxChildrenToDisplay)
+                        childWindowsFlyout.DropDownItems.Add(
+                            new ToolStripMenuItem(
+                                $"… and {childWindows.Length - MaxChildrenToDisplay} more")
+                            { Enabled = false });
+
+                    menu.Items.Add(childWindowsFlyout);
                 }
             }
             catch { /* best effort */ }
@@ -2149,6 +2369,14 @@ public sealed class RecordingOverlayWindow : Form
     private void ReapplyClickThroughStyle()
     {
         if (!IsHandleCreated || IsDisposed) return;
+
+        // Cancel the safety timer — the menu's Closed event fired normally so the
+        // fallback is no longer needed.  Do this before touching window styles so
+        // any exception in SetWindowLong does not leave the timer running.
+        _menuSafetyTimer?.Stop();
+        _menuSafetyTimer?.Dispose();
+        _menuSafetyTimer = null;
+
         try
         {
             var style = GetWindowLong(Handle, GWL_EXSTYLE);
@@ -2158,6 +2386,33 @@ public sealed class RecordingOverlayWindow : Form
         {
             _logger.LogWarning(ex, "Failed to reapply click-through styles on recording overlay");
         }
+    }
+
+    /// <summary>
+    /// Starts a 10-second one-shot timer that resets <see cref="_menuOpen"/> to
+    /// <c>false</c> as a safety net in case a context menu's <c>Closed</c> event
+    /// never fires (e.g. an edge-case focus or disposal race condition).
+    /// The timer reference is stored in <see cref="_menuSafetyTimer"/> so that
+    /// <see cref="ReapplyClickThroughStyle"/> can stop and dispose it when the
+    /// menu closes normally, preventing the timer from outliving the menu.
+    /// </summary>
+    private void StartMenuSafetyTimer()
+    {
+        // Stop any previous safety timer in case StartMenuSafetyTimer is called again
+        // before the previous menu fully closed.
+        _menuSafetyTimer?.Stop();
+        _menuSafetyTimer?.Dispose();
+
+        const int MenuSafetyTimeoutMs = 10000;
+        _menuSafetyTimer = new System.Windows.Forms.Timer { Interval = MenuSafetyTimeoutMs };
+        _menuSafetyTimer.Tick += (_, _) =>
+        {
+            _menuSafetyTimer?.Stop();
+            _menuSafetyTimer?.Dispose();
+            _menuSafetyTimer = null;
+            _menuOpen = false;
+        };
+        _menuSafetyTimer.Start();
     }
 
 
@@ -2213,6 +2468,92 @@ public sealed class RecordingOverlayWindow : Form
             UpdateStatusAfterAction($"{label}: {result}  │  [{info?.ControlType}] {info?.Name ?? "(element)"}");
         };
         menu.Items.Add(item);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="ToolStripMenuItem"/> whose click handler brings
+    /// <paramref name="searchRoot"/> to the foreground, re-locates a fresh reference
+    /// to the button by AutomationId / Name, invokes it, and records a
+    /// <see cref="ActionType.Click"/> action.
+    ///
+    /// Used by the <em>Window Buttons ▶</em>, <em>Child Windows ▶</em>, and
+    /// <em>Popup Windows ▶</em> menus which share identical button-invocation logic.
+    /// </summary>
+    /// <param name="menuLabel">Label shown in the menu.</param>
+    /// <param name="searchRoot">Window element used to search for a fresh button reference.</param>
+    /// <param name="buttonInfo">Captured element info for the button (AutomationId / Name used for re-location).</param>
+    /// <param name="originalButton">Stale-fallback button reference when re-location fails.</param>
+    /// <param name="preferredHwnd">
+    ///   If non-zero, <c>SetForegroundWindow</c> is called with this HWND before the click
+    ///   (faster than walking the UIA tree to the root window).
+    ///   Pass <c>IntPtr.Zero</c> (default) to use <see cref="BringElementWindowToForeground"/>.
+    /// </param>
+    private ToolStripMenuItem CreateWindowButtonMenuItem(
+        string menuLabel,
+        AutomationElement searchRoot,
+        ElementInfo buttonInfo,
+        AutomationElement originalButton,
+        IntPtr preferredHwnd = default)
+    {
+        var item = new ToolStripMenuItem(menuLabel);
+        item.Click += (_, _) =>
+        {
+            // Bring the window to the foreground before firing the click so it lands
+            // on the correct window rather than whatever currently has focus.
+            if (preferredHwnd != IntPtr.Zero)
+                SetForegroundWindow(preferredHwnd);
+            else
+                BringElementWindowToForeground(searchRoot);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            try
+            {
+                // Re-locate a fresh button reference so that the click is not fired on a
+                // stale element (the menu interaction may have shifted focus away from the
+                // window, potentially invalidating the captured reference).
+                AutomationElement? freshBtn = null;
+                if (_automation != null)
+                {
+                    var cf = _automation.ConditionFactory;
+                    if (!string.IsNullOrEmpty(buttonInfo.AutomationId))
+                        freshBtn = searchRoot.FindFirstDescendant(cf.ByAutomationId(buttonInfo.AutomationId));
+                    if (freshBtn == null && !string.IsNullOrEmpty(buttonInfo.Name))
+                        freshBtn = searchRoot.FindFirstDescendant(
+                            cf.ByControlType(ControlType.Button).And(cf.ByName(buttonInfo.Name)));
+                }
+
+                if (freshBtn != null)
+                {
+                    if (freshBtn.Patterns.Invoke.IsSupported)
+                        freshBtn.Patterns.Invoke.Pattern.Invoke();
+                    else
+                        freshBtn.Click();
+                }
+                else
+                {
+                    // Fall back to the (possibly stale) original reference.
+                    if (originalButton.Patterns.Invoke.IsSupported)
+                        originalButton.Patterns.Invoke.Pattern.Invoke();
+                    else
+                        originalButton.Click();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Window button click failed for '{Label}'", buttonInfo.Name);
+            }
+
+            var buttonLabel = ElementInfo.GetLabel(buttonInfo);
+            _service.AddAction(new RecordedAction
+            {
+                ActionType = ActionType.Click,
+                Mode = RecordingMode.Assistive,
+                Element = buttonInfo,
+                Description = $"Click on {buttonLabel}"
+            });
+            UpdateStatusAfterAction($"Click [Button] {buttonInfo.Name ?? "(button)"}");
+        };
+        return item;
     }
 
     private void UpdateStatusAfterAction(string detail)
