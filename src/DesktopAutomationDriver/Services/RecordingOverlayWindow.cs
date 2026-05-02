@@ -164,6 +164,11 @@ public sealed class RecordingOverlayWindow : Form
     // Guard against showing multiple context menus simultaneously (e.g. rapid right-clicks).
     private bool _menuOpen;
 
+    // One-shot 10 s fallback timer started whenever _menuOpen is set to true.
+    // Disposed/stopped in ReapplyClickThroughStyle() (called from every menu.Closed handler)
+    // so it does not outlive the menu it guards.
+    private System.Windows.Forms.Timer? _menuSafetyTimer;
+
     // Set to true after we suppress WM_RBUTTONDOWN so we can also suppress the
     // matching WM_RBUTTONUP (preventing the target app from receiving WM_CONTEXTMENU
     // which would open the app's own context menu and immediately close ours).
@@ -284,6 +289,10 @@ public sealed class RecordingOverlayWindow : Form
     {
         _cursorTimer?.Stop();
         _cursorTimer?.Dispose();
+
+        _menuSafetyTimer?.Stop();
+        _menuSafetyTimer?.Dispose();
+        _menuSafetyTimer = null;
 
         if (_keyboardHook != IntPtr.Zero)
         {
@@ -778,7 +787,7 @@ public sealed class RecordingOverlayWindow : Form
             try
             {
                 var cur = element;
-                for (int d = 0; d < MaxWindowSearchDepth && cur != null; d++)
+                for (int depth = 0; depth < MaxWindowSearchDepth && cur != null; depth++)
                 {
                     if (cur.ControlType == ControlType.Window)
                     {
@@ -799,9 +808,9 @@ public sealed class RecordingOverlayWindow : Form
             try
             {
                 var cf = _automation.ConditionFactory;
-                foreach (var w in windowAncestor.FindAllChildren(cf.ByControlType(ControlType.Window)))
+                foreach (var childWindow in windowAncestor.FindAllChildren(cf.ByControlType(ControlType.Window)))
                 {
-                    try { preActionChildWindowTitles.Add(w.Name ?? string.Empty); }
+                    try { preActionChildWindowTitles.Add(childWindow.Name ?? string.Empty); }
                     catch { /* best effort */ }
                 }
             }
@@ -2180,8 +2189,8 @@ public sealed class RecordingOverlayWindow : Form
                 {
                     try
                     {
-                        var r = w.BoundingRectangle;
-                        return !r.IsEmpty && r.Contains(pt.X, pt.Y);
+                        var bounds = w.BoundingRectangle;
+                        return !bounds.IsEmpty && bounds.Contains(pt.X, pt.Y);
                     }
                     catch { return false; }
                 });
@@ -2520,6 +2529,14 @@ public sealed class RecordingOverlayWindow : Form
     private void ReapplyClickThroughStyle()
     {
         if (!IsHandleCreated || IsDisposed) return;
+
+        // Cancel the safety timer — the menu's Closed event fired normally so the
+        // fallback is no longer needed.  Do this before touching window styles so
+        // any exception in SetWindowLong does not leave the timer running.
+        _menuSafetyTimer?.Stop();
+        _menuSafetyTimer?.Dispose();
+        _menuSafetyTimer = null;
+
         try
         {
             var style = GetWindowLong(Handle, GWL_EXSTYLE);
@@ -2535,18 +2552,27 @@ public sealed class RecordingOverlayWindow : Form
     /// Starts a 10-second one-shot timer that resets <see cref="_menuOpen"/> to
     /// <c>false</c> as a safety net in case a context menu's <c>Closed</c> event
     /// never fires (e.g. an edge-case focus or disposal race condition).
+    /// The timer reference is stored in <see cref="_menuSafetyTimer"/> so that
+    /// <see cref="ReapplyClickThroughStyle"/> can stop and dispose it when the
+    /// menu closes normally, preventing the timer from outliving the menu.
     /// </summary>
     private void StartMenuSafetyTimer()
     {
+        // Stop any previous safety timer in case StartMenuSafetyTimer is called again
+        // before the previous menu fully closed.
+        _menuSafetyTimer?.Stop();
+        _menuSafetyTimer?.Dispose();
+
         const int MenuSafetyTimeoutMs = 10000;
-        var safetyTimer = new System.Windows.Forms.Timer { Interval = MenuSafetyTimeoutMs };
-        safetyTimer.Tick += (_, _) =>
+        _menuSafetyTimer = new System.Windows.Forms.Timer { Interval = MenuSafetyTimeoutMs };
+        _menuSafetyTimer.Tick += (_, _) =>
         {
-            safetyTimer.Stop();
-            safetyTimer.Dispose();
+            _menuSafetyTimer?.Stop();
+            _menuSafetyTimer?.Dispose();
+            _menuSafetyTimer = null;
             _menuOpen = false;
         };
-        safetyTimer.Start();
+        _menuSafetyTimer.Start();
     }
 
 
