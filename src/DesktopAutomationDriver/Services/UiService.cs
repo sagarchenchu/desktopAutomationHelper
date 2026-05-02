@@ -1149,11 +1149,16 @@ public class UiService : IUiService
         {
             var session = _ctx.ActiveSession;
             if (session != null)
-                PerformHandleAlert(session.Automation, buttonNames, closeOnly);
+            {
+                var mainWindow = session.Application.GetMainWindow(session.Automation);
+                var mainHandle = mainWindow != null ? SafeWindowHandle(mainWindow) : (IntPtr?)null;
+                PerformHandleAlert(session.Automation, buttonNames, closeOnly,
+                    session.Application.ProcessId, mainHandle);
+            }
             else
             {
                 using var tempAutomation = new UIA3Automation();
-                PerformHandleAlert(tempAutomation, buttonNames, closeOnly);
+                PerformHandleAlert(tempAutomation, buttonNames, closeOnly, null, null);
             }
         }
         catch (Exception ex)
@@ -1166,31 +1171,20 @@ public class UiService : IUiService
     /// Core alert-handling logic that operates on the supplied <paramref name="automation"/>
     /// instance so it works both with an active session and with a temporary automation.
     /// </summary>
-    private static void PerformHandleAlert(AutomationBase automation, string[] buttonNames, bool closeOnly)
+    private static void PerformHandleAlert(
+        AutomationBase automation,
+        string[] buttonNames,
+        bool closeOnly,
+        int? processId,
+        IntPtr? mainWindowHandle)
     {
-        var cf = automation.ConditionFactory;
-        var desktop = automation.GetDesktop();
-
-        // Fast path: check direct desktop children first.
-        var dialog = desktop
-            .FindAllChildren(cf.ByControlType(ControlType.Window))
-            .FirstOrDefault(IsModalDialog);
-
-        // Fallback: owned/child modal dialogs are often nested as descendants of
-        // their owning application window in the UIA tree rather than as direct
-        // children of the desktop node. A full descendant scan is required to
-        // find them.
-        if (dialog == null)
-        {
-            dialog = desktop
-                .FindAllDescendants(cf.ByControlType(ControlType.Window))
-                .FirstOrDefault(IsModalDialog);
-        }
-
+        var dialog = FindPopupDialog(automation, processId, mainWindowHandle);
         if (dialog == null) return;
 
         if (!closeOnly && buttonNames.Length > 0)
         {
+            var cf = automation.ConditionFactory;
+
             // Look for a button whose name matches one of the candidate names.
             var btn = dialog
                 .FindAllDescendants(cf.ByControlType(ControlType.Button))
@@ -1209,6 +1203,137 @@ public class UiService : IUiService
 
         // Close the dialog (fallback or alertclose).
         CloseElement(dialog);
+    }
+
+    /// <summary>
+    /// Locates the popup/confirmation dialog using a prioritised search strategy:
+    /// <list type="number">
+    ///   <item>
+    ///     <description>
+    ///       Collect all top-level desktop windows belonging to <paramref name="processId"/>
+    ///       (when provided), falling back to UIA-tree descendants for owned dialogs that
+    ///       are nested rather than top-level in the OS window hierarchy.
+    ///     </description>
+    ///   </item>
+    ///   <item>
+    ///     <description>
+    ///       Require the Window UIA pattern (<c>WindowPattern</c>) to confirm the candidate
+    ///       is a real dialog window rather than an arbitrary UIA element.
+    ///     </description>
+    ///   </item>
+    ///   <item>
+    ///     <description>
+    ///       Prefer <c>IsModal == true</c> — the strongest signal that the window is a
+    ///       confirmation popup.  Also recognises Win32 standard dialog class <c>#32770</c>
+    ///       which is functionally modal even when <c>IsModal</c> is reported as false.
+    ///     </description>
+    ///   </item>
+    ///   <item>
+    ///     <description>
+    ///       Exclude the main application window by comparing
+    ///       <paramref name="mainWindowHandle"/> against each candidate's
+    ///       <c>NativeWindowHandle</c> to avoid acting on the wrong window.
+    ///     </description>
+    ///   </item>
+    ///   <item>
+    ///     <description>
+    ///       Fall back to the OS foreground window — confirmation popups typically steal
+    ///       focus when they open.
+    ///     </description>
+    ///   </item>
+    /// </list>
+    /// </summary>
+    private static AutomationElement? FindPopupDialog(
+        AutomationBase automation,
+        int? processId,
+        IntPtr? mainWindowHandle)
+    {
+        var cf = automation.ConditionFactory;
+        var desktop = automation.GetDesktop();
+
+        // Collects Window-type elements that pass all filters into `candidates`,
+        // deduplicating by NativeWindowHandle to avoid processing the same window twice.
+        var seenHandles = new HashSet<IntPtr>();
+        var candidates  = new List<AutomationElement>();
+
+        void Collect(AutomationElement[] windows)
+        {
+            foreach (var w in windows)
+            {
+                // Priority 2: must support WindowPattern — confirms it is a real window/dialog.
+                try { if (!w.Patterns.Window.IsSupported) continue; }
+                catch { continue; }
+
+                // Priority 1: same ProcessId when known — avoids picking up unrelated dialogs.
+                if (processId.HasValue)
+                {
+                    try { if (w.Properties.ProcessId.Value != processId.Value) continue; }
+                    catch { continue; }
+                }
+
+                // Priority 4: exclude the main application window by NativeWindowHandle.
+                if (mainWindowHandle.HasValue && mainWindowHandle.Value != IntPtr.Zero)
+                {
+                    try
+                    {
+                        if (w.Properties.NativeWindowHandle.Value == mainWindowHandle.Value)
+                            continue;
+                    }
+                    catch { /* can't read handle — keep as candidate */ }
+                }
+
+                // Deduplicate by HWND.
+                IntPtr hwnd;
+                try { hwnd = w.Properties.NativeWindowHandle.Value; }
+                catch { hwnd = IntPtr.Zero; }
+
+                if (hwnd == IntPtr.Zero || seenHandles.Add(hwnd))
+                    candidates.Add(w);
+            }
+        }
+
+        // Priority 1 — top-level windows first (direct desktop children).
+        Collect(desktop.FindAllChildren(cf.ByControlType(ControlType.Window)));
+
+        // If no qualifying top-level window was found, descend into the UIA tree: owned
+        // dialogs are sometimes nested under their owning window rather than appearing as
+        // direct desktop children.
+        if (candidates.Count == 0)
+            Collect(desktop.FindAllDescendants(cf.ByControlType(ControlType.Window)));
+
+        if (candidates.Count == 0) return null;
+
+        // Priority 3a: IsModal == true is the strongest confirmation-popup signal.
+        var modal = candidates.FirstOrDefault(w =>
+        {
+            try { return w.Patterns.Window.Pattern.IsModal; }
+            catch { return false; }
+        });
+        if (modal != null) return modal;
+
+        // Priority 3b: Win32 standard dialog class (#32770) is functionally modal even
+        // when IsModal is reported as false by UIA.
+        var win32Dialog = candidates.FirstOrDefault(w =>
+        {
+            try { return string.Equals(w.ClassName, "#32770", StringComparison.Ordinal); }
+            catch { return false; }
+        });
+        if (win32Dialog != null) return win32Dialog;
+
+        // Priority 5: foreground window fallback — confirmation popups usually take focus.
+        var foregroundHwnd = GetForegroundWindow();
+        if (foregroundHwnd != IntPtr.Zero)
+        {
+            var foreground = candidates.FirstOrDefault(w =>
+            {
+                try { return w.Properties.NativeWindowHandle.Value == foregroundHwnd; }
+                catch { return false; }
+            });
+            if (foreground != null) return foreground;
+        }
+
+        // Last resort: return the first remaining candidate.
+        return candidates.FirstOrDefault();
     }
 
     /// <summary>
@@ -1276,28 +1401,6 @@ public class UiService : IUiService
         {
             tempAutomation?.Dispose();
         }
-    }
-
-    /// <summary>
-    /// Returns true when <paramref name="w"/> is a modal dialog window.
-    /// Also recognises standard Win32 dialogs (window class <c>#32770</c>) that are
-    /// functionally modal but do not always report <c>IsModal = true</c> via UIA.
-    /// Any exception from accessing UIA properties (e.g. stale element reference or
-    /// COM error) is treated as "not a modal dialog" so the caller can continue safely.
-    /// </summary>
-    private static bool IsModalDialog(AutomationElement w)
-    {
-        try
-        {
-            if (w.Patterns.Window.IsSupported && w.Patterns.Window.Pattern.IsModal)
-                return true;
-        }
-        catch { /* stale element or COM error — fall through to #32770 check */ }
-
-        // Win32 standard dialog class — many Win32 dialogs do not set IsModal correctly
-        // but their HWND class name is always "#32770".
-        try { return string.Equals(w.ClassName, "#32770", StringComparison.Ordinal); }
-        catch { return false; }
     }
 
     private object? ClickGridCell(UiRequest req)
@@ -2329,4 +2432,7 @@ public class UiService : IUiService
     private static string SanitizeValue(string? value) =>
         System.Text.RegularExpressions.Regex.Replace(
             value ?? string.Empty, @"[\r\n\t]", "_");
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
 }
