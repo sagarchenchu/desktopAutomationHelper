@@ -2257,7 +2257,7 @@ public sealed class RecordingOverlayWindow : Form
         {
             var popupHandle = AssistivePopupResolver.SafeWindowHandle(windowElement);
             var handleHex = popupHandle != IntPtr.Zero
-                ? $"0x{popupHandle.ToInt64():X8}"
+                ? $"0x{popupHandle.ToInt64():X}"
                 : "(unknown handle)";
 
             // Header (not selectable)
@@ -2331,6 +2331,15 @@ public sealed class RecordingOverlayWindow : Form
                 if (capturedHwnd != IntPtr.Zero)
                     SetForegroundWindow(capturedHwnd);
                 System.Windows.Forms.SendKeys.SendWait("{ENTER}");
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Type,
+                    Mode = RecordingMode.Assistive,
+                    Element = capturedPopupInfo,
+                    Value = "{ENTER}",
+                    Description = $"Press Enter on '{windowTitle}'"
+                });
+                UpdateStatusAfterAction($"Press Enter on [Popup] {windowTitle}");
             };
             menu.Items.Add(pressEnterItem);
 
@@ -2341,6 +2350,15 @@ public sealed class RecordingOverlayWindow : Form
                 if (capturedHwnd != IntPtr.Zero)
                     SetForegroundWindow(capturedHwnd);
                 System.Windows.Forms.SendKeys.SendWait("{ESC}");
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Type,
+                    Mode = RecordingMode.Assistive,
+                    Element = capturedPopupInfo,
+                    Value = "{ESC}",
+                    Description = $"Press Esc on '{windowTitle}'"
+                });
+                UpdateStatusAfterAction($"Press Esc on [Popup] {windowTitle}");
             };
             menu.Items.Add(pressEscItem);
 
