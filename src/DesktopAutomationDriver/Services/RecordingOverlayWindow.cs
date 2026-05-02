@@ -1011,18 +1011,44 @@ public sealed class RecordingOverlayWindow : Form
                     // The driver process still holds the foreground lock immediately
                     // after the menu closes, so SetForegroundWindow is allowed here.
                     BringElementWindowToForeground(element);
-                    // Brief pause to let the window activation take effect before
-                    // the physical mouse click fires; without this, Windows may not
-                    // have finished processing the SetForegroundWindow call and the
-                    // click can still land on the previously-focused application.
-                    Thread.Sleep(WindowActivationDelayMs);
-                    // Click at the exact point the user right-clicked rather than
-                    // re-querying GetClickablePoint() from the element.  This is
-                    // essential for Unknown-framework elements (e.g. Java Swing top-level
-                    // MenuItems) whose UIA BoundingRectangle / ClickablePoint can be the
-                    // full menu-bar row rather than the specific item under the cursor,
-                    // causing clicks to land at the wrong position.
-                    Mouse.Click(pt);
+
+                    // For MenuItem elements that open a native dropdown via physical click,
+                    // defer Mouse.Click via a short timer so the click fires AFTER the
+                    // assistive context menu has fully closed.  Without this deferral,
+                    // the assistive menu's close sequence can disturb the native dropdown
+                    // (e.g. through focus-change messages), preventing the user from
+                    // right-clicking a sub-item to record the second step.
+                    if (element?.ControlType == ControlType.MenuItem)
+                    {
+                        // Capture pt as a local so the lambda holds a copy of the value-type struct.
+                        var deferredPt = pt;
+                        var clickTimer = new System.Windows.Forms.Timer { Interval = WindowActivationDelayMs };
+                        clickTimer.Tick += (_, _) =>
+                        {
+                            clickTimer.Stop();
+                            clickTimer.Dispose();
+                            // Best-effort: the action is already recorded; if the physical
+                            // click fails here the user can retry the interaction.
+                            try { Mouse.Click(deferredPt); }
+                            catch (Exception ex) { _logger.LogWarning(ex, "Deferred MenuItem Mouse.Click failed"); }
+                        };
+                        clickTimer.Start();
+                    }
+                    else
+                    {
+                        // Brief pause to let the window activation take effect before
+                        // the physical mouse click fires; without this, Windows may not
+                        // have finished processing the SetForegroundWindow call and the
+                        // click can still land on the previously-focused application.
+                        Thread.Sleep(WindowActivationDelayMs);
+                        // Click at the exact point the user right-clicked rather than
+                        // re-querying GetClickablePoint() from the element.  This is
+                        // essential for Unknown-framework elements (e.g. Java Swing top-level
+                        // MenuItems) whose UIA BoundingRectangle / ClickablePoint can be the
+                        // full menu-bar row rather than the specific item under the cursor,
+                        // causing clicks to land at the wrong position.
+                        Mouse.Click(pt);
+                    }
                 }
             });
         AddActionItem(menu, "Double Click", element, elementInfo, ActionType.DoubleClick,
@@ -1305,11 +1331,35 @@ public sealed class RecordingOverlayWindow : Form
                 var elementLabel = ElementInfo.GetLabel(editTargetInfo);
                 try
                 {
+                    // After the Type dialog closes, focus may have moved to an unexpected
+                    // window (e.g. the IDE that launched the driver, or a previously focused
+                    // element).  Bring the target element's window to the foreground first so
+                    // that simulated keystrokes land on the correct control.
+                    BringElementWindowToForeground(editTarget);
+                    Thread.Sleep(WindowActivationDelayMs);
+
                     if (editTarget.Patterns.Value.IsSupported)
-                        editTarget.Patterns.Value.Pattern.SetValue(text);
+                    {
+                        try
+                        {
+                            editTarget.Patterns.Value.Pattern.SetValue(text);
+                        }
+                        catch (Exception ex)
+                        {
+                            // SetValue can fail for various reasons — password fields that
+                            // block direct UIA writes, read-only elements whose IsReadOnly
+                            // flag is unreliable, or framework-specific restrictions.
+                            // Log at debug level and fall back to simulated keystrokes.
+                            _logger.LogDebug(ex, "SetValue failed for element \"{Label}\"; falling back to SendKeys", elementLabel);
+                            editTarget.Focus();
+                            Thread.Sleep(WindowActivationDelayMs);
+                            System.Windows.Forms.SendKeys.SendWait(EscapeForSendKeys(text));
+                        }
+                    }
                     else
                     {
                         editTarget.Focus();
+                        Thread.Sleep(WindowActivationDelayMs);
                         System.Windows.Forms.SendKeys.SendWait(EscapeForSendKeys(text));
                     }
                 }
