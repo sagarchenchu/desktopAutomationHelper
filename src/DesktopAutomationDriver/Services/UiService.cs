@@ -1251,12 +1251,12 @@ public class UiService : IUiService
         var cf = automation.ConditionFactory;
         var desktop = automation.GetDesktop();
 
-        // Collects Window-type elements that pass all filters into `candidates`,
+        // Filters Window-type elements and appends qualifying ones to `candidates`,
         // deduplicating by NativeWindowHandle to avoid processing the same window twice.
         var seenHandles = new HashSet<IntPtr>();
         var candidates  = new List<AutomationElement>();
 
-        void Collect(AutomationElement[] windows)
+        void CollectWindowCandidates(AutomationElement[] windows)
         {
             foreach (var w in windows)
             {
@@ -1282,24 +1282,27 @@ public class UiService : IUiService
                     catch { /* can't read handle — keep as candidate */ }
                 }
 
-                // Deduplicate by HWND.
+                // Require a valid (non-zero) HWND and deduplicate by it.
+                // Elements without a readable HWND are not real top-level windows
+                // and are skipped to avoid false positives.
                 IntPtr hwnd;
                 try { hwnd = w.Properties.NativeWindowHandle.Value; }
-                catch { hwnd = IntPtr.Zero; }
+                catch { continue; }
 
-                if (hwnd == IntPtr.Zero || seenHandles.Add(hwnd))
+                if (hwnd != IntPtr.Zero && seenHandles.Add(hwnd))
                     candidates.Add(w);
             }
         }
 
         // Priority 1 — top-level windows first (direct desktop children).
-        Collect(desktop.FindAllChildren(cf.ByControlType(ControlType.Window)));
+        CollectWindowCandidates(desktop.FindAllChildren(cf.ByControlType(ControlType.Window)));
 
         // If no qualifying top-level window was found, descend into the UIA tree: owned
         // dialogs are sometimes nested under their owning window rather than appearing as
-        // direct desktop children.
+        // direct desktop children.  This scan is more expensive so it is only run as a
+        // fallback when the fast path yields nothing.
         if (candidates.Count == 0)
-            Collect(desktop.FindAllDescendants(cf.ByControlType(ControlType.Window)));
+            CollectWindowCandidates(desktop.FindAllDescendants(cf.ByControlType(ControlType.Window)));
 
         if (candidates.Count == 0) return null;
 
