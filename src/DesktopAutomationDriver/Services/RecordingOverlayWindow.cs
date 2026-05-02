@@ -92,6 +92,15 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxWindowSearchDepth = 5;
     private const int MaxMenuAncestorDepth = 10;
 
+    /// <summary>Interval in milliseconds between popup-probe timer ticks after an assistive click.</summary>
+    private const int PopupProbeIntervalMs = 100;
+
+    /// <summary>Maximum number of probe timer ticks before the probe is abandoned (2 seconds total).</summary>
+    private const int MaxPopupProbeAttempts = PopupProbeTimeoutMs / PopupProbeIntervalMs;
+
+    /// <summary>Total duration in milliseconds for the post-click popup probe.</summary>
+    private const int PopupProbeTimeoutMs = 2000;
+
     /// <summary>
     /// Minimum pixel distance the mouse must travel while the left button is held before a
     /// mouse-down + mouse-up sequence is classified as a drag rather than a click.
@@ -2895,7 +2904,7 @@ public sealed class RecordingOverlayWindow : Form
                 current = current.Parent;
             }
 
-            return element.ControlType == ControlType.Window ? element : null;
+            return null;
         }
         catch
         {
@@ -2914,7 +2923,7 @@ public sealed class RecordingOverlayWindow : Form
             return;
 
         var attempts = 0;
-        var probeTimer = new System.Windows.Forms.Timer { Interval = 100 };
+        var probeTimer = new System.Windows.Forms.Timer { Interval = PopupProbeIntervalMs };
 
         probeTimer.Tick += (_, _) =>
         {
@@ -2943,7 +2952,7 @@ public sealed class RecordingOverlayWindow : Form
                 // best effort
             }
 
-            if (attempts >= 20) // 20 * 100 ms = 2 seconds
+            if (attempts >= MaxPopupProbeAttempts)
             {
                 probeTimer.Stop();
                 probeTimer.Dispose();
@@ -2952,7 +2961,6 @@ public sealed class RecordingOverlayWindow : Form
 
         probeTimer.Start();
     }
-
 
     private void EnsureOverlayVisible()
     {
