@@ -82,6 +82,7 @@ public sealed class RecordingOverlayWindow : Form
     private const int WS_EX_LAYERED = 0x00080000;
     private const int WS_EX_TOPMOST = 0x00000008;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
+    private const int WS_EX_NOACTIVATE = 0x08000000;
 
     /// <summary>Maximum number of child elements shown in the "Children ▶" submenu.</summary>
     private const int MaxChildrenToDisplay = 30;
@@ -317,7 +318,7 @@ public sealed class RecordingOverlayWindow : Form
         const int MaxNameLen = 22;
         var displayName = name.Length > MaxNameLen ? name[..MaxNameLen] + "…" : name;
 
-        var text = $"● [{ct}] {displayName}  Right-click";
+        var text = $"● [{ct}] {displayName}  Right-click  │  Ctrl+RC = Window";
         if (_statusLabel.Text != text)
             _statusLabel.Text = text;
     }
@@ -370,7 +371,7 @@ public sealed class RecordingOverlayWindow : Form
 
         var label = mode == RecordingMode.Passive
             ? "● PASSIVE  Recording clicks & keys  S=Stop"
-            : "● ASSISTIVE  Right-click element  S=Stop";
+            : "● ASSISTIVE  Right-click element  │  Ctrl+Right-click for window actions  S=Stop";
         _statusLabel.Text = label;
     }
 
@@ -455,6 +456,23 @@ public sealed class RecordingOverlayWindow : Form
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
                 var pt = ms.pt;
+
+                // Ctrl+Right Click → show the window-level context menu instead of
+                // the normal element context menu.
+                bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                if (ctrlHeld)
+                {
+                    var timer = new System.Windows.Forms.Timer { Interval = ContextMenuDelayMs };
+                    timer.Tick += (_, _) =>
+                    {
+                        timer.Stop();
+                        timer.Dispose();
+                        ShowWindowContextMenu(pt);
+                    };
+                    timer.Start();
+                    _suppressNextRButtonUp = true;
+                    return (IntPtr)1; // suppress the native right-click
+                }
 
                 // A simulated right-click fired by the "Right Click" action item sets
                 // _suppressNextRButtonDown so the hook does not intercept it.
@@ -747,12 +765,38 @@ public sealed class RecordingOverlayWindow : Form
 
         var elementInfo = element != null ? BuildElementInfo(element) : null;
 
-        // For sub-MenuItems that live inside a ToolStripDropDown popup: showing the
-        // assistive ContextMenuStrip steals focus from the application, which causes
-        // WinForms to destroy the popup HWND.  The captured 'element' reference then
-        // points to a destroyed UIA element, so Invoke() / Click() on it fail silently.
-        // Build a re-navigation path right now (while the popup is still open) so the
-        // Click handler can re-open the menu chain and locate fresh UIA elements.
+        // Capture the element's top-level window HWND before the assistive context menu
+        // is shown.  NoActivateContextMenuStrip (WS_EX_NOACTIVATE) prevents
+        // activation-based dismissal of modal popup windows (IsModal = true), but some
+        // popups also close on click-based dismissal (e.g. WPF Popup with
+        // StaysOpen = False).  Using the pre-captured HWND in the Right Click handler
+        // avoids stale-element exceptions when the element's properties are queried
+        // after the popup has closed.
+        IntPtr capturedHwnd = IntPtr.Zero;
+        if (element != null)
+        {
+            try
+            {
+                var hwnd = element.Properties.NativeWindowHandle.Value;
+                if (hwnd != IntPtr.Zero)
+                {
+                    var root = GetAncestor(hwnd, GA_ROOT);
+                    capturedHwnd = root != IntPtr.Zero ? root : hwnd;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not capture HWND for element at {Pt}; Right Click will fall back to element reference", pt);
+            }
+        }
+
+        // For sub-MenuItems that live inside a ToolStripDropDown popup: even with
+        // NoActivateContextMenuStrip preventing activation-based dismissal, some
+        // WinForms popups may still collapse when focus is redirected.  The captured
+        // 'element' reference then points to a destroyed UIA element, so Invoke() /
+        // Click() on it fail silently.  Build a re-navigation path right now (while
+        // the popup is still open) so the Click handler can re-open the menu chain
+        // and locate fresh UIA elements.
         AutomationElement? popupMenuBarRef = null;
         var popupMenuPath = new List<string>(); // top-down MenuItem names, e.g. ["QA", "Level 1"]
         if (element?.ControlType == ControlType.MenuItem)
@@ -805,7 +849,7 @@ public sealed class RecordingOverlayWindow : Form
             : null;
         var innerEditInfo = innerEditElement != null ? BuildElementInfo(innerEditElement) : null;
 
-        var menu = new ContextMenuStrip { ShowImageMargin = false };
+        var menu = new NoActivateContextMenuStrip { ShowImageMargin = false };
         menu.Font = new Font("Segoe UI", 10f);
 
         // Re-apply click-through styles when the menu closes so rapid right-clicks
@@ -915,7 +959,14 @@ public sealed class RecordingOverlayWindow : Form
         AddActionItem(menu, "Right Click", element, elementInfo, ActionType.RightClick,
             () =>
             {
-                BringElementWindowToForeground(element);
+                // Prefer the HWND captured before the menu appeared so that the correct
+                // window receives focus even when the element becomes stale (e.g. a
+                // modal popup closed on click-based dismissal).  Fall back to the
+                // standard BringElementWindowToForeground when no HWND was captured.
+                if (capturedHwnd != IntPtr.Zero)
+                    SetForegroundWindow(capturedHwnd);
+                else
+                    BringElementWindowToForeground(element);
                 Thread.Sleep(WindowActivationDelayMs);
                 // Set the flag so the global hook does not intercept this simulated
                 // right-click and show the assistive context menu a second time.
@@ -1841,6 +1892,240 @@ public sealed class RecordingOverlayWindow : Form
         menu.Show(this, PointToClient(pt));
     }
 
+    // ── Assistive mode: Ctrl+Right Click window context menu ─────────────────
+
+    /// <summary>
+    /// Guard wrapper for <see cref="ShowWindowContextMenuCore"/>. Mirrors the pattern
+    /// used by <see cref="ShowAssistiveContextMenu"/>.
+    /// </summary>
+    private void ShowWindowContextMenu(System.Drawing.Point pt)
+    {
+        if (_menuOpen) return;
+        if (_automation == null) return;
+
+        _menuOpen = true;
+        try
+        {
+            ShowWindowContextMenuCore(pt);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to show window context menu at {Pt}", pt);
+            _menuOpen = false;
+        }
+    }
+
+    /// <summary>
+    /// Builds and shows a context menu that targets the <em>window</em> under the cursor
+    /// rather than the individual UI element. Triggered by Ctrl+Right Click in Assistive mode.
+    ///
+    /// <para>The menu always contains:</para>
+    /// <list type="bullet">
+    ///   <item>A read-only header showing the window title.</item>
+    ///   <item><b>Switch Window</b> — records <see cref="ActionType.SwitchWindow"/>.</item>
+    ///   <item><b>Maximize / Minimize / Close Window</b> — when the window supports the WindowPattern.</item>
+    ///   <item><b>Window Buttons ▶</b> — flyout listing all Button descendants of the window,
+    ///         e.g. OK, Cancel, Yes, No. Each records <see cref="ActionType.Click"/>.</item>
+    /// </list>
+    /// </summary>
+    private void ShowWindowContextMenuCore(System.Drawing.Point pt)
+    {
+        // ── Locate the target window ────────────────────────────────────────
+        AutomationElement? element = null;
+        try { element = _automation!.FromPoint(pt); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not get element at point {Pt} for window context menu", pt);
+        }
+
+        // Walk up the UIA tree to find the nearest Window ancestor (or self).
+        AutomationElement? windowElement = null;
+        try
+        {
+            var current = element;
+            for (int _ = 0; _ < MaxWindowSearchDepth && current != null; _++)
+            {
+                if (current.ControlType == ControlType.Window)
+                {
+                    windowElement = current;
+                    break;
+                }
+                current = current.Parent;
+            }
+        }
+        catch { /* best effort */ }
+
+        // Fall back to the element itself if no Window parent was found.
+        windowElement ??= element;
+
+        var windowInfo = windowElement != null ? BuildElementInfo(windowElement) : null;
+        var windowTitle = windowInfo?.Name ?? string.Empty;
+
+        // Capture the HWND before the menu appears (mirrors the existing Right Click handler).
+        IntPtr capturedHwnd = IntPtr.Zero;
+        if (windowElement != null)
+        {
+            try
+            {
+                var hwnd = windowElement.Properties.NativeWindowHandle.Value;
+                if (hwnd != IntPtr.Zero)
+                {
+                    var root = GetAncestor(hwnd, GA_ROOT);
+                    capturedHwnd = root != IntPtr.Zero ? root : hwnd;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not capture HWND for window at {Pt}", pt);
+            }
+        }
+
+        // ── Build the context menu ──────────────────────────────────────────
+        var menu = new NoActivateContextMenuStrip { ShowImageMargin = false };
+        menu.Font = new Font("Segoe UI", 10f);
+
+        menu.Closed += (_, _) =>
+        {
+            _menuOpen = false;
+            ReapplyClickThroughStyle();
+        };
+
+        // Header (not selectable)
+        var headerName = windowInfo?.Name ?? windowInfo?.AutomationId ?? "(no name)";
+        var header = new ToolStripMenuItem($"[Window]  {headerName}")
+        {
+            Enabled = false,
+            ForeColor = Color.DimGray
+        };
+        menu.Items.Add(header);
+        menu.Items.Add(new ToolStripSeparator());
+
+        // Switch Window — always available
+        var switchItem = new ToolStripMenuItem("Switch Window");
+        switchItem.Click += (_, _) =>
+        {
+            var label = ElementInfo.GetLabel(windowInfo);
+            _service.AddAction(new RecordedAction
+            {
+                ActionType = ActionType.SwitchWindow,
+                Mode = RecordingMode.Assistive,
+                Element = windowInfo,
+                Value = windowTitle,
+                Description = $"Switch window to '{windowTitle}'"
+            });
+            UpdateStatusAfterAction($"Switch Window [{windowInfo?.ControlType}] {label}");
+        };
+        menu.Items.Add(switchItem);
+
+        // Window pattern operations (Maximize / Minimize / Close Window)
+        if (windowElement != null && windowElement.Patterns.Window.IsSupported)
+        {
+            AddActionItem(menu, "Maximize", windowElement, windowInfo, ActionType.Maximize,
+                () => windowElement.Patterns.Window.Pattern.SetWindowVisualState(
+                    FlaUI.Core.Definitions.WindowVisualState.Maximized));
+            AddActionItem(menu, "Minimize", windowElement, windowInfo, ActionType.Minimize,
+                () => windowElement.Patterns.Window.Pattern.SetWindowVisualState(
+                    FlaUI.Core.Definitions.WindowVisualState.Minimized));
+            AddActionItem(menu, "Close Window", windowElement, windowInfo, ActionType.CloseWindow,
+                () => windowElement.Patterns.Window.Pattern.Close());
+        }
+
+        // Window Buttons flyout — Button descendants of the window
+        if (windowElement != null && _automation != null)
+        {
+            try
+            {
+                var cf = _automation.ConditionFactory;
+                var buttons = windowElement.FindAllDescendants(cf.ByControlType(ControlType.Button));
+
+                if (buttons.Length > 0)
+                {
+                    menu.Items.Add(new ToolStripSeparator());
+                    var buttonsFlyout = new ToolStripMenuItem("Window Buttons ▶");
+
+                    foreach (var btn in buttons.Take(MaxChildrenToDisplay))
+                    {
+                        var btnInfo = BuildElementInfo(btn);
+                        var btnLabel = $"[Button]  {btnInfo.Name ?? btnInfo.AutomationId ?? "(unnamed)"}";
+                        var btnItem = new ToolStripMenuItem(btnLabel);
+                        var capturedBtnInfo = btnInfo;
+                        var capturedBtnWindowHwnd = capturedHwnd;
+
+                        btnItem.Click += (_, _) =>
+                        {
+                            // Re-locate a fresh reference to the button so that the click
+                            // is not fired on a stale element (the menu interaction may have
+                            // shifted focus away from the window).
+                            if (capturedBtnWindowHwnd != IntPtr.Zero)
+                                SetForegroundWindow(capturedBtnWindowHwnd);
+                            else
+                                BringElementWindowToForeground(windowElement);
+                            Thread.Sleep(WindowActivationDelayMs);
+
+                            try
+                            {
+                                AutomationElement? freshBtn = null;
+                                if (_automation != null)
+                                {
+                                    var cf2 = _automation.ConditionFactory;
+                                    if (!string.IsNullOrEmpty(capturedBtnInfo.AutomationId))
+                                        freshBtn = windowElement.FindFirstDescendant(
+                                            cf2.ByAutomationId(capturedBtnInfo.AutomationId));
+                                    if (freshBtn == null && !string.IsNullOrEmpty(capturedBtnInfo.Name))
+                                        freshBtn = windowElement.FindFirstDescendant(
+                                            cf2.ByControlType(ControlType.Button)
+                                               .And(cf2.ByName(capturedBtnInfo.Name)));
+                                }
+
+                                if (freshBtn != null)
+                                {
+                                    if (freshBtn.Patterns.Invoke.IsSupported)
+                                        freshBtn.Patterns.Invoke.Pattern.Invoke();
+                                    else
+                                        freshBtn.Click();
+                                }
+                                else
+                                {
+                                    // Fall back to invoking the (possibly stale) original reference.
+                                    if (btn.Patterns.Invoke.IsSupported)
+                                        btn.Patterns.Invoke.Pattern.Invoke();
+                                    else
+                                        btn.Click();
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "Window button click failed for '{Label}'", capturedBtnInfo.Name);
+                            }
+
+                            var elemLabel = ElementInfo.GetLabel(capturedBtnInfo);
+                            _service.AddAction(new RecordedAction
+                            {
+                                ActionType = ActionType.Click,
+                                Mode = RecordingMode.Assistive,
+                                Element = capturedBtnInfo,
+                                Description = $"Click on {elemLabel}"
+                            });
+                            UpdateStatusAfterAction($"Click [Button] {capturedBtnInfo.Name ?? "(button)"}");
+                        };
+
+                        buttonsFlyout.DropDownItems.Add(btnItem);
+                    }
+
+                    if (buttons.Length > MaxChildrenToDisplay)
+                        buttonsFlyout.DropDownItems.Add(
+                            new ToolStripMenuItem($"… and {buttons.Length - MaxChildrenToDisplay} more") { Enabled = false });
+
+                    menu.Items.Add(buttonsFlyout);
+                }
+            }
+            catch { /* best effort */ }
+        }
+
+        AddCloseItem(menu);
+        menu.Show(this, PointToClient(pt));
+    }
+
     /// <summary>
     /// Appends a separator and a "✕  Close" item that lets the user dismiss the context
     /// menu without recording any action.
@@ -1940,7 +2225,7 @@ public sealed class RecordingOverlayWindow : Form
             timer.Stop();
             timer.Dispose();
             if (_service.CurrentMode == RecordingMode.Assistive)
-                _statusLabel.Text = "  Assistive ACTIVE  │  Right-click any element for available actions  │  Ctrl+P = Passive  │  Ctrl+S = Stop  ";
+                _statusLabel.Text = "  Assistive ACTIVE  │  Right-click element  │  Ctrl+Right-click for window actions  │  Ctrl+P = Passive  │  Ctrl+S = Stop  ";
             else if (_service.CurrentMode == RecordingMode.Passive)
                 _statusLabel.Text = "  Passive ACTIVE  │  Recording clicks & keys  │  Ctrl+A = Assistive  │  Ctrl+S = Stop  ";
         };
@@ -2239,5 +2524,37 @@ public sealed class RecordingOverlayWindow : Form
             result = textBox.Text;
 
         return result;
+    }
+
+    /// <summary>
+    /// A <see cref="ContextMenuStrip"/> that carries the <c>WS_EX_NOACTIVATE</c>
+    /// extended window style so that showing it does not steal input focus from the
+    /// currently active window.
+    ///
+    /// <para>
+    /// Without this, displaying the assistive context menu over a modal popup window
+    /// (UIA <c>IsModal = true</c>) sends <c>WM_ACTIVATE(WA_INACTIVE)</c> to the popup,
+    /// causing light-dismiss popups to close before the user can select an action.
+    /// With <c>WS_EX_NOACTIVATE</c> the previously active window retains focus, so
+    /// the popup stays open and the simulated right-click (or click) reaches it.
+    /// </para>
+    ///
+    /// <para>
+    /// Mouse clicks on menu items are still delivered based on hit-testing and are
+    /// unaffected by the lack of activation; keyboard navigation of the menu is not
+    /// supported, but the assistive overlay is a mouse-driven tool.
+    /// </para>
+    /// </summary>
+    private sealed class NoActivateContextMenuStrip : ContextMenuStrip
+    {
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ExStyle |= WS_EX_NOACTIVATE;
+                return cp;
+            }
+        }
     }
 }
