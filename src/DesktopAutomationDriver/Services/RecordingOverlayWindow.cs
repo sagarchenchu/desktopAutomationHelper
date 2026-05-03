@@ -122,6 +122,13 @@ public sealed class RecordingOverlayWindow : Form
     private const int ContextMenuDelayMs = 1;
 
     /// <summary>
+    /// Delay in milliseconds inserted between <c>Mouse.MoveTo</c> and <c>Mouse.Click</c>
+    /// to allow the mouse cursor to settle and the target window to react before the
+    /// click is fired.
+    /// </summary>
+    private const int MouseClickSettleMs = 75;
+
+    /// <summary>
     /// Delay in milliseconds inserted after <c>SetForegroundWindow</c> to let the OS
     /// finish window activation before firing a physical mouse click.  Without this
     /// pause, the click can land on whatever window still holds the input focus
@@ -3122,15 +3129,20 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     /// <summary>
-    /// Tries to invoke or click <paramref name="element"/> with multiple fallbacks:
+    /// Tries to click <paramref name="element"/> with multiple fallbacks, updating the status label.
     /// <list type="number">
-    ///   <item>InvokePattern.Invoke()</item>
-    ///   <item>element.Click()</item>
-    ///   <item>Physical mouse click at the element's bounding-rectangle centre</item>
+    ///   <item>Physical mouse click at the element's bounding-rectangle centre (most reliable for native/modal buttons)</item>
+    ///   <item>FlaUI <see cref="AutomationElement.Click"/></item>
+    ///   <item>InvokePattern — only when <paramref name="allowInvokePattern"/> is <c>true</c></item>
+    ///   <item>Keyboard fallback: Enter for OK/Yes/Continue actions, Esc for Cancel/No actions</item>
     /// </list>
-    /// Updates the status label on failure.
+    /// InvokePattern is disabled by default because native Win32/modal popup buttons can throw
+    /// COM 0x80040201 (CONNECT_E_NOCONNECTION) from Invoke().
     /// </summary>
-    private void SafeInvokeOrClickElement(AutomationElement element, string actionName = "Click")
+    private void SafeInvokeOrClickElement(
+        AutomationElement element,
+        string actionName = "Click",
+        bool allowInvokePattern = false)
     {
         try
         {
@@ -3140,41 +3152,15 @@ public sealed class RecordingOverlayWindow : Form
                 return;
             }
 
-            // Try InvokePattern first.
-            try
-            {
-                if (element.Patterns.Invoke.IsSupported)
-                {
-                    element.Patterns.Invoke.Pattern.Invoke();
-                    StartPopupProbeAfterAction();
-                    return;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "{ActionName}: InvokePattern failed; falling back to mouse click", actionName);
-            }
-
-            // Fallback 1: FlaUI element.Click().
-            try
-            {
-                element.Click();
-                StartPopupProbeAfterAction();
-                return;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "{ActionName}: FlaUI element.Click failed; falling back to coordinate click", actionName);
-            }
-
-            // Fallback 2: physical mouse click at element centre.
+            // 1. Physical coordinate click first — most reliable for native/modal popup buttons.
             try
             {
                 var rect = element.BoundingRectangle;
 
-                if (!rect.IsEmpty)
+                if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
                 {
                     FlaUI.Core.Input.Mouse.MoveTo(GetElementCenter(rect));
+                    Thread.Sleep(MouseClickSettleMs);
                     FlaUI.Core.Input.Mouse.Click();
 
                     StartPopupProbeAfterAction();
@@ -3183,10 +3169,70 @@ public sealed class RecordingOverlayWindow : Form
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "{ActionName}: coordinate click failed", actionName);
+                _logger.LogWarning(ex, "{ActionName}: coordinate click failed; trying element.Click()", actionName);
             }
 
-            _statusLabel.Text = $"{actionName} failed: unable to invoke/click element";
+            // 2. FlaUI element.Click() second.
+            try
+            {
+                element.Click();
+                StartPopupProbeAfterAction();
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "{ActionName}: element.Click() failed", actionName);
+            }
+
+            // 3. InvokePattern LAST, and only when explicitly allowed.
+            // Default is false to avoid COM 0x80040201 on native modal buttons.
+            if (allowInvokePattern)
+            {
+                try
+                {
+                    if (element.Patterns.Invoke.IsSupported)
+                    {
+                        element.Patterns.Invoke.Pattern.Invoke();
+                        StartPopupProbeAfterAction();
+                        return;
+                    }
+                }
+                catch (FlaUI.Core.Exceptions.ElementNotAvailableException ex)
+                {
+                    _logger.LogWarning(ex, "{ActionName}: InvokePattern ElementNotAvailable", actionName);
+                }
+                catch (COMException ex)
+                {
+                    _logger.LogWarning(ex, "{ActionName}: InvokePattern COM failed (0x{HResult:X8})", actionName, ex.HResult);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "{ActionName}: InvokePattern failed", actionName);
+                }
+            }
+
+            // 4. Keyboard fallback for popup actions.
+            if (actionName.Contains("OK", StringComparison.OrdinalIgnoreCase) ||
+                actionName.Contains("Yes", StringComparison.OrdinalIgnoreCase) ||
+                actionName.Contains("Continue", StringComparison.OrdinalIgnoreCase))
+            {
+                System.Windows.Forms.SendKeys.SendWait("{ENTER}");
+                _statusLabel.Text = $"{actionName}: fallback Enter";
+                StartPopupProbeAfterAction();
+                return;
+            }
+
+            if (actionName.Contains("Cancel", StringComparison.OrdinalIgnoreCase) ||
+                actionName.Contains("No", StringComparison.OrdinalIgnoreCase) ||
+                actionName.Contains("Esc", StringComparison.OrdinalIgnoreCase))
+            {
+                System.Windows.Forms.SendKeys.SendWait("{ESC}");
+                _statusLabel.Text = $"{actionName}: fallback Esc";
+                StartPopupProbeAfterAction();
+                return;
+            }
+
+            _statusLabel.Text = $"{actionName} failed: unable to click element";
         }
         catch (Exception ex)
         {
@@ -3240,6 +3286,7 @@ public sealed class RecordingOverlayWindow : Form
                     if (!rect.IsEmpty)
                     {
                         FlaUI.Core.Input.Mouse.MoveTo(GetElementCenter(rect));
+                        Thread.Sleep(MouseClickSettleMs);
                         FlaUI.Core.Input.Mouse.Click();
 
                         _statusLabel.Text = "Popup OK clicked";
@@ -3252,12 +3299,8 @@ public sealed class RecordingOverlayWindow : Form
                     _logger.LogWarning(ex, "Popup OK coordinate click failed");
                 }
 
-                if (AssistivePopupResolver.TryInvokeOrClick(okButton, _logger))
-                {
-                    _statusLabel.Text = "Popup OK invoked";
-                    StartPopupProbeAfterAction();
-                    return;
-                }
+                // Do not call TryInvokeOrClick here — it can call InvokePattern and
+                // cause COM 0x80040201 on native modal buttons.
             }
 
             // Final fallback: press Enter.
@@ -3289,6 +3332,16 @@ public sealed class RecordingOverlayWindow : Form
             {
                 System.Windows.Forms.SendKeys.SendWait("{ESC}");
                 return;
+            }
+
+            try
+            {
+                popup.AsWindow()?.SetForeground();
+                Thread.Sleep(100);
+            }
+            catch
+            {
+                // best effort
             }
 
             var cf = _automation!.ConditionFactory;
@@ -3364,18 +3417,12 @@ public sealed class RecordingOverlayWindow : Form
 
                 if (freshBtn != null)
                 {
-                    if (freshBtn.Patterns.Invoke.IsSupported)
-                        freshBtn.Patterns.Invoke.Pattern.Invoke();
-                    else
-                        freshBtn.Click();
+                    SafeInvokeOrClickElement(freshBtn, $"Window Button: {buttonInfo.Name ?? menuLabel}");
                 }
                 else
                 {
                     // Fall back to the (possibly stale) original reference.
-                    if (originalButton.Patterns.Invoke.IsSupported)
-                        originalButton.Patterns.Invoke.Pattern.Invoke();
-                    else
-                        originalButton.Click();
+                    SafeInvokeOrClickElement(originalButton, $"Window Button: {buttonInfo.Name ?? menuLabel}");
                 }
             }
             catch (Exception ex)

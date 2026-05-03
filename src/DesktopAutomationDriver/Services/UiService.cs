@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using DesktopAutomationDriver.Models.Request;
 using FlaUI.Core;
@@ -281,9 +282,10 @@ public class UiService : IUiService
                     closeButton.Patterns.Invoke.Pattern.Invoke();
                     return;
                 }
-                catch (FlaUI.Core.Exceptions.ElementNotAvailableException)
+                catch (Exception ex) when (ex is FlaUI.Core.Exceptions.ElementNotAvailableException
+                                        || ex is COMException)
                 {
-                    // Element became unavailable; fall through to mouse click.
+                    // Element became unavailable or invoke failed; fall through to mouse click.
                 }
             }
 
@@ -768,9 +770,10 @@ public class UiService : IUiService
                 element.Patterns.Invoke.Pattern.Invoke();
                 return null;
             }
-            catch (FlaUI.Core.Exceptions.ElementNotAvailableException ex)
+            catch (Exception ex) when (ex is FlaUI.Core.Exceptions.ElementNotAvailableException
+                                    || ex is COMException)
             {
-                _logger.LogWarning(ex, "InvokePattern.Invoke() threw ElementNotAvailableException; falling back to element.Click()");
+                _logger.LogWarning(ex, "InvokePattern.Invoke() failed; falling back to element.Click()");
             }
         }
 
@@ -1220,9 +1223,10 @@ public class UiService : IUiService
                         btn.Patterns.Invoke.Pattern.Invoke();
                         return;
                     }
-                    catch (FlaUI.Core.Exceptions.ElementNotAvailableException)
+                    catch (Exception ex) when (ex is FlaUI.Core.Exceptions.ElementNotAvailableException
+                                            || ex is COMException)
                     {
-                        // Element became unavailable; fall through to mouse click.
+                        // Element became unavailable or invoke failed; fall through to mouse click.
                     }
                 }
 
@@ -1566,9 +1570,10 @@ public class UiService : IUiService
                 cell.Patterns.Invoke.Pattern.Invoke();
                 return;
             }
-            catch (FlaUI.Core.Exceptions.ElementNotAvailableException)
+            catch (Exception ex) when (ex is FlaUI.Core.Exceptions.ElementNotAvailableException
+                                    || ex is COMException)
             {
-                // Element became unavailable; fall through to mouse click.
+                // Element became unavailable or invoke failed; fall through to mouse click.
             }
         }
 
