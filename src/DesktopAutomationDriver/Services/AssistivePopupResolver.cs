@@ -15,6 +15,12 @@ namespace DesktopAutomationDriver.Services;
 /// </summary>
 public static class AssistivePopupResolver
 {
+    /// <summary>
+    /// Delay in milliseconds inserted between <c>Mouse.MoveTo</c> and <c>Mouse.Click</c>
+    /// to allow the mouse cursor to settle and the target window to react.
+    /// </summary>
+    private const int MouseClickSettleMs = 75;
+
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
@@ -258,8 +264,10 @@ public static class AssistivePopupResolver
 
     /// <summary>
     /// Invokes the element's Invoke pattern if supported; otherwise uses a mouse click.
-    /// Falls back to <see cref="AutomationElement.Click"/> if
-    /// <see cref="FlaUI.Core.Exceptions.ElementNotAvailableException"/> is thrown.
+    /// Falls back to <see cref="AutomationElement.Click"/> if the invocation fails
+    /// (e.g. <see cref="FlaUI.Core.Exceptions.ElementNotAvailableException"/> or a
+    /// <see cref="System.Runtime.InteropServices.COMException"/> such as
+    /// CONNECT_E_NOCONNECTION 0x80040201).
     /// </summary>
     public static void InvokeOrClick(AutomationElement element)
     {
@@ -270,9 +278,10 @@ public static class AssistivePopupResolver
                 element.Patterns.Invoke.Pattern.Invoke();
                 return;
             }
-            catch (FlaUI.Core.Exceptions.ElementNotAvailableException)
+            catch (Exception ex) when (ex is FlaUI.Core.Exceptions.ElementNotAvailableException
+                                    || ex is COMException)
             {
-                // Element became unavailable; fall through to mouse click.
+                // Element became unavailable or invoke failed; fall through to mouse click.
             }
         }
 
@@ -280,32 +289,44 @@ public static class AssistivePopupResolver
     }
 
     /// <summary>
-    /// Tries to invoke or click <paramref name="element"/> with multiple fallbacks:
+    /// Tries to click <paramref name="element"/> with multiple fallbacks.
     /// <list type="number">
-    ///   <item>InvokePattern.Invoke()</item>
-    ///   <item>element.Click()</item>
-    ///   <item>Physical mouse click at the element's bounding-rectangle centre</item>
+    ///   <item>Physical mouse click at the element's bounding-rectangle centre (most reliable for native/modal buttons)</item>
+    ///   <item>FlaUI <see cref="AutomationElement.Click"/></item>
+    ///   <item>InvokePattern.Invoke() — only when <paramref name="allowInvokePattern"/> is <c>true</c></item>
     /// </list>
+    /// InvokePattern is disabled by default because native Win32/modal popup buttons can throw
+    /// <see cref="FlaUI.Core.Exceptions.ElementNotAvailableException"/> or
+    /// <see cref="COMException"/> (0x80040201 CONNECT_E_NOCONNECTION) from Invoke().
     /// Returns <c>true</c> if any method succeeded, <c>false</c> if all failed.
     /// </summary>
-    public static bool TryInvokeOrClick(AutomationElement element, ILogger? logger = null)
+    public static bool TryInvokeOrClick(
+        AutomationElement element,
+        ILogger? logger = null,
+        bool allowInvokePattern = false)
     {
         if (element == null)
             return false;
 
+        // 1. Physical coordinate click first — most reliable for native/modal popup buttons.
         try
         {
-            if (element.Patterns.Invoke.IsSupported)
+            var rect = element.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
-                element.Patterns.Invoke.Pattern.Invoke();
+                FlaUI.Core.Input.Mouse.MoveTo(GetElementCenter(rect));
+                Thread.Sleep(MouseClickSettleMs);
+                FlaUI.Core.Input.Mouse.Click();
                 return true;
             }
         }
         catch (Exception ex)
         {
-            logger?.LogWarning(ex, "InvokePattern failed; trying element.Click()");
+            logger?.LogWarning(ex, "Coordinate click failed; trying element.Click()");
         }
 
+        // 2. FlaUI element.Click() second.
         try
         {
             element.Click();
@@ -313,24 +334,33 @@ public static class AssistivePopupResolver
         }
         catch (Exception ex)
         {
-            logger?.LogWarning(ex, "element.Click() failed; trying coordinate click");
+            logger?.LogWarning(ex, "element.Click() failed");
         }
 
-        try
+        // 3. InvokePattern LAST, and only when explicitly allowed.
+        // Default is false to avoid COM 0x80040201 on native modal buttons.
+        if (allowInvokePattern)
         {
-            var rect = element.BoundingRectangle;
-
-            if (!rect.IsEmpty)
+            try
             {
-                FlaUI.Core.Input.Mouse.MoveTo(GetElementCenter(rect));
-                FlaUI.Core.Input.Mouse.Click();
-
-                return true;
+                if (element.Patterns.Invoke.IsSupported)
+                {
+                    element.Patterns.Invoke.Pattern.Invoke();
+                    return true;
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            logger?.LogWarning(ex, "Coordinate click failed");
+            catch (FlaUI.Core.Exceptions.ElementNotAvailableException ex)
+            {
+                logger?.LogWarning(ex, "InvokePattern ElementNotAvailable");
+            }
+            catch (COMException ex)
+            {
+                logger?.LogWarning(ex, "InvokePattern COM failed (0x{HResult:X8})", ex.HResult);
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "InvokePattern failed");
+            }
         }
 
         return false;
