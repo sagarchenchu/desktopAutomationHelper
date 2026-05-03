@@ -156,6 +156,13 @@ public sealed class RecordingOverlayWindow : Form
     /// </summary>
     private const int OverlayHideDelayMs = 100;
 
+    /// <summary>
+    /// Delay in milliseconds inserted after <c>SendInput</c> returns to allow the target
+    /// window to process the click before <c>WindowFromPoint</c> is sampled for diagnostic
+    /// logging.
+    /// </summary>
+    private const int PostClickSettleMs = 100;
+
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
@@ -178,6 +185,45 @@ public sealed class RecordingOverlayWindow : Form
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+
+    // ── Win32 mouse input P/Invokes ─────────────────────────────────────────
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetCursorPos(int X, int Y);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(System.Drawing.Point point);
+
+    [DllImport("user32.dll")]
+    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out System.Drawing.Point lpPoint);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint type;
+        public MOUSEINPUT mi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    private const uint INPUT_MOUSE = 0;
+    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    private const uint BM_CLICK = 0x00F5;
 
     // ── fields ──────────────────────────────────────────────────────────────
     private readonly IRecordingService _service;
@@ -3089,9 +3135,14 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     /// <summary>
-    /// Performs a physical mouse click at <paramref name="point"/>, briefly hiding the
-    /// overlay so it cannot steal the click.  Brings the target window to the foreground
-    /// first when <paramref name="targetHwnd"/> is provided.
+    /// Performs a physical mouse click at <paramref name="point"/> using Win32 <c>SetCursorPos</c>
+    /// and <c>SendInput</c> (LEFTDOWN + LEFTUP), briefly hiding the overlay so it cannot steal
+    /// the click.  Brings the target window to the foreground first when
+    /// <paramref name="targetHwnd"/> is provided.
+    /// <para>
+    /// <c>FlaUI.Core.Input.Mouse.Click()</c> is intentionally <b>not</b> used here because it
+    /// does not guarantee delivery of real WM_LBUTTONDOWN/WM_LBUTTONUP messages to the target.
+    /// </para>
     /// </summary>
     /// <returns><c>true</c> on success; <c>false</c> if the click could not be performed.</returns>
     private bool TryPhysicalClickPoint(
@@ -3108,13 +3159,13 @@ public sealed class RecordingOverlayWindow : Form
             }
 
             _logger.LogInformation(
-                "{ActionName}: physical point click at {X},{Y}, hwnd=0x{Hwnd:X}",
+                "{ActionName}: Win32 click requested at {X},{Y}, targetHwnd=0x{Hwnd:X}",
                 actionName,
                 point.X,
                 point.Y,
                 targetHwnd.ToInt64());
 
-            // Temporarily hide overlay so it cannot steal click.
+            // Temporarily hide overlay so it cannot intercept the click.
             var wasVisible = Visible;
             var oldTopMost = TopMost;
 
@@ -3124,9 +3175,60 @@ public sealed class RecordingOverlayWindow : Form
                 Hide();
                 Thread.Sleep(OverlayHideDelayMs);
 
-                FlaUI.Core.Input.Mouse.MoveTo(point);
+                var hwndBefore = WindowFromPoint(point);
+                _logger.LogInformation(
+                    "{ActionName}: WindowFromPoint before click = 0x{Hwnd:X}",
+                    actionName,
+                    hwndBefore.ToInt64());
+
+                if (targetHwnd != IntPtr.Zero && hwndBefore != IntPtr.Zero)
+                {
+                    var rootBefore = GetAncestor(hwndBefore, GA_ROOT);
+                    _logger.LogInformation(
+                        "{ActionName}: hwndBefore=0x{Before:X}, rootBefore=0x{Root:X}, target=0x{Target:X}",
+                        actionName,
+                        hwndBefore.ToInt64(),
+                        rootBefore.ToInt64(),
+                        targetHwnd.ToInt64());
+                }
+
+                if (!SetCursorPos(point.X, point.Y))
+                {
+                    _logger.LogWarning(
+                        "{ActionName}: SetCursorPos failed. LastError={Error}",
+                        actionName,
+                        Marshal.GetLastWin32Error());
+                    return false;
+                }
+
                 Thread.Sleep(MouseClickSettleMs);
-                FlaUI.Core.Input.Mouse.Click();
+
+                var inputs = new[]
+                {
+                    new INPUT { type = INPUT_MOUSE, mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTDOWN } },
+                    new INPUT { type = INPUT_MOUSE, mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTUP } }
+                };
+
+                var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+
+                if (sent != (uint)inputs.Length)
+                {
+                    _logger.LogWarning(
+                        "{ActionName}: SendInput sent {Sent}/{Expected}. LastError={Error}",
+                        actionName,
+                        sent,
+                        inputs.Length,
+                        Marshal.GetLastWin32Error());
+                    return false;
+                }
+
+                Thread.Sleep(PostClickSettleMs);
+
+                var hwndAfter = WindowFromPoint(point);
+                _logger.LogInformation(
+                    "{ActionName}: Win32 click completed. WindowFromPoint after click = 0x{Hwnd:X}",
+                    actionName,
+                    hwndAfter.ToInt64());
             }
             finally
             {
@@ -3137,7 +3239,7 @@ public sealed class RecordingOverlayWindow : Form
                 ReapplyClickThroughStyle();
             }
 
-            _statusLabel.Text = $"{actionName}: clicked at {point.X},{point.Y}";
+            _statusLabel.Text = $"{actionName}: Win32 click at {point.X},{point.Y}";
             _logger.LogInformation("{ActionName}: physical point click completed", actionName);
             return true;
         }
@@ -3145,6 +3247,37 @@ public sealed class RecordingOverlayWindow : Form
         {
             _statusLabel.Text = $"{actionName} failed: {ex.Message}";
             _logger.LogError(ex, "{ActionName}: physical point click failed at {Point}", actionName, point);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Sends a <c>BM_CLICK</c> message directly to the native HWND of <paramref name="element"/>.
+    /// This is more reliable than UIA for native Win32 buttons when coordinate clicks fail.
+    /// </summary>
+    /// <returns><c>true</c> if the element has a native HWND and the message was sent; <c>false</c> otherwise.</returns>
+    private bool TryBmClick(AutomationElement element, string actionName)
+    {
+        try
+        {
+            var hwnd = element.Properties.NativeWindowHandle.ValueOrDefault;
+
+            if (hwnd == 0)
+                return false;
+
+            SendMessage(new IntPtr(hwnd), BM_CLICK, IntPtr.Zero, IntPtr.Zero);
+
+            _logger.LogInformation(
+                "{ActionName}: BM_CLICK sent to hwnd=0x{Hwnd:X}",
+                actionName,
+                hwnd);
+
+            _statusLabel.Text = $"{actionName}: BM_CLICK";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ActionName}: BM_CLICK failed", actionName);
             return false;
         }
     }
@@ -3285,19 +3418,18 @@ public sealed class RecordingOverlayWindow : Form
                 return false;
             }
 
-            // 1. Physical coordinate click first — most reliable for native/modal popup buttons.
+            // 1. Win32 SendInput coordinate click first — most reliable for native/modal popup buttons.
             try
             {
                 var rect = element.BoundingRectangle;
 
                 if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
                 {
-                    FlaUI.Core.Input.Mouse.MoveTo(GetElementCenter(rect));
-                    Thread.Sleep(MouseClickSettleMs);
-                    FlaUI.Core.Input.Mouse.Click();
-
-                    StartPopupProbeAfterAction();
-                    return true;
+                    if (TryPhysicalClickPoint(GetElementCenter(rect), actionName))
+                    {
+                        StartPopupProbeAfterAction();
+                        return true;
+                    }
                 }
             }
             catch (Exception ex)
@@ -3412,26 +3544,36 @@ public sealed class RecordingOverlayWindow : Form
 
             if (okButton != null)
             {
-                // Prefer a real mouse click for native modal buttons — InvokePattern
-                // can throw a COM exception (0x80040201) on some native dialogs.
+                // 1. Win32 SendInput physical click at button center — most reliable for native modal buttons.
+                // InvokePattern can throw COM 0x80040201 on some native dialogs, so it is not used.
                 try
                 {
                     var rect = okButton.BoundingRectangle;
 
                     if (!rect.IsEmpty)
                     {
-                        FlaUI.Core.Input.Mouse.MoveTo(GetElementCenter(rect));
-                        Thread.Sleep(MouseClickSettleMs);
-                        FlaUI.Core.Input.Mouse.Click();
+                        var center = GetElementCenter(rect);
+                        var popupHwnd = AssistivePopupResolver.SafeWindowHandle(popup);
 
-                        _statusLabel.Text = "Popup OK clicked";
-                        StartPopupProbeAfterAction();
-                        return;
+                        if (TryPhysicalClickPoint(center, "Popup OK", popupHwnd))
+                        {
+                            _statusLabel.Text = "Popup OK clicked";
+                            StartPopupProbeAfterAction();
+                            return;
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Popup OK coordinate click failed");
+                }
+
+                // 2. BM_CLICK fallback for native Win32 buttons that have a real HWND.
+                if (TryBmClick(okButton, "Popup OK"))
+                {
+                    _statusLabel.Text = "Popup OK clicked (BM_CLICK)";
+                    StartPopupProbeAfterAction();
+                    return;
                 }
 
                 // Do not call TryInvokeOrClick here — it can call InvokePattern and
