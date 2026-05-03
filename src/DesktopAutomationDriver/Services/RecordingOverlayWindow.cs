@@ -156,6 +156,13 @@ public sealed class RecordingOverlayWindow : Form
     /// </summary>
     private const int OverlayHideDelayMs = 100;
 
+    /// <summary>
+    /// Delay in milliseconds inserted after <c>SendInput</c> returns to allow the target
+    /// window to process the click before <c>WindowFromPoint</c> is sampled for diagnostic
+    /// logging.
+    /// </summary>
+    private const int PostClickSettleMs = 100;
+
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
@@ -3215,7 +3222,7 @@ public sealed class RecordingOverlayWindow : Form
                     return false;
                 }
 
-                Thread.Sleep(100);
+                Thread.Sleep(PostClickSettleMs);
 
                 var hwndAfter = WindowFromPoint(point);
                 _logger.LogInformation(
