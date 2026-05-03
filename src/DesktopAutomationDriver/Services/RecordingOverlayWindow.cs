@@ -1069,7 +1069,20 @@ public sealed class RecordingOverlayWindow : Form
                 }
                 else if (element?.Patterns.Invoke.IsSupported == true)
                 {
-                    element.Patterns.Invoke.Pattern.Invoke();
+                    // Re-resolve the element at point to avoid stale-element exceptions:
+                    // by the time the menu item is clicked, the window/popup may have changed.
+                    var capturedPoint = pt;
+                    var freshElement = _automation?.FromPoint(capturedPoint);
+
+                    if (freshElement != null)
+                    {
+                        SafeInvokeOrClickElement(freshElement, "Click");
+                    }
+                    else
+                    {
+                        // Fall back to the original captured element.
+                        SafeInvokeOrClickElement(element, "Click");
+                    }
                 }
                 else
                 {
@@ -2383,7 +2396,8 @@ public sealed class RecordingOverlayWindow : Form
             menu.Items.Add(handleHeader);
             menu.Items.Add(new ToolStripSeparator());
 
-            // Click OK — find the OK button and invoke it.
+            // Click OK — re-detects the popup and its OK button at click time to avoid
+            // stale element exceptions (SafeClickPopupOk handles all fallbacks).
             var capturedPopupWindow = windowElement;
             var capturedPopupInfo = windowInfo;
             var clickOkItem = new ToolStripMenuItem("Click OK");
@@ -2391,45 +2405,15 @@ public sealed class RecordingOverlayWindow : Form
             {
                 if (_automation == null) return;
 
-                if (capturedHwnd != IntPtr.Zero)
-                    SetForegroundWindow(capturedHwnd);
+                SafeClickPopupOk();
 
-                try
+                _service.AddAction(new RecordedAction
                 {
-                    var cf = _automation.ConditionFactory;
-                    var okBtn = AssistivePopupResolver.FindOkButton(capturedPopupWindow.AsWindow()!, cf);
-                    if (okBtn != null)
-                    {
-                        var okInfo = BuildElementInfo(okBtn);
-                        AssistivePopupResolver.InvokeOrClick(okBtn);
-                        _service.AddAction(new RecordedAction
-                        {
-                            ActionType = ActionType.Click,
-                            Mode = RecordingMode.Assistive,
-                            Element = okInfo,
-                            Description = $"Click OK on '{windowTitle}'"
-                        });
-                        UpdateStatusAfterAction($"Click OK on [Popup] {windowTitle}");
-                        StartPopupProbeAfterAction();
-                    }
-                    else
-                    {
-                        System.Windows.Forms.SendKeys.SendWait("{ENTER}");
-                        _service.AddAction(new RecordedAction
-                        {
-                            ActionType = ActionType.Click,
-                            Mode = RecordingMode.Assistive,
-                            Element = capturedPopupInfo,
-                            Description = $"Press Enter on '{windowTitle}' (OK button not found)"
-                        });
-                        UpdateStatusAfterAction($"Press Enter on [Popup] {windowTitle}");
-                        StartPopupProbeAfterAction();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Click OK failed for popup '{Title}'", windowTitle);
-                }
+                    ActionType = ActionType.Click,
+                    Mode = RecordingMode.Assistive,
+                    Element = capturedPopupInfo,
+                    Description = $"Click OK on '{windowTitle}'"
+                });
             };
             menu.Items.Add(clickOkItem);
 
@@ -2470,6 +2454,25 @@ public sealed class RecordingOverlayWindow : Form
                 UpdateStatusAfterAction($"Press Esc on [Popup] {windowTitle}");
             };
             menu.Items.Add(pressEscItem);
+
+            // Cancel / Esc — re-detects popup, finds Cancel button fresh at action time,
+            // falling back to Esc if no Cancel button is found.
+            var cancelEscItem = new ToolStripMenuItem("Cancel / Esc");
+            cancelEscItem.Click += (_, _) =>
+            {
+                SafeCancelPopup();
+
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Type,
+                    Mode = RecordingMode.Assistive,
+                    Element = capturedPopupInfo,
+                    Value = "{ESC}",
+                    Description = $"Cancel on '{windowTitle}'"
+                });
+                UpdateStatusAfterAction($"Cancel on [Popup] {windowTitle}");
+            };
+            menu.Items.Add(cancelEscItem);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -3035,8 +3038,43 @@ public sealed class RecordingOverlayWindow : Form
         var item = new ToolStripMenuItem(label);
         item.Click += (_, _) =>
         {
-            try { perform(); }
-            catch (Exception ex) { _logger.LogWarning(ex, "Action {Action} failed", actionType); }
+            try
+            {
+                perform();
+            }
+            catch (FlaUI.Core.Exceptions.ElementNotAvailableException ex)
+            {
+                _statusLabel.Text = "Element became unavailable. Re-detecting window/popup.";
+                _logger.LogWarning(ex, "ElementNotAvailableException in assistive action '{Label}'", label);
+
+                try
+                {
+                    var popup = DetectActivePopupWindow();
+
+                    if (popup != null)
+                    {
+                        _lastDetectedPopupWindow = popup;
+                        _lastDetectedPopupHwnd = AssistivePopupResolver.SafeWindowHandle(popup);
+                        _lastPopupDetectionUtc = DateTime.UtcNow;
+
+                        _statusLabel.Text = $"Popup re-detected: {popup.Name}";
+                    }
+                }
+                catch
+                {
+                    // best effort only
+                }
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                _statusLabel.Text = "COM invoke failed. Trying coordinate click fallback.";
+                _logger.LogWarning(ex, "COMException in assistive action '{Label}'", label);
+            }
+            catch (Exception ex)
+            {
+                _statusLabel.Text = $"Assistive action failed: {ex.Message}";
+                _logger.LogError(ex, "Assistive action '{Label}' failed", label);
+            }
 
             _service.AddAction(new RecordedAction
             {
@@ -3081,6 +3119,201 @@ public sealed class RecordingOverlayWindow : Form
             UpdateStatusAfterAction($"{label}: {result}  │  [{info?.ControlType}] {info?.Name ?? "(element)"}");
         };
         menu.Items.Add(item);
+    }
+
+    /// <summary>
+    /// Tries to invoke or click <paramref name="element"/> with multiple fallbacks:
+    /// <list type="number">
+    ///   <item>InvokePattern.Invoke()</item>
+    ///   <item>element.Click()</item>
+    ///   <item>Physical mouse click at the element's bounding-rectangle centre</item>
+    /// </list>
+    /// Updates the status label on failure.
+    /// </summary>
+    private void SafeInvokeOrClickElement(AutomationElement element, string actionName = "Click")
+    {
+        try
+        {
+            if (element == null)
+            {
+                _statusLabel.Text = $"{actionName} failed: element is null";
+                return;
+            }
+
+            // Try InvokePattern first.
+            try
+            {
+                if (element.Patterns.Invoke.IsSupported)
+                {
+                    element.Patterns.Invoke.Pattern.Invoke();
+                    StartPopupProbeAfterAction();
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "{ActionName}: InvokePattern failed; falling back to mouse click", actionName);
+            }
+
+            // Fallback 1: FlaUI element.Click().
+            try
+            {
+                element.Click();
+                StartPopupProbeAfterAction();
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "{ActionName}: FlaUI element.Click failed; falling back to coordinate click", actionName);
+            }
+
+            // Fallback 2: physical mouse click at element centre.
+            try
+            {
+                var rect = element.BoundingRectangle;
+
+                if (!rect.IsEmpty)
+                {
+                    var x = (int)(rect.Left + rect.Width / 2);
+                    var y = (int)(rect.Top + rect.Height / 2);
+
+                    FlaUI.Core.Input.Mouse.MoveTo(new System.Drawing.Point(x, y));
+                    FlaUI.Core.Input.Mouse.Click();
+
+                    StartPopupProbeAfterAction();
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "{ActionName}: coordinate click failed", actionName);
+            }
+
+            _statusLabel.Text = $"{actionName} failed: unable to invoke/click element";
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = $"{actionName} failed: {ex.Message}";
+            _logger.LogError(ex, "{ActionName} failed", actionName);
+        }
+    }
+
+    /// <summary>
+    /// Re-detects the active popup window at click time, finds its OK button fresh,
+    /// and prefers a physical mouse click over InvokePattern for native modal buttons
+    /// (which can throw a COM exception via InvokePattern.Invoke).
+    /// Falls back to pressing Enter if no OK button is found.
+    /// </summary>
+    private void SafeClickPopupOk()
+    {
+        try
+        {
+            var popup = DetectActivePopupWindow();
+
+            if (popup == null && _lastDetectedPopupWindow != null)
+                popup = _lastDetectedPopupWindow;
+
+            if (popup == null)
+            {
+                _statusLabel.Text = "Click OK failed: popup not found";
+                return;
+            }
+
+            try
+            {
+                popup.AsWindow()?.SetForeground();
+                Thread.Sleep(100);
+            }
+            catch
+            {
+                // best effort
+            }
+
+            var cf = _automation!.ConditionFactory;
+            var okButton = AssistivePopupResolver.FindOkButton(popup.AsWindow()!, cf);
+
+            if (okButton != null)
+            {
+                // Prefer a real mouse click for native modal buttons — InvokePattern
+                // can throw a COM exception (0x80040201) on some native dialogs.
+                try
+                {
+                    var rect = okButton.BoundingRectangle;
+
+                    if (!rect.IsEmpty)
+                    {
+                        var x = (int)(rect.Left + rect.Width / 2);
+                        var y = (int)(rect.Top + rect.Height / 2);
+
+                        FlaUI.Core.Input.Mouse.MoveTo(new System.Drawing.Point(x, y));
+                        FlaUI.Core.Input.Mouse.Click();
+
+                        _statusLabel.Text = "Popup OK clicked";
+                        StartPopupProbeAfterAction();
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Popup OK coordinate click failed");
+                }
+
+                if (AssistivePopupResolver.TryInvokeOrClick(okButton, _logger))
+                {
+                    _statusLabel.Text = "Popup OK invoked";
+                    StartPopupProbeAfterAction();
+                    return;
+                }
+            }
+
+            // Final fallback: press Enter.
+            System.Windows.Forms.SendKeys.SendWait("{ENTER}");
+            _statusLabel.Text = "Popup OK fallback: Enter";
+            StartPopupProbeAfterAction();
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = "Popup OK failed: " + ex.Message;
+            _logger.LogError(ex, "SafeClickPopupOk failed");
+        }
+    }
+
+    /// <summary>
+    /// Re-detects the active popup window at click time and clicks its Cancel button,
+    /// falling back to pressing Escape if no Cancel button is found.
+    /// </summary>
+    private void SafeCancelPopup()
+    {
+        try
+        {
+            var popup = DetectActivePopupWindow();
+
+            if (popup == null && _lastDetectedPopupWindow != null)
+                popup = _lastDetectedPopupWindow;
+
+            if (popup == null)
+            {
+                System.Windows.Forms.SendKeys.SendWait("{ESC}");
+                return;
+            }
+
+            var cf = _automation!.ConditionFactory;
+            var cancelButton = AssistivePopupResolver.FindCancelButton(popup.AsWindow()!, cf);
+
+            if (cancelButton != null)
+            {
+                SafeInvokeOrClickElement(cancelButton, "Popup Cancel");
+                return;
+            }
+
+            System.Windows.Forms.SendKeys.SendWait("{ESC}");
+            StartPopupProbeAfterAction();
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = "Popup Cancel failed: " + ex.Message;
+            _logger.LogError(ex, "SafeCancelPopup failed");
+        }
     }
 
     /// <summary>
