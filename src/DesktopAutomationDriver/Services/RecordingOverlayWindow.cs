@@ -2464,7 +2464,7 @@ public sealed class RecordingOverlayWindow : Form
 
                 _service.AddAction(new RecordedAction
                 {
-                    ActionType = ActionType.Type,
+                    ActionType = ActionType.Click,
                     Mode = RecordingMode.Assistive,
                     Element = capturedPopupInfo,
                     Value = "{ESC}",
@@ -3174,10 +3174,7 @@ public sealed class RecordingOverlayWindow : Form
 
                 if (!rect.IsEmpty)
                 {
-                    var x = (int)(rect.Left + rect.Width / 2);
-                    var y = (int)(rect.Top + rect.Height / 2);
-
-                    FlaUI.Core.Input.Mouse.MoveTo(new System.Drawing.Point(x, y));
+                    FlaUI.Core.Input.Mouse.MoveTo(GetElementCenter(rect));
                     FlaUI.Core.Input.Mouse.Click();
 
                     StartPopupProbeAfterAction();
@@ -3242,10 +3239,7 @@ public sealed class RecordingOverlayWindow : Form
 
                     if (!rect.IsEmpty)
                     {
-                        var x = (int)(rect.Left + rect.Width / 2);
-                        var y = (int)(rect.Top + rect.Height / 2);
-
-                        FlaUI.Core.Input.Mouse.MoveTo(new System.Drawing.Point(x, y));
+                        FlaUI.Core.Input.Mouse.MoveTo(GetElementCenter(rect));
                         FlaUI.Core.Input.Mouse.Click();
 
                         _statusLabel.Text = "Popup OK clicked";
@@ -3427,6 +3421,16 @@ public sealed class RecordingOverlayWindow : Form
     /// </summary>
     private static string BuildDescription(string actionLabel, ElementInfo? info) =>
         $"{actionLabel} on {ElementInfo.GetLabel(info)}";
+
+    /// <summary>
+    /// Returns the centre point of <paramref name="rect"/> as an integer
+    /// <see cref="System.Drawing.Point"/>, suitable for passing to
+    /// <see cref="FlaUI.Core.Input.Mouse.MoveTo"/>.
+    /// </summary>
+    private static System.Drawing.Point GetElementCenter(System.Drawing.RectangleF rect) =>
+        new System.Drawing.Point(
+            (int)(rect.Left + rect.Width / 2),
+            (int)(rect.Top + rect.Height / 2));
 
     internal static ElementInfo BuildElementInfo(AutomationElement element)
     {

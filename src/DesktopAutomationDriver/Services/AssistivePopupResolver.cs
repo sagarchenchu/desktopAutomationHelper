@@ -310,10 +310,7 @@ public static class AssistivePopupResolver
 
             if (!rect.IsEmpty)
             {
-                var x = (int)(rect.Left + rect.Width / 2);
-                var y = (int)(rect.Top + rect.Height / 2);
-
-                FlaUI.Core.Input.Mouse.MoveTo(new System.Drawing.Point(x, y));
+                FlaUI.Core.Input.Mouse.MoveTo(GetElementCenter(rect));
                 FlaUI.Core.Input.Mouse.Click();
 
                 return true;
@@ -405,6 +402,14 @@ public static class AssistivePopupResolver
         try { return !element.IsOffscreen; }
         catch { return false; }
     }
+
+    /// <summary>
+    /// Returns the centre of <paramref name="rect"/> as a <see cref="System.Drawing.Point"/>.
+    /// </summary>
+    private static System.Drawing.Point GetElementCenter(System.Drawing.RectangleF rect) =>
+        new System.Drawing.Point(
+            (int)(rect.Left + rect.Width / 2),
+            (int)(rect.Top + rect.Height / 2));
 
     /// <summary>
     /// Returns the native window handle of <paramref name="element"/>, or
