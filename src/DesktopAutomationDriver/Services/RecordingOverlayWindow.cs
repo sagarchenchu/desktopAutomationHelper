@@ -1025,6 +1025,9 @@ public sealed class RecordingOverlayWindow : Form
         menu.Items.Add(header);
         menu.Items.Add(new ToolStripSeparator());
 
+        var capturedClickPoint = pt;
+        var capturedClickHwnd = capturedHwnd;
+
         // ── Interactive actions ──────────────────────────────────────────────
         AddActionItem(menu, "Click", element, elementInfo, ActionType.Click,
             () =>
@@ -1058,63 +1061,57 @@ public sealed class RecordingOverlayWindow : Form
                         bool isLast = i == popupMenuPath.Count - 1;
                         try
                         {
-                            if (stepItem.Patterns.Invoke.IsSupported)
-                                stepItem.Patterns.Invoke.Pattern.Invoke();
+                            // Do not use InvokePattern here. Use physical click.
+                            var rect = stepItem.BoundingRectangle;
+
+                            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+                            {
+                                var center = GetElementCenter(rect);
+                                FlaUI.Core.Input.Mouse.MoveTo(center);
+                                Thread.Sleep(MouseClickSettleMs);
+                                FlaUI.Core.Input.Mouse.Click();
+                            }
                             else
+                            {
                                 stepItem.Click();
+                            }
                         }
-                        catch { break; }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Menu re-navigation click failed for {StepName}", stepName);
+                            break;
+                        }
 
                         if (!isLast)
                         {
-                            // Wait for the intermediate dropdown to materialise before
-                            // searching for the next item.
                             Thread.Sleep(MenuNavigationDelayMs);
                             stepAnchor = stepItem;
                         }
                     }
-                }
-                else if (element?.Patterns.Invoke.IsSupported == true)
-                {
-                    // Re-resolve the element at point to avoid stale-element exceptions:
-                    // by the time the menu item is clicked, the window/popup may have changed.
-                    var capturedPoint = pt;
-                    var freshElement = _automation?.FromPoint(capturedPoint);
 
-                    if (freshElement != null)
-                    {
-                        SafeInvokeOrClickElement(freshElement, "Click");
-                    }
-                    else
-                    {
-                        // Fall back to the original captured element.
-                        SafeInvokeOrClickElement(element, "Click");
-                    }
+                    return;
                 }
-                else
-                {
-                    // Bring the element's root window to the foreground via Win32
-                    // SetForegroundWindow before firing a physical mouse click.
-                    // This is more reliable than UIA element.Focus() alone: when the
-                    // assistive context menu is dismissed, Windows can hand focus back
-                    // to IntelliJ (the process that launched the driver) before the
-                    // action handler executes — causing the click to land on IntelliJ.
-                    // The driver process still holds the foreground lock immediately
-                    // after the menu closes, so SetForegroundWindow is allowed here.
-                    BringElementWindowToForeground(element);
-                    // Brief pause to let the window activation take effect before
-                    // the physical mouse click fires; without this, Windows may not
-                    // have finished processing the SetForegroundWindow call and the
-                    // click can still land on the previously-focused application.
-                    Thread.Sleep(WindowActivationDelayMs);
-                    // Click at the exact point the user right-clicked rather than
-                    // re-querying GetClickablePoint() from the element.  This is
-                    // essential for Unknown-framework elements (e.g. Java Swing top-level
-                    // MenuItems) whose UIA BoundingRectangle / ClickablePoint can be the
-                    // full menu-bar row rather than the specific item under the cursor,
-                    // causing clicks to land at the wrong position.
-                    Mouse.Click(pt);
-                }
+
+                // Normal Assistive Click:
+                // Always click exactly where the user right-clicked, after the menu closes.
+                _logger.LogInformation(
+                    "Assistive Click requested. name={Name}, automationId={AutomationId}, controlType={ControlType}, point={Point}, hwnd=0x{Hwnd:X}",
+                    elementInfo?.Name,
+                    elementInfo?.AutomationId,
+                    elementInfo?.ControlType,
+                    capturedClickPoint,
+                    capturedClickHwnd.ToInt64());
+
+                var success = TryPhysicalClickPoint(capturedClickPoint, "Click", capturedClickHwnd);
+
+                if (!success)
+                    throw new InvalidOperationException($"Click failed at {capturedClickPoint.X},{capturedClickPoint.Y}");
+
+                _logger.LogInformation(
+                    "Assistive Click succeeded. name={Name}, automationId={AutomationId}, point={Point}",
+                    elementInfo?.Name,
+                    elementInfo?.AutomationId,
+                    capturedClickPoint);
             });
         AddActionItem(menu, "Double Click", element, elementInfo, ActionType.DoubleClick,
             () =>
@@ -3034,6 +3031,111 @@ public sealed class RecordingOverlayWindow : Form
     }
 
 
+    /// <summary>
+    /// Starts a short timer (175 ms) so that the context menu has fully closed before
+    /// the assistive action fires.  This prevents the overlay or menu from stealing the
+    /// physical click and ensures the target window can receive foreground focus.
+    /// </summary>
+    private void RunAssistiveActionAfterMenuClose(string actionName, Action action)
+    {
+        try
+        {
+            // Allow the ContextMenuStrip to fully close before moving/clicking the mouse.
+            _menuOpen = false;
+
+            var timer = new System.Windows.Forms.Timer { Interval = 175 };
+
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+
+                try
+                {
+                    _logger.LogInformation("Assistive action starting: {ActionName}", actionName);
+                    _statusLabel.Text = $"Running: {actionName}";
+
+                    action();
+
+                    _logger.LogInformation("Assistive action completed: {ActionName}", actionName);
+                }
+                catch (Exception ex)
+                {
+                    _statusLabel.Text = $"{actionName} failed: {ex.Message}";
+                    _logger.LogError(ex, "Assistive action failed: {ActionName}", actionName);
+                }
+            };
+
+            timer.Start();
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = $"{actionName} scheduling failed: {ex.Message}";
+            _logger.LogError(ex, "Assistive action scheduling failed: {ActionName}", actionName);
+        }
+    }
+
+    /// <summary>
+    /// Performs a physical mouse click at <paramref name="point"/>, briefly hiding the
+    /// overlay so it cannot steal the click.  Brings the target window to the foreground
+    /// first when <paramref name="targetHwnd"/> is provided.
+    /// </summary>
+    /// <returns><c>true</c> on success; <c>false</c> if the click could not be performed.</returns>
+    private bool TryPhysicalClickPoint(
+        System.Drawing.Point point,
+        string actionName,
+        IntPtr targetHwnd = default)
+    {
+        try
+        {
+            if (targetHwnd != IntPtr.Zero)
+            {
+                SetForegroundWindow(targetHwnd);
+                Thread.Sleep(WindowActivationDelayMs);
+            }
+
+            _logger.LogInformation(
+                "{ActionName}: physical point click at {X},{Y}, hwnd=0x{Hwnd:X}",
+                actionName,
+                point.X,
+                point.Y,
+                targetHwnd.ToInt64());
+
+            // Temporarily hide overlay so it cannot steal click.
+            var wasVisible = Visible;
+            var oldTopMost = TopMost;
+
+            try
+            {
+                TopMost = false;
+                Hide();
+                Thread.Sleep(100);
+
+                FlaUI.Core.Input.Mouse.MoveTo(point);
+                Thread.Sleep(MouseClickSettleMs);
+                FlaUI.Core.Input.Mouse.Click();
+            }
+            finally
+            {
+                if (wasVisible)
+                    Show();
+
+                TopMost = oldTopMost;
+                ReapplyClickThroughStyle();
+            }
+
+            _statusLabel.Text = $"{actionName}: clicked at {point.X},{point.Y}";
+            _logger.LogInformation("{ActionName}: physical point click completed", actionName);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = $"{actionName} failed: {ex.Message}";
+            _logger.LogError(ex, "{ActionName}: physical point click failed at {Point}", actionName, point);
+            return false;
+        }
+    }
+
     private void AddActionItem(
         ContextMenuStrip menu,
         string label,
@@ -3043,60 +3145,78 @@ public sealed class RecordingOverlayWindow : Form
         Action perform)
     {
         var item = new ToolStripMenuItem(label);
+
         item.Click += (_, _) =>
         {
-            try
+            RunAssistiveActionAfterMenuClose(label, () =>
             {
-                perform();
-            }
-            catch (FlaUI.Core.Exceptions.ElementNotAvailableException ex)
-            {
-                _statusLabel.Text = "Element became unavailable. Re-detecting window/popup.";
-                _logger.LogWarning(ex, "ElementNotAvailableException in assistive action '{Label}'", label);
+                var success = false;
 
                 try
                 {
-                    var popup = DetectActivePopupWindow();
+                    perform();
+                    success = true;
+                }
+                catch (FlaUI.Core.Exceptions.ElementNotAvailableException ex)
+                {
+                    _statusLabel.Text = "Element became unavailable. Re-detecting window/popup.";
+                    _logger.LogWarning(ex, "ElementNotAvailableException in assistive action '{Label}'", label);
 
-                    if (popup != null)
+                    try
                     {
-                        _lastDetectedPopupWindow = popup;
-                        _lastDetectedPopupHwnd = AssistivePopupResolver.SafeWindowHandle(popup);
-                        _lastPopupDetectionUtc = DateTime.UtcNow;
+                        var popup = DetectActivePopupWindow();
 
-                        _statusLabel.Text = $"Popup re-detected: {popup.Name}";
+                        if (popup != null)
+                        {
+                            _lastDetectedPopupWindow = popup;
+                            _lastDetectedPopupHwnd = AssistivePopupResolver.SafeWindowHandle(popup);
+                            _lastPopupDetectionUtc = DateTime.UtcNow;
+                            _statusLabel.Text = $"Popup re-detected: {popup.Name}";
+                        }
+                    }
+                    catch
+                    {
+                        // best effort only
                     }
                 }
-                catch
+                catch (System.Runtime.InteropServices.COMException ex)
                 {
-                    // best effort only
+                    _statusLabel.Text = "COM action failed.";
+                    _logger.LogWarning(ex, "COMException in assistive action '{Label}'", label);
                 }
-            }
-            catch (System.Runtime.InteropServices.COMException ex)
-            {
-                _statusLabel.Text = "COM invoke failed. Trying coordinate click fallback.";
-                _logger.LogWarning(ex, "COMException in assistive action '{Label}'", label);
-            }
-            catch (Exception ex)
-            {
-                _statusLabel.Text = $"Assistive action failed: {ex.Message}";
-                _logger.LogError(ex, "Assistive action '{Label}' failed", label);
-            }
+                catch (Exception ex)
+                {
+                    _statusLabel.Text = $"Assistive action failed: {ex.Message}";
+                    _logger.LogError(ex, "Assistive action '{Label}' failed", label);
+                }
 
-            _service.AddAction(new RecordedAction
-            {
-                ActionType = actionType,
-                Mode = RecordingMode.Assistive,
-                Element = info,
-                Description = BuildDescription(label, info)
+                if (!success)
+                {
+                    _logger.LogWarning(
+                        "Assistive action '{Label}' was not recorded because execution failed. Element={Element}",
+                        label,
+                        ElementInfo.GetLabel(info));
+
+                    return;
+                }
+
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = actionType,
+                    Mode = RecordingMode.Assistive,
+                    Element = info,
+                    Description = BuildDescription(label, info)
+                });
+
+                UpdateStatusAfterAction($"{label} on [{info?.ControlType}] {info?.Name ?? "(element)"}");
+
+                // After a Click action, start a short probe to detect any popup that may
+                // have opened as a result (e.g. clicking the login OK button).
+                if (actionType == ActionType.Click)
+                    StartPopupProbeAfterAction();
             });
-            UpdateStatusAfterAction($"{label} on [{info?.ControlType}] {info?.Name ?? "(element)"}");
-
-            // After a Click action, start a short probe to detect any popup that may
-            // have opened as a result (e.g. clicking the login OK button).
-            if (actionType == ActionType.Click)
-                StartPopupProbeAfterAction();
         };
+
         menu.Items.Add(item);
     }
 
@@ -3139,7 +3259,7 @@ public sealed class RecordingOverlayWindow : Form
     /// InvokePattern is disabled by default because native Win32/modal popup buttons can throw
     /// COM 0x80040201 (CONNECT_E_NOCONNECTION) from Invoke().
     /// </summary>
-    private void SafeInvokeOrClickElement(
+    private bool SafeInvokeOrClickElement(
         AutomationElement element,
         string actionName = "Click",
         bool allowInvokePattern = false)
@@ -3149,7 +3269,7 @@ public sealed class RecordingOverlayWindow : Form
             if (element == null)
             {
                 _statusLabel.Text = $"{actionName} failed: element is null";
-                return;
+                return false;
             }
 
             // 1. Physical coordinate click first — most reliable for native/modal popup buttons.
@@ -3164,7 +3284,7 @@ public sealed class RecordingOverlayWindow : Form
                     FlaUI.Core.Input.Mouse.Click();
 
                     StartPopupProbeAfterAction();
-                    return;
+                    return true;
                 }
             }
             catch (Exception ex)
@@ -3177,7 +3297,7 @@ public sealed class RecordingOverlayWindow : Form
             {
                 element.Click();
                 StartPopupProbeAfterAction();
-                return;
+                return true;
             }
             catch (Exception ex)
             {
@@ -3194,7 +3314,7 @@ public sealed class RecordingOverlayWindow : Form
                     {
                         element.Patterns.Invoke.Pattern.Invoke();
                         StartPopupProbeAfterAction();
-                        return;
+                        return true;
                     }
                 }
                 catch (FlaUI.Core.Exceptions.ElementNotAvailableException ex)
@@ -3219,7 +3339,7 @@ public sealed class RecordingOverlayWindow : Form
                 System.Windows.Forms.SendKeys.SendWait("{ENTER}");
                 _statusLabel.Text = $"{actionName}: fallback Enter";
                 StartPopupProbeAfterAction();
-                return;
+                return true;
             }
 
             if (actionName.Contains("Cancel", StringComparison.OrdinalIgnoreCase) ||
@@ -3229,15 +3349,17 @@ public sealed class RecordingOverlayWindow : Form
                 System.Windows.Forms.SendKeys.SendWait("{ESC}");
                 _statusLabel.Text = $"{actionName}: fallback Esc";
                 StartPopupProbeAfterAction();
-                return;
+                return true;
             }
 
             _statusLabel.Text = $"{actionName} failed: unable to click element";
+            return false;
         }
         catch (Exception ex)
         {
             _statusLabel.Text = $"{actionName} failed: {ex.Message}";
             _logger.LogError(ex, "{ActionName} failed", actionName);
+            return false;
         }
     }
 
@@ -3399,6 +3521,7 @@ public sealed class RecordingOverlayWindow : Form
                 BringElementWindowToForeground(searchRoot);
             Thread.Sleep(WindowActivationDelayMs);
 
+            bool success = false;
             try
             {
                 // Re-locate a fresh button reference so that the click is not fired on a
@@ -3417,17 +3540,24 @@ public sealed class RecordingOverlayWindow : Form
 
                 if (freshBtn != null)
                 {
-                    SafeInvokeOrClickElement(freshBtn, $"Window Button: {buttonInfo.Name ?? menuLabel}");
+                    success = SafeInvokeOrClickElement(freshBtn, $"Window Button: {buttonInfo.Name ?? menuLabel}");
                 }
                 else
                 {
                     // Fall back to the (possibly stale) original reference.
-                    SafeInvokeOrClickElement(originalButton, $"Window Button: {buttonInfo.Name ?? menuLabel}");
+                    success = SafeInvokeOrClickElement(originalButton, $"Window Button: {buttonInfo.Name ?? menuLabel}");
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Window button click failed for '{Label}'", buttonInfo.Name);
+            }
+
+            if (!success)
+            {
+                _logger.LogWarning("Window button click failed and will not be recorded: {Label}", buttonInfo.Name ?? menuLabel);
+                _statusLabel.Text = $"Window button click failed: {buttonInfo.Name ?? menuLabel}";
+                return;
             }
 
             var buttonLabel = ElementInfo.GetLabel(buttonInfo);
