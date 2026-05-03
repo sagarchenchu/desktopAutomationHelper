@@ -4,6 +4,7 @@ using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
 using FlaUI.Core.Definitions;
 using FlaUI.UIA3;
+using Microsoft.Extensions.Logging;
 
 namespace DesktopAutomationDriver.Services;
 
@@ -267,6 +268,63 @@ public static class AssistivePopupResolver
     }
 
     /// <summary>
+    /// Tries to invoke or click <paramref name="element"/> with multiple fallbacks:
+    /// <list type="number">
+    ///   <item>InvokePattern.Invoke()</item>
+    ///   <item>element.Click()</item>
+    ///   <item>Physical mouse click at the element's bounding-rectangle centre</item>
+    /// </list>
+    /// Returns <c>true</c> if any method succeeded, <c>false</c> if all failed.
+    /// </summary>
+    public static bool TryInvokeOrClick(AutomationElement element, ILogger? logger = null)
+    {
+        if (element == null)
+            return false;
+
+        try
+        {
+            if (element.Patterns.Invoke.IsSupported)
+            {
+                element.Patterns.Invoke.Pattern.Invoke();
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "InvokePattern failed; trying element.Click()");
+        }
+
+        try
+        {
+            element.Click();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "element.Click() failed; trying coordinate click");
+        }
+
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            if (!rect.IsEmpty)
+            {
+                FlaUI.Core.Input.Mouse.MoveTo(GetElementCenter(rect));
+                FlaUI.Core.Input.Mouse.Click();
+
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "Coordinate click failed");
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Returns an inspection snapshot of all descendants of <paramref name="popupWindow"/>,
     /// including their name, automation ID, control type, class name, HWND, visibility,
     /// and whether they sit inside the window chrome or system menu.
@@ -344,6 +402,14 @@ public static class AssistivePopupResolver
         try { return !element.IsOffscreen; }
         catch { return false; }
     }
+
+    /// <summary>
+    /// Returns the centre of <paramref name="rect"/> as a <see cref="System.Drawing.Point"/>.
+    /// </summary>
+    private static System.Drawing.Point GetElementCenter(System.Drawing.RectangleF rect) =>
+        new System.Drawing.Point(
+            (int)(rect.Left + rect.Width / 2),
+            (int)(rect.Top + rect.Height / 2));
 
     /// <summary>
     /// Returns the native window handle of <paramref name="element"/>, or
