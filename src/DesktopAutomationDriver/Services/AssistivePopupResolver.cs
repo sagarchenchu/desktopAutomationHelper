@@ -258,13 +258,25 @@ public static class AssistivePopupResolver
 
     /// <summary>
     /// Invokes the element's Invoke pattern if supported; otherwise uses a mouse click.
+    /// Falls back to <see cref="AutomationElement.Click"/> if
+    /// <see cref="FlaUI.Core.Exceptions.ElementNotAvailableException"/> is thrown.
     /// </summary>
     public static void InvokeOrClick(AutomationElement element)
     {
         if (element.Patterns.Invoke.IsSupported)
-            element.Patterns.Invoke.Pattern.Invoke();
-        else
-            element.Click();
+        {
+            try
+            {
+                element.Patterns.Invoke.Pattern.Invoke();
+                return;
+            }
+            catch (FlaUI.Core.Exceptions.ElementNotAvailableException)
+            {
+                // Element became unavailable; fall through to mouse click.
+            }
+        }
+
+        element.Click();
     }
 
     /// <summary>
