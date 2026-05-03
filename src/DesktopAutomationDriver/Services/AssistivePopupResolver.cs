@@ -258,8 +258,10 @@ public static class AssistivePopupResolver
 
     /// <summary>
     /// Invokes the element's Invoke pattern if supported; otherwise uses a mouse click.
-    /// Falls back to <see cref="AutomationElement.Click"/> if
-    /// <see cref="FlaUI.Core.Exceptions.ElementNotAvailableException"/> is thrown.
+    /// Falls back to <see cref="AutomationElement.Click"/> if the invocation fails
+    /// (e.g. <see cref="FlaUI.Core.Exceptions.ElementNotAvailableException"/> or a
+    /// <see cref="System.Runtime.InteropServices.COMException"/> such as
+    /// CONNECT_E_NOCONNECTION 0x80040201).
     /// </summary>
     public static void InvokeOrClick(AutomationElement element)
     {
@@ -270,9 +272,10 @@ public static class AssistivePopupResolver
                 element.Patterns.Invoke.Pattern.Invoke();
                 return;
             }
-            catch (FlaUI.Core.Exceptions.ElementNotAvailableException)
+            catch (Exception ex) when (ex is FlaUI.Core.Exceptions.ElementNotAvailableException
+                                    || ex is COMException)
             {
-                // Element became unavailable; fall through to mouse click.
+                // Element became unavailable or invoke failed; fall through to mouse click.
             }
         }
 
