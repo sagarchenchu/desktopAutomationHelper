@@ -275,9 +275,19 @@ public class UiService : IUiService
         if (closeButton != null)
         {
             if (closeButton.Patterns.Invoke.IsSupported)
-                closeButton.Patterns.Invoke.Pattern.Invoke();
-            else
-                closeButton.Click();
+            {
+                try
+                {
+                    closeButton.Patterns.Invoke.Pattern.Invoke();
+                    return;
+                }
+                catch (FlaUI.Core.Exceptions.ElementNotAvailableException)
+                {
+                    // Element became unavailable; fall through to mouse click.
+                }
+            }
+
+            closeButton.Click();
             return;
         }
 
@@ -752,9 +762,19 @@ public class UiService : IUiService
         // synchronously on the application's UI thread with no mouse-movement
         // overhead, which is significantly faster than a simulated mouse click.
         if (element.Patterns.Invoke.IsSupported)
-            element.Patterns.Invoke.Pattern.Invoke();
-        else
-            element.Click();
+        {
+            try
+            {
+                element.Patterns.Invoke.Pattern.Invoke();
+                return null;
+            }
+            catch (FlaUI.Core.Exceptions.ElementNotAvailableException ex)
+            {
+                _logger.LogWarning(ex, "InvokePattern.Invoke() threw ElementNotAvailableException; falling back to element.Click()");
+            }
+        }
+
+        element.Click();
         return null;
     }
 
@@ -1194,9 +1214,19 @@ public class UiService : IUiService
             if (btn != null)
             {
                 if (btn.Patterns.Invoke.IsSupported)
-                    btn.Patterns.Invoke.Pattern.Invoke();
-                else
-                    btn.Click();
+                {
+                    try
+                    {
+                        btn.Patterns.Invoke.Pattern.Invoke();
+                        return;
+                    }
+                    catch (FlaUI.Core.Exceptions.ElementNotAvailableException)
+                    {
+                        // Element became unavailable; fall through to mouse click.
+                    }
+                }
+
+                btn.Click();
                 return;
             }
         }
@@ -1530,9 +1560,19 @@ public class UiService : IUiService
         }
 
         if (cell.Patterns.Invoke.IsSupported)
-            cell.Patterns.Invoke.Pattern.Invoke();
-        else
-            cell.Click();
+        {
+            try
+            {
+                cell.Patterns.Invoke.Pattern.Invoke();
+                return;
+            }
+            catch (FlaUI.Core.Exceptions.ElementNotAvailableException)
+            {
+                // Element became unavailable; fall through to mouse click.
+            }
+        }
+
+        cell.Click();
     }
 
     /// <summary>
