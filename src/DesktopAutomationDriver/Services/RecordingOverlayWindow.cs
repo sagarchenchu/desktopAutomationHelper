@@ -143,6 +143,19 @@ public sealed class RecordingOverlayWindow : Form
     /// </summary>
     private const int MenuNavigationDelayMs = 300;
 
+    /// <summary>
+    /// Delay in milliseconds between selecting a context menu action and executing
+    /// it, to allow the ContextMenuStrip to fully close before the mouse is moved
+    /// or a click is fired.
+    /// </summary>
+    private const int MenuCloseDelayMs = 175;
+
+    /// <summary>
+    /// Delay in milliseconds inserted after hiding the overlay window to allow the
+    /// OS to fully remove it from the hit-test stack before a physical click fires.
+    /// </summary>
+    private const int OverlayHideDelayMs = 100;
+
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
@@ -3043,7 +3056,7 @@ public sealed class RecordingOverlayWindow : Form
             // Allow the ContextMenuStrip to fully close before moving/clicking the mouse.
             _menuOpen = false;
 
-            var timer = new System.Windows.Forms.Timer { Interval = 175 };
+            var timer = new System.Windows.Forms.Timer { Interval = MenuCloseDelayMs };
 
             timer.Tick += (_, _) =>
             {
@@ -3109,7 +3122,7 @@ public sealed class RecordingOverlayWindow : Form
             {
                 TopMost = false;
                 Hide();
-                Thread.Sleep(100);
+                Thread.Sleep(OverlayHideDelayMs);
 
                 FlaUI.Core.Input.Mouse.MoveTo(point);
                 Thread.Sleep(MouseClickSettleMs);
@@ -3181,7 +3194,7 @@ public sealed class RecordingOverlayWindow : Form
                 }
                 catch (System.Runtime.InteropServices.COMException ex)
                 {
-                    _statusLabel.Text = "COM action failed.";
+                    _statusLabel.Text = "COM action failed. Coordinate click fallback was already attempted.";
                     _logger.LogWarning(ex, "COMException in assistive action '{Label}'", label);
                 }
                 catch (Exception ex)
