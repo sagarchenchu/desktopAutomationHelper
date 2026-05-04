@@ -43,6 +43,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
     private int? _recordingTargetProcessId;
     private IntPtr _recordingTargetMainHwnd = IntPtr.Zero;
     private string? _recordingTargetExePath;
+    private readonly HashSet<IntPtr> _allowedTargetWindows = new();
 
     private volatile bool _isActive;
     private volatile RecordingMode _currentMode = RecordingMode.None;
@@ -105,6 +106,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
             _recordingTargetProcessId = null;
             _recordingTargetMainHwnd = IntPtr.Zero;
             _recordingTargetExePath = null;
+            _allowedTargetWindows.Clear();
         }
 
         // ── Capture target from active UiSession (if any) ─────────────────────
@@ -117,6 +119,8 @@ public sealed class RecordingService : IRecordingService, IDisposable
                 var proc = Process.GetProcessById(activeSession.Application.ProcessId);
                 proc.Refresh();
                 _recordingTargetMainHwnd = proc.MainWindowHandle;
+                if (_recordingTargetMainHwnd != IntPtr.Zero)
+                    _allowedTargetWindows.Add(_recordingTargetMainHwnd);
             }
             catch
             {
@@ -140,6 +144,8 @@ public sealed class RecordingService : IRecordingService, IDisposable
                     var proc = Process.GetProcessById(launchInfo.ProcessId.Value);
                     proc.Refresh();
                     _recordingTargetMainHwnd = proc.MainWindowHandle;
+                    if (_recordingTargetMainHwnd != IntPtr.Zero)
+                        _allowedTargetWindows.Add(_recordingTargetMainHwnd);
                 }
                 catch
                 {
@@ -454,15 +460,11 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
         var targetPid = GetRecordingTargetProcessId();
 
-        // No target known — avoid breaking legacy behaviour
-        if (!targetPid.HasValue)
-            return true;
-
         // Primary check: match by process ID
         try
         {
             var elementPid = element.Properties.ProcessId.Value;
-            if (elementPid == targetPid.Value)
+            if (targetPid.HasValue && elementPid == targetPid.Value)
                 return true;
         }
         catch
@@ -470,13 +472,21 @@ public sealed class RecordingService : IRecordingService, IDisposable
             // continue to HWND fallback
         }
 
-        // HWND fallback: compare root ancestor windows
+        // HWND fallback: check against allowed target windows and root HWND
         try
         {
-            var hwnd = element.Properties.NativeWindowHandle.ValueOrDefault;
-            if (hwnd != 0)
+            var hwndRaw = element.Properties.NativeWindowHandle.ValueOrDefault;
+            if (hwndRaw != 0)
             {
-                var root = GetAncestor(new IntPtr(hwnd), GA_ROOT);
+                var hwnd = new IntPtr(hwndRaw);
+                var root = GetAncestor(hwnd, GA_ROOT);
+
+                if (_allowedTargetWindows.Contains(hwnd) ||
+                    (root != IntPtr.Zero && _allowedTargetWindows.Contains(root)))
+                {
+                    return true;
+                }
+
                 var targetRoot = GetRecordingTargetMainWindowHandle();
                 if (root != IntPtr.Zero && targetRoot != IntPtr.Zero && root == targetRoot)
                     return true;
@@ -487,7 +497,37 @@ public sealed class RecordingService : IRecordingService, IDisposable
             // best effort
         }
 
+        // No target known — preserve legacy behaviour
+        if (!targetPid.HasValue && _allowedTargetWindows.Count == 0)
+            return true;
+
         return false;
+    }
+
+    /// <inheritdoc/>
+    public void SetRecordingTargetWindow(IntPtr hwnd, int? processId = null, string? reason = null)
+    {
+        if (hwnd == IntPtr.Zero)
+            return;
+
+        try
+        {
+            _recordingTargetMainHwnd = hwnd;
+            _allowedTargetWindows.Add(hwnd);
+
+            if (processId.HasValue)
+                _recordingTargetProcessId = processId;
+
+            _logger.LogInformation(
+                "Recording target window updated. hwnd=0x{Hwnd:X}, pid={Pid}, reason={Reason}",
+                hwnd.ToInt64(),
+                _recordingTargetProcessId,
+                reason ?? "(none)");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to update recording target window to 0x{Hwnd:X}", hwnd.ToInt64());
+        }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
