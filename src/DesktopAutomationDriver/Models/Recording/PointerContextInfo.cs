@@ -12,4 +12,15 @@ public class PointerContextInfo
     public bool UsedCursorFallback { get; set; }
     public bool HookPointInTarget { get; set; }
     public bool CursorPointInTarget { get; set; }
+
+    public PointerContextInfo Clone() => new()
+    {
+        HookPoint = HookPoint?.Clone(),
+        CursorPoint = CursorPoint?.Clone(),
+        ResolvedPoint = ResolvedPoint?.Clone(),
+        CoordinateMismatch = CoordinateMismatch,
+        UsedCursorFallback = UsedCursorFallback,
+        HookPointInTarget = HookPointInTarget,
+        CursorPointInTarget = CursorPointInTarget
+    };
 }

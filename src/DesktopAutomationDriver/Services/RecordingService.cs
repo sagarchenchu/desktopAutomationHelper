@@ -646,7 +646,14 @@ public sealed class RecordingService : IRecordingService, IDisposable
                 return new LaunchInfo { Success = false, Error = "Process.Start returned null." };
 
             // Give the process up to 3 seconds to show a main window so we can read its title
-            try { process.WaitForInputIdle(3000); } catch { /* best effort */ }
+            try
+            {
+                process.WaitForInputIdle(3000);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "WaitForInputIdle failed for '{Exe}'", SanitizeForLog(exePath));
+            }
 
             string? title = null;
             IntPtr mainWindowHandle = IntPtr.Zero;
