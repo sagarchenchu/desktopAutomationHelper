@@ -617,6 +617,24 @@ public sealed class RecordingOverlayWindow : Form
                     return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
                 }
 
+                try
+                {
+                    if (GetCursorPos(out var actualPoint))
+                    {
+                        _logger.LogInformation(
+                            "Right-click point selected. hookPoint={HookPoint}, actualCursor={ActualCursor}",
+                            hookPoint,
+                            actualPoint);
+                        pt = actualPoint;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Could not retrieve Win32 cursor position for assistive right-click");
+                }
+
+                LogCoordinateDiagnostics(hookPoint, "AssistiveRightClick");
+
                 bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
                 if (ctrlHeld)
                 {
@@ -638,24 +656,6 @@ public sealed class RecordingOverlayWindow : Form
                     _suppressNextRButtonUp = true;
                     return (IntPtr)1;
                 }
-
-                try
-                {
-                    if (GetCursorPos(out var actualPoint))
-                    {
-                        _logger.LogInformation(
-                            "Right-click point selected. hookPoint={HookPoint}, actualCursor={ActualCursor}",
-                            hookPoint,
-                            actualPoint);
-                        pt = actualPoint;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Could not retrieve Win32 cursor position for assistive right-click");
-                }
-
-                LogCoordinateDiagnostics(hookPoint, "AssistiveRightClick");
 
                 if (_awaitingDragTarget)
                 {
@@ -4481,7 +4481,9 @@ public sealed class RecordingOverlayWindow : Form
         try
         {
             var cursorPoint = Cursor.Position;
-            GetCursorPos(out var win32CursorPoint);
+            var win32CursorPoint = cursorPoint;
+            if (GetCursorPos(out var currentCursorPoint))
+                win32CursorPoint = currentCursorPoint;
             var screen = Screen.FromPoint(hookPoint);
 
             _logger.LogInformation(
@@ -4504,7 +4506,9 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
-            GetCursorPos(out var actualCursor);
+            var actualCursor = Cursor.Position;
+            if (GetCursorPos(out var currentCursorPoint))
+                actualCursor = currentCursorPoint;
 
             var element = _automation?.FromPoint(actualCursor);
 
