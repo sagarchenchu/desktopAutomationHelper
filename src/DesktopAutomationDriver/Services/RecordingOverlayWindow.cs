@@ -594,38 +594,34 @@ public sealed class RecordingOverlayWindow : Form
             {
                 var pt = ms.pt;
 
-                // Ctrl+Right Click OR normal right-click when a popup is active →
-                // show the window-level context menu instead of the normal element context menu.
-                bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-                bool popupActive = IsPopupCurrentlyActive();
-                if (ctrlHeld || popupActive)
-                {
-                    BeginInvoke(new Action(() =>
-                    {
-                        if (popupActive)
-                            _statusLabel.Text = $"Target popup detected — showing popup actions at {pt.X},{pt.Y}";
-                        else
-                            _statusLabel.Text = $"CTRL+RC captured at {pt.X},{pt.Y}";
-                        try
-                        {
-                            ShowWindowContextMenu(pt);
-                        }
-                        catch (Exception ex)
-                        {
-                            _statusLabel.Text = "Popup/window menu failed: " + ex.Message;
-                            _logger.LogError(ex, "Popup/window context menu failed");
-                        }
-                    }));
-                    _suppressNextRButtonUp = true;
-                    return (IntPtr)1; // suppress the native right-click
-                }
-
                 // A simulated right-click fired by the "Right Click" action item sets
                 // _suppressNextRButtonDown so the hook does not intercept it.
                 if (_suppressNextRButtonDown)
                 {
                     _suppressNextRButtonDown = false;
                     return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+                }
+
+                bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                if (ctrlHeld)
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        _statusLabel.Text = $"CTRL+RC window menu at {pt.X},{pt.Y}";
+
+                        try
+                        {
+                            ShowWindowContextMenu(pt);
+                        }
+                        catch (Exception ex)
+                        {
+                            _statusLabel.Text = "CTRL+RC window menu failed: " + ex.Message;
+                            _logger.LogError(ex, "CTRL+Right-click window menu failed");
+                        }
+                    }));
+
+                    _suppressNextRButtonUp = true;
+                    return (IntPtr)1;
                 }
 
                 if (_awaitingDragTarget)
@@ -648,21 +644,43 @@ public sealed class RecordingOverlayWindow : Form
                 }
                 else
                 {
-                    // Normal: show the assistive context menu.
-                    // Use a one-tick timer instead of BeginInvoke so that any native
-                    // menu dismissal or window-activation messages triggered by the
-                    // right-click are fully processed before we build and show the
-                    // assistive context menu.  This ensures the correct element is
-                    // identified on the first right-click over MenuBar / MenuItem
-                    // elements where the native menu may still be transitioning.
-                    var timer = new System.Windows.Forms.Timer { Interval = ContextMenuDelayMs };
-                    timer.Tick += (_, _) =>
+                    AutomationElement? capturedElement = null;
+                    if (_automation != null)
                     {
-                        timer.Stop();
-                        timer.Dispose();
-                        ShowAssistiveContextMenu(pt);
-                    };
-                    timer.Start();
+                        try
+                        {
+                            capturedElement = _automation.FromPoint(pt);
+                            if (capturedElement != null)
+                                capturedElement = DrillDownToElementAtPoint(capturedElement, pt);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Assistive right-click capture failed at {Point}", pt);
+                        }
+                    }
+
+                    BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            if (TryShowAssistiveMenuForTargetElement(pt, capturedElement))
+                                return;
+
+                            if (IsPopupCurrentlyActive())
+                            {
+                                _statusLabel.Text = $"Target popup detected — showing popup actions at {pt.X},{pt.Y}";
+                                ShowWindowContextMenu(pt);
+                                return;
+                            }
+
+                            ShowOutsideTargetDiagnosticFromPoint(pt);
+                        }
+                        catch (Exception ex)
+                        {
+                            _statusLabel.Text = "Assistive right-click failed: " + ex.Message;
+                            _logger.LogError(ex, "Assistive right-click failed at {Point}", pt);
+                        }
+                    }));
                 }
 
                 _suppressNextRButtonUp = true;
@@ -846,7 +864,11 @@ public sealed class RecordingOverlayWindow : Form
     {
         // Ignore rapid right-clicks while a menu is already visible.
         if (_menuOpen) return;
-        if (_automation == null) return;
+        if (_automation == null)
+        {
+            _statusLabel.Text = "Assistive menu blocked: automation is null";
+            return;
+        }
 
         _menuOpen = true;
 
@@ -865,156 +887,124 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
-    private void ShowAssistiveContextMenuCore(System.Drawing.Point pt)
+    private bool TryShowAssistiveMenuForTargetElement(System.Drawing.Point pt)
     {
-        AutomationElement? element = null;
-        try { element = _automation!.FromPoint(pt); }
+        return TryShowAssistiveMenuForTargetElement(pt, null);
+    }
+
+    private bool TryShowAssistiveMenuForTargetElement(System.Drawing.Point pt, AutomationElement? preCapturedElement)
+    {
+        if (_automation == null)
+        {
+            _statusLabel.Text = "Assistive menu blocked: automation is null";
+            return false;
+        }
+
+        try
+        {
+            var element = preCapturedElement;
+
+            if (element == null)
+            {
+                element = _automation.FromPoint(pt);
+
+                if (element == null)
+                {
+                    _logger.LogWarning("Assistive right-click found no element at {Point}", pt);
+                    return false;
+                }
+
+                element = DrillDownToElementAtPoint(element, pt);
+
+                if (element == null)
+                {
+                    _logger.LogWarning("Assistive right-click drilldown found no element at {Point}", pt);
+                    return false;
+                }
+            }
+
+            if (_service.IsElementInRecordingTarget(element))
+            {
+                _logger.LogInformation(
+                    "Assistive right-click accepted target element. point={Point}, name={Name}, automationId={AutomationId}, controlType={ControlType}",
+                    pt,
+                    SafeElementName(element),
+                    SafeElementAutomationId(element),
+                    element.ControlType);
+
+                ShowAssistiveContextMenuForElement(pt, element);
+                return true;
+            }
+
+            LogOutsideTargetDetails(pt, element);
+            return false;
+        }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not get element at point {Pt} for assistive menu", pt);
+            _logger.LogWarning(ex, "TryShowAssistiveMenuForTargetElement failed at {Point}", pt);
+            return false;
+        }
+    }
+
+    private void ShowAssistiveContextMenuForElement(System.Drawing.Point pt, AutomationElement capturedElement)
+    {
+        if (_menuOpen)
+        {
+            _menuOpen = false;
+        }
+
+        if (_automation == null)
+        {
+            _statusLabel.Text = "Assistive menu blocked: automation is null";
+            return;
+        }
+
+        _menuOpen = true;
+        StartMenuSafetyTimer();
+
+        try
+        {
+            ShowAssistiveContextMenuCore(pt, capturedElement);
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = "Assistive menu failed: " + ex.Message;
+            _logger.LogWarning(ex, "Failed to show assistive context menu for captured element at {Point}", pt);
+            _menuOpen = false;
+        }
+    }
+
+    private void ShowAssistiveContextMenuCore(
+        System.Drawing.Point pt,
+        AutomationElement? preCapturedElement = null)
+    {
+        AutomationElement? element = preCapturedElement;
+
+        if (element == null)
+        {
+            try { element = _automation!.FromPoint(pt); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not get element at point {Pt} for assistive menu", pt);
+            }
         }
 
         // For container controls (e.g. WinForms MenuStrip/MenuBar), FromPoint may return
         // the parent instead of the specific child under the cursor. Drill down one level.
-        if (element != null)
+        if (element != null && preCapturedElement == null)
             element = DrillDownToElementAtPoint(element, pt);
 
-        // Fix 6: Validate the element belongs to the recording target (not the driver/IDE).
-        // In RDP/single-monitor environments IntelliJ or the driver window may be foreground,
-        // so FromPoint can return a driver element instead of the launched app element.
-        if (element != null && !_service.IsElementInRecordingTarget(element))
+        if (element == null)
         {
-            // Secondary diagnostic: identify if this is a known IDE/driver process.
-            var isIde = IsDriverOrIdeElement(element);
+            _statusLabel.Text = "No element found at point";
+            return;
+        }
 
-            var outsideTargetPid = _service.GetRecordingTargetProcessId();
-            var outsideTargetHwnd = _service.GetApplicationMainWindowHandle();
-
-            int? elementPid = null;
-            IntPtr elementHwnd = IntPtr.Zero;
-            IntPtr elementRoot = IntPtr.Zero;
-
-            try { elementPid = element.Properties.ProcessId.Value; } catch { }
-            try
-            {
-                var rawHwnd = element.Properties.NativeWindowHandle.ValueOrDefault;
-                if (rawHwnd != 0)
-                {
-                    elementHwnd = new IntPtr(rawHwnd);
-                    elementRoot = GetAncestor(elementHwnd, GA_ROOT);
-                }
-            }
-            catch { }
-
-            _logger.LogWarning(
-                "Assistive right-click ignored outside target. point={Point}, elementName={Name}, automationId={AutomationId}, controlType={ControlType}, isIdeOrDriver={IsIde}, elementPid={ElementPid}, elementHwnd=0x{ElementHwnd:X}, elementRoot=0x{ElementRoot:X}, targetPid={TargetPid}, targetHwnd=0x{TargetHwnd:X}",
-                pt,
-                SafeElementName(element),
-                SafeElementAutomationId(element),
-                element.ControlType,
-                isIde,
-                elementPid,
-                elementHwnd.ToInt64(),
-                elementRoot.ToInt64(),
-                outsideTargetPid,
-                outsideTargetHwnd.ToInt64());
-
-            _statusLabel.Text = "⚠ Right-click is outside launched app. Bring target app forward.";
-
-            _service.BringApplicationWindowToFront();
-
-            // Try one more time after foreground correction
-            Thread.Sleep(WindowActivationDelayMs);
-
-            try
-            {
-                var retry = _automation!.FromPoint(pt);
-                if (retry != null)
-                    retry = DrillDownToElementAtPoint(retry, pt);
-
-                if (retry != null && _service.IsElementInRecordingTarget(retry))
-                {
-                    element = retry;
-                }
-                else
-                {
-                    // Show diagnostic menu instead of silently returning so the user can
-                    // recover if the target was captured incorrectly.
-                    var diagnosticMenu = new NoActivateContextMenuStrip { ShowImageMargin = false };
-                    diagnosticMenu.Font = new Font("Segoe UI", 10f);
-                    diagnosticMenu.Closed += (_, _) =>
-                    {
-                        _menuOpen = false;
-                        ReapplyClickThroughStyle();
-                    };
-
-                    diagnosticMenu.Items.Add(new ToolStripMenuItem("⚠ Element is outside current recording target")
-                    {
-                        Enabled = false,
-                        ForeColor = Color.DarkRed
-                    });
-
-                    var diagElement = retry ?? element;
-                    var diagElementLabel = diagElement != null
-                        ? (SafeElementName(diagElement) ?? SafeElementAutomationId(diagElement) ?? "(unnamed)")
-                        : "(unknown)";
-                    diagnosticMenu.Items.Add(new ToolStripMenuItem(
-                        $"Element: [{diagElement?.ControlType}] {diagElementLabel}")
-                    {
-                        Enabled = false
-                    });
-
-                    diagnosticMenu.Items.Add(new ToolStripMenuItem(
-                        $"Target PID: {outsideTargetPid?.ToString() ?? "(unknown)"}")
-                    {
-                        Enabled = false
-                    });
-
-                    diagnosticMenu.Items.Add(new ToolStripMenuItem(
-                        $"Target HWND: 0x{outsideTargetHwnd.ToInt64():X}")
-                    {
-                        Enabled = false
-                    });
-
-                    diagnosticMenu.Items.Add(new ToolStripSeparator());
-
-                    var setAsTargetItem = new ToolStripMenuItem("Use This Window As Recording Target");
-                    setAsTargetItem.Click += (_, _) =>
-                    {
-                        try
-                        {
-                            var diagWin = FindWindowAncestorOrSelf(diagElement!);
-                            var diagHwnd = diagWin != null
-                                ? AssistivePopupResolver.SafeWindowHandle(diagWin)
-                                : IntPtr.Zero;
-
-                            int? diagPid = null;
-                            try { diagPid = diagElement!.Properties.ProcessId.Value; } catch { }
-
-                            if (diagHwnd != IntPtr.Zero)
-                            {
-                                _service.SetRecordingTargetWindow(
-                                    diagHwnd, diagPid, "User selected Use This Window As Recording Target");
-                                _statusLabel.Text = $"Recording target updated: {diagWin?.Name ?? "(window)"}";
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Failed to set current element window as recording target");
-                        }
-                    };
-
-                    diagnosticMenu.Items.Add(setAsTargetItem);
-                    AddCloseItem(diagnosticMenu);
-                    EnsureOverlayVisible();
-                    diagnosticMenu.Show(pt);
-                    return;
-                }
-            }
-            catch
-            {
-                return;
-            }
+        if (!_service.IsElementInRecordingTarget(element))
+        {
+            LogOutsideTargetDetails(pt, element);
+            ShowOutsideTargetDiagnosticMenu(pt, element);
+            return;
         }
 
         // Save the original element before any promotion so that the "Type…" and
@@ -2386,6 +2376,119 @@ public sealed class RecordingOverlayWindow : Form
         // topmost so the menu renders above the target application's windows.
         EnsureOverlayVisible();
         menu.Show(pt);
+    }
+
+    private void ShowOutsideTargetDiagnosticFromPoint(System.Drawing.Point pt)
+    {
+        try
+        {
+            if (_automation == null)
+            {
+                _statusLabel.Text = "Outside-target diagnostic blocked: automation is null";
+                return;
+            }
+
+            var element = _automation.FromPoint(pt);
+
+            if (element != null)
+                element = DrillDownToElementAtPoint(element, pt);
+
+            ShowOutsideTargetDiagnosticMenu(pt, element);
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = "Outside-target diagnostic failed: " + ex.Message;
+            _logger.LogWarning(ex, "Outside-target diagnostic failed at {Point}", pt);
+        }
+    }
+
+    private void ShowOutsideTargetDiagnosticMenu(System.Drawing.Point pt, AutomationElement? element)
+    {
+        if (_menuOpen)
+        {
+            _menuOpen = false;
+        }
+
+        _menuOpen = true;
+        StartMenuSafetyTimer();
+        _statusLabel.Text = "⚠ Right-click is outside launched app. Bring target app forward.";
+
+        var targetPid = _service.GetRecordingTargetProcessId();
+        var targetHwnd = _service.GetApplicationMainWindowHandle();
+
+        var diagnosticMenu = new NoActivateContextMenuStrip { ShowImageMargin = false };
+        diagnosticMenu.Font = new Font("Segoe UI", 10f);
+        diagnosticMenu.Closed += (_, _) =>
+        {
+            _menuOpen = false;
+            ReapplyClickThroughStyle();
+        };
+
+        diagnosticMenu.Items.Add(new ToolStripMenuItem("⚠ Element is outside current recording target")
+        {
+            Enabled = false,
+            ForeColor = Color.DarkRed
+        });
+
+        var diagElementLabel = element != null
+            ? (SafeElementName(element) ?? SafeElementAutomationId(element) ?? "(unnamed)")
+            : "(unknown)";
+        diagnosticMenu.Items.Add(new ToolStripMenuItem(
+            $"Element: [{element?.ControlType}] {diagElementLabel}")
+        {
+            Enabled = false
+        });
+
+        diagnosticMenu.Items.Add(new ToolStripMenuItem(
+            $"Target PID: {targetPid?.ToString() ?? "(unknown)"}")
+        {
+            Enabled = false
+        });
+
+        diagnosticMenu.Items.Add(new ToolStripMenuItem(
+            $"Target HWND: 0x{targetHwnd.ToInt64():X}")
+        {
+            Enabled = false
+        });
+
+        diagnosticMenu.Items.Add(new ToolStripSeparator());
+
+        var setAsTargetItem = new ToolStripMenuItem("Use This Window As Recording Target")
+        {
+            Enabled = element != null
+        };
+        setAsTargetItem.Click += (_, _) =>
+        {
+            if (element == null)
+                return;
+
+            try
+            {
+                var diagWin = FindWindowAncestorOrSelf(element);
+                var diagHwnd = diagWin != null
+                    ? AssistivePopupResolver.SafeWindowHandle(diagWin)
+                    : IntPtr.Zero;
+
+                int? diagPid = null;
+                try { diagPid = element.Properties.ProcessId.Value; } catch { }
+
+                if (diagHwnd != IntPtr.Zero)
+                {
+                    _service.SetRecordingTargetWindow(
+                        diagHwnd, diagPid, "User selected Use This Window As Recording Target");
+                    _statusLabel.Text = $"Recording target updated: {diagWin?.Name ?? "(window)"}";
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to set current element window as recording target");
+            }
+        };
+
+        diagnosticMenu.Items.Add(setAsTargetItem);
+        AddCloseItem(diagnosticMenu);
+        EnsureOverlayVisible();
+        diagnosticMenu.Show(pt);
     }
 
     // ── Assistive mode: Ctrl+Right Click window context menu ─────────────────
@@ -4292,6 +4395,45 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     // ── Assistive-mode safety helpers ──────────────────────────────────────
+
+    private void LogOutsideTargetDetails(System.Drawing.Point pt, AutomationElement? element)
+    {
+        var targetPid = _service.GetRecordingTargetProcessId();
+        var targetHwnd = _service.GetApplicationMainWindowHandle();
+
+        int? elementPid = null;
+        IntPtr elementHwnd = IntPtr.Zero;
+        IntPtr elementRoot = IntPtr.Zero;
+
+        if (element != null)
+        {
+            try { elementPid = element.Properties.ProcessId.Value; } catch { }
+
+            try
+            {
+                var rawHwnd = element.Properties.NativeWindowHandle.ValueOrDefault;
+
+                if (rawHwnd != 0)
+                {
+                    elementHwnd = new IntPtr(rawHwnd);
+                    elementRoot = GetAncestor(elementHwnd, GA_ROOT);
+                }
+            }
+            catch { }
+        }
+
+        _logger.LogWarning(
+            "Assistive right-click element is outside target. point={Point}, elementName={Name}, automationId={AutomationId}, controlType={ControlType}, elementPid={ElementPid}, elementHwnd=0x{ElementHwnd:X}, elementRoot=0x{ElementRoot:X}, targetPid={TargetPid}, targetHwnd=0x{TargetHwnd:X}",
+            pt,
+            element != null ? SafeElementName(element) : null,
+            element != null ? SafeElementAutomationId(element) : null,
+            element?.ControlType.ToString(),
+            elementPid,
+            elementHwnd.ToInt64(),
+            elementRoot.ToInt64(),
+            targetPid,
+            targetHwnd.ToInt64());
+    }
 
     /// <summary>
     /// Returns the element's Name property without throwing, or <c>null</c> on failure.
