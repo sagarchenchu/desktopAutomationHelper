@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DesktopAutomationDriver.Models.Recording;
 using DesktopAutomationDriver.Models.Request;
+using FlaUI.Core.AutomationElements;
 using FlaUI.UIA3;
 
 // Alias to avoid ambiguity with FlaUI.Core.Application (both in scope via implicit usings)
@@ -26,8 +27,22 @@ public sealed class RecordingService : IRecordingService, IDisposable
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    private const uint GA_ROOT = 2;
+
     private readonly List<RecordedAction> _actions = [];
     private readonly object _lock = new();
+
+    // ── Recording target (process/window to which Assistive mode is scoped) ──
+    private int? _recordingTargetProcessId;
+    private IntPtr _recordingTargetMainHwnd = IntPtr.Zero;
+    private string? _recordingTargetExePath;
 
     private volatile bool _isActive;
     private volatile RecordingMode _currentMode = RecordingMode.None;
@@ -85,12 +100,53 @@ public sealed class RecordingService : IRecordingService, IDisposable
             _outputPath = request?.OutputPath;
             _startedAt = DateTimeOffset.UtcNow;
             _isActive = true;
+
+            // Reset recording target
+            _recordingTargetProcessId = null;
+            _recordingTargetMainHwnd = IntPtr.Zero;
+            _recordingTargetExePath = null;
+        }
+
+        // ── Capture target from active UiSession (if any) ─────────────────────
+        var activeSession = _sessionContext.ActiveSession;
+        if (activeSession != null)
+        {
+            _recordingTargetProcessId = activeSession.Application.ProcessId;
+            try
+            {
+                var proc = Process.GetProcessById(activeSession.Application.ProcessId);
+                proc.Refresh();
+                _recordingTargetMainHwnd = proc.MainWindowHandle;
+            }
+            catch
+            {
+                _recordingTargetMainHwnd = IntPtr.Zero;
+            }
         }
 
         // ── Optional: launch the target application ──────────────────────────
         LaunchInfo? launchInfo = null;
         if (!string.IsNullOrWhiteSpace(request?.ExePath))
+        {
             launchInfo = LaunchApplication(request.ExePath);
+
+            if (launchInfo?.Success == true && launchInfo.ProcessId > 0)
+            {
+                _recordingTargetProcessId = launchInfo.ProcessId;
+                _recordingTargetExePath = request.ExePath;
+
+                try
+                {
+                    var proc = Process.GetProcessById(launchInfo.ProcessId.Value);
+                    proc.Refresh();
+                    _recordingTargetMainHwnd = proc.MainWindowHandle;
+                }
+                catch
+                {
+                    _recordingTargetMainHwnd = IntPtr.Zero;
+                }
+            }
+        }
 
         // ── Start the overlay on a dedicated STA thread ───────────────────────
         _overlayThread = new Thread(() =>
@@ -225,6 +281,18 @@ public sealed class RecordingService : IRecordingService, IDisposable
             var element = _automation.FromPoint(point);
             if (element == null) return null;
             element = RecordingOverlayWindow.DrillDownToElementAtPoint(element, point);
+
+            if (!IsElementInRecordingTarget(element))
+            {
+                _logger.LogWarning(
+                    "Ignoring element outside recording target at {Point}: name={Name}, automationId={AutomationId}, processId={ProcessId}",
+                    point,
+                    SafeName(element),
+                    SafeAutomationId(element),
+                    SafeProcessId(element));
+                return null;
+            }
+
             return RecordingOverlayWindow.BuildElementInfo(element);
         }
         catch (Exception ex)
@@ -291,12 +359,20 @@ public sealed class RecordingService : IRecordingService, IDisposable
     {
         try
         {
+            var hwnd = GetRecordingTargetMainWindowHandle();
+
+            if (hwnd != IntPtr.Zero)
+            {
+                SetForegroundWindow(hwnd);
+                return;
+            }
+
             var session = _sessionContext.ActiveSession;
             if (session == null) return;
 
             var pid = session.Application.ProcessId;
             var proc = Process.GetProcessById(pid);
-            var hwnd = proc.MainWindowHandle;
+            hwnd = proc.MainWindowHandle;
             if (hwnd != IntPtr.Zero)
                 SetForegroundWindow(hwnd);
         }
@@ -306,6 +382,10 @@ public sealed class RecordingService : IRecordingService, IDisposable
     /// <inheritdoc/>
     public IntPtr GetApplicationMainWindowHandle()
     {
+        var recordingTarget = GetRecordingTargetMainWindowHandle();
+        if (recordingTarget != IntPtr.Zero)
+            return recordingTarget;
+
         try
         {
             var session = _sessionContext.ActiveSession;
@@ -319,6 +399,95 @@ public sealed class RecordingService : IRecordingService, IDisposable
         {
             return IntPtr.Zero;
         }
+    }
+
+    /// <inheritdoc/>
+    public int? GetRecordingTargetProcessId()
+    {
+        if (_recordingTargetProcessId.HasValue)
+            return _recordingTargetProcessId;
+
+        try
+        {
+            var session = _sessionContext.ActiveSession;
+            return session?.Application.ProcessId;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <inheritdoc/>
+    public IntPtr GetRecordingTargetMainWindowHandle()
+    {
+        if (_recordingTargetMainHwnd != IntPtr.Zero && IsWindow(_recordingTargetMainHwnd))
+            return _recordingTargetMainHwnd;
+
+        try
+        {
+            var pid = GetRecordingTargetProcessId();
+            if (pid.HasValue)
+            {
+                var proc = Process.GetProcessById(pid.Value);
+                proc.Refresh();
+                if (proc.MainWindowHandle != IntPtr.Zero)
+                {
+                    _recordingTargetMainHwnd = proc.MainWindowHandle;
+                    return _recordingTargetMainHwnd;
+                }
+            }
+        }
+        catch
+        {
+            // best effort
+        }
+
+        return IntPtr.Zero;
+    }
+
+    /// <inheritdoc/>
+    public bool IsElementInRecordingTarget(AutomationElement element)
+    {
+        if (element == null)
+            return false;
+
+        var targetPid = GetRecordingTargetProcessId();
+
+        // No target known — avoid breaking legacy behaviour
+        if (!targetPid.HasValue)
+            return true;
+
+        // Primary check: match by process ID
+        try
+        {
+            var elementPid = element.Properties.ProcessId.Value;
+            if (elementPid == targetPid.Value)
+                return true;
+        }
+        catch
+        {
+            // continue to HWND fallback
+        }
+
+        // HWND fallback: compare root ancestor windows
+        try
+        {
+            var hwnd = element.Properties.NativeWindowHandle.ValueOrDefault;
+            if (hwnd != 0)
+            {
+                var root = GetAncestor(new IntPtr(hwnd), GA_ROOT);
+                var targetRoot = GetRecordingTargetMainWindowHandle();
+                if (root != IntPtr.Zero && targetRoot != IntPtr.Zero && root == targetRoot)
+                    return true;
+            }
+        }
+        catch
+        {
+            // best effort
+        }
+
+        return false;
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -431,6 +600,24 @@ public sealed class RecordingService : IRecordingService, IDisposable
     private static string SanitizeForLog(string value) =>
         value.Replace("\r", string.Empty, StringComparison.Ordinal)
              .Replace("\n", string.Empty, StringComparison.Ordinal);
+
+    private static string? SafeName(AutomationElement element)
+    {
+        try { return element.Name; }
+        catch { return null; }
+    }
+
+    private static string? SafeAutomationId(AutomationElement element)
+    {
+        try { return element.AutomationId; }
+        catch { return null; }
+    }
+
+    private static int? SafeProcessId(AutomationElement element)
+    {
+        try { return element.Properties.ProcessId.Value; }
+        catch { return null; }
+    }
 
     private RecordingExport BuildExport()
     {
