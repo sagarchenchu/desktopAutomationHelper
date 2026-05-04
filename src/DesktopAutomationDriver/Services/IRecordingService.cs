@@ -1,5 +1,6 @@
 using DesktopAutomationDriver.Models.Recording;
 using DesktopAutomationDriver.Models.Request;
+using FlaUI.Core.AutomationElements;
 
 namespace DesktopAutomationDriver.Services;
 
@@ -83,4 +84,25 @@ public interface IRecordingService
     /// foreground popup window from the application's own main window.
     /// </summary>
     IntPtr GetApplicationMainWindowHandle();
+
+    /// <summary>
+    /// Returns the process ID of the recording target application (the app launched or
+    /// attached when <see cref="StartRecording"/> was called), or <c>null</c> when unknown.
+    /// </summary>
+    int? GetRecordingTargetProcessId();
+
+    /// <summary>
+    /// Returns the main window handle of the recording target application, refreshing it
+    /// from the process when the stored handle is no longer valid.
+    /// Returns <see cref="IntPtr.Zero"/> when the target is unknown or the window cannot
+    /// be found.
+    /// </summary>
+    IntPtr GetRecordingTargetMainWindowHandle();
+
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="element"/> belongs to the recording target
+    /// process/window. When no target is known, always returns <c>true</c> to preserve
+    /// legacy behaviour.
+    /// </summary>
+    bool IsElementInRecordingTarget(AutomationElement element);
 }

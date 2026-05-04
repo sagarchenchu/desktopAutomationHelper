@@ -879,6 +879,46 @@ public sealed class RecordingOverlayWindow : Form
         if (element != null)
             element = DrillDownToElementAtPoint(element, pt);
 
+        // Fix 6: Validate the element belongs to the recording target (not the driver/IDE).
+        // In RDP/single-monitor environments IntelliJ or the driver window may be foreground,
+        // so FromPoint can return a driver element instead of the launched app element.
+        if (element != null && !_service.IsElementInRecordingTarget(element))
+        {
+            _logger.LogWarning(
+                "Assistive right-click ignored element outside target at {Point}: name={Name}, automationId={AutomationId}, controlType={ControlType}",
+                pt,
+                SafeElementName(element),
+                SafeElementAutomationId(element),
+                element.ControlType);
+
+            _statusLabel.Text = "⚠ Right-click is outside launched app. Bring target app forward.";
+
+            _service.BringApplicationWindowToFront();
+
+            // Try one more time after foreground correction
+            Thread.Sleep(WindowActivationDelayMs);
+
+            try
+            {
+                var retry = _automation!.FromPoint(pt);
+                if (retry != null)
+                    retry = DrillDownToElementAtPoint(retry, pt);
+
+                if (retry != null && _service.IsElementInRecordingTarget(retry))
+                {
+                    element = retry;
+                }
+                else
+                {
+                    return;
+                }
+            }
+            catch
+            {
+                return;
+            }
+        }
+
         // Save the original element before any promotion so that the "Type…" and
         // "Is Editable" menu items are still available when an inner Edit control is
         // promoted to its parent ComboBox (e.g. a username/password field with history).
@@ -976,6 +1016,25 @@ public sealed class RecordingOverlayWindow : Form
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "Could not capture HWND for element at {Pt}; Right Click will fall back to element reference", pt);
+            }
+        }
+
+        // Fix 7: After capturing the HWND, verify it belongs to the recording target.
+        // This is a secondary guard for cases where the element passed Fix 6 but the HWND
+        // still resolves to a driver/IDE window (e.g. popup child of the IDE).
+        if (capturedHwnd != IntPtr.Zero)
+        {
+            var targetHwnd = _service.GetApplicationMainWindowHandle();
+            if (targetHwnd != IntPtr.Zero && capturedHwnd != targetHwnd &&
+                !_service.IsElementInRecordingTarget(element!))
+            {
+                _logger.LogWarning(
+                    "Assistive menu target HWND mismatch. captured=0x{Captured:X}, target=0x{Target:X}. Ignoring right-click.",
+                    capturedHwnd.ToInt64(),
+                    targetHwnd.ToInt64());
+
+                _statusLabel.Text = "⚠ Selected window is not the launched app";
+                return;
             }
         }
 
@@ -1082,6 +1141,30 @@ public sealed class RecordingOverlayWindow : Form
             ForeColor = Color.DimGray
         };
         menu.Items.Add(header);
+
+        // Fix 8: Diagnostic target PID / HWND row so developers can immediately spot
+        // when the menu was built from IntelliJ/driver instead of the target app.
+        var targetPid = _service.GetRecordingTargetProcessId();
+        var targetHwndDiag = _service.GetApplicationMainWindowHandle();
+        menu.Items.Add(new ToolStripMenuItem(
+            $"Target PID: {targetPid?.ToString() ?? "(unknown)"}  HWND: 0x{targetHwndDiag.ToInt64():X}")
+        {
+            Enabled = false,
+            ForeColor = Color.DarkSlateGray
+        });
+
+        if (element != null)
+        {
+            int? elementPid = null;
+            try { elementPid = element.Properties.ProcessId.Value; } catch { }
+            menu.Items.Add(new ToolStripMenuItem(
+                $"Element PID: {elementPid?.ToString() ?? "(unknown)"}")
+            {
+                Enabled = false,
+                ForeColor = Color.DarkSlateGray
+            });
+        }
+
         menu.Items.Add(new ToolStripSeparator());
 
         var capturedClickPoint = pt;
@@ -4048,6 +4131,51 @@ public sealed class RecordingOverlayWindow : Form
             result = textBox.Text;
 
         return result;
+    }
+
+    // ── Assistive-mode safety helpers ──────────────────────────────────────
+
+    /// <summary>
+    /// Returns the element's Name property without throwing, or <c>null</c> on failure.
+    /// Used for safe logging when the element may have gone stale.
+    /// </summary>
+    private static string? SafeElementName(AutomationElement element)
+    {
+        try { return element.Name; }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Returns the element's AutomationId property without throwing, or <c>null</c> on failure.
+    /// </summary>
+    private static string? SafeElementAutomationId(AutomationElement element)
+    {
+        try { return element.AutomationId; }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Secondary safety check: returns <c>true</c> when the element belongs to a known
+    /// IDE or driver process (IntelliJ IDEA, Rider, Visual Studio, or the driver itself).
+    /// This is used only for diagnostic warnings; the primary guard is
+    /// <see cref="IRecordingService.IsElementInRecordingTarget"/>.
+    /// </summary>
+    private static bool IsDriverOrIdeElement(AutomationElement element)
+    {
+        try
+        {
+            var pid = element.Properties.ProcessId.Value;
+            var proc = System.Diagnostics.Process.GetProcessById(pid);
+            var name = proc.ProcessName;
+            return name.Contains("idea", StringComparison.OrdinalIgnoreCase) ||
+                   name.Contains("devenv", StringComparison.OrdinalIgnoreCase) ||
+                   name.Contains("rider", StringComparison.OrdinalIgnoreCase) ||
+                   name.Contains("DesktopAutomationDriver", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
