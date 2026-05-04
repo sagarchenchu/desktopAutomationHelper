@@ -80,8 +80,8 @@ public interface IRecordingService
     /// Returns the native window handle (HWND) of the active session's application
     /// main window, or <see cref="IntPtr.Zero"/> when no session is active or the
     /// handle cannot be obtained.
-    /// Used by the Assistive-mode Ctrl+Right-Click handler to distinguish a
-    /// foreground popup window from the application's own main window.
+    /// Used by Assistive-mode diagnostics, bounds fallback, and Ctrl+Right-Click
+    /// handling to distinguish the application window from foreground popups.
     /// </summary>
     IntPtr GetApplicationMainWindowHandle();
 

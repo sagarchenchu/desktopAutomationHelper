@@ -200,6 +200,9 @@ public sealed class RecordingOverlayWindow : Form
     private static extern bool GetCursorPos(out System.Drawing.Point lpPoint);
 
     [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
     private static extern IntPtr GetThreadDpiAwarenessContext();
 
     [DllImport("user32.dll")]
@@ -232,6 +235,15 @@ public sealed class RecordingOverlayWindow : Form
         public uint dwFlags;
         public uint time;
         public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
     }
 
     private const uint INPUT_MOUSE = 0;
@@ -644,6 +656,8 @@ public sealed class RecordingOverlayWindow : Form
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
                 var hookPoint = ms.pt;
+                var pt = hookPoint;
+                System.Drawing.Point? actualCursorPoint = null;
 
                 // A simulated right-click fired by the "Right Click" action item sets
                 // _suppressNextRButtonDown so the hook does not intercept it.
@@ -653,9 +667,25 @@ public sealed class RecordingOverlayWindow : Form
                     return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
                 }
 
-                LogCoordinateDiagnostics(hookPoint, "AssistiveRightClick");
-                var pointResolution = ResolveAssistivePoint(hookPoint);
-                var pt = pointResolution.ResolvedPoint;
+                try
+                {
+                    if (GetCursorPos(out var win32CursorPoint))
+                    {
+                        _logger.LogInformation(
+                            "Assistive right-click point captured. hookPoint={HookPoint}, actualCursor={ActualCursor}",
+                            hookPoint,
+                            win32CursorPoint);
+                        pt = win32CursorPoint;
+                        actualCursorPoint = win32CursorPoint;
+                    }
+                }
+                catch
+                {
+                    // Keep the low-level hook point when Win32 cursor capture fails.
+                }
+
+                LogScreenAndWindowDiagnostics(pt, "AssistiveRightClick");
+                var pointResolution = ResolveAssistivePoint(hookPoint, actualCursorPoint, pt);
                 _currentAssistivePointerContext = pointResolution.ToPointerContext();
 
                 bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -949,43 +979,71 @@ public sealed class RecordingOverlayWindow : Form
             return false;
         }
 
+        LogScreenAndWindowDiagnostics(pt, "TryShowAssistiveMenuForTargetElement");
+
         try
         {
-            var element = preCapturedElement;
+            AutomationElement? element = preCapturedElement;
 
             if (element == null)
             {
-                element = _automation.FromPoint(pt);
-
-                if (element == null)
+                try
                 {
-                    _logger.LogWarning("Assistive right-click found no element at {Point}", pt);
-                    return false;
+                    element = _automation.FromPoint(pt);
+                    if (element != null)
+                        element = DrillDownToElementAtPoint(element, pt);
                 }
-
-                element = DrillDownToElementAtPoint(element, pt);
-
-                if (element == null)
+                catch (Exception ex)
                 {
-                    _logger.LogWarning("Assistive right-click drilldown found no element at {Point}", pt);
-                    return false;
+                    _logger.LogWarning(ex, "FromPoint failed at {Point}", pt);
                 }
             }
 
-            if (_service.IsElementInRecordingTarget(element))
+            if (element != null && _service.IsElementInRecordingTarget(element))
             {
                 _logger.LogInformation(
-                    "Assistive right-click accepted target element. point={Point}, name={Name}, automationId={AutomationId}, controlType={ControlType}",
+                    "Assistive right-click accepted target element from FromPoint. point={Point}, name={Name}, automationId={AutomationId}, controlType={ControlType}, bounds={Bounds}",
                     pt,
                     SafeElementName(element),
                     SafeElementAutomationId(element),
-                    element.ControlType);
+                    element.ControlType,
+                    element.BoundingRectangle);
 
                 ShowAssistiveContextMenuForElement(pt, element);
                 return true;
             }
 
-            LogOutsideTargetDetails(pt, element);
+            if (element != null)
+                LogOutsideTargetDetails(pt, element);
+
+            if (IsPointInsideTargetWindow(pt))
+            {
+                _logger.LogInformation(
+                    "Point is inside target window but FromPoint did not return target element. Trying bounds fallback. point={Point}",
+                    pt);
+
+                var fallbackElement = FindTargetElementByBoundsFallback(pt);
+                if (fallbackElement != null && _service.IsElementInRecordingTarget(fallbackElement))
+                {
+                    _logger.LogInformation(
+                        "Assistive right-click accepted target element from bounds fallback. point={Point}, name={Name}, automationId={AutomationId}, controlType={ControlType}, bounds={Bounds}",
+                        pt,
+                        SafeElementName(fallbackElement),
+                        SafeElementAutomationId(fallbackElement),
+                        fallbackElement.ControlType,
+                        fallbackElement.BoundingRectangle);
+
+                    ShowAssistiveContextMenuForElement(pt, fallbackElement);
+                    return true;
+                }
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Point is not inside target window. Skipping bounds fallback. point={Point}",
+                    pt);
+            }
+
             return false;
         }
         catch (Exception ex)
@@ -1412,6 +1470,7 @@ public sealed class RecordingOverlayWindow : Form
                 else
                     BringElementWindowToForeground(element);
                 Thread.Sleep(WindowActivationDelayMs);
+                LogScreenAndWindowDiagnostics(pt, "AssistiveMenuRightClickAction");
                 // Set the flag so the global hook does not intercept this simulated
                 // right-click and show the assistive context menu a second time.
                 _suppressNextRButtonDown = true;
@@ -3553,6 +3612,8 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
+            LogScreenAndWindowDiagnostics(point, $"PhysicalClick:{actionName}");
+
             if (targetHwnd != IntPtr.Zero)
             {
                 SetForegroundWindow(targetHwnd);
@@ -4494,79 +4555,199 @@ public sealed class RecordingOverlayWindow : Form
             targetHwnd.ToInt64());
     }
 
-    private void LogCoordinateDiagnostics(System.Drawing.Point hookPoint, string reason)
+    private void LogScreenAndWindowDiagnostics(System.Drawing.Point pt, string reason)
     {
         try
         {
-            var cursorPoint = Cursor.Position;
-            var win32CursorPoint = cursorPoint;
-            if (GetCursorPos(out var currentCursorPoint))
-                win32CursorPoint = currentCursorPoint;
-            var screen = Screen.FromPoint(hookPoint);
+            var screen = Screen.FromPoint(pt);
+            var targetHwnd = _service.GetApplicationMainWindowHandle();
+            var targetPid = _service.GetRecordingTargetProcessId();
 
+            RECT appRect = default;
+            var hasAppRect = targetHwnd != IntPtr.Zero && GetWindowRect(targetHwnd, out appRect);
             _logger.LogInformation(
-                "Coordinate diagnostics [{Reason}]: hookPoint={HookPoint}, Cursor.Position={CursorPoint}, GetCursorPos={Win32Point}, screen={ScreenBounds}, workingArea={WorkingArea}, dpiAwareness={DpiAwareness}",
+                "Diagnostics [{Reason}]: point={Point}, screen={ScreenDevice}, screenBounds={ScreenBounds}, workingArea={WorkingArea}, targetPid={TargetPid}, targetHwnd=0x{TargetHwnd:X}, hasAppRect={HasAppRect}, appRect=({Left},{Top},{Right},{Bottom}), appSize=({Width}x{Height}), dpiAwareness={DpiAwareness}",
                 reason,
-                hookPoint,
-                cursorPoint,
-                win32CursorPoint,
+                pt,
+                screen.DeviceName,
                 screen.Bounds,
                 screen.WorkingArea,
+                targetPid,
+                targetHwnd.ToInt64(),
+                hasAppRect,
+                appRect.Left,
+                appRect.Top,
+                appRect.Right,
+                appRect.Bottom,
+                appRect.Right - appRect.Left,
+                appRect.Bottom - appRect.Top,
                 GetCurrentDpiAwarenessText());
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Coordinate diagnostics failed");
+            _logger.LogWarning(ex, "Screen/window diagnostics failed");
         }
     }
 
-    private PointResolutionResult ResolveAssistivePoint(System.Drawing.Point hookPoint)
+    private PointResolutionResult ResolveAssistivePoint(
+        System.Drawing.Point hookPoint,
+        System.Drawing.Point? actualCursorPoint,
+        System.Drawing.Point authoritativePoint)
     {
-        var cursorAvailable = GetCursorPos(out var cursorPoint);
         var hookCandidate = GetPointCandidate(hookPoint);
-        PointCandidate? cursorCandidate = cursorAvailable ? GetPointCandidate(cursorPoint) : null;
-
-        var resolvedPoint = hookPoint;
-        var resolvedElement = hookCandidate.Element;
-        var usedCursorFallback = false;
-
-        if (cursorAvailable && cursorPoint != hookPoint)
-        {
-            if (cursorCandidate?.IsInTarget == true)
-            {
-                resolvedPoint = cursorPoint;
-                resolvedElement = cursorCandidate.Element;
-                usedCursorFallback = true;
-            }
-            else if (!hookCandidate.IsInTarget &&
-                     cursorCandidate?.Element != null &&
-                     hookCandidate.Element == null)
-            {
-                resolvedPoint = cursorPoint;
-                resolvedElement = cursorCandidate.Element;
-                usedCursorFallback = true;
-            }
-        }
+        PointCandidate? cursorCandidate = actualCursorPoint.HasValue
+            ? GetPointCandidate(actualCursorPoint.Value)
+            : null;
+        var resolvedCandidate = GetPointCandidate(authoritativePoint);
 
         _logger.LogInformation(
             "Assistive point resolution: hookPoint={HookPoint}, cursorPoint={CursorPoint}, resolvedPoint={ResolvedPoint}, hookPointInTarget={HookInTarget}, cursorPointInTarget={CursorInTarget}, usedCursorFallback={UsedCursorFallback}",
             hookPoint,
-            cursorAvailable ? cursorPoint : null,
-            resolvedPoint,
+            actualCursorPoint,
+            authoritativePoint,
             hookCandidate.IsInTarget,
             cursorCandidate?.IsInTarget ?? false,
-            usedCursorFallback);
+            actualCursorPoint.HasValue && actualCursorPoint.Value != hookPoint);
 
         return new PointResolutionResult
         {
             HookPoint = hookPoint,
-            CursorPoint = cursorAvailable ? cursorPoint : null,
-            ResolvedPoint = resolvedPoint,
+            CursorPoint = actualCursorPoint,
+            ResolvedPoint = authoritativePoint,
             HookPointInTarget = hookCandidate.IsInTarget,
             CursorPointInTarget = cursorCandidate?.IsInTarget ?? false,
-            UsedCursorFallback = usedCursorFallback,
-            ResolvedElement = resolvedElement
+            UsedCursorFallback = actualCursorPoint.HasValue && actualCursorPoint.Value != hookPoint,
+            ResolvedElement = resolvedCandidate.Element
         };
+    }
+
+    private bool IsPointInsideTargetWindow(System.Drawing.Point pt)
+    {
+        try
+        {
+            var hwnd = _service.GetApplicationMainWindowHandle();
+            if (hwnd == IntPtr.Zero)
+                return false;
+
+            if (!GetWindowRect(hwnd, out var rect))
+                return false;
+
+            return pt.X >= rect.Left &&
+                   pt.X <= rect.Right &&
+                   pt.Y >= rect.Top &&
+                   pt.Y <= rect.Bottom;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "IsPointInsideTargetWindow failed for {Point}", pt);
+            return false;
+        }
+    }
+
+    private AutomationElement? FindTargetElementByBoundsFallback(System.Drawing.Point pt)
+    {
+        try
+        {
+            if (_automation == null)
+                return null;
+
+            var targetHwnd = _service.GetApplicationMainWindowHandle();
+            if (targetHwnd == IntPtr.Zero)
+                return null;
+
+            var root = _automation.FromHandle(targetHwnd);
+            if (root == null)
+                return null;
+
+            var candidates = new List<AutomationElement> { root };
+            candidates.AddRange(root.FindAllDescendants());
+
+            AutomationElement? bestExact = null;
+            double bestExactArea = double.MaxValue;
+            AutomationElement? bestNearest = null;
+            double bestDistance = double.MaxValue;
+
+            foreach (var candidate in candidates)
+            {
+                try
+                {
+                    if (!_service.IsElementInRecordingTarget(candidate))
+                        continue;
+
+                    if (!IsActionableAssistiveElement(candidate))
+                        continue;
+
+                    var rect = candidate.BoundingRectangle;
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        continue;
+
+                    if (pt.X >= rect.Left && pt.X <= rect.Right &&
+                        pt.Y >= rect.Top && pt.Y <= rect.Bottom)
+                    {
+                        var area = rect.Width * (double)rect.Height;
+                        if (area < bestExactArea)
+                        {
+                            bestExactArea = area;
+                            bestExact = candidate;
+                        }
+                    }
+
+                    var cx = rect.Left + rect.Width / 2.0;
+                    var cy = rect.Top + rect.Height / 2.0;
+                    var dx = pt.X - cx;
+                    var dy = pt.Y - cy;
+                    var distance = Math.Sqrt(dx * dx + dy * dy);
+
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        bestNearest = candidate;
+                    }
+                }
+                catch
+                {
+                    // Ignore unstable UIA elements during fallback scanning.
+                }
+            }
+
+            if (bestExact != null)
+            {
+                _logger.LogInformation(
+                    "Bounds fallback exact match. point={Point}, name={Name}, automationId={AutomationId}, controlType={ControlType}, bounds={Bounds}",
+                    pt,
+                    SafeElementName(bestExact),
+                    SafeElementAutomationId(bestExact),
+                    bestExact.ControlType,
+                    bestExact.BoundingRectangle);
+                return bestExact;
+            }
+
+            const double MaxAssistiveFallbackDistance = 150.0;
+            if (bestNearest != null && bestDistance <= MaxAssistiveFallbackDistance)
+            {
+                _logger.LogInformation(
+                    "Bounds fallback nearest match. point={Point}, distance={Distance}, name={Name}, automationId={AutomationId}, controlType={ControlType}, bounds={Bounds}",
+                    pt,
+                    bestDistance,
+                    SafeElementName(bestNearest),
+                    SafeElementAutomationId(bestNearest),
+                    bestNearest.ControlType,
+                    bestNearest.BoundingRectangle);
+                return bestNearest;
+            }
+
+            _logger.LogWarning(
+                "Bounds fallback found no acceptable match. point={Point}, bestDistance={Distance}",
+                pt,
+                bestDistance);
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindTargetElementByBoundsFallback failed for {Point}", pt);
+            return null;
+        }
     }
 
     private PointCandidate GetPointCandidate(System.Drawing.Point point)
@@ -4593,50 +4774,107 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
+    private static bool IsActionableAssistiveElement(AutomationElement element)
+    {
+        try
+        {
+            var ct = element.ControlType;
+            return ct == ControlType.Edit ||
+                   ct == ControlType.Button ||
+                   ct == ControlType.ComboBox ||
+                   ct == ControlType.CheckBox ||
+                   ct == ControlType.RadioButton ||
+                   ct == ControlType.MenuItem ||
+                   ct == ControlType.ListItem ||
+                   ct == ControlType.TreeItem ||
+                   ct == ControlType.TabItem ||
+                   ct == ControlType.Text ||
+                   ct == ControlType.Pane ||
+                   ct == ControlType.Custom;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private void InspectPointMapping(System.Drawing.Point pt)
     {
         try
         {
-            var actualCursor = Cursor.Position;
+            var actualCursor = pt;
             if (GetCursorPos(out var currentCursorPoint))
                 actualCursor = currentCursorPoint;
 
-            var element = _automation?.FromPoint(actualCursor);
+            LogScreenAndWindowDiagnostics(actualCursor, "InspectPointMapping");
 
-            if (element != null)
-                element = DrillDownToElementAtPoint(element, actualCursor);
-
-            var bounds = element?.BoundingRectangle;
-
-            int? pid = null;
-            IntPtr hwnd = IntPtr.Zero;
-
-            try { pid = element?.Properties.ProcessId.Value; } catch { }
+            AutomationElement? element = null;
             try
             {
-                var raw = element?.Properties.NativeWindowHandle.ValueOrDefault ?? 0;
-                hwnd = raw != 0 ? new IntPtr(raw) : IntPtr.Zero;
+                element = _automation?.FromPoint(actualCursor);
+                if (element != null)
+                    element = DrillDownToElementAtPoint(element, actualCursor);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "InspectPointMapping FromPoint failed");
+            }
+
+            AutomationElement? fallbackElement = null;
+            if (IsPointInsideTargetWindow(actualCursor))
+                fallbackElement = FindTargetElementByBoundsFallback(actualCursor);
 
             _logger.LogInformation(
-                "Point mapping inspect: hookPoint={HookPoint}, cursor={Cursor}, elementName={Name}, automationId={AutomationId}, controlType={ControlType}, pid={Pid}, hwnd=0x{Hwnd:X}, bounds={Bounds}, targetPid={TargetPid}, targetHwnd=0x{TargetHwnd:X}",
+                "Point mapping inspect: requestedPoint={RequestedPoint}, cursor={Cursor}, fromPointName={FromPointName}, fromPointAutomationId={FromPointAutomationId}, fromPointControlType={FromPointControlType}, fromPointBounds={FromPointBounds}, fromPointInTarget={FromPointInTarget}, fallbackName={FallbackName}, fallbackAutomationId={FallbackAutomationId}, fallbackControlType={FallbackControlType}, fallbackBounds={FallbackBounds}, fallbackInTarget={FallbackInTarget}, pointDebug={PointDebug}, targetPid={TargetPid}, targetHwnd=0x{TargetHwnd:X}",
                 pt,
                 actualCursor,
                 element != null ? SafeElementName(element) : null,
                 element != null ? SafeElementAutomationId(element) : null,
                 element?.ControlType.ToString(),
-                pid,
-                hwnd.ToInt64(),
-                bounds,
+                element?.BoundingRectangle,
+                element != null && _service.IsElementInRecordingTarget(element),
+                fallbackElement != null ? SafeElementName(fallbackElement) : null,
+                fallbackElement != null ? SafeElementAutomationId(fallbackElement) : null,
+                fallbackElement?.ControlType.ToString(),
+                fallbackElement?.BoundingRectangle,
+                fallbackElement != null && _service.IsElementInRecordingTarget(fallbackElement),
+                BuildPointDebugMetadata(actualCursor),
                 _service.GetRecordingTargetProcessId(),
                 _service.GetApplicationMainWindowHandle().ToInt64());
 
-            _statusLabel.Text = "Point mapping diagnostic logged.";
+            _statusLabel.Text = "Point mapping logged";
         }
         catch (Exception ex)
         {
+            _statusLabel.Text = "Point mapping inspect failed: " + ex.Message;
             _logger.LogError(ex, "Point mapping inspect failed");
+        }
+    }
+
+    private object? BuildPointDebugMetadata(System.Drawing.Point pt)
+    {
+        try
+        {
+            var hwnd = _service.GetApplicationMainWindowHandle();
+            if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect))
+                return null;
+
+            return new
+            {
+                absolute = new { x = pt.X, y = pt.Y },
+                appRelative = new { x = pt.X - rect.Left, y = pt.Y - rect.Top },
+                appWindowBounds = new
+                {
+                    x = rect.Left,
+                    y = rect.Top,
+                    width = rect.Right - rect.Left,
+                    height = rect.Bottom - rect.Top
+                }
+            };
+        }
+        catch
+        {
+            return null;
         }
     }
 
