@@ -12,6 +12,7 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <!-- Required for the recording overlay (WinForms transparent window + Win32 hooks) -->
     <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Self-contained executable settings -->
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
