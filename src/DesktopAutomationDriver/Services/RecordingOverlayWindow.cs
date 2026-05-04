@@ -199,8 +199,22 @@ public sealed class RecordingOverlayWindow : Form
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out System.Drawing.Point lpPoint);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetThreadDpiAwarenessContext();
+
+    [DllImport("user32.dll")]
+    private static extern int GetAwarenessFromDpiAwarenessContext(IntPtr value);
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    private enum DpiAwareness
+    {
+        Invalid = -1,
+        Unaware = 0,
+        SystemAware = 1,
+        PerMonitorAware = 2
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct INPUT
@@ -592,7 +606,8 @@ public sealed class RecordingOverlayWindow : Form
         {
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
-                var pt = ms.pt;
+                var hookPoint = ms.pt;
+                var pt = hookPoint;
 
                 // A simulated right-click fired by the "Right Click" action item sets
                 // _suppressNextRButtonDown so the hook does not intercept it.
@@ -601,6 +616,24 @@ public sealed class RecordingOverlayWindow : Form
                     _suppressNextRButtonDown = false;
                     return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
                 }
+
+                try
+                {
+                    if (GetCursorPos(out var actualPoint))
+                    {
+                        _logger.LogInformation(
+                            "Right-click point selected. hookPoint={HookPoint}, actualCursor={ActualCursor}",
+                            hookPoint,
+                            actualPoint);
+                        pt = actualPoint;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Could not retrieve Win32 cursor position for assistive right-click");
+                }
+
+                LogCoordinateDiagnostics(hookPoint, "AssistiveRightClick");
 
                 bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
                 if (ctrlHeld)
@@ -1254,6 +1287,10 @@ public sealed class RecordingOverlayWindow : Form
 
         var capturedClickPoint = pt;
         var capturedClickHwnd = capturedHwnd;
+        var inspectPointMappingItem = new ToolStripMenuItem("Inspect Point Mapping");
+        inspectPointMappingItem.Click += (_, _) => InspectPointMapping(capturedClickPoint);
+        menu.Items.Add(inspectPointMappingItem);
+        menu.Items.Add(new ToolStripSeparator());
 
         // ── Interactive actions ──────────────────────────────────────────────
         AddActionItem(menu, "Click", element, elementInfo, ActionType.Click,
@@ -2452,6 +2489,10 @@ public sealed class RecordingOverlayWindow : Form
         });
 
         diagnosticMenu.Items.Add(new ToolStripSeparator());
+
+        var inspectPointMappingItem = new ToolStripMenuItem("Inspect Point Mapping");
+        inspectPointMappingItem.Click += (_, _) => InspectPointMapping(pt);
+        diagnosticMenu.Items.Add(inspectPointMappingItem);
 
         var setAsTargetItem = new ToolStripMenuItem("Use This Window As Recording Target")
         {
@@ -4433,6 +4474,99 @@ public sealed class RecordingOverlayWindow : Form
             elementRoot.ToInt64(),
             targetPid,
             targetHwnd.ToInt64());
+    }
+
+    private void LogCoordinateDiagnostics(System.Drawing.Point hookPoint, string reason)
+    {
+        try
+        {
+            var cursorPoint = Cursor.Position;
+            var win32CursorPoint = cursorPoint;
+            if (GetCursorPos(out var currentCursorPoint))
+                win32CursorPoint = currentCursorPoint;
+            var screen = Screen.FromPoint(hookPoint);
+
+            _logger.LogInformation(
+                "Coordinate diagnostics [{Reason}]: hookPoint={HookPoint}, Cursor.Position={CursorPoint}, GetCursorPos={Win32Point}, screen={ScreenBounds}, workingArea={WorkingArea}, dpiAwareness={DpiAwareness}",
+                reason,
+                hookPoint,
+                cursorPoint,
+                win32CursorPoint,
+                screen.Bounds,
+                screen.WorkingArea,
+                GetCurrentDpiAwarenessText());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Coordinate diagnostics failed");
+        }
+    }
+
+    private void InspectPointMapping(System.Drawing.Point pt)
+    {
+        try
+        {
+            var actualCursor = Cursor.Position;
+            if (GetCursorPos(out var currentCursorPoint))
+                actualCursor = currentCursorPoint;
+
+            var element = _automation?.FromPoint(actualCursor);
+
+            if (element != null)
+                element = DrillDownToElementAtPoint(element, actualCursor);
+
+            var bounds = element?.BoundingRectangle;
+
+            int? pid = null;
+            IntPtr hwnd = IntPtr.Zero;
+
+            try { pid = element?.Properties.ProcessId.Value; } catch { }
+            try
+            {
+                var raw = element?.Properties.NativeWindowHandle.ValueOrDefault ?? 0;
+                hwnd = raw != 0 ? new IntPtr(raw) : IntPtr.Zero;
+            }
+            catch { }
+
+            _logger.LogInformation(
+                "Point mapping inspect: hookPoint={HookPoint}, cursor={Cursor}, elementName={Name}, automationId={AutomationId}, controlType={ControlType}, pid={Pid}, hwnd=0x{Hwnd:X}, bounds={Bounds}, targetPid={TargetPid}, targetHwnd=0x{TargetHwnd:X}",
+                pt,
+                actualCursor,
+                element != null ? SafeElementName(element) : null,
+                element != null ? SafeElementAutomationId(element) : null,
+                element?.ControlType.ToString(),
+                pid,
+                hwnd.ToInt64(),
+                bounds,
+                _service.GetRecordingTargetProcessId(),
+                _service.GetApplicationMainWindowHandle().ToInt64());
+
+            _statusLabel.Text = "Point mapping diagnostic logged.";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Point mapping inspect failed");
+        }
+    }
+
+    private static string GetCurrentDpiAwarenessText()
+    {
+        try
+        {
+            var awareness = (DpiAwareness)GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());
+            return awareness switch
+            {
+                DpiAwareness.Unaware => "Unaware",
+                DpiAwareness.SystemAware => "SystemAware",
+                DpiAwareness.PerMonitorAware => "PerMonitorAware",
+                DpiAwareness.Invalid => "Invalid",
+                _ => $"Unknown({(int)awareness})"
+            };
+        }
+        catch
+        {
+            return "Unknown";
+        }
     }
 
     /// <summary>
