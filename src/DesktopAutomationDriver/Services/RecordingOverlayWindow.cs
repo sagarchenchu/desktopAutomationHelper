@@ -290,6 +290,35 @@ public sealed class RecordingOverlayWindow : Form
     private AutomationElement? _lastDetectedPopupWindow;
     private IntPtr _lastDetectedPopupHwnd = IntPtr.Zero;
     private DateTime _lastPopupDetectionUtc = DateTime.MinValue;
+    private PointerContextInfo? _currentAssistivePointerContext;
+
+    private sealed class PointResolutionResult
+    {
+        public required System.Drawing.Point HookPoint { get; init; }
+        public System.Drawing.Point? CursorPoint { get; init; }
+        public required System.Drawing.Point ResolvedPoint { get; init; }
+        public bool HookPointInTarget { get; init; }
+        public bool CursorPointInTarget { get; init; }
+        public bool UsedCursorFallback { get; init; }
+        public AutomationElement? ResolvedElement { get; init; }
+
+        public PointerContextInfo ToPointerContext() => new()
+        {
+            HookPoint = ToPointerCoordinate(HookPoint),
+            CursorPoint = CursorPoint.HasValue ? ToPointerCoordinate(CursorPoint.Value) : null,
+            ResolvedPoint = ToPointerCoordinate(ResolvedPoint),
+            CoordinateMismatch = CursorPoint.HasValue && CursorPoint.Value != HookPoint,
+            UsedCursorFallback = UsedCursorFallback,
+            HookPointInTarget = HookPointInTarget,
+            CursorPointInTarget = CursorPointInTarget
+        };
+    }
+
+    private sealed class PointCandidate
+    {
+        public AutomationElement? Element { get; init; }
+        public bool IsInTarget { get; init; }
+    }
 
     // ── Drag-tracking helpers ────────────────────────────────────────────────
     /// <summary>
@@ -607,7 +636,6 @@ public sealed class RecordingOverlayWindow : Form
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
                 var hookPoint = ms.pt;
-                var pt = hookPoint;
 
                 // A simulated right-click fired by the "Right Click" action item sets
                 // _suppressNextRButtonDown so the hook does not intercept it.
@@ -617,23 +645,10 @@ public sealed class RecordingOverlayWindow : Form
                     return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
                 }
 
-                try
-                {
-                    if (GetCursorPos(out var actualPoint))
-                    {
-                        _logger.LogInformation(
-                            "Right-click point selected. hookPoint={HookPoint}, actualCursor={ActualCursor}",
-                            hookPoint,
-                            actualPoint);
-                        pt = actualPoint;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Could not retrieve Win32 cursor position for assistive right-click");
-                }
-
                 LogCoordinateDiagnostics(hookPoint, "AssistiveRightClick");
+                var pointResolution = ResolveAssistivePoint(hookPoint);
+                var pt = pointResolution.ResolvedPoint;
+                _currentAssistivePointerContext = pointResolution.ToPointerContext();
 
                 bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
                 if (ctrlHeld)
@@ -677,20 +692,7 @@ public sealed class RecordingOverlayWindow : Form
                 }
                 else
                 {
-                    AutomationElement? capturedElement = null;
-                    if (_automation != null)
-                    {
-                        try
-                        {
-                            capturedElement = _automation.FromPoint(pt);
-                            if (capturedElement != null)
-                                capturedElement = DrillDownToElementAtPoint(capturedElement, pt);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Assistive right-click capture failed at {Point}", pt);
-                        }
-                    }
+                    var capturedElement = pointResolution.ResolvedElement;
 
                     BeginInvoke(new Action(() =>
                     {
@@ -809,6 +811,11 @@ public sealed class RecordingOverlayWindow : Form
             ActionType = ActionType.RightClick,
             Mode = RecordingMode.Passive,
             Element = info,
+            PointerContext = new PointerContextInfo
+            {
+                HookPoint = ToPointerCoordinate(pt),
+                ResolvedPoint = ToPointerCoordinate(pt)
+            },
             Description = BuildDescription("Right Click", info)
         });
     }
@@ -842,6 +849,7 @@ public sealed class RecordingOverlayWindow : Form
             Mode = RecordingMode.Assistive,
             Element = sourceInfo,
             TargetElement = targetInfo,
+            PointerContext = ClonePointerContext(_currentAssistivePointerContext),
             Description = $"Drag from {sourceLabel} to {targetLabel}"
         });
         UpdateStatusAfterAction(
@@ -3736,6 +3744,7 @@ public sealed class RecordingOverlayWindow : Form
                     ActionType = actionType,
                     Mode = RecordingMode.Assistive,
                     Element = info,
+                    PointerContext = ClonePointerContext(_currentAssistivePointerContext),
                     Description = BuildDescription(label, info)
                 });
 
@@ -3772,6 +3781,7 @@ public sealed class RecordingOverlayWindow : Form
                 Mode = RecordingMode.Assistive,
                 Element = info,
                 QueryResult = result,
+                PointerContext = ClonePointerContext(_currentAssistivePointerContext),
                 Description = $"{label} check on {ElementInfo.GetLabel(info)}: {result}"
             });
             UpdateStatusAfterAction($"{label}: {result}  │  [{info?.ControlType}] {info?.Name ?? "(element)"}");
@@ -4502,6 +4512,79 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
+    private PointResolutionResult ResolveAssistivePoint(System.Drawing.Point hookPoint)
+    {
+        var cursorAvailable = GetCursorPos(out var cursorPoint);
+        var hookCandidate = GetPointCandidate(hookPoint);
+        PointCandidate? cursorCandidate = cursorAvailable ? GetPointCandidate(cursorPoint) : null;
+
+        var resolvedPoint = hookPoint;
+        var resolvedElement = hookCandidate.Element;
+        var usedCursorFallback = false;
+
+        if (cursorAvailable && cursorPoint != hookPoint)
+        {
+            if (cursorCandidate?.IsInTarget == true)
+            {
+                resolvedPoint = cursorPoint;
+                resolvedElement = cursorCandidate.Element;
+                usedCursorFallback = true;
+            }
+            else if (!hookCandidate.IsInTarget &&
+                     cursorCandidate?.Element != null &&
+                     hookCandidate.Element == null)
+            {
+                resolvedPoint = cursorPoint;
+                resolvedElement = cursorCandidate.Element;
+                usedCursorFallback = true;
+            }
+        }
+
+        _logger.LogInformation(
+            "Assistive point resolution: hookPoint={HookPoint}, cursorPoint={CursorPoint}, resolvedPoint={ResolvedPoint}, hookPointInTarget={HookInTarget}, cursorPointInTarget={CursorInTarget}, usedCursorFallback={UsedCursorFallback}",
+            hookPoint,
+            cursorAvailable ? cursorPoint : null,
+            resolvedPoint,
+            hookCandidate.IsInTarget,
+            cursorCandidate?.IsInTarget ?? false,
+            usedCursorFallback);
+
+        return new PointResolutionResult
+        {
+            HookPoint = hookPoint,
+            CursorPoint = cursorAvailable ? cursorPoint : null,
+            ResolvedPoint = resolvedPoint,
+            HookPointInTarget = hookCandidate.IsInTarget,
+            CursorPointInTarget = cursorCandidate?.IsInTarget ?? false,
+            UsedCursorFallback = usedCursorFallback,
+            ResolvedElement = resolvedElement
+        };
+    }
+
+    private PointCandidate GetPointCandidate(System.Drawing.Point point)
+    {
+        if (_automation == null)
+            return new PointCandidate();
+
+        try
+        {
+            var element = _automation.FromPoint(point);
+            if (element != null)
+                element = DrillDownToElementAtPoint(element, point);
+
+            return new PointCandidate
+            {
+                Element = element,
+                IsInTarget = element != null && _service.IsElementInRecordingTarget(element)
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not inspect assistive point candidate at {Point}", point);
+            return new PointCandidate();
+        }
+    }
+
     private void InspectPointMapping(System.Drawing.Point pt)
     {
         try
@@ -4567,6 +4650,42 @@ public sealed class RecordingOverlayWindow : Form
         {
             return "Unknown";
         }
+    }
+
+    private static PointerCoordinateInfo ToPointerCoordinate(System.Drawing.Point point) =>
+        new()
+        {
+            X = point.X,
+            Y = point.Y
+        };
+
+    private static PointerContextInfo? ClonePointerContext(PointerContextInfo? context)
+    {
+        if (context == null)
+            return null;
+
+        return new PointerContextInfo
+        {
+            HookPoint = context.HookPoint == null ? null : new PointerCoordinateInfo
+            {
+                X = context.HookPoint.X,
+                Y = context.HookPoint.Y
+            },
+            CursorPoint = context.CursorPoint == null ? null : new PointerCoordinateInfo
+            {
+                X = context.CursorPoint.X,
+                Y = context.CursorPoint.Y
+            },
+            ResolvedPoint = context.ResolvedPoint == null ? null : new PointerCoordinateInfo
+            {
+                X = context.ResolvedPoint.X,
+                Y = context.ResolvedPoint.Y
+            },
+            CoordinateMismatch = context.CoordinateMismatch,
+            UsedCursorFallback = context.UsedCursorFallback,
+            HookPointInTarget = context.HookPointInTarget,
+            CursorPointInTarget = context.CursorPointInTarget
+        };
     }
 
     /// <summary>

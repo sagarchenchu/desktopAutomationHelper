@@ -14,6 +14,9 @@ public class StartRecordingResult
     /// </summary>
     public LaunchInfo? Launch { get; set; }
 
+    /// <summary>Screen bounds captured before the optional application launch.</summary>
+    public ScreenResolutionInfo? Screen { get; set; }
+
     /// <summary>
     /// Resolved output path that will be used for the JSON export file,
     /// reflecting the caller-supplied value or the default temp directory.
