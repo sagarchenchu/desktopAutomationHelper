@@ -884,12 +884,15 @@ public sealed class RecordingOverlayWindow : Form
         // so FromPoint can return a driver element instead of the launched app element.
         if (element != null && !_service.IsElementInRecordingTarget(element))
         {
+            // Secondary diagnostic: identify if this is a known IDE/driver process.
+            var isIde = IsDriverOrIdeElement(element);
             _logger.LogWarning(
-                "Assistive right-click ignored element outside target at {Point}: name={Name}, automationId={AutomationId}, controlType={ControlType}",
+                "Assistive right-click ignored element outside target at {Point}: name={Name}, automationId={AutomationId}, controlType={ControlType}, isIdeOrDriver={IsIde}",
                 pt,
                 SafeElementName(element),
                 SafeElementAutomationId(element),
-                element.ControlType);
+                element.ControlType,
+                isIde);
 
             _statusLabel.Text = "⚠ Right-click is outside launched app. Bring target app forward.";
 
@@ -1019,22 +1022,19 @@ public sealed class RecordingOverlayWindow : Form
             }
         }
 
-        // Fix 7: After capturing the HWND, verify it belongs to the recording target.
-        // This is a secondary guard for cases where the element passed Fix 6 but the HWND
-        // still resolves to a driver/IDE window (e.g. popup child of the IDE).
+        // Fix 7: Log a diagnostic warning when the captured HWND differs from the recording
+        // target's main window (e.g. the element is in a popup child window of the target app).
+        // The element has already been validated by Fix 6, so this is a warning-only log;
+        // popup child windows from the same target process are allowed through.
         if (capturedHwnd != IntPtr.Zero)
         {
             var targetHwnd = _service.GetApplicationMainWindowHandle();
-            if (targetHwnd != IntPtr.Zero && capturedHwnd != targetHwnd &&
-                !_service.IsElementInRecordingTarget(element!))
+            if (targetHwnd != IntPtr.Zero && capturedHwnd != targetHwnd)
             {
-                _logger.LogWarning(
-                    "Assistive menu target HWND mismatch. captured=0x{Captured:X}, target=0x{Target:X}. Ignoring right-click.",
+                _logger.LogDebug(
+                    "Assistive menu HWND differs from target main window (popup child?). captured=0x{Captured:X}, target=0x{Target:X}",
                     capturedHwnd.ToInt64(),
                     targetHwnd.ToInt64());
-
-                _statusLabel.Text = "⚠ Selected window is not the launched app";
-                return;
             }
         }
 
