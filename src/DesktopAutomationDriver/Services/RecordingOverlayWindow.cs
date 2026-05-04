@@ -603,7 +603,7 @@ public sealed class RecordingOverlayWindow : Form
                     BeginInvoke(new Action(() =>
                     {
                         if (popupActive)
-                            _statusLabel.Text = $"Popup detected — showing popup actions at {pt.X},{pt.Y}";
+                            _statusLabel.Text = $"Target popup detected — showing popup actions at {pt.X},{pt.Y}";
                         else
                             _statusLabel.Text = $"CTRL+RC captured at {pt.X},{pt.Y}";
                         try
@@ -886,13 +886,38 @@ public sealed class RecordingOverlayWindow : Form
         {
             // Secondary diagnostic: identify if this is a known IDE/driver process.
             var isIde = IsDriverOrIdeElement(element);
+
+            var outsideTargetPid = _service.GetRecordingTargetProcessId();
+            var outsideTargetHwnd = _service.GetApplicationMainWindowHandle();
+
+            int? elementPid = null;
+            IntPtr elementHwnd = IntPtr.Zero;
+            IntPtr elementRoot = IntPtr.Zero;
+
+            try { elementPid = element.Properties.ProcessId.Value; } catch { }
+            try
+            {
+                var rawHwnd = element.Properties.NativeWindowHandle.ValueOrDefault;
+                if (rawHwnd != 0)
+                {
+                    elementHwnd = new IntPtr(rawHwnd);
+                    elementRoot = GetAncestor(elementHwnd, GA_ROOT);
+                }
+            }
+            catch { }
+
             _logger.LogWarning(
-                "Assistive right-click ignored element outside target at {Point}: name={Name}, automationId={AutomationId}, controlType={ControlType}, isIdeOrDriver={IsIde}",
+                "Assistive right-click ignored outside target. point={Point}, elementName={Name}, automationId={AutomationId}, controlType={ControlType}, isIdeOrDriver={IsIde}, elementPid={ElementPid}, elementHwnd=0x{ElementHwnd:X}, elementRoot=0x{ElementRoot:X}, targetPid={TargetPid}, targetHwnd=0x{TargetHwnd:X}",
                 pt,
                 SafeElementName(element),
                 SafeElementAutomationId(element),
                 element.ControlType,
-                isIde);
+                isIde,
+                elementPid,
+                elementHwnd.ToInt64(),
+                elementRoot.ToInt64(),
+                outsideTargetPid,
+                outsideTargetHwnd.ToInt64());
 
             _statusLabel.Text = "⚠ Right-click is outside launched app. Bring target app forward.";
 
@@ -913,6 +938,76 @@ public sealed class RecordingOverlayWindow : Form
                 }
                 else
                 {
+                    // Show diagnostic menu instead of silently returning so the user can
+                    // recover if the target was captured incorrectly.
+                    var diagnosticMenu = new NoActivateContextMenuStrip { ShowImageMargin = false };
+                    diagnosticMenu.Font = new Font("Segoe UI", 10f);
+                    diagnosticMenu.Closed += (_, _) =>
+                    {
+                        _menuOpen = false;
+                        ReapplyClickThroughStyle();
+                    };
+
+                    diagnosticMenu.Items.Add(new ToolStripMenuItem("⚠ Element is outside current recording target")
+                    {
+                        Enabled = false,
+                        ForeColor = Color.DarkRed
+                    });
+
+                    var diagElement = retry ?? element;
+                    var diagElementLabel = diagElement != null
+                        ? (SafeElementName(diagElement) ?? SafeElementAutomationId(diagElement) ?? "(unnamed)")
+                        : "(unknown)";
+                    diagnosticMenu.Items.Add(new ToolStripMenuItem(
+                        $"Element: [{diagElement?.ControlType}] {diagElementLabel}")
+                    {
+                        Enabled = false
+                    });
+
+                    diagnosticMenu.Items.Add(new ToolStripMenuItem(
+                        $"Target PID: {outsideTargetPid?.ToString() ?? "(unknown)"}")
+                    {
+                        Enabled = false
+                    });
+
+                    diagnosticMenu.Items.Add(new ToolStripMenuItem(
+                        $"Target HWND: 0x{outsideTargetHwnd.ToInt64():X}")
+                    {
+                        Enabled = false
+                    });
+
+                    diagnosticMenu.Items.Add(new ToolStripSeparator());
+
+                    var setAsTargetItem = new ToolStripMenuItem("Use This Window As Recording Target");
+                    setAsTargetItem.Click += (_, _) =>
+                    {
+                        try
+                        {
+                            var diagWin = FindWindowAncestorOrSelf(diagElement!);
+                            var diagHwnd = diagWin != null
+                                ? AssistivePopupResolver.SafeWindowHandle(diagWin)
+                                : IntPtr.Zero;
+
+                            int? diagPid = null;
+                            try { diagPid = diagElement!.Properties.ProcessId.Value; } catch { }
+
+                            if (diagHwnd != IntPtr.Zero)
+                            {
+                                _service.SetRecordingTargetWindow(
+                                    diagHwnd, diagPid, "User selected Use This Window As Recording Target");
+                                _statusLabel.Text = $"Recording target updated: {diagWin?.Name ?? "(window)"}";
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to set current element window as recording target");
+                        }
+                    };
+
+                    diagnosticMenu.Items.Add(setAsTargetItem);
+                    AddCloseItem(diagnosticMenu);
+                    EnsureOverlayVisible();
+                    diagnosticMenu.Show(pt);
                     return;
                 }
             }
@@ -2552,6 +2647,7 @@ public sealed class RecordingOverlayWindow : Form
                 if (_automation == null) return;
 
                 SafeClickPopupOk();
+                ClearPopupCache();
 
                 _service.AddAction(new RecordedAction
                 {
@@ -2607,6 +2703,7 @@ public sealed class RecordingOverlayWindow : Form
             cancelEscItem.Click += (_, _) =>
             {
                 SafeCancelPopup();
+                ClearPopupCache();
 
                 _service.AddAction(new RecordedAction
                 {
@@ -2649,6 +2746,7 @@ public sealed class RecordingOverlayWindow : Form
                     Element = capturedPopupInfo,
                     Description = $"Close popup '{windowTitle}'"
                 });
+                ClearPopupCache();
                 UpdateStatusAfterAction($"Close Popup [Window] {windowTitle}");
             };
             menu.Items.Add(closePopupItem);
@@ -2694,12 +2792,31 @@ public sealed class RecordingOverlayWindow : Form
 
             menu.Items.Add(new ToolStripSeparator());
 
-            // Make This Current Window — records a SwitchWindow action so the automation
-            // script will target this popup window on subsequent operations.
-            var makeCurrentItem = new ToolStripMenuItem("Make This Current Window");
+            // Switch Window / Make Current — updates the runtime recording target AND records
+            // a SwitchWindow action so the automation script targets this window on subsequent operations.
+            var makeCurrentItem = new ToolStripMenuItem("Switch Window / Make Current");
             makeCurrentItem.Click += (_, _) =>
             {
                 var label = ElementInfo.GetLabel(capturedPopupInfo);
+                var popupHwnd = AssistivePopupResolver.SafeWindowHandle(capturedPopupWindow);
+
+                int? popupPid = null;
+                try { popupPid = capturedPopupWindow.Properties.ProcessId.Value; } catch { }
+
+                if (popupHwnd != IntPtr.Zero)
+                {
+                    _service.SetRecordingTargetWindow(
+                        popupHwnd,
+                        popupPid,
+                        $"Assistive Switch Window / Make Current: {windowTitle}");
+
+                    _lastDetectedPopupWindow = capturedPopupWindow;
+                    _lastDetectedPopupHwnd = popupHwnd;
+                    _lastPopupDetectionUtc = DateTime.UtcNow;
+
+                    try { capturedPopupWindow.AsWindow().SetForeground(); } catch { }
+                }
+
                 _service.AddAction(new RecordedAction
                 {
                     ActionType = ActionType.SwitchWindow,
@@ -2708,7 +2825,7 @@ public sealed class RecordingOverlayWindow : Form
                     Value = windowTitle,
                     Description = $"Switch window to '{windowTitle}'"
                 });
-                UpdateStatusAfterAction($"Make Current Window [Window] {label}");
+                UpdateStatusAfterAction($"Current Window set to [Window] {label}");
             };
             menu.Items.Add(makeCurrentItem);
 
@@ -2893,6 +3010,17 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     /// <summary>
+    /// Clears the popup detection cache so subsequent checks re-evaluate the active window
+    /// rather than returning a stale element.
+    /// </summary>
+    private void ClearPopupCache()
+    {
+        _lastDetectedPopupWindow = null;
+        _lastDetectedPopupHwnd = IntPtr.Zero;
+        _lastPopupDetectionUtc = DateTime.MinValue;
+    }
+
+    /// <summary>
     /// Returns <c>true</c> when an active popup or child dialog window is detected,
     /// updating the popup cache fields on success.
     /// Uses <see cref="DetectActivePopupWindow"/> for stronger detection that covers
@@ -2924,11 +3052,11 @@ public sealed class RecordingOverlayWindow : Form
     /// <summary>
     /// Attempts to locate an active popup or child dialog window using three strategies:
     /// <list type="number">
-    ///   <item>Foreground window differs from the main application window.</item>
+    ///   <item>Foreground window differs from the main application window AND belongs to the recording target.</item>
     ///   <item>A visible, named child Window exists under the main application window
     ///         (covers popups that appear as child windows of the main HWND).</item>
     ///   <item>The element under the current cursor position belongs to a window other
-    ///         than the main application window.</item>
+    ///         than the main application window AND belongs to the recording target.</item>
     /// </list>
     /// Returns the first matched <see cref="AutomationElement"/>, or <c>null</c> if no
     /// popup is found.
@@ -2941,7 +3069,7 @@ public sealed class RecordingOverlayWindow : Form
         var mainHwnd = _service.GetApplicationMainWindowHandle();
         var foregroundHwnd = GetForegroundWindow();
 
-        // 1. Strongest signal: foreground window is different from main window.
+        // 1. Foreground window can be popup ONLY if it belongs to the recording target.
         if (foregroundHwnd != IntPtr.Zero &&
             mainHwnd != IntPtr.Zero &&
             foregroundHwnd != mainHwnd)
@@ -2949,29 +3077,31 @@ public sealed class RecordingOverlayWindow : Form
             try
             {
                 var foregroundElement = _automation.FromHandle(foregroundHwnd);
+                var win = foregroundElement != null
+                    ? FindWindowAncestorOrSelf(foregroundElement)
+                    : null;
 
-                if (foregroundElement != null)
+                if (win != null && _service.IsElementInRecordingTarget(win))
                 {
-                    var win = FindWindowAncestorOrSelf(foregroundElement);
-
-                    if (win != null)
-                    {
-                        _logger.LogInformation(
-                            "Popup detected: name={Name}, hwnd=0x{Hwnd:X}",
-                            win.Name,
-                            AssistivePopupResolver.SafeWindowHandle(win).ToInt64());
-                        return win;
-                    }
+                    _logger.LogInformation(
+                        "Target popup detected from foreground: name={Name}, hwnd=0x{Hwnd:X}",
+                        win.Name,
+                        AssistivePopupResolver.SafeWindowHandle(win).ToInt64());
+                    return win;
                 }
+
+                _logger.LogDebug(
+                    "Ignoring foreground window as popup because it is outside target: hwnd=0x{Hwnd:X}, name={Name}",
+                    foregroundHwnd.ToInt64(),
+                    win?.Name ?? "(no window ancestor found)");
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Could not resolve foreground popup hwnd 0x{Hwnd:X}", foregroundHwnd);
+                _logger.LogDebug(ex, "Could not resolve foreground hwnd 0x{Hwnd:X}", foregroundHwnd.ToInt64());
             }
         }
 
-        // 2. Important for this app:
-        // Popup appears as a child Window under LoginForm, while foreground can still be main window.
+        // 2. Child popup under main target window.
         try
         {
             AutomationElement? mainWindow = null;
@@ -2983,10 +3113,10 @@ public sealed class RecordingOverlayWindow : Form
             {
                 var childPopup = AssistivePopupResolver.DetectChildPopupWindow(mainWindow, _automation);
 
-                if (childPopup != null)
+                if (childPopup != null && _service.IsElementInRecordingTarget(childPopup))
                 {
                     _logger.LogInformation(
-                        "Popup detected: name={Name}, hwnd=0x{Hwnd:X}",
+                        "Target child popup detected: name={Name}, hwnd=0x{Hwnd:X}",
                         childPopup.Name,
                         AssistivePopupResolver.SafeWindowHandle(childPopup).ToInt64());
                     return childPopup;
@@ -2995,11 +3125,10 @@ public sealed class RecordingOverlayWindow : Form
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Could not detect child popup under main window");
+            _logger.LogDebug(ex, "Could not detect child popup under main target window");
         }
 
-        // 3. Last fallback:
-        // If current mouse point is inside a child Window, treat that child as popup.
+        // 3. Cursor fallback: only if window under cursor belongs to target.
         try
         {
             var pt = Cursor.Position;
@@ -3015,10 +3144,11 @@ public sealed class RecordingOverlayWindow : Form
 
                     if (winHwnd != IntPtr.Zero &&
                         mainHwnd != IntPtr.Zero &&
-                        winHwnd != mainHwnd)
+                        winHwnd != mainHwnd &&
+                        _service.IsElementInRecordingTarget(win))
                     {
                         _logger.LogInformation(
-                            "Popup detected: name={Name}, hwnd=0x{Hwnd:X}",
+                            "Target popup detected from cursor: name={Name}, hwnd=0x{Hwnd:X}",
                             win.Name,
                             winHwnd.ToInt64());
                         return win;

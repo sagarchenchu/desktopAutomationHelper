@@ -105,4 +105,12 @@ public interface IRecordingService
     /// legacy behaviour.
     /// </summary>
     bool IsElementInRecordingTarget(AutomationElement element);
+
+    /// <summary>
+    /// Updates the runtime recording target to the given window handle.
+    /// Optionally accepts a process ID; if omitted, the existing target PID is kept.
+    /// Adds the HWND to the set of allowed target windows so that later
+    /// <see cref="IsElementInRecordingTarget"/> checks accept elements inside it.
+    /// </summary>
+    void SetRecordingTargetWindow(IntPtr hwnd, int? processId = null, string? reason = null);
 }
