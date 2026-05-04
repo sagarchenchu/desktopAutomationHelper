@@ -734,7 +734,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
         };
     }
 
-    private static ScreenResolutionInfo? CaptureScreenResolution()
+    private ScreenResolutionInfo? CaptureScreenResolution()
     {
         try
         {
@@ -756,13 +756,14 @@ public sealed class RecordingService : IRecordingService, IDisposable
                 WorkingAreaHeight = screen.WorkingArea.Height
             };
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogDebug(ex, "Failed to capture screen resolution before recording start");
             return null;
         }
     }
 
-    private static ApplicationWindowInfo? CaptureApplicationWindow(IntPtr hwnd, string? title)
+    private ApplicationWindowInfo? CaptureApplicationWindow(IntPtr hwnd, string? title)
     {
         if (hwnd == IntPtr.Zero)
             return null;
@@ -810,8 +811,9 @@ public sealed class RecordingService : IRecordingService, IDisposable
                 IsFullScreen = isFullScreen
             };
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogDebug(ex, "Failed to capture launched window details for '{Title}'", title ?? "(unknown)");
             return null;
         }
     }
