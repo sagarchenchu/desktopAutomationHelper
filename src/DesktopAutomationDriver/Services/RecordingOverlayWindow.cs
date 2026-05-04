@@ -292,6 +292,10 @@ public sealed class RecordingOverlayWindow : Form
     private DateTime _lastPopupDetectionUtc = DateTime.MinValue;
     private PointerContextInfo? _currentAssistivePointerContext;
 
+    /// <summary>
+    /// Holds the hook point, live cursor point, and chosen target point for an
+    /// assistive right-click so later actions can reuse the same coordinates.
+    /// </summary>
     private sealed class PointResolutionResult
     {
         public required System.Drawing.Point HookPoint { get; init; }
@@ -314,6 +318,10 @@ public sealed class RecordingOverlayWindow : Form
         };
     }
 
+    /// <summary>
+    /// Represents a single candidate point inspected during assistive right-click
+    /// resolution together with whether the element at that point belongs to the target.
+    /// </summary>
     private sealed class PointCandidate
     {
         public AutomationElement? Element { get; init; }
