@@ -4664,28 +4664,7 @@ public sealed class RecordingOverlayWindow : Form
         if (context == null)
             return null;
 
-        return new PointerContextInfo
-        {
-            HookPoint = context.HookPoint == null ? null : new PointerCoordinateInfo
-            {
-                X = context.HookPoint.X,
-                Y = context.HookPoint.Y
-            },
-            CursorPoint = context.CursorPoint == null ? null : new PointerCoordinateInfo
-            {
-                X = context.CursorPoint.X,
-                Y = context.CursorPoint.Y
-            },
-            ResolvedPoint = context.ResolvedPoint == null ? null : new PointerCoordinateInfo
-            {
-                X = context.ResolvedPoint.X,
-                Y = context.ResolvedPoint.Y
-            },
-            CoordinateMismatch = context.CoordinateMismatch,
-            UsedCursorFallback = context.UsedCursorFallback,
-            HookPointInTarget = context.HookPointInTarget,
-            CursorPointInTarget = context.CursorPointInTarget
-        };
+        return context.Clone();
     }
 
     /// <summary>

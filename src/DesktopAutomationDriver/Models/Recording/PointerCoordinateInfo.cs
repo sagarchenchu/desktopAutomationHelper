@@ -7,4 +7,10 @@ public class PointerCoordinateInfo
 {
     public int X { get; set; }
     public int Y { get; set; }
+
+    public PointerCoordinateInfo Clone() => new()
+    {
+        X = X,
+        Y = Y
+    };
 }
