@@ -2484,26 +2484,44 @@ public sealed class RecordingOverlayWindow : Form
             mainHwnd != IntPtr.Zero &&
             foregroundHwnd != mainHwnd)
         {
-            // The foreground window differs from the application's main window:
-            // treat it as a popup / dialog.
+            // The foreground window differs from the application's main window.
+            // Only treat it as a popup / dialog when it belongs to the recording target.
+            // This prevents IntelliJ / the driver IDE from being detected as a popup.
             try
             {
                 var foregroundElement = _automation.FromHandle(foregroundHwnd);
                 if (foregroundElement != null)
                 {
                     // Walk up to the Window ancestor if FromHandle returned a child.
+                    AutomationElement? win = null;
                     var cur = foregroundElement;
                     for (int d = 0; d < MaxWindowSearchDepth && cur != null; d++)
                     {
                         if (cur.ControlType == ControlType.Window)
                         {
-                            windowElement = cur;
+                            win = cur;
                             break;
                         }
                         cur = cur.Parent;
                     }
-                    windowElement ??= foregroundElement;
-                    isPopupMode = true;
+                    win ??= foregroundElement;
+
+                    if (_service.IsElementInRecordingTarget(win))
+                    {
+                        windowElement = win;
+                        isPopupMode = true;
+                        _logger.LogInformation(
+                            "Window menu: target popup detected from foreground: name={Name}, hwnd=0x{Hwnd:X}",
+                            win.Name,
+                            foregroundHwnd.ToInt64());
+                    }
+                    else
+                    {
+                        _logger.LogDebug(
+                            "Window menu: ignoring foreground window as popup because it is outside recording target. hwnd=0x{Hwnd:X}, name={Name}",
+                            foregroundHwnd.ToInt64(),
+                            win.Name);
+                    }
                 }
             }
             catch (Exception ex)
@@ -2810,6 +2828,8 @@ public sealed class RecordingOverlayWindow : Form
                         popupPid,
                         $"Assistive Switch Window / Make Current: {windowTitle}");
 
+                    // Clear stale popup cache first, then re-point it at the new current window.
+                    ClearPopupCache();
                     _lastDetectedPopupWindow = capturedPopupWindow;
                     _lastDetectedPopupHwnd = popupHwnd;
                     _lastPopupDetectionUtc = DateTime.UtcNow;
@@ -3120,6 +3140,14 @@ public sealed class RecordingOverlayWindow : Form
                         childPopup.Name,
                         AssistivePopupResolver.SafeWindowHandle(childPopup).ToInt64());
                     return childPopup;
+                }
+
+                if (childPopup != null)
+                {
+                    _logger.LogDebug(
+                        "Ignoring child popup because it is outside recording target: name={Name}, hwnd=0x{Hwnd:X}",
+                        childPopup.Name,
+                        AssistivePopupResolver.SafeWindowHandle(childPopup).ToInt64());
                 }
             }
         }
