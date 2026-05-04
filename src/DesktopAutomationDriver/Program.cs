@@ -3,6 +3,11 @@ using System.Text;
 using System.Text.Json;
 using DesktopAutomationDriver.Middleware;
 using DesktopAutomationDriver.Services;
+using WinForms = System.Windows.Forms.Application;
+
+WinForms.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
+WinForms.EnableVisualStyles();
+WinForms.SetCompatibleTextRenderingDefault(false);
 
 // -----------------------------------------------------------------------
 // Create driver context first: determines the user-specific port and the
