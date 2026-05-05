@@ -472,7 +472,7 @@ public sealed class RecordingOverlayWindow : Form
                 _keyboardHook, _mouseHook);
 
         // Timer to refresh the "cursor on: …" label in Assistive mode
-        _cursorTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _cursorTimer = new System.Windows.Forms.Timer { Interval = 600 };
         _cursorTimer.Tick += OnCursorTimerTick;
         _cursorTimer.Start();
     }
@@ -541,7 +541,7 @@ public sealed class RecordingOverlayWindow : Form
         var movedEnough = (dx * dx + dy * dy) > 64;
 
         if (!movedEnough &&
-            now - _lastCursorElementRefreshUtc < TimeSpan.FromMilliseconds(800))
+            now - _lastCursorElementRefreshUtc < TimeSpan.FromMilliseconds(1000))
         {
             return;
         }
@@ -2611,6 +2611,7 @@ public sealed class RecordingOverlayWindow : Form
                 {
                     _service.SetRecordingTargetWindow(
                         diagHwnd, diagPid, "User selected Use This Window As Recording Target");
+                    ClearBoundsFallbackCache();
                     _statusLabel.Text = $"Recording target updated: {diagWin?.Name ?? "(window)"}";
                 }
             }

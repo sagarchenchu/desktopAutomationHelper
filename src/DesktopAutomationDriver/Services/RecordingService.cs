@@ -335,7 +335,28 @@ public sealed class RecordingService : IRecordingService, IDisposable
     {
         using (MeasurePerf("GetElementAtPointLightweight"))
         {
-            return GetElementAtPointCore(point, logOutsideTarget: false);
+            if (_automation == null)
+                return null;
+
+            try
+            {
+                var element = _automation.FromPoint(point);
+
+                if (element == null)
+                    return null;
+
+                element = RecordingOverlayWindow.DrillDownToElementAtPoint(element, point);
+
+                if (!IsElementInRecordingTarget(element))
+                    return null;
+
+                return RecordingOverlayWindow.BuildElementInfo(element);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "GetElementAtPointLightweight failed for {Point}", point);
+                return null;
+            }
         }
     }
 
