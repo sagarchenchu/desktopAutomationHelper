@@ -759,7 +759,7 @@ public sealed class RecordingOverlayWindow : Form
                 {
                     try
                     {
-                        if (EnableVerboseCoordinateDiagnostics)
+                        if (ShouldLogVerboseCoordinateDiagnostics())
                             LogScreenAndWindowDiagnostics(capturedPoint, "AssistiveRightClick");
 
                         var pointResolution = ResolveAssistivePoint(
@@ -1029,7 +1029,7 @@ public sealed class RecordingOverlayWindow : Form
             return false;
         }
 
-        if (EnableVerboseCoordinateDiagnostics)
+        if (ShouldLogVerboseCoordinateDiagnostics())
             LogScreenAndWindowDiagnostics(pt, "TryShowAssistiveMenuForTargetElement");
 
         try
@@ -1523,7 +1523,7 @@ public sealed class RecordingOverlayWindow : Form
                 else
                     BringElementWindowToForeground(element);
                 Thread.Sleep(WindowActivationDelayMs);
-                if (EnableVerboseCoordinateDiagnostics)
+                if (ShouldLogVerboseCoordinateDiagnostics())
                     LogScreenAndWindowDiagnostics(pt, "AssistiveMenuRightClickAction");
                 // Set the flag so the global hook does not intercept this simulated
                 // right-click and show the assistive context menu a second time.
@@ -3676,7 +3676,7 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
-            if (EnableVerboseCoordinateDiagnostics)
+            if (ShouldLogVerboseCoordinateDiagnostics())
                 LogScreenAndWindowDiagnostics(point, $"PhysicalClick:{actionName}");
 
             if (targetHwnd != IntPtr.Zero)
@@ -4762,6 +4762,11 @@ public sealed class RecordingOverlayWindow : Form
     private IDisposable MeasurePerf(string name)
     {
         return new PerfScope(_logger, name);
+    }
+
+    private static bool ShouldLogVerboseCoordinateDiagnostics()
+    {
+        return EnableVerboseCoordinateDiagnostics;
     }
 
     private void ClearBoundsFallbackCache()
