@@ -6,6 +6,7 @@ namespace DesktopAutomationDriver.Models.Recording;
 public enum ActionType
 {
     Click,
+    MenuPathClick,
     DoubleClick,
     RightClick,
     Hover,
