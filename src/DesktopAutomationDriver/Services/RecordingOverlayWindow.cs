@@ -740,73 +740,7 @@ public sealed class RecordingOverlayWindow : Form
                 }
 
                 var capturedHookPoint = ms.pt;
-                var capturedPoint = capturedHookPoint;
-                System.Drawing.Point? capturedActualCursorPoint = null;
-
-                try
-                {
-                    if (GetCursorPos(out var win32CursorPoint))
-                    {
-                        capturedPoint = win32CursorPoint;
-                        capturedActualCursorPoint = win32CursorPoint;
-                    }
-                }
-                catch
-                {
-                    // Keep the low-level hook point when Win32 cursor capture fails.
-                }
-
-                bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-                BeginInvoke(new Action(() =>
-                {
-                    try
-                    {
-                        if (ShouldLogVerboseCoordinateDiagnostics())
-                            LogScreenAndWindowDiagnostics(capturedPoint, "AssistiveRightClick");
-
-                        var pointResolution = ResolveAssistivePoint(
-                            capturedHookPoint,
-                            capturedActualCursorPoint,
-                            capturedPoint);
-
-                        _currentAssistivePointerContext = pointResolution.ToPointerContext();
-
-                        if (ctrlHeld)
-                        {
-                            _statusLabel.Text = $"CTRL+RC window menu at {capturedPoint.X},{capturedPoint.Y}";
-                            ShowWindowContextMenu(capturedPoint);
-                            return;
-                        }
-
-                        if (_awaitingDragTarget)
-                        {
-                            _awaitingDragTarget = false;
-                            var sourceInfo = _dragSourceInfo;
-                            _dragSourceInfo = null;
-                            RecordAssistiveDragTarget(capturedPoint, sourceInfo);
-                            return;
-                        }
-
-                        var capturedElement = pointResolution.ResolvedElement;
-
-                        if (TryShowAssistiveMenuForTargetElement(capturedPoint, capturedElement))
-                            return;
-
-                        if (IsPopupCurrentlyActive())
-                        {
-                            _statusLabel.Text = $"Target popup detected — showing popup actions at {capturedPoint.X},{capturedPoint.Y}";
-                            ShowWindowContextMenu(capturedPoint);
-                            return;
-                        }
-
-                        ShowOutsideTargetDiagnosticFromPoint(capturedPoint);
-                    }
-                    catch (Exception ex)
-                    {
-                        _statusLabel.Text = "Assistive right-click failed: " + ex.Message;
-                        _logger.LogError(ex, "Assistive right-click failed at {Point}", capturedPoint);
-                    }
-                }));
+                BeginInvoke(new Action(() => HandleAssistiveRightClick(capturedHookPoint)));
 
                 _suppressNextRButtonUp = true;
                 return (IntPtr)1; // suppress the native right-click
@@ -819,6 +753,73 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+    }
+
+    private void HandleAssistiveRightClick(System.Drawing.Point capturedHookPoint)
+    {
+        var capturedPoint = capturedHookPoint;
+        System.Drawing.Point? capturedActualCursorPoint = null;
+
+        try
+        {
+            if (GetCursorPos(out var win32CursorPoint))
+            {
+                capturedPoint = win32CursorPoint;
+                capturedActualCursorPoint = win32CursorPoint;
+            }
+        }
+        catch
+        {
+            // Keep the low-level hook point when Win32 cursor capture fails.
+        }
+
+        try
+        {
+            if (ShouldLogVerboseCoordinateDiagnostics())
+                LogScreenAndWindowDiagnostics(capturedPoint, "AssistiveRightClick");
+
+            var pointResolution = ResolveAssistivePoint(
+                capturedHookPoint,
+                capturedActualCursorPoint,
+                capturedPoint);
+
+            _currentAssistivePointerContext = pointResolution.ToPointerContext();
+
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
+            {
+                _statusLabel.Text = $"CTRL+RC window menu at {capturedPoint.X},{capturedPoint.Y}";
+                ShowWindowContextMenu(capturedPoint);
+                return;
+            }
+
+            if (_awaitingDragTarget)
+            {
+                _awaitingDragTarget = false;
+                var sourceInfo = _dragSourceInfo;
+                _dragSourceInfo = null;
+                RecordAssistiveDragTarget(capturedPoint, sourceInfo);
+                return;
+            }
+
+            var capturedElement = pointResolution.ResolvedElement;
+
+            if (TryShowAssistiveMenuForTargetElement(capturedPoint, capturedElement))
+                return;
+
+            if (IsPopupCurrentlyActive())
+            {
+                _statusLabel.Text = $"Target popup detected — showing popup actions at {capturedPoint.X},{capturedPoint.Y}";
+                ShowWindowContextMenu(capturedPoint);
+                return;
+            }
+
+            ShowOutsideTargetDiagnosticFromPoint(capturedPoint);
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = "Assistive right-click failed: " + ex.Message;
+            _logger.LogError(ex, "Assistive right-click failed at {Point}", capturedPoint);
+        }
     }
 
     // ── Passive recording helpers ────────────────────────────────────────────
