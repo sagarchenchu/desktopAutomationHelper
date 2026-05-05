@@ -1545,9 +1545,17 @@ public sealed class RecordingOverlayWindow : Form
                             {
                                 subMenuBarRef = cur;
                                 pathElements.Reverse(); // collected bottom-up; reverse to top-down
+                                var skippedSegments = pathElements.Count(info =>
+                                    string.IsNullOrWhiteSpace(GetLogicalMenuPathSegment(info)));
                                 parentMenuPath = pathElements
                                     .Where(info => !string.IsNullOrWhiteSpace(GetLogicalMenuPathSegment(info)))
                                     .ToList();
+                                if (skippedSegments > 0)
+                                {
+                                    _logger.LogWarning(
+                                        "Logical menu path omitted {Count} unnamed segment(s) while recording submenu selection.",
+                                        skippedSegments);
+                                }
                                 break;
                             }
                             var par = cur.Parent;
@@ -1585,7 +1593,7 @@ public sealed class RecordingOverlayWindow : Form
                                 Thread.Sleep(WindowActivationDelayMs);
 
                                 if (!TryActivateLogicalMenuItem(subItem, $"Logical menu path {capturedMenuPathValue}"))
-                                    throw new InvalidOperationException($"Failed to activate logical menu item '{capturedSubItemName}'.");
+                                    throw new InvalidOperationException($"Failed to activate logical menu path '{capturedMenuPathValue}'.");
 
                                 _service.AddAction(new RecordedAction
                                 {
