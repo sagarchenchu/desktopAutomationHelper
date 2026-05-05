@@ -192,8 +192,9 @@ static void LogStartupBanner(IDriverContext ctx, ILogger logger)
     sb.AppendLine("║    getname, getcontroltype, getselected,                     ║");
     sb.AppendLine("║    gettabledata, gettableheaders,                            ║");
     sb.AppendLine("║    isrightof, isleftof, isabove, isbelow, getposition,       ║");
-    sb.AppendLine("║    click, clickmenu, clickmenupath, doubleclick, rightclick, ║");
-    sb.AppendLine("║    hover, focus, type, clear, sendkeys, scroll, check,       ║");
+    sb.AppendLine("║    click, clickmenu, clickmenupath, clicklogicalmenupath,    ║");
+    sb.AppendLine("║    inspectlogicalmenu, doubleclick, rightclick, hover,       ║");
+    sb.AppendLine("║    focus, type, clear, sendkeys, scroll, check,              ║");
     sb.AppendLine("║    uncheck, select, alertok, alertcancel, alertclose,        ║");
     sb.AppendLine("║    popupok                                                   ║");
     sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
