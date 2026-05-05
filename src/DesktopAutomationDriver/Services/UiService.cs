@@ -423,11 +423,11 @@ public class UiService : IUiService
         try
         {
             var mainWindow = session.Application.GetMainWindow(session.Automation);
-            if (mainWindow != null && TitleContains(mainWindow, titleFragment))
-                return mainWindow;
-
             if (mainWindow != null)
             {
+                if (TitleContains(mainWindow, titleFragment))
+                    return mainWindow;
+
                 var mainDescendant = mainWindow
                     .FindAllDescendants(windowCondition)
                     .FirstOrDefault(w => TitleContains(w, titleFragment));
@@ -662,10 +662,18 @@ public class UiService : IUiService
         var session = RequireSession();
         var cf = session.Automation.ConditionFactory;
         var windows = new List<AutomationElement>();
+        var seenHandles = new HashSet<long>();
 
         try
         {
-            windows.AddRange(session.Application.GetAllTopLevelWindows(session.Automation));
+            foreach (var window in session.Application.GetAllTopLevelWindows(session.Automation))
+            {
+                windows.Add(window);
+
+                var hwnd = SafeWindowHandle(window).ToInt64();
+                if (hwnd != 0)
+                    seenHandles.Add(hwnd);
+            }
         }
         catch
         {
@@ -679,9 +687,8 @@ public class UiService : IUiService
 
             foreach (var window in desktopDescendants)
             {
-                var hwnd = SafeWindowHandle(window);
-                if (hwnd != IntPtr.Zero &&
-                    windows.All(existing => SafeWindowHandle(existing) != hwnd))
+                var hwnd = SafeWindowHandle(window).ToInt64();
+                if (hwnd != 0 && seenHandles.Add(hwnd))
                 {
                     windows.Add(window);
                 }
