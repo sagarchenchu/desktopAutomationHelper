@@ -1696,35 +1696,30 @@ public class UiService : IUiService
                 .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
                 .ToList();
 
+            var topLevelItems = root.ControlType == ControlType.MenuBar
+                ? FindDirectChildrenByControlType(root, ControlType.MenuItem)
+                : allMenuItems;
+
             _logger.LogInformation(
-                "FindLogicalMenuPath: path={Path}, rootName={RootName}, totalMenuItems={Count}",
+                "FindLogicalMenuPath: path={Path}, rootName={RootName}, rootControlType={RootControlType}, totalMenuItems={Total}, topLevelCount={TopLevelCount}, topLevelItems={TopLevelItems}",
                 string.Join(" > ", parts),
                 SafeElementName(root),
-                allMenuItems.Count);
+                root.ControlType,
+                allMenuItems.Count,
+                topLevelItems.Count,
+                topLevelItems.Select(x => new
+                {
+                    name = SafeElementName(x),
+                    automationId = SafeElementAutomationId(x),
+                    nameNorm = NormalizeMenuText(SafeElementName(x)),
+                    expectedNorm = NormalizeMenuText(parts[0]),
+                    isMatch = MenuTextMatches(x, parts[0]),
+                    childCount = SafeMenuItemChildCount(x, cf)
+                }).ToList());
 
-            List<AutomationElement> parentCandidates;
-            if (root.ControlType == ControlType.MenuBar)
-            {
-                var topLevelMenuItems = FindDirectChildrenByControlType(root, ControlType.MenuItem);
-                parentCandidates = topLevelMenuItems
-                    .Where(e => MenuTextMatches(e, parts[0]))
-                    .ToList();
-
-                _logger.LogInformation(
-                    "FindLogicalMenuPath: root is MenuBar. Top-level MenuItems={TopLevelItems}",
-                    topLevelMenuItems.Select(x => new
-                    {
-                        name = SafeElementName(x),
-                        automationId = SafeElementAutomationId(x),
-                        childCount = SafeMenuItemChildCount(x, cf)
-                    }).ToList());
-            }
-            else
-            {
-                parentCandidates = allMenuItems
-                    .Where(e => MenuTextMatches(e, parts[0]))
-                    .ToList();
-            }
+            var parentCandidates = topLevelItems
+                .Where(e => MenuTextMatches(e, parts[0]))
+                .ToList();
 
             _logger.LogInformation(
                 "FindLogicalMenuPath: parent candidates for '{Parent}' = {Candidates}",
@@ -1733,28 +1728,23 @@ public class UiService : IUiService
                 {
                     name = SafeElementName(x),
                     automationId = SafeElementAutomationId(x),
-                    controlType = SafeElementControlType(x),
-                    parentChain = BuildParentChain(x)
+                    nameNorm = NormalizeMenuText(SafeElementName(x)),
+                    expectedNorm = NormalizeMenuText(parts[0]),
+                    isMatch = MenuTextMatches(x, parts[0]),
+                    childCount = SafeMenuItemChildCount(x, cf)
                 }).ToList());
 
             foreach (var candidate in parentCandidates)
             {
-                _logger.LogInformation(
-                    "DQA candidate details. name={Name}, automationId={AutomationId}, bounds={Bounds}, children={Children}",
-                    SafeElementName(candidate),
-                    SafeElementAutomationId(candidate),
-                    SafeBoundingRectangle(candidate),
-                    GetMenuItemDescendantSummary(candidate, cf));
-
                 var resolved = TryResolveMenuPathFromParent(candidate, cf, parts, 1);
 
                 if (resolved != null)
                 {
                     _logger.LogInformation(
-                        "FindLogicalMenuPath: resolved path={Path} using parent name={ParentName}, automationId={ParentAutomationId}",
+                        "FindLogicalMenuPath: resolved path={Path} using parent={Parent}, target={Target}",
                         string.Join(" > ", parts),
                         SafeElementName(candidate),
-                        SafeElementAutomationId(candidate));
+                        SafeElementName(resolved));
 
                     return resolved;
                 }
@@ -1773,12 +1763,15 @@ public class UiService : IUiService
                     .ToList();
 
                 _logger.LogWarning(
-                    "FindLogicalMenuPath: direct path failed. Leaf matches for '{Leaf}' = {Matches}",
+                    "FindLogicalMenuPath direct path failed. Leaf matches for '{Leaf}' = {Matches}",
                     leafName,
                     leafMatches.Select(x => new
                     {
                         name = SafeElementName(x),
                         automationId = SafeElementAutomationId(x),
+                        nameNorm = NormalizeMenuText(SafeElementName(x)),
+                        expectedNorm = NormalizeMenuText(leafName),
+                        isMatch = MenuTextMatches(x, leafName),
                         parentChain = BuildParentChain(x)
                     }).ToList());
 
@@ -1816,49 +1809,40 @@ public class UiService : IUiService
         for (var i = nextIndex; i < parts.Count; i++)
         {
             var nextName = parts[i];
-            AutomationElement? next = null;
-
             var directChildren = FindDirectChildrenByControlType(current, ControlType.MenuItem);
 
             _logger.LogInformation(
-                "Looking for direct child menu item. parent={Parent}, lookingFor={Child}, directChildren={Children}",
+                "Looking for direct child. parent={Parent}, lookingFor={LookingFor}, children={Children}",
                 SafeElementName(current),
                 nextName,
                 directChildren.Select(x => new
                 {
                     name = SafeElementName(x),
-                    automationId = SafeElementAutomationId(x)
+                    automationId = SafeElementAutomationId(x),
+                    nameNorm = NormalizeMenuText(SafeElementName(x)),
+                    expectedNorm = NormalizeMenuText(nextName),
+                    isMatch = MenuTextMatches(x, nextName)
                 }).ToList());
 
-            next = directChildren.FirstOrDefault(e => MenuTextMatches(e, nextName));
+            var next = directChildren.FirstOrDefault(e => MenuTextMatches(e, nextName));
 
             if (next == null)
             {
-                List<AutomationElement> descendants;
-
-                try
-                {
-                    descendants = current
-                        .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
-                        .ToList();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(
-                        ex,
-                        "TryResolveMenuPathFromParent failed while enumerating descendants for {Current}",
-                        SafeElementName(current));
-                    return null;
-                }
+                var descendants = current
+                    .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                    .ToList();
 
                 _logger.LogInformation(
-                    "Looking for descendant menu item. parent={Parent}, lookingFor={Child}, descendants={Descendants}",
+                    "Looking for descendant child. parent={Parent}, lookingFor={LookingFor}, descendants={Descendants}",
                     SafeElementName(current),
                     nextName,
                     descendants.Select(x => new
                     {
                         name = SafeElementName(x),
-                        automationId = SafeElementAutomationId(x)
+                        automationId = SafeElementAutomationId(x),
+                        nameNorm = NormalizeMenuText(SafeElementName(x)),
+                        expectedNorm = NormalizeMenuText(nextName),
+                        isMatch = MenuTextMatches(x, nextName)
                     }).ToList());
 
                 next = descendants.FirstOrDefault(e => MenuTextMatches(e, nextName));
@@ -1867,10 +1851,9 @@ public class UiService : IUiService
             if (next == null)
             {
                 _logger.LogWarning(
-                    "Menu path failed at step. parent={Parent}, lookingFor={Child}. Available child names={Available}",
+                    "Menu path step not found. currentParent={Parent}, lookingFor={LookingFor}",
                     SafeElementName(current),
-                    nextName,
-                    GetMenuItemDescendantNames(current, cf));
+                    nextName);
 
                 return null;
             }
@@ -1980,22 +1963,16 @@ public class UiService : IUiService
 
     private static bool MenuTextMatches(AutomationElement element, string expected)
     {
-        try
-        {
-            var expectedNorm = NormalizeMenuText(expected);
-            var nameNorm = NormalizeMenuText(element.Name);
-            var automationIdNorm = NormalizeMenuText(element.AutomationId);
+        var expectedNorm = NormalizeMenuText(expected);
 
-            if (string.IsNullOrWhiteSpace(expectedNorm))
-                return false;
-
-            return string.Equals(nameNorm, expectedNorm, StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(automationIdNorm, expectedNorm, StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
+        if (string.IsNullOrWhiteSpace(expectedNorm))
             return false;
-        }
+
+        var nameNorm = NormalizeMenuText(SafeElementName(element));
+        var automationIdNorm = NormalizeMenuText(SafeElementAutomationId(element));
+
+        return string.Equals(nameNorm, expectedNorm, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(automationIdNorm, expectedNorm, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeMenuText(string? value)
@@ -2004,14 +1981,13 @@ public class UiService : IUiService
             return string.Empty;
 
         var normalized = value
-            .Replace("&amp;", string.Empty, StringComparison.OrdinalIgnoreCase)
-            .Replace("&", string.Empty, StringComparison.Ordinal)
+            .Replace("&amp;", string.Empty)
             .Replace("_", string.Empty)
             .Replace("\u00A0", " ")
             .Trim();
 
-        while (normalized.Contains("  ", StringComparison.Ordinal))
-            normalized = normalized.Replace("  ", " ", StringComparison.Ordinal);
+        while (normalized.Contains("  "))
+            normalized = normalized.Replace("  ", " ");
 
         return normalized;
     }
