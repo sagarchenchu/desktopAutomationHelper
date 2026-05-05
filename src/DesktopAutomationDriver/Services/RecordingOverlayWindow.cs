@@ -740,7 +740,8 @@ public sealed class RecordingOverlayWindow : Form
                 }
 
                 var capturedHookPoint = ms.pt;
-                BeginInvoke(new Action(() => HandleAssistiveRightClick(capturedHookPoint)));
+                var ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                BeginInvoke(new Action(() => HandleAssistiveRightClick(capturedHookPoint, ctrlHeld)));
 
                 _suppressNextRButtonUp = true;
                 return (IntPtr)1; // suppress the native right-click
@@ -755,7 +756,7 @@ public sealed class RecordingOverlayWindow : Form
         return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
     }
 
-    private void HandleAssistiveRightClick(System.Drawing.Point capturedHookPoint)
+    private void HandleAssistiveRightClick(System.Drawing.Point capturedHookPoint, bool ctrlHeld)
     {
         var capturedPoint = capturedHookPoint;
         System.Drawing.Point? capturedActualCursorPoint = null;
@@ -785,7 +786,7 @@ public sealed class RecordingOverlayWindow : Form
 
             _currentAssistivePointerContext = pointResolution.ToPointerContext();
 
-            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
+            if (ctrlHeld)
             {
                 _statusLabel.Text = $"CTRL+RC window menu at {capturedPoint.X},{capturedPoint.Y}";
                 ShowWindowContextMenu(capturedPoint);
