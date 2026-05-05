@@ -37,6 +37,18 @@ public class RecordedAction
     public string? Value { get; set; }
 
     /// <summary>
+    /// Optional low-level operation name to use during playback/export
+    /// (for example <c>clicklogicalmenupath</c>).
+    /// </summary>
+    public string? Operation { get; set; }
+
+    /// <summary>
+    /// Optional logical menu path captured for menu-path actions.
+    /// Entries are ordered from parent to target item.
+    /// </summary>
+    public List<ElementInfo>? MenuPath { get; set; }
+
+    /// <summary>
     /// The drop-target element for a <see cref="ActionType.DragAndDrop"/> action.
     /// <see cref="Element"/> holds the drag source; this property holds the drop destination.
     /// Null for all other action types.

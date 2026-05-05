@@ -6,6 +6,12 @@ namespace DesktopAutomationDriver.Models.Request;
 /// </summary>
 public class UiLocator
 {
+    /// <summary>
+    /// Optional locator mode hint for operations that support multiple strategies
+    /// (for example visual vs logical menu path resolution).
+    /// </summary>
+    public string? Mode { get; set; }
+
     /// <summary>UIA Name property (element label).</summary>
     public string? Name { get; set; }
 
