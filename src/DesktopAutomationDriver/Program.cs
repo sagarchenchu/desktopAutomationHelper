@@ -189,13 +189,13 @@ static void LogStartupBanner(IDriverContext ctx, ILogger logger)
     sb.AppendLine("║    switchwindow, refresh, screenshot, listelements,          ║");
     sb.AppendLine("║    listwindows, exists, waitfor, isenabled, isvisible,       ║");
     sb.AppendLine("║    isclickable, iseditable, ischecked, getvalue, gettext,    ║");
-    sb.AppendLine("║    getname,                                                  ║");
-    sb.AppendLine("║    getcontroltype, getselected, gettabledata, gettableheaders, ║");
+    sb.AppendLine("║    getname, getcontroltype, getselected,                     ║");
+    sb.AppendLine("║    gettabledata, gettableheaders,                            ║");
     sb.AppendLine("║    isrightof, isleftof, isabove, isbelow, getposition,       ║");
     sb.AppendLine("║    click, clickmenu, clickmenupath, doubleclick, rightclick, ║");
     sb.AppendLine("║    hover, focus, type, clear, sendkeys, scroll, check,       ║");
-    sb.AppendLine("║    uncheck, select,                                           ║");
-    sb.AppendLine("║    alertok, alertcancel, alertclose, popupok                 ║");
+    sb.AppendLine("║    uncheck, select, alertok, alertcancel, alertclose,        ║");
+    sb.AppendLine("║    popupok                                                   ║");
     sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
     sb.AppendLine("║  OTHER ENDPOINTS (require: Authorization: Bearer <token>)    ║");
     sb.AppendLine("║                                                              ║");
