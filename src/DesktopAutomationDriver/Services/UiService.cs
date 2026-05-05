@@ -148,6 +148,8 @@ public class UiService : IUiService
             "clickmenulogical" => ClickLogicalMenuPath(request),
             "menupath"         => ClickLogicalMenuPath(request),
             "inspectlogicalmenu" => InspectLogicalMenu(request),
+            "dumpmenus"        => DumpLogicalMenus(request),
+            "dumplogicalmenus" => DumpLogicalMenus(request),
             "doubleclick"      => DoubleClick(request),
             "rightclick"       => RightClick(request),
             "hover"            => Hover(request),
@@ -1100,7 +1102,7 @@ public class UiService : IUiService
         }
 
         var session = RequireSession();
-        var root = GetWindowRoot(session);
+        var searchRoot = GetSearchRootForMenuOperation(req, session);
         var cf = session.Automation.ConditionFactory;
         var normalizedValue = System.Net.WebUtility.HtmlDecode(req.Value);
         var parts = SplitMenuPath(normalizedValue);
@@ -1109,10 +1111,13 @@ public class UiService : IUiService
             throw new ArgumentException("Menu path is empty.");
 
         _logger.LogInformation(
-            "ClickLogicalMenuPath requested. Path={Path}",
-            string.Join(" > ", parts));
+            "ClickLogicalMenuPath requested. path={Path}, searchRootName={RootName}, searchRootAutomationId={RootAutomationId}, searchRootControlType={RootControlType}",
+            string.Join(" > ", parts),
+            SafeElementName(searchRoot),
+            SafeElementAutomationId(searchRoot),
+            searchRoot.ControlType);
 
-        var target = FindLogicalMenuPath(root, cf, parts);
+        var target = FindLogicalMenuPath(searchRoot, cf, parts);
 
         if (target == null)
         {
@@ -1143,43 +1148,87 @@ public class UiService : IUiService
     private object? InspectLogicalMenu(UiRequest req)
     {
         var session = RequireSession();
-        var root = GetWindowRoot(session);
+        var root = GetSearchRootForMenuOperation(req, session);
         var cf = session.Automation.ConditionFactory;
         var parentName = string.IsNullOrWhiteSpace(req.Value)
             ? null
             : System.Net.WebUtility.HtmlDecode(req.Value);
 
-        var parent = root
+        var parents = root
             .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
-            .FirstOrDefault(e => string.IsNullOrWhiteSpace(parentName) || MenuTextMatches(e, parentName));
-
-        if (parent == null)
-            throw new InvalidOperationException($"MenuItem '{parentName}' not found.");
-
-        var children = parent
-            .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
-            .Select(e => new
-            {
-                name = SafeElementName(e),
-                automationId = SafeElementAutomationId(e),
-                controlType = e.ControlType.ToString(),
-                patterns = new
-                {
-                    invoke = e.Patterns.Invoke.IsSupported,
-                    expandCollapse = e.Patterns.ExpandCollapse.IsSupported,
-                    selectionItem = e.Patterns.SelectionItem.IsSupported
-                }
-            })
+            .Where(e => string.IsNullOrWhiteSpace(parentName) || MenuTextMatches(e, parentName))
             .ToList();
 
-        return new
+        if (parents.Count == 0)
+            throw new InvalidOperationException($"MenuItem '{parentName}' not found.");
+
+        return parents.Select(parent => new
         {
             parent = new
             {
                 name = SafeElementName(parent),
-                automationId = SafeElementAutomationId(parent)
+                automationId = SafeElementAutomationId(parent),
+                parentChain = BuildParentChain(parent)
             },
-            children
+            children = parent
+                .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                .Select(e => new
+                {
+                    name = SafeElementName(e),
+                    automationId = SafeElementAutomationId(e),
+                    controlType = e.ControlType.ToString(),
+                    parentChain = BuildParentChain(e),
+                    patterns = new
+                    {
+                        invoke = e.Patterns.Invoke.IsSupported,
+                        expandCollapse = e.Patterns.ExpandCollapse.IsSupported,
+                        selectionItem = e.Patterns.SelectionItem.IsSupported
+                    }
+                })
+                .ToList()
+        }).ToList();
+    }
+
+    private object? DumpLogicalMenus(UiRequest req)
+    {
+        var session = RequireSession();
+        var root = GetSearchRootForMenuOperation(req, session);
+        var cf = session.Automation.ConditionFactory;
+
+        var menuItems = root
+            .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+            .Select(e =>
+            {
+                try
+                {
+                    return new
+                    {
+                        name = SafeElementName(e),
+                        automationId = SafeElementAutomationId(e),
+                        controlType = e.ControlType.ToString(),
+                        className = e.ClassName,
+                        bounds = e.BoundingRectangle.ToString(),
+                        parentChain = BuildParentChain(e)
+                    };
+                }
+                catch
+                {
+                    return null;
+                }
+            })
+            .Where(x => x != null)
+            .ToList();
+
+        return new
+        {
+            root = new
+            {
+                name = SafeElementName(root),
+                automationId = SafeElementAutomationId(root),
+                controlType = root.ControlType.ToString(),
+                hwnd = SafeWindowHandle(root).ToInt64()
+            },
+            menuItems
         };
     }
 
@@ -1549,37 +1598,83 @@ public class UiService : IUiService
 
         try
         {
-            var first = root
+            var allMenuItems = root
                 .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
-                .FirstOrDefault(e => MenuTextMatches(e, parts[0]));
+                .ToList();
 
-            if (first == null)
-                return null;
+            _logger.LogInformation(
+                "FindLogicalMenuPath: path={Path}, rootName={RootName}, totalMenuItems={Count}",
+                string.Join(" > ", parts),
+                SafeElementName(root),
+                allMenuItems.Count);
 
-            var current = first;
+            var parentCandidates = allMenuItems
+                .Where(e => MenuTextMatches(e, parts[0]))
+                .ToList();
 
-            for (int i = 1; i < parts.Count; i++)
-            {
-                var nextName = parts[i];
-                var next = current
-                    .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
-                    .FirstOrDefault(e => MenuTextMatches(e, nextName));
-
-                if (next == null)
+            _logger.LogInformation(
+                "FindLogicalMenuPath: parent candidates for '{Parent}' = {Candidates}",
+                parts[0],
+                parentCandidates.Select(x => new
                 {
-                    _logger.LogWarning(
-                        "Menu path step not found. parent={Parent}, missingStep={MissingStep}, index={Index}",
-                        SafeElementName(current),
-                        nextName,
-                        i);
+                    name = SafeElementName(x),
+                    automationId = SafeElementAutomationId(x),
+                    controlType = x.ControlType.ToString(),
+                    parentChain = BuildParentChain(x)
+                }).ToList());
 
-                    return null;
+            foreach (var candidate in parentCandidates)
+            {
+                var resolved = TryResolveMenuPathFromParent(candidate, cf, parts, 1);
+
+                if (resolved != null)
+                {
+                    _logger.LogInformation(
+                        "FindLogicalMenuPath: resolved path={Path} using parent name={ParentName}, automationId={ParentAutomationId}",
+                        string.Join(" > ", parts),
+                        SafeElementName(candidate),
+                        SafeElementAutomationId(candidate));
+
+                    return resolved;
                 }
-
-                current = next;
             }
 
-            return current;
+            if (parts.Count >= 2)
+            {
+                var leaf = FindMenuItemByLeafAndAncestor(root, cf, parts[^1], parts[^2]);
+
+                if (leaf != null)
+                    return leaf;
+            }
+
+            if (parts.Count >= 2)
+            {
+                var leafName = parts[^1];
+                var leafMatches = allMenuItems
+                    .Where(e => MenuTextMatches(e, leafName))
+                    .ToList();
+
+                _logger.LogWarning(
+                    "FindLogicalMenuPath: direct path failed. Leaf matches for '{Leaf}' = {Matches}",
+                    leafName,
+                    leafMatches.Select(x => new
+                    {
+                        name = SafeElementName(x),
+                        automationId = SafeElementAutomationId(x),
+                        parentChain = BuildParentChain(x)
+                    }).ToList());
+
+                if (leafMatches.Count == 1)
+                {
+                    _logger.LogInformation(
+                        "FindLogicalMenuPath: using unique leaf fallback for '{Leaf}'",
+                        leafName);
+
+                    return leafMatches[0];
+                }
+            }
+
+            return null;
         }
         catch (Exception ex)
         {
@@ -1592,6 +1687,115 @@ public class UiService : IUiService
         }
     }
 
+    private AutomationElement? TryResolveMenuPathFromParent(
+        AutomationElement parent,
+        ConditionFactory cf,
+        IReadOnlyList<string> parts,
+        int nextIndex)
+    {
+        var current = parent;
+
+        for (var i = nextIndex; i < parts.Count; i++)
+        {
+            var nextName = parts[i];
+            List<AutomationElement> descendants;
+
+            try
+            {
+                descendants = current
+                    .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                    .ToList();
+            }
+            catch
+            {
+                return null;
+            }
+
+            _logger.LogDebug(
+                "TryResolveMenuPathFromParent: current={Current}, lookingFor={Child}, descendants={Descendants}",
+                SafeElementName(current),
+                nextName,
+                descendants.Select(x => new
+                {
+                    name = SafeElementName(x),
+                    automationId = SafeElementAutomationId(x)
+                }).ToList());
+
+            var next = descendants.FirstOrDefault(e => MenuTextMatches(e, nextName));
+
+            if (next == null)
+                return null;
+
+            current = next;
+        }
+
+        return current;
+    }
+
+    private AutomationElement? FindMenuItemByLeafAndAncestor(
+        AutomationElement root,
+        ConditionFactory cf,
+        string leafName,
+        string ancestorName)
+    {
+        try
+        {
+            var all = root.FindAllDescendants(cf.ByControlType(ControlType.MenuItem));
+
+            foreach (var item in all)
+            {
+                if (!MenuTextMatches(item, leafName))
+                    continue;
+
+                var current = item.Parent;
+
+                while (current != null)
+                {
+                    if (current.ControlType == ControlType.MenuItem &&
+                        MenuTextMatches(current, ancestorName))
+                    {
+                        _logger.LogInformation(
+                            "FindMenuItemByLeafAndAncestor matched leaf={Leaf}, ancestor={Ancestor}",
+                            SafeElementName(item),
+                            SafeElementName(current));
+
+                        return item;
+                    }
+
+                    current = current.Parent;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindMenuItemByLeafAndAncestor failed");
+        }
+
+        return null;
+    }
+
+    private static List<string> BuildParentChain(AutomationElement element)
+    {
+        var chain = new List<string>();
+
+        try
+        {
+            var current = element.Parent;
+
+            while (current != null)
+            {
+                chain.Add($"{current.ControlType}:{current.Name}:{current.AutomationId}");
+                current = current.Parent;
+            }
+        }
+        catch
+        {
+            // ignore unstable UIA tree
+        }
+
+        return chain;
+    }
+
     private static bool MenuTextMatches(AutomationElement element, string expected)
     {
         try
@@ -1600,8 +1804,13 @@ public class UiService : IUiService
             var nameNorm = NormalizeMenuText(element.Name);
             var automationIdNorm = NormalizeMenuText(element.AutomationId);
 
+            if (string.IsNullOrWhiteSpace(expectedNorm))
+                return false;
+
             return string.Equals(nameNorm, expectedNorm, StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(automationIdNorm, expectedNorm, StringComparison.OrdinalIgnoreCase);
+                   string.Equals(automationIdNorm, expectedNorm, StringComparison.OrdinalIgnoreCase) ||
+                   nameNorm.Contains(expectedNorm, StringComparison.OrdinalIgnoreCase) ||
+                   automationIdNorm.Contains(expectedNorm, StringComparison.OrdinalIgnoreCase);
         }
         catch
         {
@@ -1611,11 +1820,17 @@ public class UiService : IUiService
 
     private static string NormalizeMenuText(string? value)
     {
-        return (value ?? string.Empty)
+        var normalized = (value ?? string.Empty)
+            .Replace("&amp;", string.Empty, StringComparison.OrdinalIgnoreCase)
             .Replace("&", string.Empty)
             .Replace("_", string.Empty)
             .Replace("\u00A0", " ")
             .Trim();
+
+        while (normalized.Contains("  ", StringComparison.Ordinal))
+            normalized = normalized.Replace("  ", " ", StringComparison.Ordinal);
+
+        return normalized;
     }
 
     private bool TryActivateLogicalMenuItem(AutomationElement item, string actionName)
@@ -2412,6 +2627,45 @@ public class UiService : IUiService
         return session.ActiveWindow
             ?? session.Application.GetMainWindow(session.Automation)
             ?? throw new InvalidOperationException("Could not find the main window of the application.");
+    }
+
+    private AutomationElement GetSearchRootForMenuOperation(UiRequest req, AutomationSession session)
+    {
+        if (req.Locator != null && !IsEmptyLocator(req.Locator))
+        {
+            var baseRoot = GetWindowRoot(session);
+            var locatorRoot = FindLocatorWithRetry(session, baseRoot, req.Locator);
+
+            _logger.LogInformation(
+                "Menu operation using locator root. name={Name}, automationId={AutomationId}, controlType={ControlType}, hwnd=0x{Hwnd:X}",
+                SafeElementName(locatorRoot),
+                SafeElementAutomationId(locatorRoot),
+                locatorRoot.ControlType,
+                SafeWindowHandle(locatorRoot).ToInt64());
+
+            return locatorRoot;
+        }
+
+        var root = GetWindowRoot(session);
+
+        _logger.LogInformation(
+            "Menu operation using window root. name={Name}, automationId={AutomationId}, controlType={ControlType}, hwnd=0x{Hwnd:X}",
+            SafeElementName(root),
+            SafeElementAutomationId(root),
+            root.ControlType,
+            SafeWindowHandle(root).ToInt64());
+
+        return root;
+    }
+
+    private static bool IsEmptyLocator(UiLocator? locator)
+    {
+        return locator == null ||
+               string.IsNullOrWhiteSpace(locator.Name) &&
+               string.IsNullOrWhiteSpace(locator.AutomationId) &&
+               string.IsNullOrWhiteSpace(locator.ClassName) &&
+               string.IsNullOrWhiteSpace(locator.XPath) &&
+               string.IsNullOrWhiteSpace(locator.ControlType);
     }
 
     /// <summary>
