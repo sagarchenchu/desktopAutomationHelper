@@ -1567,7 +1567,6 @@ public sealed class RecordingOverlayWindow : Form
                         var subMenuFlyout = new ToolStripMenuItem("Sub-Menu Items ▶");
                         foreach (var subItem in subItems.Take(MaxChildrenToDisplay))
                         {
-                            var capturedSubItem = subItem;
                             var subItemInfo = BuildElementInfo(subItem);
                             var subItemName = subItemInfo.Name ?? subItemInfo.AutomationId ?? "(unnamed)";
                             var subItemEntry = new ToolStripMenuItem(subItemName);
@@ -1585,7 +1584,7 @@ public sealed class RecordingOverlayWindow : Form
                                 BringElementWindowToForeground(capturedMenuBarRef);
                                 Thread.Sleep(WindowActivationDelayMs);
 
-                                if (!TryActivateLogicalMenuItem(capturedSubItem, $"Logical menu path {capturedMenuPathValue}"))
+                                if (!TryActivateLogicalMenuItem(subItem, $"Logical menu path {capturedMenuPathValue}"))
                                     throw new InvalidOperationException($"Failed to activate logical menu item '{capturedSubItemName}'.");
 
                                 _service.AddAction(new RecordedAction
