@@ -122,6 +122,7 @@ public class UiService : IUiService
             "isenabled"      => IsEnabled(request),
             "isvisible"      => IsVisible(request),
             "isclickable"    => IsClickable(request),
+            "iseditable"     => IsEditable(request),
             "ischecked"      => IsChecked(request),
             "getvalue"       => GetValue(request),
             "gettext"        => GetText(request),
@@ -784,6 +785,12 @@ public class UiService : IUiService
     {
         var element = FindWithRetry(req);
         return new { clickable = element.IsEnabled && !element.IsOffscreen };
+    }
+
+    private object? IsEditable(UiRequest req)
+    {
+        var element = FindWithRetry(req);
+        return new { editable = IsElementEditable(element) };
     }
 
     private object? IsChecked(UiRequest req)
@@ -2939,6 +2946,18 @@ public class UiService : IUiService
         if (c >= '0' && c <= '9')
             return (VirtualKeyShort)('0' + (c - '0'));
         return null;
+    }
+
+    private static bool IsElementEditable(AutomationElement element)
+    {
+        if (!element.IsEnabled)
+            return false;
+
+        var valuePattern = element.Patterns.Value.PatternOrDefault;
+        if (valuePattern != null)
+            return !valuePattern.IsReadOnly;
+
+        return element.ControlType == ControlType.Edit || element.ControlType == ControlType.Document;
     }
 
     private bool TryPhysicalClick(AutomationElement element, string actionName) =>
