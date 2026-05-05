@@ -1163,7 +1163,6 @@ public class UiService : IUiService
 
     private object? GetCurrentRoot(UiRequest req)
     {
-        _ = req;
         var session = RequireSession();
         var root = GetWindowRoot(session);
 
@@ -2731,9 +2730,12 @@ public class UiService : IUiService
 
                     return locatorRoot;
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // Best effort: continue scanning other application windows.
+                    _logger.LogDebug(
+                        ex,
+                        "Menu locator was not found under app window {AppWindow}; trying next window.",
+                        SafeElementName(appWindow));
                 }
             }
 
