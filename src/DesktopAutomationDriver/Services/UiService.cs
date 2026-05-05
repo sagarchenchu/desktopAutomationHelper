@@ -155,6 +155,7 @@ public class UiService : IUiService
             "clickmenulogical" => ClickLogicalMenuPath(request),
             "menupath"         => ClickLogicalMenuPath(request),
             "inspectlogicalmenu" => InspectLogicalMenu(request),
+            "inspectmenupathcandidates" => InspectMenuPathCandidates(request),
             "dumpmenus"        => DumpLogicalMenus(request),
             "dumplogicalmenus" => DumpLogicalMenus(request),
             "doubleclick"      => DoubleClick(request),
@@ -1276,6 +1277,55 @@ public class UiService : IUiService
         };
     }
 
+    private object? InspectMenuPathCandidates(UiRequest req)
+    {
+        var session = RequireSession();
+        var searchRoot = GetSearchRootForMenuOperation(req, session);
+        var cf = session.Automation.ConditionFactory;
+        var parts = SplitMenuPath(req.Value ?? string.Empty);
+
+        if (parts.Count == 0)
+            throw new ArgumentException("value is required, example: DQA>Level 17");
+
+        var allMenuItems = searchRoot
+            .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+            .ToList();
+
+        var topLevel = searchRoot.ControlType == ControlType.MenuBar
+            ? FindDirectChildrenByControlType(searchRoot, ControlType.MenuItem)
+            : allMenuItems;
+
+        var parentCandidates = topLevel
+            .Where(e => MenuTextMatches(e, parts[0]))
+            .ToList();
+
+        return new
+        {
+            root = new
+            {
+                name = SafeElementName(searchRoot),
+                automationId = SafeElementAutomationId(searchRoot),
+                controlType = SafeElementControlType(searchRoot),
+                totalMenuItems = allMenuItems.Count,
+                topLevelCount = topLevel.Count
+            },
+            path = parts,
+            topLevelMenuItems = topLevel.Select(x => new
+            {
+                name = SafeElementName(x),
+                automationId = SafeElementAutomationId(x),
+                childCount = SafeMenuItemChildCount(x, cf)
+            }).ToList(),
+            parentCandidates = parentCandidates.Select(x => new
+            {
+                name = SafeElementName(x),
+                automationId = SafeElementAutomationId(x),
+                bounds = SafeBoundingRectangle(x),
+                children = GetMenuItemDescendantSummary(x, cf)
+            }).ToList()
+        };
+    }
+
     private object? DoubleClick(UiRequest req)
     {
         FindWithRetry(req).DoubleClick();
@@ -1652,9 +1702,29 @@ public class UiService : IUiService
                 SafeElementName(root),
                 allMenuItems.Count);
 
-            var parentCandidates = allMenuItems
-                .Where(e => MenuTextMatches(e, parts[0]))
-                .ToList();
+            List<AutomationElement> parentCandidates;
+            if (root.ControlType == ControlType.MenuBar)
+            {
+                var topLevelMenuItems = FindDirectChildrenByControlType(root, ControlType.MenuItem);
+                parentCandidates = topLevelMenuItems
+                    .Where(e => MenuTextMatches(e, parts[0]))
+                    .ToList();
+
+                _logger.LogInformation(
+                    "FindLogicalMenuPath: root is MenuBar. Top-level MenuItems={TopLevelItems}",
+                    topLevelMenuItems.Select(x => new
+                    {
+                        name = SafeElementName(x),
+                        automationId = SafeElementAutomationId(x),
+                        childCount = SafeMenuItemChildCount(x, cf)
+                    }).ToList());
+            }
+            else
+            {
+                parentCandidates = allMenuItems
+                    .Where(e => MenuTextMatches(e, parts[0]))
+                    .ToList();
+            }
 
             _logger.LogInformation(
                 "FindLogicalMenuPath: parent candidates for '{Parent}' = {Candidates}",
@@ -1669,6 +1739,13 @@ public class UiService : IUiService
 
             foreach (var candidate in parentCandidates)
             {
+                _logger.LogInformation(
+                    "DQA candidate details. name={Name}, automationId={AutomationId}, bounds={Bounds}, children={Children}",
+                    SafeElementName(candidate),
+                    SafeElementAutomationId(candidate),
+                    SafeBoundingRectangle(candidate),
+                    GetMenuItemDescendantSummary(candidate, cf));
+
                 var resolved = TryResolveMenuPathFromParent(candidate, cf, parts, 1);
 
                 if (resolved != null)
@@ -1739,42 +1816,97 @@ public class UiService : IUiService
         for (var i = nextIndex; i < parts.Count; i++)
         {
             var nextName = parts[i];
-            List<AutomationElement> descendants;
+            AutomationElement? next = null;
 
             try
             {
-                descendants = current
-                    .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
-                    .ToList();
+                var directChildren = FindDirectChildrenByControlType(current, ControlType.MenuItem);
+
+                _logger.LogInformation(
+                    "Looking for direct child menu item. parent={Parent}, lookingFor={Child}, directChildren={Children}",
+                    SafeElementName(current),
+                    nextName,
+                    directChildren.Select(x => new
+                    {
+                        name = SafeElementName(x),
+                        automationId = SafeElementAutomationId(x)
+                    }).ToList());
+
+                next = directChildren.FirstOrDefault(e => MenuTextMatches(e, nextName));
             }
-            catch (Exception ex)
+            catch
             {
-                _logger.LogDebug(
-                    ex,
-                    "TryResolveMenuPathFromParent failed while enumerating descendants for {Current}",
-                    SafeElementName(current));
-                return null;
+                // Continue to descendant fallback.
             }
-
-            _logger.LogDebug(
-                "TryResolveMenuPathFromParent: current={Current}, lookingFor={Child}, descendants={Descendants}",
-                SafeElementName(current),
-                nextName,
-                descendants.Select(x => new
-                {
-                    name = SafeElementName(x),
-                    automationId = SafeElementAutomationId(x)
-                }).ToList());
-
-            var next = descendants.FirstOrDefault(e => MenuTextMatches(e, nextName));
 
             if (next == null)
+            {
+                List<AutomationElement> descendants;
+
+                try
+                {
+                    descendants = current
+                        .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                        .ToList();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "TryResolveMenuPathFromParent failed while enumerating descendants for {Current}",
+                        SafeElementName(current));
+                    return null;
+                }
+
+                _logger.LogInformation(
+                    "Looking for descendant menu item. parent={Parent}, lookingFor={Child}, descendants={Descendants}",
+                    SafeElementName(current),
+                    nextName,
+                    descendants.Select(x => new
+                    {
+                        name = SafeElementName(x),
+                        automationId = SafeElementAutomationId(x)
+                    }).ToList());
+
+                next = descendants.FirstOrDefault(e => MenuTextMatches(e, nextName));
+            }
+
+            if (next == null)
+            {
+                _logger.LogWarning(
+                    "Menu path failed at step. parent={Parent}, lookingFor={Child}. Available child names={Available}",
+                    SafeElementName(current),
+                    nextName,
+                    GetMenuItemDescendantNames(current, cf));
+
                 return null;
+            }
 
             current = next;
         }
 
         return current;
+    }
+
+    private static List<AutomationElement> FindDirectChildrenByControlType(
+        AutomationElement parent,
+        ControlType controlType)
+    {
+        try
+        {
+            return parent
+                .FindAllChildren()
+                .Where(e =>
+                {
+                    try { return e.ControlType == controlType; }
+                    catch { return false; }
+                })
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     private AutomationElement? FindMenuItemByLeafAndAncestor(
@@ -1859,15 +1991,8 @@ public class UiService : IUiService
             if (string.IsNullOrWhiteSpace(expectedNorm))
                 return false;
 
-            var isExactMatch =
-                string.Equals(nameNorm, expectedNorm, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(automationIdNorm, expectedNorm, StringComparison.OrdinalIgnoreCase);
-
-            if (isExactMatch)
-                return true;
-
-            return nameNorm.Contains(expectedNorm, StringComparison.OrdinalIgnoreCase) ||
-                   automationIdNorm.Contains(expectedNorm, StringComparison.OrdinalIgnoreCase);
+            return string.Equals(nameNorm, expectedNorm, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(automationIdNorm, expectedNorm, StringComparison.OrdinalIgnoreCase);
         }
         catch
         {
@@ -1877,14 +2002,19 @@ public class UiService : IUiService
 
     private static string NormalizeMenuText(string? value)
     {
-        var normalized = (value ?? string.Empty)
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var normalized = value
             .Replace("&amp;", string.Empty, StringComparison.OrdinalIgnoreCase)
-            .Replace("&", string.Empty)
             .Replace("_", string.Empty)
             .Replace("\u00A0", " ")
             .Trim();
 
-        return System.Text.RegularExpressions.Regex.Replace(normalized, @"\s{2,}", " ");
+        while (normalized.Contains("  ", StringComparison.Ordinal))
+            normalized = normalized.Replace("  ", " ", StringComparison.Ordinal);
+
+        return normalized;
     }
 
     private bool TryActivateLogicalMenuItem(AutomationElement item, string actionName)
@@ -3901,6 +4031,58 @@ public class UiService : IUiService
         catch
         {
             return string.Empty;
+        }
+    }
+
+    private static int SafeMenuItemChildCount(AutomationElement item, ConditionFactory cf)
+    {
+        try
+        {
+            return item.FindAllDescendants(cf.ByControlType(ControlType.MenuItem)).Length;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    private static List<object> GetMenuItemDescendantSummary(
+        AutomationElement parent,
+        ConditionFactory cf)
+    {
+        try
+        {
+            return parent
+                .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                .Select(e => new
+                {
+                    name = SafeElementName(e),
+                    automationId = SafeElementAutomationId(e),
+                    controlType = SafeElementControlType(e)
+                })
+                .Cast<object>()
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static List<string> GetMenuItemDescendantNames(
+        AutomationElement parent,
+        ConditionFactory cf)
+    {
+        try
+        {
+            return parent
+                .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                .Select(SafeElementName)
+                .ToList();
+        }
+        catch
+        {
+            return [];
         }
     }
 
