@@ -333,7 +333,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     public ElementInfo? GetElementAtPointLightweight(System.Drawing.Point point)
     {
-        using (MeasurePerf("GetElementAtPoint"))
+        using (MeasurePerf("GetElementAtPointLightweight"))
         {
             return GetElementAtPointCore(point, logOutsideTarget: false);
         }
