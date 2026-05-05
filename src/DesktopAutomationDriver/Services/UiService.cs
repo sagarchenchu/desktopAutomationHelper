@@ -1818,26 +1818,19 @@ public class UiService : IUiService
             var nextName = parts[i];
             AutomationElement? next = null;
 
-            try
-            {
-                var directChildren = FindDirectChildrenByControlType(current, ControlType.MenuItem);
+            var directChildren = FindDirectChildrenByControlType(current, ControlType.MenuItem);
 
-                _logger.LogInformation(
-                    "Looking for direct child menu item. parent={Parent}, lookingFor={Child}, directChildren={Children}",
-                    SafeElementName(current),
-                    nextName,
-                    directChildren.Select(x => new
-                    {
-                        name = SafeElementName(x),
-                        automationId = SafeElementAutomationId(x)
-                    }).ToList());
+            _logger.LogInformation(
+                "Looking for direct child menu item. parent={Parent}, lookingFor={Child}, directChildren={Children}",
+                SafeElementName(current),
+                nextName,
+                directChildren.Select(x => new
+                {
+                    name = SafeElementName(x),
+                    automationId = SafeElementAutomationId(x)
+                }).ToList());
 
-                next = directChildren.FirstOrDefault(e => MenuTextMatches(e, nextName));
-            }
-            catch
-            {
-                // Continue to descendant fallback.
-            }
+            next = directChildren.FirstOrDefault(e => MenuTextMatches(e, nextName));
 
             if (next == null)
             {
@@ -1888,7 +1881,7 @@ public class UiService : IUiService
         return current;
     }
 
-    private static List<AutomationElement> FindDirectChildrenByControlType(
+    private List<AutomationElement> FindDirectChildrenByControlType(
         AutomationElement parent,
         ControlType controlType)
     {
@@ -1903,8 +1896,13 @@ public class UiService : IUiService
                 })
                 .ToList();
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogDebug(
+                ex,
+                "FindDirectChildrenByControlType failed for {Parent} and {ControlType}",
+                SafeElementName(parent),
+                controlType);
             return [];
         }
     }
