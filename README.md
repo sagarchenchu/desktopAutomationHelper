@@ -359,6 +359,17 @@ All `locator` and `locator2` objects support the following properties (combined 
 
 ---
 
+## Recording Metadata
+
+When `POST /record/start` launches an application, the response now includes the captured
+screen resolution plus the launched window's initial `x`, `y`, `width`, `height`,
+`windowState`, and `isFullScreen` details. The exported recording JSON also includes the
+same `screen` / `launch` metadata and a per-action `pointerContext` block for assistive
+and right-click-driven actions so hook coordinates, live cursor coordinates, and the
+resolved fallback point can be inspected later.
+
+---
+
 ## Example: Automating Notepad (Python)
 
 ```python

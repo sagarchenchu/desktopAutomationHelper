@@ -28,6 +28,14 @@ public sealed class RecordingService : IRecordingService, IDisposable
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);
+
+    [DllImport("user32.dll")]
     private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
 
     [DllImport("user32.dll")]
@@ -35,6 +43,36 @@ public sealed class RecordingService : IRecordingService, IDisposable
     private static extern bool IsWindow(IntPtr hWnd);
 
     private const uint GA_ROOT = 2;
+    private const int SW_SHOWNORMAL = 1;
+    private const int SW_SHOWMINIMIZED = 2;
+    private const int SW_SHOWMAXIMIZED = 3;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINDOWPLACEMENT
+    {
+        public int Length;
+        public int Flags;
+        public int ShowCmd;
+        public POINT MinPosition;
+        public POINT MaxPosition;
+        public RECT NormalPosition;
+    }
 
     private readonly List<RecordedAction> _actions = [];
     private readonly object _lock = new();
@@ -54,6 +92,8 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     // Custom output path supplied by the caller; null → use default temp directory
     private string? _outputPath;
+    private ScreenResolutionInfo? _screenInfo;
+    private LaunchInfo? _launchInfo;
 
     // Auto-stop timer (fires when waitSeconds elapses)
     private System.Threading.Timer? _autoStopTimer;
@@ -101,6 +141,8 @@ public sealed class RecordingService : IRecordingService, IDisposable
             _outputPath = request?.OutputPath;
             _startedAt = DateTimeOffset.UtcNow;
             _isActive = true;
+            _screenInfo = CaptureScreenResolution();
+            _launchInfo = null;
 
             // Reset recording target
             _recordingTargetProcessId = null;
@@ -133,6 +175,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
         if (!string.IsNullOrWhiteSpace(request?.ExePath))
         {
             launchInfo = LaunchApplication(request.ExePath);
+            _launchInfo = launchInfo;
 
             if (launchInfo?.Success == true && launchInfo.ProcessId > 0)
             {
@@ -210,6 +253,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
         return new StartRecordingResult
         {
             Launch = launchInfo,
+            Screen = _screenInfo,
             OutputPath = outputPath
         };
     }
@@ -564,6 +608,8 @@ public sealed class RecordingService : IRecordingService, IDisposable
             StartedAt = _startedAt,
             StoppedAt = _stoppedAt,
             Mode = _currentMode.ToString(),
+            Screen = _screenInfo,
+            Launch = _launchInfo,
             ExportedFilePath = _exportFilePath,
             Actions = snapshot
         };
@@ -600,16 +646,27 @@ public sealed class RecordingService : IRecordingService, IDisposable
                 return new LaunchInfo { Success = false, Error = "Process.Start returned null." };
 
             // Give the process up to 3 seconds to show a main window so we can read its title
-            process.WaitForInputIdle(3000);
+            try
+            {
+                process.WaitForInputIdle(3000);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "WaitForInputIdle failed for '{Exe}'", SanitizeForLog(exePath));
+            }
 
             string? title = null;
+            IntPtr mainWindowHandle = IntPtr.Zero;
             for (int i = 0; i < 10; i++)
             {
                 process.Refresh();
                 title = process.MainWindowTitle;
-                if (!string.IsNullOrEmpty(title)) break;
+                mainWindowHandle = process.MainWindowHandle;
+                if (!string.IsNullOrEmpty(title) || mainWindowHandle != IntPtr.Zero) break;
                 Thread.Sleep(300);
             }
+
+            var windowInfo = CaptureApplicationWindow(mainWindowHandle, title);
 
             // Sanitize user-provided values before logging to prevent log-forging
             var safeExe = SanitizeForLog(exePath);
@@ -622,7 +679,8 @@ public sealed class RecordingService : IRecordingService, IDisposable
             {
                 Success = true,
                 ProcessId = process.Id,
-                WindowTitle = title
+                WindowTitle = title,
+                Window = windowInfo
             };
         }
         catch (Exception ex)
@@ -669,8 +727,94 @@ public sealed class RecordingService : IRecordingService, IDisposable
             StartedAt = _startedAt,
             StoppedAt = _stoppedAt,
             Mode = _currentMode.ToString(),
+            Screen = _screenInfo,
+            Launch = _launchInfo,
             ExportedFilePath = _exportFilePath,
             Actions = snapshot
         };
+    }
+
+    private ScreenResolutionInfo? CaptureScreenResolution()
+    {
+        try
+        {
+            var screen = WinForms.Screen.PrimaryScreen ?? WinForms.Screen.AllScreens.FirstOrDefault();
+            if (screen == null)
+                return null;
+
+            return new ScreenResolutionInfo
+            {
+                DeviceName = screen.DeviceName,
+                IsPrimary = screen.Primary,
+                X = screen.Bounds.X,
+                Y = screen.Bounds.Y,
+                Width = screen.Bounds.Width,
+                Height = screen.Bounds.Height,
+                WorkingAreaX = screen.WorkingArea.X,
+                WorkingAreaY = screen.WorkingArea.Y,
+                WorkingAreaWidth = screen.WorkingArea.Width,
+                WorkingAreaHeight = screen.WorkingArea.Height
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to capture screen resolution before recording start");
+            return null;
+        }
+    }
+
+    private ApplicationWindowInfo? CaptureApplicationWindow(IntPtr hwnd, string? title)
+    {
+        if (hwnd == IntPtr.Zero)
+            return null;
+
+        try
+        {
+            if (!GetWindowRect(hwnd, out var rect))
+                return null;
+
+            var placement = new WINDOWPLACEMENT { Length = Marshal.SizeOf<WINDOWPLACEMENT>() };
+            var hasPlacement = GetWindowPlacement(hwnd, ref placement);
+
+            var windowRect = new System.Drawing.Rectangle(
+                rect.Left,
+                rect.Top,
+                Math.Max(0, rect.Right - rect.Left),
+                Math.Max(0, rect.Bottom - rect.Top));
+
+            var screen = WinForms.Screen.FromHandle(hwnd);
+            var screenBounds = screen.Bounds;
+            var isFullScreen =
+                windowRect.Left <= screenBounds.Left &&
+                windowRect.Top <= screenBounds.Top &&
+                windowRect.Right >= screenBounds.Right &&
+                windowRect.Bottom >= screenBounds.Bottom;
+
+            var showCmd = hasPlacement ? placement.ShowCmd : 0;
+
+            return new ApplicationWindowInfo
+            {
+                Title = title,
+                X = windowRect.X,
+                Y = windowRect.Y,
+                Width = windowRect.Width,
+                Height = windowRect.Height,
+                WindowState = showCmd switch
+                {
+                    SW_SHOWMAXIMIZED => "maximized",
+                    SW_SHOWMINIMIZED => "minimized",
+                    SW_SHOWNORMAL => "normal",
+                    _ => "unknown"
+                },
+                IsMaximized = showCmd == SW_SHOWMAXIMIZED,
+                IsMinimized = showCmd == SW_SHOWMINIMIZED,
+                IsFullScreen = isFullScreen
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to capture launched window details for '{Title}'", title ?? "(unknown)");
+            return null;
+        }
     }
 }
