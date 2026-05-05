@@ -8,6 +8,12 @@ internal static class WinFormsDateTimePickerHelper
 {
     private const int MinimumMonthClickOffsetPx = 8;
     private const double MonthClickWidthDivisor = 10.0;
+    private const string MonthDayPartFormat = "00";
+    private const string YearPartFormat = "0000";
+
+    public const int DatePickerClickDelayMs = 100;
+    public const int DatePickerSegmentDelayMs = 75;
+    public const int DatePickerCommitDelayMs = 100;
 
     public static bool IsDateTimePicker(AutomationElement element)
     {
@@ -63,9 +69,9 @@ internal static class WinFormsDateTimePickerHelper
                 return false;
         }
 
-        month = date.Month.ToString("00", CultureInfo.InvariantCulture);
-        day = date.Day.ToString("00", CultureInfo.InvariantCulture);
-        year = date.Year.ToString("0000", CultureInfo.InvariantCulture);
+        month = date.Month.ToString(MonthDayPartFormat, CultureInfo.InvariantCulture);
+        day = date.Day.ToString(MonthDayPartFormat, CultureInfo.InvariantCulture);
+        year = date.Year.ToString(YearPartFormat, CultureInfo.InvariantCulture);
 
         return true;
     }

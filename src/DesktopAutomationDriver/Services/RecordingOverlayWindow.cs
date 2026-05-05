@@ -40,6 +40,7 @@ public sealed class RecordingOverlayWindow : Form
     private const byte VK_A = 0x41;
     private const byte VK_S = 0x53;
     private const byte VK_W = 0x57;
+    private const string SelectAllSendKeys = "^a";
 
     [StructLayout(LayoutKind.Sequential)]
     private struct KBDLLHOOKSTRUCT
@@ -4007,34 +4008,34 @@ public sealed class RecordingOverlayWindow : Form
             Thread.Sleep(WindowActivationDelayMs);
 
             ClickDatePickerMonthSection(element);
-            Thread.Sleep(100);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerClickDelayMs);
 
             if (clearFirst)
             {
-                System.Windows.Forms.SendKeys.SendWait("^a");
-                Thread.Sleep(75);
+                System.Windows.Forms.SendKeys.SendWait(SelectAllSendKeys);
+                Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
             }
 
             SendKey(VirtualKeyShort.HOME);
-            Thread.Sleep(75);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
             Keyboard.Type(month);
-            Thread.Sleep(75);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
             SendKey(VirtualKeyShort.RIGHT);
-            Thread.Sleep(75);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
             Keyboard.Type(day);
-            Thread.Sleep(75);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
             SendKey(VirtualKeyShort.RIGHT);
-            Thread.Sleep(75);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
             Keyboard.Type(year);
-            Thread.Sleep(75);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
             SendKey(VirtualKeyShort.RETURN);
-            Thread.Sleep(100);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerCommitDelayMs);
 
             _statusLabel.Text = $"Typed date {month}/{day}/{year}";
             return true;
@@ -4059,7 +4060,7 @@ public sealed class RecordingOverlayWindow : Form
             var point = WinFormsDateTimePickerHelper.GetMonthSectionPoint(rect);
 
             TryPhysicalClickPoint(point, "Click Date Month Section");
-            Thread.Sleep(100);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerClickDelayMs);
 
             return true;
         }
