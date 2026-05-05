@@ -31,7 +31,14 @@ public class UiService : IUiService
     /// keyboard or mouse input, to allow the OS to finish the window-activation sequence.
     /// </summary>
     private const int WindowActivationDelayMs = 100;
+    /// <summary>
+    /// Brief pause after <c>SetCursorPos</c> so Windows finishes moving the cursor before
+    /// the left-button input events are sent.
+    /// </summary>
     private const int CursorPositionStabilityDelayMs = 30;
+    private const int MenuExpandDelayMs = 250;
+    private const int MenuActionDelayMs = 150;
+    private const int MenuFocusDelayMs = 75;
 
     // Named keys for the "sendkeys" operation (AutoIt / keyboard-shorthand format).
     private static readonly Dictionary<string, VirtualKeyShort> NamedKeys =
@@ -956,7 +963,7 @@ public class UiService : IUiService
                 if (state != ExpandCollapseState.Expanded)
                 {
                     menuItem.Patterns.ExpandCollapse.Pattern.Expand();
-                    Thread.Sleep(250);
+                    Thread.Sleep(MenuExpandDelayMs);
 
                     _logger.LogInformation("MenuItem expanded: {Name}", SafeElementName(menuItem));
                     return null;
@@ -973,7 +980,7 @@ public class UiService : IUiService
             if (menuItem.Patterns.SelectionItem.IsSupported)
             {
                 menuItem.Patterns.SelectionItem.Pattern.Select();
-                Thread.Sleep(150);
+                Thread.Sleep(MenuActionDelayMs);
                 return null;
             }
         }
@@ -985,7 +992,7 @@ public class UiService : IUiService
         try
         {
             menuItem.Click();
-            Thread.Sleep(150);
+            Thread.Sleep(MenuActionDelayMs);
             return null;
         }
         catch (Exception ex)
@@ -996,9 +1003,9 @@ public class UiService : IUiService
         try
         {
             menuItem.Focus();
-            Thread.Sleep(75);
+            Thread.Sleep(MenuFocusDelayMs);
             Keyboard.Press(VirtualKeyShort.RETURN);
-            Thread.Sleep(150);
+            Thread.Sleep(MenuActionDelayMs);
             return null;
         }
         catch (Exception ex)
@@ -1022,7 +1029,7 @@ public class UiService : IUiService
         var session = RequireSession();
         var root = GetWindowRoot(session);
         var cf = session.Automation.ConditionFactory;
-        var normalizedValue = req.Value.Replace("&gt;", ">", StringComparison.OrdinalIgnoreCase);
+        var normalizedValue = System.Net.WebUtility.HtmlDecode(req.Value);
         var parts = normalizedValue
             .Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
@@ -1059,13 +1066,13 @@ public class UiService : IUiService
             if (!isLast)
             {
                 OpenMenuItem(item);
-                Thread.Sleep(250);
+                Thread.Sleep(MenuExpandDelayMs);
                 searchRoot = session.Automation.GetDesktop();
             }
             else
             {
                 ActivateMenuItem(item);
-                Thread.Sleep(150);
+                Thread.Sleep(MenuActionDelayMs);
             }
         }
 
@@ -3027,27 +3034,33 @@ public class UiService : IUiService
                 new INPUT
                 {
                     type = INPUT_MOUSE,
-                    mi = new MOUSEINPUT
+                    U = new InputUnion
                     {
-                        dx = 0,
-                        dy = 0,
-                        mouseData = 0,
-                        dwFlags = MOUSEEVENTF_LEFTDOWN,
-                        time = 0,
-                        dwExtraInfo = IntPtr.Zero
+                        mi = new MOUSEINPUT
+                        {
+                            dx = 0,
+                            dy = 0,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_LEFTDOWN,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
                     }
                 },
                 new INPUT
                 {
                     type = INPUT_MOUSE,
-                    mi = new MOUSEINPUT
+                    U = new InputUnion
                     {
-                        dx = 0,
-                        dy = 0,
-                        mouseData = 0,
-                        dwFlags = MOUSEEVENTF_LEFTUP,
-                        time = 0,
-                        dwExtraInfo = IntPtr.Zero
+                        mi = new MOUSEINPUT
+                        {
+                            dx = 0,
+                            dy = 0,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_LEFTUP,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
                     }
                 }
             };
@@ -3149,6 +3162,13 @@ public class UiService : IUiService
     private struct INPUT
     {
         public uint type;
+        public InputUnion U;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)]
         public MOUSEINPUT mi;
     }
 
