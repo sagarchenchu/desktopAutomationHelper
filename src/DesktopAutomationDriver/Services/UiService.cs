@@ -468,9 +468,10 @@ public class UiService : IUiService
             // Continue to broader search scopes.
         }
 
+        AutomationElement? desktop = null;
         try
         {
-            var desktop = session.Automation.GetDesktop();
+            desktop = session.Automation.GetDesktop();
             var desktopChild = desktop
                 .FindAllChildren(windowCondition)
                 .FirstOrDefault(w => TitleContains(w, titleFragment));
@@ -484,8 +485,9 @@ public class UiService : IUiService
 
         try
         {
-            var desktop = session.Automation.GetDesktop();
-            return desktop
+            return desktop == null
+                ? null
+                : desktop
                 .FindAllDescendants(windowCondition)
                 .FirstOrDefault(w => TitleContains(w, titleFragment));
         }
@@ -1916,6 +1918,10 @@ public class UiService : IUiService
         catch { return IntPtr.Zero; }
     }
 
+    /// <summary>
+    /// Normalizes window titles for matching by converting non-breaking spaces to
+    /// regular spaces and trimming surrounding whitespace.
+    /// </summary>
     private static string NormalizeTitle(string? value) =>
         (value ?? string.Empty)
             .Replace("\u00A0", " ")
