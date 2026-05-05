@@ -6,6 +6,9 @@ namespace DesktopAutomationDriver.Services;
 
 internal static class TypeCapabilityHelper
 {
+    public const int TypeFocusSettleMs = 100;
+    public const int SelectAllDelayMs = 75;
+
     public static bool IsTypeCapableElement(AutomationElement? element, ConditionFactory? conditionFactory)
     {
         if (element == null)

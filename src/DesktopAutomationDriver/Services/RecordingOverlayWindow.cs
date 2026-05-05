@@ -3910,13 +3910,13 @@ public sealed class RecordingOverlayWindow : Form
                     _logger.LogDebug(ex, "Focus click fallback failed for Type on {Name}", info?.Name);
                 }
 
-                Thread.Sleep(100);
+                Thread.Sleep(TypeCapabilityHelper.TypeFocusSettleMs);
             }
 
             if (clearFirst)
             {
                 System.Windows.Forms.SendKeys.SendWait("^a");
-                Thread.Sleep(75);
+                Thread.Sleep(TypeCapabilityHelper.SelectAllDelayMs);
             }
 
             Keyboard.Type(value);
