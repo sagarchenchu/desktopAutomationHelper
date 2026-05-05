@@ -3896,8 +3896,8 @@ public sealed class RecordingOverlayWindow : Form
             BringElementWindowToForeground(element);
             Thread.Sleep(WindowActivationDelayMs);
 
-            var focused = SafeFocusElement(element);
-            if (!focused || ShouldClickBeforeTyping(element))
+            var focused = TypeCapabilityHelper.TryFocusElement(element);
+            if (!focused || TypeCapabilityHelper.ShouldClickBeforeTyping(element))
             {
                 try
                 {
@@ -3928,34 +3928,6 @@ public sealed class RecordingOverlayWindow : Form
         {
             _logger.LogError(ex, "Assistive type failed for {Name}", info?.Name);
             _statusLabel.Text = "Type failed: " + ex.Message;
-            return false;
-        }
-    }
-
-    private static bool ShouldClickBeforeTyping(AutomationElement element)
-    {
-        try
-        {
-            var ct = element.ControlType;
-            return ct == ControlType.Pane ||
-                   ct == ControlType.Custom ||
-                   ct == ControlType.Text;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static bool SafeFocusElement(AutomationElement element)
-    {
-        try
-        {
-            element.Focus();
-            return true;
-        }
-        catch
-        {
             return false;
         }
     }
@@ -5171,93 +5143,7 @@ public sealed class RecordingOverlayWindow : Form
 
     private bool IsTypeCapableElement(AutomationElement? element)
     {
-        if (element == null)
-            return false;
-
-        try
-        {
-            var ct = element.ControlType;
-
-            if (ct == ControlType.Edit ||
-                ct == ControlType.ComboBox ||
-                ct == ControlType.Document)
-            {
-                return true;
-            }
-
-            if (ct == ControlType.Pane ||
-                ct == ControlType.Custom ||
-                ct == ControlType.Text)
-            {
-                if (IsFocusable(element))
-                    return true;
-
-                if (HasEditableChild(element))
-                    return true;
-            }
-
-            try
-            {
-                if (element.Patterns.Value.IsSupported)
-                    return true;
-            }
-            catch
-            {
-                // Best effort only.
-            }
-
-            try
-            {
-                if (element.Patterns.Text.IsSupported)
-                    return true;
-            }
-            catch
-            {
-                // Best effort only.
-            }
-
-            return false;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static bool IsFocusable(AutomationElement element)
-    {
-        try
-        {
-            return element.Properties.IsKeyboardFocusable.ValueOrDefault;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private bool HasEditableChild(AutomationElement element)
-    {
-        try
-        {
-            var cf = _automation?.ConditionFactory;
-            if (cf == null)
-                return false;
-
-            var editChild = element.FindFirstDescendant(cf.ByControlType(ControlType.Edit));
-            if (editChild != null)
-                return true;
-
-            var comboChild = element.FindFirstDescendant(cf.ByControlType(ControlType.ComboBox));
-            if (comboChild != null)
-                return true;
-
-            return false;
-        }
-        catch
-        {
-            return false;
-        }
+        return TypeCapabilityHelper.IsTypeCapableElement(element, _automation?.ConditionFactory);
     }
 
     private void InspectPointMapping(System.Drawing.Point pt)
