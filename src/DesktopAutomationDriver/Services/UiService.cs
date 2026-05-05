@@ -1,6 +1,5 @@
 using System.Drawing;
 using System.Drawing.Imaging;
-using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using DesktopAutomationDriver.Models.Request;
@@ -1359,7 +1358,7 @@ public class UiService : IUiService
             throw new ArgumentException("'value' is required for 'type'.");
 
         var element = FindWithRetry(req);
-        if (IsWinFormsDateTimePicker(element))
+        if (WinFormsDateTimePickerHelper.IsDateTimePicker(element))
             return TypeDatePicker(element, req.Value);
 
         BringElementWindowToForeground(element);
@@ -1380,7 +1379,7 @@ public class UiService : IUiService
         if (string.IsNullOrWhiteSpace(value))
             throw new ArgumentException("Date value is required.");
 
-        if (!TryParseDateParts(value, out var month, out var day, out var year))
+        if (!WinFormsDateTimePickerHelper.TryParseDateParts(value, out var month, out var day, out var year))
             throw new ArgumentException("Invalid date value. Use MM/DD/YYYY.");
 
         BringElementWindowToForeground(element);
@@ -3167,7 +3166,7 @@ public class UiService : IUiService
         AutomationSession session,
         UiLocator locator)
     {
-        if (!IsWinFormsDateTimePickerClassName(locator.ClassName))
+        if (!WinFormsDateTimePickerHelper.IsDateTimePickerClassName(locator.ClassName))
             return null;
 
         var candidates = !string.IsNullOrWhiteSpace(locator.ControlType)
@@ -3202,15 +3201,6 @@ public class UiService : IUiService
             return false;
 
         return true;
-    }
-
-    private static bool IsWinFormsDateTimePickerClassName(string? className)
-    {
-        if (string.IsNullOrWhiteSpace(className))
-            return false;
-
-        return className.Contains("SysDateTimePick32", StringComparison.OrdinalIgnoreCase) ||
-               className.Contains("WindowsForms10.SysDateTimePick32", StringComparison.OrdinalIgnoreCase);
     }
 
     // =========================================================================
@@ -3935,9 +3925,7 @@ public class UiService : IUiService
             if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
                 return false;
 
-            var point = new Point(
-                (int)Math.Round(rect.Left + Math.Max(8, rect.Width / 10.0)),
-                (int)Math.Round(rect.Top + rect.Height / 2.0));
+            var point = WinFormsDateTimePickerHelper.GetMonthSectionPoint(rect);
 
             return SendInstantLeftClick(point, "Click Date Month Section");
         }
@@ -4094,52 +4082,6 @@ public class UiService : IUiService
         {
             return string.Empty;
         }
-    }
-
-    private static bool IsWinFormsDateTimePicker(AutomationElement element)
-    {
-        return IsWinFormsDateTimePickerClassName(SafeElementClassName(element));
-    }
-
-    private static bool TryParseDateParts(
-        string input,
-        out string month,
-        out string day,
-        out string year)
-    {
-        month = string.Empty;
-        day = string.Empty;
-        year = string.Empty;
-
-        if (string.IsNullOrWhiteSpace(input))
-            return false;
-
-        var cleaned = input.Trim();
-
-        var formats = new[]
-        {
-            "MM/dd/yyyy",
-            "M/d/yyyy",
-            "MM-dd-yyyy",
-            "M-d-yyyy"
-        };
-
-        if (!DateTime.TryParseExact(
-                cleaned,
-                formats,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.None,
-                out var date))
-        {
-            if (!DateTime.TryParse(cleaned, CultureInfo.InvariantCulture, DateTimeStyles.None, out date))
-                return false;
-        }
-
-        month = date.Month.ToString("00", CultureInfo.InvariantCulture);
-        day = date.Day.ToString("00", CultureInfo.InvariantCulture);
-        year = date.Year.ToString("0000", CultureInfo.InvariantCulture);
-
-        return true;
     }
 
     private static int? SafeProcessId(AutomationElement element)

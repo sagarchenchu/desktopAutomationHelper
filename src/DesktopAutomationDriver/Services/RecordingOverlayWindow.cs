@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.Runtime.InteropServices;
 using DesktopAutomationDriver.Models.Recording;
 using FlaUI.Core.AutomationElements;
@@ -1774,7 +1773,7 @@ public sealed class RecordingOverlayWindow : Form
         if (typeTarget != null && !isDisabledTypeTarget)
         {
             menu.Items.Add(new ToolStripSeparator());
-            if (IsWinFormsDateTimePicker(typeTarget))
+            if (WinFormsDateTimePickerHelper.IsDateTimePicker(typeTarget))
             {
                 AddAssistiveDateTypeItem(menu, "Type Date…", typeTarget, typeTargetInfo, clearFirst: false);
                 AddAssistiveDateTypeItem(menu, "Clear + Type Date…", typeTarget, typeTargetInfo, clearFirst: true);
@@ -3998,7 +3997,7 @@ public sealed class RecordingOverlayWindow : Form
             if (string.IsNullOrWhiteSpace(value))
                 return false;
 
-            if (!TryParseDateParts(value, out var month, out var day, out var year))
+            if (!WinFormsDateTimePickerHelper.TryParseDateParts(value, out var month, out var day, out var year))
             {
                 _statusLabel.Text = "Invalid date. Use MM/DD/YYYY.";
                 return false;
@@ -4057,9 +4056,7 @@ public sealed class RecordingOverlayWindow : Form
             if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
                 return false;
 
-            var point = new System.Drawing.Point(
-                (int)Math.Round(rect.Left + Math.Max(8, rect.Width / 10.0)),
-                (int)Math.Round(rect.Top + rect.Height / 2.0));
+            var point = WinFormsDateTimePickerHelper.GetMonthSectionPoint(rect);
 
             TryPhysicalClickPoint(point, "Click Date Month Section");
             Thread.Sleep(100);
@@ -5353,67 +5350,6 @@ public sealed class RecordingOverlayWindow : Form
     private bool IsTypeCapableElement(AutomationElement? element)
     {
         return TypeCapabilityHelper.IsTypeCapableElement(element, _automation?.ConditionFactory);
-    }
-
-    private static bool IsWinFormsDateTimePicker(AutomationElement element)
-    {
-        var className = SafeElementClassName(element);
-
-        return className.Contains("SysDateTimePick32", StringComparison.OrdinalIgnoreCase) ||
-               className.Contains("WindowsForms10.SysDateTimePick32", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string SafeElementClassName(AutomationElement element)
-    {
-        try
-        {
-            return element.ClassName ?? string.Empty;
-        }
-        catch
-        {
-            return string.Empty;
-        }
-    }
-
-    private static bool TryParseDateParts(
-        string input,
-        out string month,
-        out string day,
-        out string year)
-    {
-        month = string.Empty;
-        day = string.Empty;
-        year = string.Empty;
-
-        if (string.IsNullOrWhiteSpace(input))
-            return false;
-
-        var cleaned = input.Trim();
-
-        var formats = new[]
-        {
-            "MM/dd/yyyy",
-            "M/d/yyyy",
-            "MM-dd-yyyy",
-            "M-d-yyyy"
-        };
-
-        if (!DateTime.TryParseExact(
-                cleaned,
-                formats,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.None,
-                out var date))
-        {
-            if (!DateTime.TryParse(cleaned, CultureInfo.InvariantCulture, DateTimeStyles.None, out date))
-                return false;
-        }
-
-        month = date.Month.ToString("00", CultureInfo.InvariantCulture);
-        day = date.Day.ToString("00", CultureInfo.InvariantCulture);
-        year = date.Year.ToString("0000", CultureInfo.InvariantCulture);
-
-        return true;
     }
 
     private void InspectPointMapping(System.Drawing.Point pt)
