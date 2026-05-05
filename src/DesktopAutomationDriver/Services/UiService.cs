@@ -1211,8 +1211,9 @@ public class UiService : IUiService
                         parentChain = BuildParentChain(e)
                     };
                 }
-                catch
+                catch (Exception ex)
                 {
+                    _logger.LogDebug(ex, "DumpLogicalMenus skipped unstable menu item.");
                     return null;
                 }
             })
@@ -1645,10 +1646,7 @@ public class UiService : IUiService
 
                 if (leaf != null)
                     return leaf;
-            }
 
-            if (parts.Count >= 2)
-            {
                 var leafName = parts[^1];
                 var leafMatches = allMenuItems
                     .Where(e => MenuTextMatches(e, leafName))
@@ -1706,8 +1704,12 @@ public class UiService : IUiService
                     .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
                     .ToList();
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.LogDebug(
+                    ex,
+                    "TryResolveMenuPathFromParent failed while enumerating descendants for {Current}",
+                    SafeElementName(current));
                 return null;
             }
 
@@ -1774,7 +1776,7 @@ public class UiService : IUiService
         return null;
     }
 
-    private static List<string> BuildParentChain(AutomationElement element)
+    private List<string> BuildParentChain(AutomationElement element)
     {
         var chain = new List<string>();
 
@@ -1795,9 +1797,9 @@ public class UiService : IUiService
                 current = current.Parent;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // ignore unstable UIA tree
+            _logger.LogDebug(ex, "BuildParentChain failed for {Element}", SafeElementName(element));
         }
 
         return chain;
