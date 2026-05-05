@@ -144,6 +144,11 @@ public sealed class RecordingOverlayWindow : Form
     private const int MenuNavigationDelayMs = 300;
 
     /// <summary>
+    /// Delay in milliseconds between focusing a logical menu item and sending Enter.
+    /// </summary>
+    private const int MenuFocusDelayMs = 75;
+
+    /// <summary>
     /// Delay in milliseconds between selecting a context menu action and executing
     /// it, to allow the ContextMenuStrip to fully close before the mouse is moved
     /// or a click is fired.
@@ -1525,26 +1530,24 @@ public sealed class RecordingOverlayWindow : Form
                 if (subItems.Length > 0)
                 {
                     // Walk up from element to the MenuBar to build a stable anchor and a
-                    // top-down path of MenuItem names (e.g. element="QA" → ["QA"]).
+                    // top-down path of MenuItem infos (e.g. element="QA" → ["QA"]).
                     AutomationElement? subMenuBarRef = null;
-                    var parentMenuPath = new List<string>();
+                    var parentMenuPath = new List<ElementInfo>();
                     try
                     {
-                        var pathNames = new List<string>();
+                        var pathElements = new List<ElementInfo>();
                         var cur = element;
                         for (int d = 0; d < MaxMenuAncestorDepth; d++)
                         {
                             if (cur.ControlType == ControlType.MenuItem)
-                            {
-                                var n = cur.Name ?? string.Empty;
-                                if (!string.IsNullOrEmpty(n))
-                                    pathNames.Add(n);
-                            }
+                                pathElements.Add(BuildElementInfo(cur));
                             else if (cur.ControlType == ControlType.MenuBar)
                             {
                                 subMenuBarRef = cur;
-                                pathNames.Reverse(); // collected bottom-up; reverse to top-down
-                                parentMenuPath = pathNames;
+                                pathElements.Reverse(); // collected bottom-up; reverse to top-down
+                                parentMenuPath = pathElements
+                                    .Where(info => !string.IsNullOrWhiteSpace(GetLogicalMenuPathSegment(info)))
+                                    .ToList();
                                 break;
                             }
                             var par = cur.Parent;
@@ -1564,81 +1567,40 @@ public sealed class RecordingOverlayWindow : Form
                         var subMenuFlyout = new ToolStripMenuItem("Sub-Menu Items ▶");
                         foreach (var subItem in subItems.Take(MaxChildrenToDisplay))
                         {
+                            var capturedSubItem = subItem;
                             var subItemInfo = BuildElementInfo(subItem);
                             var subItemName = subItemInfo.Name ?? subItemInfo.AutomationId ?? "(unnamed)";
                             var subItemEntry = new ToolStripMenuItem(subItemName);
                             var capturedSubItemInfo = subItemInfo;
                             var capturedSubItemName = subItemName;
+                            var capturedMenuPath = new List<ElementInfo>(capturedParentMenuPath) { capturedSubItemInfo };
+                            var capturedMenuPathValue = string.Join(
+                                ">",
+                                capturedMenuPath
+                                    .Select(GetLogicalMenuPathSegment)
+                                    .Where(segment => !string.IsNullOrWhiteSpace(segment)));
 
                             subItemEntry.Click += (_, _) =>
                             {
-                                // Navigate: click each ancestor MenuItem to expand the chain,
-                                // then click the target sub-item.  Re-fetch fresh UIA elements
-                                // at every step so stale references never cause silent failures.
                                 BringElementWindowToForeground(capturedMenuBarRef);
                                 Thread.Sleep(WindowActivationDelayMs);
 
-                                // Full path from MenuBar anchor to sub-item, e.g. ["QA", "1"].
-                                var fullPath = new List<string>(capturedParentMenuPath) { capturedSubItemName };
+                                if (!TryActivateLogicalMenuItem(capturedSubItem, $"Logical menu path {capturedMenuPathValue}"))
+                                    throw new InvalidOperationException($"Failed to activate logical menu item '{capturedSubItemName}'.");
 
-                                AutomationElement? stepAnchor = capturedMenuBarRef;
-                                for (int i = 0; i < fullPath.Count; i++)
-                                {
-                                    var stepName = fullPath[i];
-                                    if (stepAnchor == null) break;
-
-                                    AutomationElement? stepItem = null;
-                                    try
-                                    {
-                                        var cf2 = _automation!.ConditionFactory;
-                                        stepItem = stepAnchor.FindFirstDescendant(
-                                            cf2.ByControlType(ControlType.MenuItem).And(cf2.ByName(stepName)));
-                                    }
-                                    catch { break; }
-
-                                    if (stepItem == null) break;
-
-                                    bool isLast = i == fullPath.Count - 1;
-                                    try
-                                    {
-                                        if (stepItem.Patterns.Invoke.IsSupported)
-                                            stepItem.Patterns.Invoke.Pattern.Invoke();
-                                        else
-                                            stepItem.Click();
-                                    }
-                                    catch { break; }
-
-                                    if (!isLast)
-                                    {
-                                        // Wait for the intermediate dropdown to materialise
-                                        // before searching for the next item in the chain.
-                                        Thread.Sleep(MenuNavigationDelayMs);
-                                        stepAnchor = stepItem;
-                                    }
-                                }
-
-                                // Record two Click actions: one for the parent MenuItem that
-                                // was right-clicked (e.g. "QA"), and one for the child item
-                                // that was selected from the flyout (e.g. "Level 35").
-                                // This mirrors the two-step navigation needed for automation
-                                // (expand parent, then click child) and makes the exported
-                                // JSON self-contained and replay-friendly.
-                                var parentLabel = ElementInfo.GetLabel(elementInfo);
                                 _service.AddAction(new RecordedAction
                                 {
-                                    ActionType = ActionType.Click,
-                                    Mode = RecordingMode.Assistive,
-                                    Element = elementInfo,
-                                    Description = $"Click on {parentLabel}"
-                                });
-                                _service.AddAction(new RecordedAction
-                                {
-                                    ActionType = ActionType.Click,
+                                    ActionType = ActionType.MenuPathClick,
+                                    Operation = "clicklogicalmenupath",
                                     Mode = RecordingMode.Assistive,
                                     Element = capturedSubItemInfo,
-                                    Description = $"Click on {ElementInfo.GetLabel(capturedSubItemInfo)}"
+                                    Value = capturedMenuPathValue,
+                                    MenuPath = capturedMenuPath,
+                                    PointerContext = ClonePointerContext(_currentAssistivePointerContext),
+                                    Description = $"Click menu path {capturedMenuPathValue}"
                                 });
-                                UpdateStatusAfterAction($"Click [{capturedSubItemInfo.ControlType}] {capturedSubItemName}");
+                                UpdateStatusAfterAction($"Menu path [{capturedSubItemInfo.ControlType}] {capturedMenuPathValue}");
+                                StartPopupProbeAfterAction();
                             };
                             subMenuFlyout.DropDownItems.Add(subItemEntry);
                         }
@@ -4273,6 +4235,62 @@ public sealed class RecordingOverlayWindow : Form
         element.ControlType == ControlType.TreeItem ||
         element.ControlType == ControlType.TabItem ||
         element.ControlType == ControlType.RadioButton;
+
+    private bool TryActivateLogicalMenuItem(AutomationElement item, string actionName)
+    {
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ActionName}: InvokePattern failed for logical menu item {Name}", actionName, SafeElementName(item));
+        }
+
+        try
+        {
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                item.Patterns.SelectionItem.Pattern.Select();
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ActionName}: SelectionItem failed for logical menu item {Name}", actionName, SafeElementName(item));
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ActionName}: Focus+Enter failed for logical menu item {Name}", actionName, SafeElementName(item));
+        }
+
+        try
+        {
+            return SafeInvokeOrClickElement(item, actionName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ActionName}: physical fallback failed for logical menu item {Name}", actionName, SafeElementName(item));
+            return false;
+        }
+    }
+
+    private static string GetLogicalMenuPathSegment(ElementInfo info) =>
+        !string.IsNullOrWhiteSpace(info.Name) ? info.Name! :
+        !string.IsNullOrWhiteSpace(info.AutomationId) ? info.AutomationId! :
+        string.Empty;
 
     private static bool IsContainer(ControlType ct) =>
         ct == ControlType.List ||

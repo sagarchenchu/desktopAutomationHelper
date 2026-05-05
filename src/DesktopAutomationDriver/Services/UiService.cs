@@ -143,7 +143,11 @@ public class UiService : IUiService
             // ----- Element Actions -----
             "click"            => Click(request),
             "clickmenu"        => ClickMenuPath(request),
-            "clickmenupath"    => ClickMenuPath(request),
+            "clickmenupath"    => IsLogicalMenuMode(request) ? ClickLogicalMenuPath(request) : ClickMenuPath(request),
+            "clicklogicalmenupath" => ClickLogicalMenuPath(request),
+            "clickmenulogical" => ClickLogicalMenuPath(request),
+            "menupath"         => ClickLogicalMenuPath(request),
+            "inspectlogicalmenu" => InspectLogicalMenu(request),
             "doubleclick"      => DoubleClick(request),
             "rightclick"       => RightClick(request),
             "hover"            => Hover(request),
@@ -1025,7 +1029,8 @@ public class UiService : IUiService
 
         throw new InvalidOperationException(
             $"MenuItem click failed for '{SafeElementName(menuItem)}'. " +
-            "For submenu navigation use operation='clickmenupath' with value='Parent>Child'.");
+            "For submenu navigation use operation='clicklogicalmenupath' " +
+            "or operation='clickmenupath' with locator.mode='logical'.");
     }
 
     private object? ClickMenuPath(UiRequest req)
@@ -1084,6 +1089,98 @@ public class UiService : IUiService
         }
 
         return null;
+    }
+
+    private object? ClickLogicalMenuPath(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+        {
+            throw new ArgumentException(
+                "'value' is required for clicklogicalmenupath. Example: tag3>tag3Child1");
+        }
+
+        var session = RequireSession();
+        var root = GetWindowRoot(session);
+        var cf = session.Automation.ConditionFactory;
+        var normalizedValue = System.Net.WebUtility.HtmlDecode(req.Value);
+        var parts = SplitMenuPath(normalizedValue);
+
+        if (parts.Count == 0)
+            throw new ArgumentException("Menu path is empty.");
+
+        _logger.LogInformation(
+            "ClickLogicalMenuPath requested. Path={Path}",
+            string.Join(" > ", parts));
+
+        var target = FindLogicalMenuPath(root, cf, parts);
+
+        if (target == null)
+        {
+            var desktop = session.Automation.GetDesktop();
+            target = FindLogicalMenuPath(desktop, cf, parts);
+        }
+
+        if (target == null)
+        {
+            throw new InvalidOperationException(
+                $"Logical menu path not found: '{req.Value}'. " +
+                "Do not expand parent first; child must be resolved from the logical MenuItem tree.");
+        }
+
+        _logger.LogInformation(
+            "Logical menu target found. name={Name}, automationId={AutomationId}, controlType={ControlType}",
+            SafeElementName(target),
+            SafeElementAutomationId(target),
+            target.ControlType);
+
+        if (TryActivateLogicalMenuItem(target, "ClickLogicalMenuPath"))
+            return null;
+
+        throw new InvalidOperationException(
+            $"Failed to activate logical menu item '{SafeElementName(target)}' for path '{req.Value}'.");
+    }
+
+    private object? InspectLogicalMenu(UiRequest req)
+    {
+        var session = RequireSession();
+        var root = GetWindowRoot(session);
+        var cf = session.Automation.ConditionFactory;
+        var parentName = string.IsNullOrWhiteSpace(req.Value)
+            ? null
+            : System.Net.WebUtility.HtmlDecode(req.Value);
+
+        var parent = root
+            .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+            .FirstOrDefault(e => string.IsNullOrWhiteSpace(parentName) || MenuTextMatches(e, parentName));
+
+        if (parent == null)
+            throw new InvalidOperationException($"MenuItem '{parentName}' not found.");
+
+        var children = parent
+            .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+            .Select(e => new
+            {
+                name = SafeElementName(e),
+                automationId = SafeElementAutomationId(e),
+                controlType = e.ControlType.ToString(),
+                patterns = new
+                {
+                    invoke = e.Patterns.Invoke.IsSupported,
+                    expandCollapse = e.Patterns.ExpandCollapse.IsSupported,
+                    selectionItem = e.Patterns.SelectionItem.IsSupported
+                }
+            })
+            .ToList();
+
+        return new
+        {
+            parent = new
+            {
+                name = SafeElementName(parent),
+                automationId = SafeElementAutomationId(parent)
+            },
+            children
+        };
     }
 
     private object? DoubleClick(UiRequest req)
@@ -1432,6 +1529,181 @@ public class UiService : IUiService
         }
     }
 
+    private static List<string> SplitMenuPath(string path)
+    {
+        return path
+            .Split(['>', '|', '/'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToList();
+    }
+
+    private AutomationElement? FindLogicalMenuPath(
+        AutomationElement root,
+        ConditionFactory cf,
+        IReadOnlyList<string> parts)
+    {
+        if (parts.Count == 0)
+            return null;
+
+        try
+        {
+            var first = root
+                .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                .FirstOrDefault(e => MenuTextMatches(e, parts[0]));
+
+            if (first == null)
+                return null;
+
+            var current = first;
+
+            for (int i = 1; i < parts.Count; i++)
+            {
+                var nextName = parts[i];
+                var next = current
+                    .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                    .FirstOrDefault(e => MenuTextMatches(e, nextName));
+
+                if (next == null)
+                {
+                    _logger.LogWarning(
+                        "Menu path step not found. parent={Parent}, missingStep={MissingStep}, index={Index}",
+                        SafeElementName(current),
+                        nextName,
+                        i);
+
+                    return null;
+                }
+
+                current = next;
+            }
+
+            return current;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "FindLogicalMenuPath failed for path={Path}",
+                string.Join(" > ", parts));
+
+            return null;
+        }
+    }
+
+    private static bool MenuTextMatches(AutomationElement element, string expected)
+    {
+        try
+        {
+            var expectedNorm = NormalizeMenuText(expected);
+            var nameNorm = NormalizeMenuText(element.Name);
+            var automationIdNorm = NormalizeMenuText(element.AutomationId);
+
+            return string.Equals(nameNorm, expectedNorm, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(automationIdNorm, expectedNorm, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string NormalizeMenuText(string? value)
+    {
+        return (value ?? string.Empty)
+            .Replace("&", string.Empty)
+            .Replace("_", string.Empty)
+            .Replace("\u00A0", " ")
+            .Trim();
+    }
+
+    private bool TryActivateLogicalMenuItem(AutomationElement item, string actionName)
+    {
+        BringElementWindowToForeground(item);
+
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+
+                _logger.LogInformation(
+                    "{ActionName}: InvokePattern succeeded for logical menu item {Name}",
+                    actionName,
+                    SafeElementName(item));
+
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "{ActionName}: InvokePattern failed for logical menu item {Name}",
+                actionName,
+                SafeElementName(item));
+        }
+
+        try
+        {
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                item.Patterns.SelectionItem.Pattern.Select();
+
+                _logger.LogInformation(
+                    "{ActionName}: SelectionItem.Select succeeded for logical menu item {Name}",
+                    actionName,
+                    SafeElementName(item));
+
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "{ActionName}: SelectionItem failed for logical menu item {Name}",
+                actionName,
+                SafeElementName(item));
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+
+            _logger.LogInformation(
+                "{ActionName}: Focus+Enter succeeded for logical menu item {Name}",
+                actionName,
+                SafeElementName(item));
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "{ActionName}: Focus+Enter failed for logical menu item {Name}",
+                actionName,
+                SafeElementName(item));
+        }
+
+        try
+        {
+            return TryInstantPhysicalClick(item, actionName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "{ActionName}: physical fallback failed for logical menu item {Name}",
+                actionName,
+                SafeElementName(item));
+
+            return false;
+        }
+    }
+
     private void OpenMenuItem(AutomationElement item)
     {
         BringElementWindowToForeground(item);
@@ -1461,6 +1733,9 @@ public class UiService : IUiService
 
         TryInstantPhysicalClick(item, "OpenMenuItem");
     }
+
+    private static bool IsLogicalMenuMode(UiRequest req) =>
+        string.Equals(req.Locator?.Mode, "logical", StringComparison.OrdinalIgnoreCase);
 
     private void ActivateMenuItem(AutomationElement item)
     {
