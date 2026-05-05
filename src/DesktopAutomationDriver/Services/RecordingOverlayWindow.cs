@@ -4849,19 +4849,38 @@ public sealed class RecordingOverlayWindow : Form
             return [];
 
         var list = new List<AutomationElement> { root };
+        var queue = new Queue<AutomationElement>();
+        queue.Enqueue(root);
 
-        if (_stopRequested)
+        while (queue.Count > 0)
         {
-            _logger.LogWarning("Bounds fallback aborted because stop was requested.");
-            return list;
-        }
+            if (_stopRequested)
+            {
+                _logger.LogWarning("Bounds fallback aborted because stop was requested.");
+                return [];
+            }
 
-        list.AddRange(root.FindAllDescendants());
+            var current = queue.Dequeue();
+            AutomationElement[] children;
 
-        if (_stopRequested)
-        {
-            _logger.LogWarning("Bounds fallback aborted because stop was requested.");
-            return [];
+            try
+            {
+                children = current.FindAllChildren();
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var child in children)
+            {
+                list.Add(child);
+
+                if (list.Count > MaxBoundsFallbackCandidates)
+                    return list;
+
+                queue.Enqueue(child);
+            }
         }
 
         _boundsFallbackCache = list;
