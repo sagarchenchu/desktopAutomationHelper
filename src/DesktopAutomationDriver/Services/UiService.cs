@@ -1358,7 +1358,15 @@ public class UiService : IUiService
             throw new ArgumentException("'value' is required for 'type'.");
 
         var element = FindWithRetry(req);
-        element.Focus();
+        BringElementWindowToForeground(element);
+
+        var focused = TryFocusElement(element);
+        if (!focused || ShouldClickBeforeTyping(element))
+        {
+            TryPhysicalClick(element, "Focus for Type");
+            Thread.Sleep(100);
+        }
+
         Keyboard.Type(req.Value);
         return null;
     }
@@ -3734,16 +3742,138 @@ public class UiService : IUiService
         return null;
     }
 
-    private static bool IsElementEditable(AutomationElement element)
+    private bool IsElementEditable(AutomationElement element)
     {
         if (!element.IsEnabled)
             return false;
+
+        if (IsTypeCapableElement(element))
+            return true;
 
         var valuePattern = element.Patterns.Value.PatternOrDefault;
         if (valuePattern != null)
             return !valuePattern.IsReadOnly;
 
         return element.ControlType == ControlType.Edit || element.ControlType == ControlType.Document;
+    }
+
+    private bool IsTypeCapableElement(AutomationElement? element)
+    {
+        if (element == null)
+            return false;
+
+        try
+        {
+            var ct = element.ControlType;
+
+            if (ct == ControlType.Edit ||
+                ct == ControlType.ComboBox ||
+                ct == ControlType.Document)
+            {
+                return true;
+            }
+
+            if (ct == ControlType.Pane ||
+                ct == ControlType.Custom ||
+                ct == ControlType.Text)
+            {
+                if (IsFocusable(element))
+                    return true;
+
+                if (HasEditableChild(element))
+                    return true;
+            }
+
+            try
+            {
+                if (element.Patterns.Value.IsSupported)
+                    return true;
+            }
+            catch
+            {
+                // Best effort only.
+            }
+
+            try
+            {
+                if (element.Patterns.Text.IsSupported)
+                    return true;
+            }
+            catch
+            {
+                // Best effort only.
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsFocusable(AutomationElement element)
+    {
+        try
+        {
+            return element.Properties.IsKeyboardFocusable.ValueOrDefault;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool HasEditableChild(AutomationElement element)
+    {
+        try
+        {
+            var cf = _ctx.ActiveSession?.Automation.ConditionFactory;
+            if (cf == null)
+                return false;
+
+            var editChild = element.FindFirstDescendant(cf.ByControlType(ControlType.Edit));
+            if (editChild != null)
+                return true;
+
+            var comboChild = element.FindFirstDescendant(cf.ByControlType(ControlType.ComboBox));
+            if (comboChild != null)
+                return true;
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryFocusElement(AutomationElement element)
+    {
+        try
+        {
+            element.Focus();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool ShouldClickBeforeTyping(AutomationElement element)
+    {
+        try
+        {
+            var ct = element.ControlType;
+            return ct == ControlType.Pane ||
+                   ct == ControlType.Custom ||
+                   ct == ControlType.Text;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private bool TryPhysicalClick(AutomationElement element, string actionName) =>
