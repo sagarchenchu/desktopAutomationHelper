@@ -92,6 +92,8 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxTableAncestorDepth = 5;
     private const int MaxWindowSearchDepth = 5;
     private const int MaxMenuAncestorDepth = 10;
+    // Guard RDP/Citrix sessions from scanning very large UIA trees on the UI thread.
+    private const int MaxBoundsFallbackCandidates = 2000;
     private const bool EnableVerboseCoordinateDiagnostics = false;
     private const int CursorTimerIntervalMs = 600;
     private const int CursorElementRefreshThrottleMs = 1000;
@@ -275,6 +277,10 @@ public sealed class RecordingOverlayWindow : Form
     private System.Windows.Forms.Timer? _cursorTimer;
     private System.Windows.Forms.Timer? _popupProbeTimer;
     private int _popupProbeAttempts;
+    private int _popupProbeStartCount;
+    private int _popupProbeStopCount;
+    private int _cursorTickCount;
+    private int _assistiveActionCount;
 
     private WinLabel _statusLabel = null!;
 
@@ -514,6 +520,8 @@ public sealed class RecordingOverlayWindow : Form
         if (_service.CurrentMode != RecordingMode.Assistive)
             return;
 
+        _cursorTickCount++;
+
         var now = DateTime.UtcNow;
         var pt = Cursor.Position;
 
@@ -597,6 +605,7 @@ public sealed class RecordingOverlayWindow : Form
                 }
                 if (kbStruct.vkCode == VK_S)
                 {
+                    _logger.LogInformation("Ctrl+S detected in keyboard hook. Requesting stop.");
                     _stopRequested = true;
                     BeginInvoke(new Action(RequestStop));
                     return (IntPtr)1; // suppress
@@ -779,10 +788,15 @@ public sealed class RecordingOverlayWindow : Form
             if (ShouldLogVerboseCoordinateDiagnostics())
                 LogScreenAndWindowDiagnostics(capturedPoint, "AssistiveRightClick");
 
-            var pointResolution = ResolveAssistivePoint(
-                capturedHookPoint,
-                capturedActualCursorPoint,
-                capturedPoint);
+            PointResolutionResult pointResolution;
+
+            using (MeasurePerf("ResolveAssistivePoint"))
+            {
+                pointResolution = ResolveAssistivePoint(
+                    capturedHookPoint,
+                    capturedActualCursorPoint,
+                    capturedPoint);
+            }
 
             _currentAssistivePointerContext = pointResolution.ToPointerContext();
 
@@ -1577,8 +1591,10 @@ public sealed class RecordingOverlayWindow : Form
         {
             try
             {
-                var cf = _automation.ConditionFactory;
-                var subItems = element.FindAllChildren(cf.ByControlType(ControlType.MenuItem));
+                using (MeasurePerf("BuildAssistiveMenuChildActions"))
+                {
+                    var cf = _automation.ConditionFactory;
+                    var subItems = element.FindAllChildren(cf.ByControlType(ControlType.MenuItem));
 
                 if (subItems.Length > 0)
                 {
@@ -1671,6 +1687,7 @@ public sealed class RecordingOverlayWindow : Form
 
                         menu.Items.Add(subMenuFlyout);
                     }
+                }
                 }
             }
             catch { /* best effort */ }
@@ -2195,6 +2212,15 @@ public sealed class RecordingOverlayWindow : Form
         {
             try
             {
+                AutomationElement[] children;
+                string childrenMenuLabel;
+                bool isComboBox = element.ControlType == ControlType.ComboBox;
+                bool isMenuRelated = element.ControlType == ControlType.MenuItem
+                    || element.ControlType == ControlType.Menu
+                    || element.ControlType == ControlType.MenuBar;
+
+                using (MeasurePerf("BuildAssistiveMenuChildActions"))
+                {
                 // For ComboBox controls expand the dropdown to materialise list items,
                 // then collapse immediately so the user does not see the dropdown open
                 // while the context menu is being built.
@@ -2202,11 +2228,6 @@ public sealed class RecordingOverlayWindow : Form
                 // opens the native submenu popup on the message-pump thread which causes
                 // a 10-15 s freeze and visual artefacts.  Their children are accessible
                 // via FindAllChildren() without expansion.
-                bool isComboBox = element.ControlType == ControlType.ComboBox;
-                bool isMenuRelated = element.ControlType == ControlType.MenuItem
-                    || element.ControlType == ControlType.Menu
-                    || element.ControlType == ControlType.MenuBar;
-
                 if (isComboBox && element.Patterns.ExpandCollapse.IsSupported)
                 {
                     try { element.Patterns.ExpandCollapse.Pattern.Expand(); }
@@ -2217,8 +2238,6 @@ public sealed class RecordingOverlayWindow : Form
                 // For ComboBox elements, retrieve the ListItem descendants (the actual
                 // dropdown options) rather than the immediate structural children
                 // (Edit, Button, List) which are not useful to the user.
-                AutomationElement[] children;
-                string childrenMenuLabel;
                 if (isComboBox && _automation != null)
                 {
                     var cf = _automation.ConditionFactory;
@@ -2278,6 +2297,7 @@ public sealed class RecordingOverlayWindow : Form
                 {
                     children = element.FindAllChildren();
                     childrenMenuLabel = "Children ▶";
+                }
                 }
 
                 if (children.Length > 0)
@@ -2375,13 +2395,14 @@ public sealed class RecordingOverlayWindow : Form
                             // item's name directly into the displayed value. This covers
                             // custom / owner-drawn combos where neither Click() nor
                             // SelectionItem.Select() update the text.
-                            if (!selected && isComboBox && !string.IsNullOrEmpty(capturedChildInfo.Name))
+                            var selectedName = capturedChildInfo.Name;
+                            if (!selected && isComboBox && !string.IsNullOrEmpty(selectedName))
                             {
                                 try
                                 {
                                     var valuePattern = element.Patterns.Value.PatternOrDefault;
                                     if (valuePattern != null && !valuePattern.IsReadOnly.Value)
-                                        valuePattern.SetValue(capturedChildInfo.Name);
+                                        valuePattern.SetValue(selectedName);
                                 }
                                 catch { /* best effort — Value pattern may not be writable */ }
                             }
@@ -3504,6 +3525,13 @@ public sealed class RecordingOverlayWindow : Form
     /// </summary>
     private void StartPopupProbeAfterAction()
     {
+        _popupProbeStartCount++;
+        _logger.LogDebug(
+            "Popup probe start requested. starts={Starts}, stops={Stops}, active={Active}",
+            _popupProbeStartCount,
+            _popupProbeStopCount,
+            _popupProbeTimer != null);
+
         if (_automation == null)
             return;
 
@@ -3551,8 +3579,17 @@ public sealed class RecordingOverlayWindow : Form
 
     private void StopPopupProbeTimer()
     {
-        _popupProbeTimer?.Stop();
-        _popupProbeTimer?.Dispose();
+        if (_popupProbeTimer == null)
+            return;
+
+        _popupProbeStopCount++;
+        _logger.LogDebug(
+            "Popup probe stopped. starts={Starts}, stops={Stops}",
+            _popupProbeStartCount,
+            _popupProbeStopCount);
+
+        _popupProbeTimer.Stop();
+        _popupProbeTimer.Dispose();
         _popupProbeTimer = null;
         _popupProbeAttempts = 0;
     }
@@ -4259,6 +4296,12 @@ public sealed class RecordingOverlayWindow : Form
 
     private void UpdateStatusAfterAction(string detail)
     {
+        _assistiveActionCount++;
+        _logger.LogInformation(
+            "Assistive action completed. count={Count}, action={Action}",
+            _assistiveActionCount,
+            detail);
+
         _statusLabel.Text = $"  ✓ Recorded: {detail}  │  Ctrl+S = Stop  ";
         // Revert to mode label after 2 s
         var timer = new System.Windows.Forms.Timer { Interval = 2000 };
@@ -4792,22 +4835,53 @@ public sealed class RecordingOverlayWindow : Form
             return _boundsFallbackCache;
         }
 
-        if (_automation == null || targetHwnd == IntPtr.Zero || _stopRequested)
+        if (_automation == null || targetHwnd == IntPtr.Zero)
             return [];
+
+        if (_stopRequested)
+        {
+            _logger.LogWarning("Bounds fallback aborted because stop was requested.");
+            return [];
+        }
 
         var root = _automation.FromHandle(targetHwnd);
         if (root == null)
             return [];
 
         var list = new List<AutomationElement> { root };
+        var queue = new Queue<AutomationElement>();
+        queue.Enqueue(root);
 
-        if (_stopRequested)
-            return list;
+        while (queue.Count > 0)
+        {
+            if (_stopRequested)
+            {
+                _logger.LogWarning("Bounds fallback aborted because stop was requested.");
+                return [];
+            }
 
-        list.AddRange(root.FindAllDescendants());
+            var current = queue.Dequeue();
+            AutomationElement[] children;
 
-        if (_stopRequested)
-            return [];
+            try
+            {
+                children = current.FindAllChildren();
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var child in children)
+            {
+                list.Add(child);
+
+                if (list.Count > MaxBoundsFallbackCandidates)
+                    return list;
+
+                queue.Enqueue(child);
+            }
+        }
 
         _boundsFallbackCache = list;
         _boundsFallbackCacheHwnd = targetHwnd;
@@ -4823,13 +4897,25 @@ public sealed class RecordingOverlayWindow : Form
             try
             {
                 if (_automation == null || _stopRequested)
+                {
+                    if (_stopRequested)
+                        _logger.LogWarning("Bounds fallback aborted because stop was requested.");
                     return null;
+                }
 
                 var targetHwnd = _service.GetApplicationMainWindowHandle();
                 if (targetHwnd == IntPtr.Zero)
                     return null;
 
                 var candidates = GetBoundsFallbackCandidates(targetHwnd);
+                if (candidates.Count > MaxBoundsFallbackCandidates)
+                {
+                    _logger.LogWarning(
+                        "Bounds fallback candidate count too high: {Count}. Skipping fallback.",
+                        candidates.Count);
+
+                    return null;
+                }
 
                 AutomationElement? bestExact = null;
                 double bestExactArea = double.MaxValue;
@@ -4839,7 +4925,10 @@ public sealed class RecordingOverlayWindow : Form
                 foreach (var candidate in candidates)
                 {
                     if (_stopRequested)
+                    {
+                        _logger.LogWarning("Bounds fallback aborted because stop was requested.");
                         return null;
+                    }
 
                     try
                     {
