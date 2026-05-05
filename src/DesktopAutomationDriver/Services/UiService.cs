@@ -917,12 +917,13 @@ public class UiService : IUiService
     private object? Click(UiRequest req)
     {
         var element = FindWithRetry(req);
-        // Prefer a physical click / FlaUI click fallback here instead of InvokePattern.
+        // Prefer a physical click with FlaUI click fallback here instead of InvokePattern.
         // Native Win32 and modal-dialog buttons can throw COM 0x80040201 or become
         // unavailable during Invoke(), which makes the old Invoke->element.Click()
         // sequence unreliable.
         if (!AssistivePopupResolver.TryInvokeOrClick(element, _logger))
-            throw new InvalidOperationException("Click failed for the requested element.");
+            throw new InvalidOperationException(
+                $"Click failed for the requested element: {DescribeLocator(RequireLocator(req))}");
 
         return null;
     }
