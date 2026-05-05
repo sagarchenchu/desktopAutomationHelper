@@ -31,6 +31,7 @@ public class UiService : IUiService
     /// keyboard or mouse input, to allow the OS to finish the window-activation sequence.
     /// </summary>
     private const int WindowActivationDelayMs = 100;
+    private const int CursorPositionStabilityDelayMs = 30;
 
     // Named keys for the "sendkeys" operation (AutoIt / keyboard-shorthand format).
     private static readonly Dictionary<string, VirtualKeyShort> NamedKeys =
@@ -2986,8 +2987,8 @@ public class UiService : IUiService
             }
 
             var point = new Point(
-                rect.Left + rect.Width / 2,
-                rect.Top + rect.Height / 2);
+                (int)Math.Round(rect.Left + (rect.Width / 2.0)),
+                (int)Math.Round(rect.Top + (rect.Height / 2.0)));
 
             _logger.LogInformation(
                 "{ActionName}: instant physical click at {Point}, name={Name}, automationId={AutomationId}, controlType={ControlType}",
@@ -3010,7 +3011,7 @@ public class UiService : IUiService
     {
         try
         {
-            if (!SetCursorPos(point.X, point.Y))
+            if (!SetCursorPos((int)point.X, (int)point.Y))
             {
                 _logger.LogWarning(
                     "{ActionName}: SetCursorPos failed. LastError={Error}",
@@ -3019,19 +3020,35 @@ public class UiService : IUiService
                 return false;
             }
 
-            Thread.Sleep(30);
+            Thread.Sleep(CursorPositionStabilityDelayMs);
 
             var inputs = new[]
             {
                 new INPUT
                 {
                     type = INPUT_MOUSE,
-                    mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTDOWN }
+                    mi = new MOUSEINPUT
+                    {
+                        dx = 0,
+                        dy = 0,
+                        mouseData = 0,
+                        dwFlags = MOUSEEVENTF_LEFTDOWN,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
                 },
                 new INPUT
                 {
                     type = INPUT_MOUSE,
-                    mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTUP }
+                    mi = new MOUSEINPUT
+                    {
+                        dx = 0,
+                        dy = 0,
+                        mouseData = 0,
+                        dwFlags = MOUSEEVENTF_LEFTUP,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
                 }
             };
 
