@@ -14,6 +14,12 @@ public class RecordingExport
     /// <summary>The last active recording mode at the time of export.</summary>
     public string Mode { get; set; } = string.Empty;
 
+    /// <summary>Screen bounds captured before the recording target was launched.</summary>
+    public ScreenResolutionInfo? Screen { get; set; }
+
+    /// <summary>Launch details for the application started by the recording session, if any.</summary>
+    public LaunchInfo? Launch { get; set; }
+
     /// <summary>Path of the JSON file that was written, if any.</summary>
     public string? ExportedFilePath { get; set; }
 

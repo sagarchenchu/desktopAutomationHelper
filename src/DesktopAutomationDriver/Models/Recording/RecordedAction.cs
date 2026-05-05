@@ -42,4 +42,10 @@ public class RecordedAction
     /// Null for all other action types.
     /// </summary>
     public ElementInfo? TargetElement { get; set; }
+
+    /// <summary>
+    /// Mouse coordinate diagnostics captured while resolving the action target.
+    /// Primarily populated for assistive and right-click-driven actions.
+    /// </summary>
+    public PointerContextInfo? PointerContext { get; set; }
 }
