@@ -111,10 +111,12 @@ public class UiService : IUiService
             "switchwinodw"  => SwitchWindow(request),
             "switch_window" => SwitchWindow(request),
             "switchto"      => SwitchWindow(request),
-            "refresh"      => Refresh(),
-            "screenshot"   => Screenshot(request),
-            "listelements" => ListElements(request),
-            "listwindows"  => ListWindows(request),
+            "refresh"        => Refresh(),
+            "screenshot"     => Screenshot(request),
+            "listelements"   => ListElements(request),
+            "listwindows"    => ListWindows(request),
+            "getcurrentroot" => GetCurrentRoot(request),
+            "findlocator"    => FindLocatorDebug(request),
 
             // ----- Element Query -----
             "exists"         => Exists(request),
@@ -372,14 +374,29 @@ public class UiService : IUiService
                 Thread.Sleep(RetryInterval);
             }
 
-            session.ActiveWindow = match;
+            var asWindow = match.AsWindow();
+            session.ActiveWindow = asWindow;
             // Seed the handle so the auto-follow logic in GetWindowRoot does not
             // immediately override this explicit switch on the very next operation.
-            var switchedHandle = SafeWindowHandle(match);
+            var switchedHandle = SafeWindowHandle(asWindow);
             if (switchedHandle != IntPtr.Zero)
                 session.SeedWindowHandles([switchedHandle]);
-            match.SetForeground();
-            return new { title = match.Name };
+            asWindow.SetForeground();
+            Thread.Sleep(WindowActivationDelayMs);
+
+            _logger.LogInformation(
+                "Switched active window. title={Title}, automationId={AutomationId}, hwnd=0x{Hwnd:X}",
+                SafeElementName(asWindow),
+                SafeElementAutomationId(asWindow),
+                SafeWindowHandle(asWindow).ToInt64());
+
+            return new
+            {
+                switched = true,
+                title = asWindow.Name,
+                automationId = asWindow.AutomationId,
+                hwnd = SafeWindowHandle(asWindow).ToInt64()
+            };
         }
         else
         {
@@ -397,14 +414,29 @@ public class UiService : IUiService
                     $"No window with title containing '{SanitizeValue(req.Value)}' was found.");
             }
 
-            session.ActiveWindow = match;
+            var asWindow = match.AsWindow();
+            session.ActiveWindow = asWindow;
             // Seed the handle so the auto-follow logic in GetWindowRoot does not
             // immediately override this explicit switch on the very next operation.
-            var switchedHandle = SafeWindowHandle(match);
+            var switchedHandle = SafeWindowHandle(asWindow);
             if (switchedHandle != IntPtr.Zero)
                 session.SeedWindowHandles([switchedHandle]);
-            match.SetForeground();
-            return new { title = match.Name };
+            asWindow.SetForeground();
+            Thread.Sleep(WindowActivationDelayMs);
+
+            _logger.LogInformation(
+                "Switched active window. title={Title}, automationId={AutomationId}, hwnd=0x{Hwnd:X}",
+                SafeElementName(asWindow),
+                SafeElementAutomationId(asWindow),
+                SafeWindowHandle(asWindow).ToInt64());
+
+            return new
+            {
+                switched = true,
+                title = asWindow.Name,
+                automationId = asWindow.AutomationId,
+                hwnd = SafeWindowHandle(asWindow).ToInt64()
+            };
         }
     }
 
@@ -1103,6 +1135,13 @@ public class UiService : IUiService
 
         var session = RequireSession();
         var searchRoot = GetSearchRootForMenuOperation(req, session);
+        if (IsDesktopRoot(searchRoot))
+        {
+            throw new InvalidOperationException(
+                "menupath search root resolved to Desktop1. This is invalid. " +
+                "Pass a MenuBar locator or switch to the application window first.");
+        }
+
         var cf = session.Automation.ConditionFactory;
         var normalizedValue = System.Net.WebUtility.HtmlDecode(req.Value);
         var parts = SplitMenuPath(normalizedValue);
@@ -1118,12 +1157,6 @@ public class UiService : IUiService
             searchRoot.ControlType);
 
         var target = FindLogicalMenuPath(searchRoot, cf, parts);
-
-        if (target == null)
-        {
-            var desktop = session.Automation.GetDesktop();
-            target = FindLogicalMenuPath(desktop, cf, parts);
-        }
 
         if (target == null)
         {
@@ -1143,6 +1176,33 @@ public class UiService : IUiService
 
         throw new InvalidOperationException(
             $"Failed to activate logical menu item '{SafeElementName(target)}' for path '{req.Value}'.");
+    }
+
+    private object? GetCurrentRoot(UiRequest req)
+    {
+        _ = req;
+        var session = RequireSession();
+        var root = GetWindowRoot(session);
+
+        return new
+        {
+            root = CreateElementSnapshot(root),
+            activeWindow = session.ActiveWindow == null ? null : CreateElementSnapshot(session.ActiveWindow)
+        };
+    }
+
+    private object? FindLocatorDebug(UiRequest req)
+    {
+        var session = RequireSession();
+        var root = GetWindowRoot(session);
+        var element = FindLocatorWithRetry(session, root, RequireLocator(req));
+
+        return new
+        {
+            found = true,
+            root = CreateElementSnapshot(root),
+            element = CreateElementSnapshot(element)
+        };
     }
 
     private object? InspectLogicalMenu(UiRequest req)
@@ -2644,17 +2704,80 @@ public class UiService : IUiService
     {
         if (req.Locator != null && !IsEmptyLocator(req.Locator))
         {
-            var baseRoot = GetWindowRoot(session);
-            var locatorRoot = FindLocatorWithRetry(session, baseRoot, req.Locator);
+            var currentRoot = GetWindowRoot(session);
 
             _logger.LogInformation(
-                "Menu operation using locator root. name={Name}, automationId={AutomationId}, controlType={ControlType}, hwnd=0x{Hwnd:X}",
-                SafeElementName(locatorRoot),
-                SafeElementAutomationId(locatorRoot),
-                locatorRoot.ControlType,
-                SafeWindowHandle(locatorRoot).ToInt64());
+                "Menu locator provided. currentRoot name={Name}, automationId={AutomationId}, controlType={ControlType}, hwnd=0x{Hwnd:X}",
+                SafeElementName(currentRoot),
+                SafeElementAutomationId(currentRoot),
+                currentRoot.ControlType,
+                SafeWindowHandle(currentRoot).ToInt64());
 
-            return locatorRoot;
+            try
+            {
+                var locatorRoot = FindLocatorWithRetry(session, currentRoot, req.Locator);
+
+                _logger.LogInformation(
+                    "Menu operation using locator root under current root. name={Name}, automationId={AutomationId}, controlType={ControlType}, hwnd=0x{Hwnd:X}",
+                    SafeElementName(locatorRoot),
+                    SafeElementAutomationId(locatorRoot),
+                    locatorRoot.ControlType,
+                    SafeWindowHandle(locatorRoot).ToInt64());
+
+                return locatorRoot;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Menu locator was not found under current root. Will try app windows before desktop.");
+            }
+
+            foreach (var appWindow in session.Application.GetAllTopLevelWindows(session.Automation))
+            {
+                try
+                {
+                    var locatorRoot = FindLocatorWithRetry(session, appWindow, req.Locator);
+
+                    _logger.LogInformation(
+                        "Menu operation using locator root under app window. appWindow={AppWindow}, locatorRoot={Root}, automationId={AutomationId}, controlType={ControlType}",
+                        SafeElementName(appWindow),
+                        SafeElementName(locatorRoot),
+                        SafeElementAutomationId(locatorRoot),
+                        locatorRoot.ControlType);
+
+                    return locatorRoot;
+                }
+                catch
+                {
+                }
+            }
+
+            try
+            {
+                var locatorRoot = FindLocatorWithRetry(session, session.Automation.GetDesktop(), req.Locator);
+
+                _logger.LogInformation(
+                    "Menu operation using locator root under desktop fallback. locatorRoot={Root}, automationId={AutomationId}, controlType={ControlType}",
+                    SafeElementName(locatorRoot),
+                    SafeElementAutomationId(locatorRoot),
+                    locatorRoot.ControlType);
+
+                if (IsDesktopRoot(locatorRoot))
+                {
+                    throw new InvalidOperationException(
+                        "menupath search root resolved to Desktop1. This is invalid. " +
+                        "Pass a MenuBar locator or switch to the application window first.");
+                }
+
+                return locatorRoot;
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"Menu locator was provided but could not be found. Locator={DescribeLocator(req.Locator)}",
+                    ex);
+            }
         }
 
         var root = GetWindowRoot(session);
@@ -2668,6 +2791,21 @@ public class UiService : IUiService
 
         return root;
     }
+
+    private static bool IsDesktopRoot(AutomationElement element) =>
+        element.ControlType == ControlType.Pane &&
+        (
+            string.Equals(SafeElementName(element), "Desktop1", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(SafeElementName(element), "Desktop", StringComparison.OrdinalIgnoreCase)
+        );
+
+    private static object CreateElementSnapshot(AutomationElement element) => new
+    {
+        name = SafeElementName(element),
+        automationId = SafeElementAutomationId(element),
+        controlType = element.ControlType.ToString(),
+        hwnd = SafeWindowHandle(element).ToInt64()
+    };
 
     private static bool IsEmptyLocator(UiLocator? locator)
     {
