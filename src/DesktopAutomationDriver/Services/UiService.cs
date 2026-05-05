@@ -1364,7 +1364,7 @@ public class UiService : IUiService
         if (!focused || TypeCapabilityHelper.ShouldClickBeforeTyping(element))
         {
             TryPhysicalClick(element, "Focus for Type");
-            Thread.Sleep(100);
+            Thread.Sleep(TypeCapabilityHelper.TypeFocusSettleMs);
         }
 
         Keyboard.Type(req.Value);
