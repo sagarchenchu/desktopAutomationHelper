@@ -99,7 +99,10 @@ public class UiService : IUiService
             "closewindow"  => CloseWindowByTitle(request),
             "maximize"     => Maximize(),
             "minimize"     => Minimize(),
-            "switchwindow" => SwitchWindow(request),
+            "switchwindow"  => SwitchWindow(request),
+            "switchwinodw"  => SwitchWindow(request),
+            "switch_window" => SwitchWindow(request),
+            "switchto"      => SwitchWindow(request),
             "refresh"      => Refresh(),
             "screenshot"   => Screenshot(request),
             "listelements" => ListElements(request),
@@ -249,13 +252,13 @@ public class UiService : IUiService
 
         // Fast path: top-level windows are direct children of the Desktop.
         var topLevel = root.FindAllChildren(windowCondition)
-            .FirstOrDefault(w => w.Name.Contains(title, StringComparison.OrdinalIgnoreCase));
+            .FirstOrDefault(w => TitleContains(w, title));
         if (topLevel != null) return topLevel;
 
         // Fallback: owned/child windows may be nested beneath their parent in the UIA tree
         // (e.g. a dialog opened from a child window).
         return root.FindAllDescendants(windowCondition)
-            .FirstOrDefault(w => w.Name.Contains(title, StringComparison.OrdinalIgnoreCase));
+            .FirstOrDefault(w => TitleContains(w, title));
     }
 
     /// <summary>
@@ -344,8 +347,11 @@ public class UiService : IUiService
                 match = FindWindowByTitle(session, req.Value);
                 if (match != null) break;
                 if (DateTime.UtcNow >= deadline)
+                {
+                    LogWindowSearchFailure(session.Automation, req.Value);
                     throw new InvalidOperationException(
-                        $"No window with title containing '{req.Value}' was found within {DefaultRetry.TotalSeconds}s.");
+                        $"No window with title containing '{SanitizeValue(req.Value)}' was found within {DefaultRetry.TotalSeconds}s.");
+                }
                 Thread.Sleep(RetryInterval);
             }
 
@@ -368,8 +374,11 @@ public class UiService : IUiService
             // Re-find the window using the freshly created session's automation.
             var match = FindWindowByTitle(session, req.Value);
             if (match == null)
+            {
+                LogWindowSearchFailure(session.Automation, req.Value);
                 throw new InvalidOperationException(
-                    $"No window with title containing '{req.Value}' was found.");
+                    $"No window with title containing '{SanitizeValue(req.Value)}' was found.");
+            }
 
             session.ActiveWindow = match;
             // Seed the handle so the auto-follow logic in GetWindowRoot does not
@@ -383,28 +392,111 @@ public class UiService : IUiService
     }
 
     /// <summary>
-    /// Searches the session's application windows and then all desktop windows for one
+    /// Searches the active window, application windows, and desktop window tree for one
     /// whose title contains <paramref name="titleFragment"/>.
     /// Returns null when no match is found.
     /// </summary>
     private static AutomationElement? FindWindowByTitle(AutomationSession session, string titleFragment)
     {
-        // Try the application's own top-level windows first (fast path).
-        var match = session.Application.GetAllTopLevelWindows(session.Automation)
-            .FirstOrDefault(w => w.Name.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
-
-        if (match != null) return match;
-
-        // Fall back to ALL desktop windows so callers can switch to any open window,
-        // including windows from other processes.
         var cf = session.Automation.ConditionFactory;
-        return session.Automation.GetDesktop()
-            .FindAllChildren(cf.ByControlType(ControlType.Window))
-            .FirstOrDefault(w => w.Name.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
+        var windowCondition = cf.ByControlType(ControlType.Window);
+
+        if (session.ActiveWindow != null && TitleContains(session.ActiveWindow, titleFragment))
+            return session.ActiveWindow;
+
+        if (session.ActiveWindow != null)
+        {
+            try
+            {
+                var activeDescendant = session.ActiveWindow
+                    .FindAllDescendants(windowCondition)
+                    .FirstOrDefault(w => TitleContains(w, titleFragment));
+                if (activeDescendant != null)
+                    return activeDescendant;
+            }
+            catch
+            {
+                // Continue to broader search scopes.
+            }
+        }
+
+        try
+        {
+            var mainWindow = session.Application.GetMainWindow(session.Automation);
+            if (mainWindow != null && TitleContains(mainWindow, titleFragment))
+                return mainWindow;
+
+            if (mainWindow != null)
+            {
+                var mainDescendant = mainWindow
+                    .FindAllDescendants(windowCondition)
+                    .FirstOrDefault(w => TitleContains(w, titleFragment));
+                if (mainDescendant != null)
+                    return mainDescendant;
+            }
+        }
+        catch
+        {
+            // Continue to broader search scopes.
+        }
+
+        try
+        {
+            var topLevel = session.Application.GetAllTopLevelWindows(session.Automation)
+                .FirstOrDefault(w => TitleContains(w, titleFragment));
+            if (topLevel != null)
+                return topLevel;
+        }
+        catch
+        {
+            // Continue to broader search scopes.
+        }
+
+        try
+        {
+            foreach (var appWindow in session.Application.GetAllTopLevelWindows(session.Automation))
+            {
+                var nested = appWindow
+                    .FindAllDescendants(windowCondition)
+                    .FirstOrDefault(w => TitleContains(w, titleFragment));
+                if (nested != null)
+                    return nested;
+            }
+        }
+        catch
+        {
+            // Continue to broader search scopes.
+        }
+
+        try
+        {
+            var desktop = session.Automation.GetDesktop();
+            var desktopChild = desktop
+                .FindAllChildren(windowCondition)
+                .FirstOrDefault(w => TitleContains(w, titleFragment));
+            if (desktopChild != null)
+                return desktopChild;
+        }
+        catch
+        {
+            // Continue to broader search scopes.
+        }
+
+        try
+        {
+            var desktop = session.Automation.GetDesktop();
+            return desktop
+                .FindAllDescendants(windowCondition)
+                .FirstOrDefault(w => TitleContains(w, titleFragment));
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
-    /// Searches all top-level desktop windows for one whose title contains
+    /// Searches the desktop window tree for one whose title contains
     /// <paramref name="titleFragment"/> and returns its process ID.
     /// Retries until <paramref name="deadline"/> to handle windows that open with a delay.
     /// Throws <see cref="InvalidOperationException"/> if no match is found before the deadline.
@@ -413,20 +505,44 @@ public class UiService : IUiService
     {
         using var tempAutomation = new UIA3Automation();
         var cf = tempAutomation.ConditionFactory;
+        var windowCondition = cf.ByControlType(ControlType.Window);
 
         while (true)
         {
-            var match = tempAutomation.GetDesktop()
-                .FindAllChildren(cf.ByControlType(ControlType.Window))
-                .FirstOrDefault(w =>
-                    w.Name.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
+            var desktop = tempAutomation.GetDesktop();
+            AutomationElement? match = null;
+
+            try
+            {
+                match = desktop
+                    .FindAllChildren(windowCondition)
+                    .FirstOrDefault(w => TitleContains(w, titleFragment));
+            }
+            catch
+            {
+                // Continue to descendant search.
+            }
+
+            if (match == null)
+            {
+                try
+                {
+                    match = desktop
+                        .FindAllDescendants(windowCondition)
+                        .FirstOrDefault(w => TitleContains(w, titleFragment));
+                }
+                catch
+                {
+                    // Ignore unstable UIA trees during retry.
+                }
+            }
 
             if (match != null)
                 return match.Properties.ProcessId.Value;
 
             if (DateTime.UtcNow >= deadline)
                 throw new InvalidOperationException(
-                    $"No window with title containing '{titleFragment}' was found within {DefaultRetry.TotalSeconds}s.");
+                    $"No window with title containing '{SanitizeValue(titleFragment)}' was found within {DefaultRetry.TotalSeconds}s.");
 
             Thread.Sleep(RetryInterval);
         }
@@ -542,18 +658,50 @@ public class UiService : IUiService
     private object? ListWindows(UiRequest req)
     {
         var session = RequireSession();
-        var allWindows = session.Application.GetAllTopLevelWindows(session.Automation);
+        var cf = session.Automation.ConditionFactory;
+        var windows = new List<AutomationElement>();
 
-        IEnumerable<AutomationElement> filtered = allWindows;
+        try
+        {
+            windows.AddRange(session.Application.GetAllTopLevelWindows(session.Automation));
+        }
+        catch
+        {
+            // Ignore unstable application window enumerations.
+        }
+
+        try
+        {
+            var desktopDescendants = session.Automation.GetDesktop()
+                .FindAllDescendants(cf.ByControlType(ControlType.Window));
+
+            foreach (var window in desktopDescendants)
+            {
+                var hwnd = SafeWindowHandle(window);
+                if (hwnd != IntPtr.Zero &&
+                    windows.All(existing => SafeWindowHandle(existing) != hwnd))
+                {
+                    windows.Add(window);
+                }
+            }
+        }
+        catch
+        {
+            // Ignore unstable desktop window enumerations.
+        }
+
+        IEnumerable<AutomationElement> filtered = windows;
         if (!string.IsNullOrWhiteSpace(req.Value))
-            filtered = allWindows.Where(w =>
-                w.Name.Contains(req.Value, StringComparison.OrdinalIgnoreCase));
+            filtered = windows.Where(w => TitleContains(w, req.Value));
 
         return filtered.Select(w => new
         {
             title = w.Name,
             automationId = w.AutomationId,
-            className = w.ClassName
+            className = w.ClassName,
+            processId = w.Properties.ProcessId.ValueOrDefault,
+            hwnd = SafeWindowHandle(w).ToInt64(),
+            isOffscreen = w.IsOffscreen
         }).ToList();
     }
 
@@ -1766,6 +1914,74 @@ public class UiService : IUiService
     {
         try { return element.Properties.NativeWindowHandle.Value; }
         catch { return IntPtr.Zero; }
+    }
+
+    private static string NormalizeTitle(string? value) =>
+        (value ?? string.Empty)
+            .Replace("\u00A0", " ")
+            .Trim();
+
+    private static bool TitleContains(AutomationElement element, string titleFragment)
+    {
+        try
+        {
+            var name = NormalizeTitle(element.Name);
+            var fragment = NormalizeTitle(titleFragment);
+            return !string.IsNullOrWhiteSpace(name) &&
+                   !string.IsNullOrWhiteSpace(fragment) &&
+                   name.Contains(fragment, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static List<object> SnapshotWindowTitles(AutomationBase automation)
+    {
+        var results = new List<object>();
+
+        try
+        {
+            var cf = automation.ConditionFactory;
+            var windows = automation.GetDesktop()
+                .FindAllDescendants(cf.ByControlType(ControlType.Window));
+
+            foreach (var window in windows)
+            {
+                try
+                {
+                    results.Add(new
+                    {
+                        title = window.Name,
+                        automationId = window.AutomationId,
+                        className = window.ClassName,
+                        processId = window.Properties.ProcessId.ValueOrDefault,
+                        hwnd = SafeWindowHandle(window).ToInt64(),
+                        isOffscreen = window.IsOffscreen
+                    });
+                }
+                catch
+                {
+                    // Ignore unstable window snapshots.
+                }
+            }
+        }
+        catch
+        {
+            // Ignore snapshot failures.
+        }
+
+        return results;
+    }
+
+    private void LogWindowSearchFailure(AutomationBase automation, string titleFragment)
+    {
+        var snapshot = SnapshotWindowTitles(automation);
+        _logger.LogWarning(
+            "switchwindow failed. Requested title fragment='{TitleFragment}'. Visible window snapshot={Snapshot}",
+            SanitizeValue(titleFragment),
+            snapshot);
     }
 
     /// <summary>
