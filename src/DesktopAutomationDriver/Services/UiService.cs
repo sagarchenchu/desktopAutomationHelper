@@ -1531,6 +1531,8 @@ public class UiService : IUiService
 
     private static List<string> SplitMenuPath(string path)
     {
+        // Canonical separator is '>', but logical menu paths may also arrive from
+        // external tools or recordings using '/' or '|', so accept all three.
         return path
             .Split(['>', '|', '/'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(p => !string.IsNullOrWhiteSpace(p))
