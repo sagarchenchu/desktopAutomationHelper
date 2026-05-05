@@ -325,6 +325,22 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     public ElementInfo? GetElementAtPoint(System.Drawing.Point point)
     {
+        using (MeasurePerf("GetElementAtPoint"))
+        {
+            return GetElementAtPointCore(point, logOutsideTarget: true);
+        }
+    }
+
+    public ElementInfo? GetElementAtPointLightweight(System.Drawing.Point point)
+    {
+        using (MeasurePerf("GetElementAtPoint"))
+        {
+            return GetElementAtPointCore(point, logOutsideTarget: false);
+        }
+    }
+
+    private ElementInfo? GetElementAtPointCore(System.Drawing.Point point, bool logOutsideTarget)
+    {
         if (_automation == null) return null;
         try
         {
@@ -334,12 +350,15 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
             if (!IsElementInRecordingTarget(element))
             {
-                _logger.LogWarning(
-                    "Ignoring element outside recording target at {Point}: name={Name}, automationId={AutomationId}, processId={ProcessId}",
-                    point,
-                    SafeName(element),
-                    SafeAutomationId(element),
-                    SafeProcessId(element));
+                if (logOutsideTarget)
+                {
+                    _logger.LogWarning(
+                        "Ignoring element outside recording target at {Point}: name={Name}, automationId={AutomationId}, processId={ProcessId}",
+                        point,
+                        SafeName(element),
+                        SafeAutomationId(element),
+                        SafeProcessId(element));
+                }
                 return null;
             }
 
@@ -394,6 +413,38 @@ public sealed class RecordingService : IRecordingService, IDisposable
         _logger.LogInformation(
             "Recording stopped at {Time}. {Count} action(s) recorded. Export: {Path}",
             _stoppedAt, _actions.Count, _exportFilePath ?? "(none)");
+    }
+
+    private IDisposable MeasurePerf(string name)
+    {
+        return new PerfScope(_logger, name);
+    }
+
+    private sealed class PerfScope : IDisposable
+    {
+        private readonly ILogger _logger;
+        private readonly string _name;
+        private readonly Stopwatch _sw;
+
+        public PerfScope(ILogger logger, string name)
+        {
+            _logger = logger;
+            _name = name;
+            _sw = Stopwatch.StartNew();
+        }
+
+        public void Dispose()
+        {
+            _sw.Stop();
+
+            if (_sw.ElapsedMilliseconds > 250)
+            {
+                _logger.LogWarning(
+                    "PERF: {Name} took {ElapsedMs} ms",
+                    _name,
+                    _sw.ElapsedMilliseconds);
+            }
+        }
     }
 
     public void Dispose()
