@@ -39,6 +39,11 @@ public class UiService : IUiService
     private const int MenuExpandDelayMs = 250;
     private const int MenuActionDelayMs = 150;
     private const int MenuFocusDelayMs = 75;
+    private const string DesktopRootName = "Desktop";
+    private const string DesktopRootNameWithSuffix = "Desktop1";
+    private const string InvalidMenuRootMessage =
+        "menupath search root resolved to Desktop. This is invalid. " +
+        "Pass a MenuBar locator or switch to the application window first.";
 
     // Named keys for the "sendkeys" operation (AutoIt / keyboard-shorthand format).
     private static readonly Dictionary<string, VirtualKeyShort> NamedKeys =
@@ -1119,11 +1124,7 @@ public class UiService : IUiService
         var session = RequireSession();
         var searchRoot = GetSearchRootForMenuOperation(req, session);
         if (IsDesktopRoot(searchRoot))
-        {
-            throw new InvalidOperationException(
-                "menupath search root resolved to Desktop1. This is invalid. " +
-                "Pass a MenuBar locator or switch to the application window first.");
-        }
+            throw new InvalidOperationException(InvalidMenuRootMessage);
 
         var cf = session.Automation.ConditionFactory;
         var normalizedValue = System.Net.WebUtility.HtmlDecode(req.Value);
@@ -2750,11 +2751,7 @@ public class UiService : IUiService
                     locatorRoot.ControlType);
 
                 if (IsDesktopRoot(locatorRoot))
-                {
-                    throw new InvalidOperationException(
-                        "menupath search root resolved to Desktop1. This is invalid. " +
-                        "Pass a MenuBar locator or switch to the application window first.");
-                }
+                    throw new InvalidOperationException(InvalidMenuRootMessage);
 
                 return locatorRoot;
             }
@@ -2781,8 +2778,8 @@ public class UiService : IUiService
     private static bool IsDesktopRoot(AutomationElement element) =>
         element.ControlType == ControlType.Pane &&
         (
-            string.Equals(SafeElementName(element), "Desktop1", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(SafeElementName(element), "Desktop", StringComparison.OrdinalIgnoreCase)
+            string.Equals(SafeElementName(element), DesktopRootNameWithSuffix, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(SafeElementName(element), DesktopRootName, StringComparison.OrdinalIgnoreCase)
         );
 
     private static object CreateElementSnapshot(AutomationElement element) => new
