@@ -374,29 +374,7 @@ public class UiService : IUiService
                 Thread.Sleep(RetryInterval);
             }
 
-            var asWindow = match.AsWindow();
-            session.ActiveWindow = asWindow;
-            // Seed the handle so the auto-follow logic in GetWindowRoot does not
-            // immediately override this explicit switch on the very next operation.
-            var switchedHandle = SafeWindowHandle(asWindow);
-            if (switchedHandle != IntPtr.Zero)
-                session.SeedWindowHandles([switchedHandle]);
-            asWindow.SetForeground();
-            Thread.Sleep(WindowActivationDelayMs);
-
-            _logger.LogInformation(
-                "Switched active window. title={Title}, automationId={AutomationId}, hwnd=0x{Hwnd:X}",
-                SafeElementName(asWindow),
-                SafeElementAutomationId(asWindow),
-                SafeWindowHandle(asWindow).ToInt64());
-
-            return new
-            {
-                switched = true,
-                title = asWindow.Name,
-                automationId = asWindow.AutomationId,
-                hwnd = SafeWindowHandle(asWindow).ToInt64()
-            };
+            return SwitchToWindow(session, match);
         }
         else
         {
@@ -414,29 +392,7 @@ public class UiService : IUiService
                     $"No window with title containing '{SanitizeValue(req.Value)}' was found.");
             }
 
-            var asWindow = match.AsWindow();
-            session.ActiveWindow = asWindow;
-            // Seed the handle so the auto-follow logic in GetWindowRoot does not
-            // immediately override this explicit switch on the very next operation.
-            var switchedHandle = SafeWindowHandle(asWindow);
-            if (switchedHandle != IntPtr.Zero)
-                session.SeedWindowHandles([switchedHandle]);
-            asWindow.SetForeground();
-            Thread.Sleep(WindowActivationDelayMs);
-
-            _logger.LogInformation(
-                "Switched active window. title={Title}, automationId={AutomationId}, hwnd=0x{Hwnd:X}",
-                SafeElementName(asWindow),
-                SafeElementAutomationId(asWindow),
-                SafeWindowHandle(asWindow).ToInt64());
-
-            return new
-            {
-                switched = true,
-                title = asWindow.Name,
-                automationId = asWindow.AutomationId,
-                hwnd = SafeWindowHandle(asWindow).ToInt64()
-            };
+            return SwitchToWindow(session, match);
         }
     }
 
@@ -605,6 +561,33 @@ public class UiService : IUiService
         // Reset the tracked window so the next call re-queries GetMainWindow().
         session.ActiveWindow = null;
         return null;
+    }
+
+    private object SwitchToWindow(AutomationSession session, AutomationElement window)
+    {
+        var asWindow = window.AsWindow();
+        session.ActiveWindow = asWindow;
+
+        var switchedHandle = SafeWindowHandle(asWindow);
+        if (switchedHandle != IntPtr.Zero)
+            session.SeedWindowHandles([switchedHandle]);
+
+        asWindow.SetForeground();
+        Thread.Sleep(WindowActivationDelayMs);
+
+        _logger.LogInformation(
+            "Switched active window. title={Title}, automationId={AutomationId}, hwnd=0x{Hwnd:X}",
+            SafeElementName(asWindow),
+            SafeElementAutomationId(asWindow),
+            SafeWindowHandle(asWindow).ToInt64());
+
+        return new
+        {
+            switched = true,
+            title = asWindow.Name,
+            automationId = asWindow.AutomationId,
+            hwnd = SafeWindowHandle(asWindow).ToInt64()
+        };
     }
 
     private object? Screenshot(UiRequest req)
@@ -2750,6 +2733,7 @@ public class UiService : IUiService
                 }
                 catch
                 {
+                    // Best effort: continue scanning other application windows.
                 }
             }
 
