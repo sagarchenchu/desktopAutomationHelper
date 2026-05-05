@@ -1784,7 +1784,14 @@ public class UiService : IUiService
 
             while (current != null)
             {
-                chain.Add($"{current.ControlType}:{current.Name}:{current.AutomationId}");
+                var name = string.IsNullOrWhiteSpace(SafeElementName(current))
+                    ? "<empty>"
+                    : SafeElementName(current);
+                var automationId = string.IsNullOrWhiteSpace(SafeElementAutomationId(current))
+                    ? "<empty>"
+                    : SafeElementAutomationId(current);
+
+                chain.Add($"{current.ControlType}:{name}:{automationId}");
                 current = current.Parent;
             }
         }
@@ -1807,9 +1814,14 @@ public class UiService : IUiService
             if (string.IsNullOrWhiteSpace(expectedNorm))
                 return false;
 
-            return string.Equals(nameNorm, expectedNorm, StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(automationIdNorm, expectedNorm, StringComparison.OrdinalIgnoreCase) ||
-                   nameNorm.Contains(expectedNorm, StringComparison.OrdinalIgnoreCase) ||
+            var isExactMatch =
+                string.Equals(nameNorm, expectedNorm, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(automationIdNorm, expectedNorm, StringComparison.OrdinalIgnoreCase);
+
+            if (isExactMatch)
+                return true;
+
+            return nameNorm.Contains(expectedNorm, StringComparison.OrdinalIgnoreCase) ||
                    automationIdNorm.Contains(expectedNorm, StringComparison.OrdinalIgnoreCase);
         }
         catch
@@ -1827,10 +1839,7 @@ public class UiService : IUiService
             .Replace("\u00A0", " ")
             .Trim();
 
-        while (normalized.Contains("  ", StringComparison.Ordinal))
-            normalized = normalized.Replace("  ", " ", StringComparison.Ordinal);
-
-        return normalized;
+        return System.Text.RegularExpressions.Regex.Replace(normalized, @"\s{2,}", " ");
     }
 
     private bool TryActivateLogicalMenuItem(AutomationElement item, string actionName)
@@ -2660,12 +2669,12 @@ public class UiService : IUiService
 
     private static bool IsEmptyLocator(UiLocator? locator)
     {
-        return locator == null ||
-               string.IsNullOrWhiteSpace(locator.Name) &&
-               string.IsNullOrWhiteSpace(locator.AutomationId) &&
-               string.IsNullOrWhiteSpace(locator.ClassName) &&
-               string.IsNullOrWhiteSpace(locator.XPath) &&
-               string.IsNullOrWhiteSpace(locator.ControlType);
+        return locator == null || (
+            string.IsNullOrWhiteSpace(locator.Name) &&
+            string.IsNullOrWhiteSpace(locator.AutomationId) &&
+            string.IsNullOrWhiteSpace(locator.ClassName) &&
+            string.IsNullOrWhiteSpace(locator.XPath) &&
+            string.IsNullOrWhiteSpace(locator.ControlType));
     }
 
     /// <summary>
