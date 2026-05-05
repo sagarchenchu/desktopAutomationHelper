@@ -93,6 +93,8 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxWindowSearchDepth = 5;
     private const int MaxMenuAncestorDepth = 10;
     private const bool EnableVerboseCoordinateDiagnostics = false;
+    private const int CursorTimerIntervalMs = 600;
+    private const int CursorElementRefreshThrottleMs = 1000;
 
     /// <summary>Interval in milliseconds between popup-probe timer ticks after an assistive click.</summary>
     private const int PopupProbeIntervalMs = 100;
@@ -472,7 +474,7 @@ public sealed class RecordingOverlayWindow : Form
                 _keyboardHook, _mouseHook);
 
         // Timer to refresh the "cursor on: …" label in Assistive mode
-        _cursorTimer = new System.Windows.Forms.Timer { Interval = 600 };
+        _cursorTimer = new System.Windows.Forms.Timer { Interval = CursorTimerIntervalMs };
         _cursorTimer.Tick += OnCursorTimerTick;
         _cursorTimer.Start();
     }
@@ -541,7 +543,7 @@ public sealed class RecordingOverlayWindow : Form
         var movedEnough = (dx * dx + dy * dy) > 64;
 
         if (!movedEnough &&
-            now - _lastCursorElementRefreshUtc < TimeSpan.FromMilliseconds(1000))
+            now - _lastCursorElementRefreshUtc < TimeSpan.FromMilliseconds(CursorElementRefreshThrottleMs))
         {
             return;
         }
