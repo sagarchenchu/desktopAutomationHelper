@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using DesktopAutomationDriver.Models.Request;
@@ -1358,6 +1359,9 @@ public class UiService : IUiService
             throw new ArgumentException("'value' is required for 'type'.");
 
         var element = FindWithRetry(req);
+        if (IsWinFormsDateTimePicker(element))
+            return TypeDatePicker(element, req.Value);
+
         BringElementWindowToForeground(element);
 
         var focused = TypeCapabilityHelper.TryFocusElement(element);
@@ -1368,6 +1372,43 @@ public class UiService : IUiService
         }
 
         Keyboard.Type(req.Value);
+        return null;
+    }
+
+    private object? TypeDatePicker(AutomationElement element, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException("Date value is required.");
+
+        if (!TryParseDateParts(value, out var month, out var day, out var year))
+            throw new ArgumentException("Invalid date value. Use MM/DD/YYYY.");
+
+        BringElementWindowToForeground(element);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        ClickDatePickerMonthSection(element);
+        Thread.Sleep(100);
+
+        Keyboard.Press(VirtualKeyShort.HOME);
+        Thread.Sleep(75);
+
+        Keyboard.Type(month);
+        Thread.Sleep(75);
+
+        Keyboard.Press(VirtualKeyShort.RIGHT);
+        Thread.Sleep(75);
+
+        Keyboard.Type(day);
+        Thread.Sleep(75);
+
+        Keyboard.Press(VirtualKeyShort.RIGHT);
+        Thread.Sleep(75);
+
+        Keyboard.Type(year);
+        Thread.Sleep(75);
+
+        Keyboard.Press(VirtualKeyShort.RETURN);
+
         return null;
     }
 
@@ -3109,12 +3150,67 @@ public class UiService : IUiService
                 return FindByXPath(root, session, locator.XPath);
 
             var condition = BuildCondition(session, locator);
-            return root.FindFirstDescendant(condition);
+            var element = root.FindFirstDescendant(condition);
+            if (element != null)
+                return element;
+
+            return TryFindWinFormsDateTimePickerByPartialClassName(root, session, locator);
         }
         catch
         {
             return null;
         }
+    }
+
+    private static AutomationElement? TryFindWinFormsDateTimePickerByPartialClassName(
+        AutomationElement root,
+        AutomationSession session,
+        UiLocator locator)
+    {
+        if (!IsWinFormsDateTimePickerClassName(locator.ClassName))
+            return null;
+
+        var candidates = !string.IsNullOrWhiteSpace(locator.ControlType)
+            ? root.FindAllDescendants(session.Automation.ConditionFactory.ByControlType(ParseControlType(locator.ControlType)))
+            : root.FindAllDescendants();
+
+        foreach (var candidate in candidates)
+        {
+            if (!LocatorMatchesExceptClassName(candidate, locator))
+                continue;
+
+            var actualClassName = SafeElementClassName(candidate);
+            if (actualClassName.Contains(locator.ClassName!, StringComparison.OrdinalIgnoreCase))
+                return candidate;
+        }
+
+        return null;
+    }
+
+    private static bool LocatorMatchesExceptClassName(AutomationElement element, UiLocator locator)
+    {
+        if (!string.IsNullOrWhiteSpace(locator.Name) &&
+            !string.Equals(SafeElementName(element), locator.Name, StringComparison.Ordinal))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(locator.AutomationId) &&
+            !string.Equals(SafeElementAutomationId(element), locator.AutomationId, StringComparison.Ordinal))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(locator.ControlType) &&
+            !string.Equals(element.ControlType.ToString(), locator.ControlType, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return true;
+    }
+
+    private static bool IsWinFormsDateTimePickerClassName(string? className)
+    {
+        if (string.IsNullOrWhiteSpace(className))
+            return false;
+
+        return className.Contains("SysDateTimePick32", StringComparison.OrdinalIgnoreCase) ||
+               className.Contains("WindowsForms10.SysDateTimePick32", StringComparison.OrdinalIgnoreCase);
     }
 
     // =========================================================================
@@ -3830,6 +3926,28 @@ public class UiService : IUiService
         }
     }
 
+    private bool ClickDatePickerMonthSection(AutomationElement element)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                return false;
+
+            var point = new Point(
+                (int)Math.Round(rect.Left + Math.Max(8, rect.Width / 10.0)),
+                (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+            return SendInstantLeftClick(point, "Click Date Month Section");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Click Date Month Section failed");
+            return false;
+        }
+    }
+
     private bool SendInstantLeftClick(Point point, string actionName)
     {
         try
@@ -3976,6 +4094,52 @@ public class UiService : IUiService
         {
             return string.Empty;
         }
+    }
+
+    private static bool IsWinFormsDateTimePicker(AutomationElement element)
+    {
+        return IsWinFormsDateTimePickerClassName(SafeElementClassName(element));
+    }
+
+    private static bool TryParseDateParts(
+        string input,
+        out string month,
+        out string day,
+        out string year)
+    {
+        month = string.Empty;
+        day = string.Empty;
+        year = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(input))
+            return false;
+
+        var cleaned = input.Trim();
+
+        var formats = new[]
+        {
+            "MM/dd/yyyy",
+            "M/d/yyyy",
+            "MM-dd-yyyy",
+            "M-d-yyyy"
+        };
+
+        if (!DateTime.TryParseExact(
+                cleaned,
+                formats,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var date))
+        {
+            if (!DateTime.TryParse(cleaned, CultureInfo.InvariantCulture, DateTimeStyles.None, out date))
+                return false;
+        }
+
+        month = date.Month.ToString("00", CultureInfo.InvariantCulture);
+        day = date.Day.ToString("00", CultureInfo.InvariantCulture);
+        year = date.Year.ToString("0000", CultureInfo.InvariantCulture);
+
+        return true;
     }
 
     private static int? SafeProcessId(AutomationElement element)

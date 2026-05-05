@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using DesktopAutomationDriver.Models.Recording;
 using FlaUI.Core.AutomationElements;
@@ -1773,6 +1774,12 @@ public sealed class RecordingOverlayWindow : Form
         if (typeTarget != null && !isDisabledTypeTarget)
         {
             menu.Items.Add(new ToolStripSeparator());
+            if (IsWinFormsDateTimePicker(typeTarget))
+            {
+                AddAssistiveDateTypeItem(menu, "Type Date…", typeTarget, typeTargetInfo, clearFirst: false);
+                AddAssistiveDateTypeItem(menu, "Clear + Type Date…", typeTarget, typeTargetInfo, clearFirst: true);
+            }
+
             AddAssistiveTypeItem(menu, "Type…", typeTarget, typeTargetInfo, clearFirst: false);
             AddAssistiveTypeItem(menu, "Clear + Type…", typeTarget, typeTargetInfo, clearFirst: true);
 
@@ -3882,6 +3889,54 @@ public sealed class RecordingOverlayWindow : Form
         menu.Items.Add(item);
     }
 
+    private void AddAssistiveDateTypeItem(
+        ContextMenuStrip menu,
+        string label,
+        AutomationElement element,
+        ElementInfo? info,
+        bool clearFirst)
+    {
+        var item = new ToolStripMenuItem(label);
+
+        item.Click += (_, _) =>
+        {
+            var value = ShowDatePrompt(info?.Name ?? info?.AutomationId ?? "date element");
+            if (value == null)
+                return;
+
+            RunAssistiveActionAfterMenuClose(label, () =>
+            {
+                if (!PerformAssistiveDateType(element, info, value, clearFirst))
+                {
+                    _logger.LogWarning(
+                        "Assistive date type action '{Label}' was not recorded because execution failed. Element={Element}",
+                        label,
+                        ElementInfo.GetLabel(info));
+                    return;
+                }
+
+                var elementLabel = ElementInfo.GetLabel(info);
+                var description = clearFirst
+                    ? $"Clear and type date {value} into {elementLabel}"
+                    : $"Type date {value} into {elementLabel}";
+
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Type,
+                    Mode = RecordingMode.Assistive,
+                    Element = info,
+                    Value = value,
+                    PointerContext = ClonePointerContext(_currentAssistivePointerContext),
+                    Description = description
+                });
+
+                UpdateStatusAfterAction($"{label.TrimEnd('…')} into [{info?.ControlType}] {elementLabel}");
+            });
+        };
+
+        menu.Items.Add(item);
+    }
+
     private bool PerformAssistiveType(
         AutomationElement element,
         ElementInfo? info,
@@ -3930,6 +3985,96 @@ public sealed class RecordingOverlayWindow : Form
             _statusLabel.Text = "Type failed: " + ex.Message;
             return false;
         }
+    }
+
+    private bool PerformAssistiveDateType(
+        AutomationElement element,
+        ElementInfo? info,
+        string value,
+        bool clearFirst)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            if (!TryParseDateParts(value, out var month, out var day, out var year))
+            {
+                _statusLabel.Text = "Invalid date. Use MM/DD/YYYY.";
+                return false;
+            }
+
+            BringElementWindowToForeground(element);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            ClickDatePickerMonthSection(element);
+            Thread.Sleep(100);
+
+            if (clearFirst)
+            {
+                System.Windows.Forms.SendKeys.SendWait("^a");
+                Thread.Sleep(75);
+            }
+
+            SendKey(VirtualKeyShort.HOME);
+            Thread.Sleep(75);
+
+            Keyboard.Type(month);
+            Thread.Sleep(75);
+
+            SendKey(VirtualKeyShort.RIGHT);
+            Thread.Sleep(75);
+
+            Keyboard.Type(day);
+            Thread.Sleep(75);
+
+            SendKey(VirtualKeyShort.RIGHT);
+            Thread.Sleep(75);
+
+            Keyboard.Type(year);
+            Thread.Sleep(75);
+
+            SendKey(VirtualKeyShort.RETURN);
+            Thread.Sleep(100);
+
+            _statusLabel.Text = $"Typed date {month}/{day}/{year}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Date typing failed for {Name}", info?.Name);
+            _statusLabel.Text = "Date typing failed: " + ex.Message;
+            return false;
+        }
+    }
+
+    private bool ClickDatePickerMonthSection(AutomationElement element)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                return false;
+
+            var point = new System.Drawing.Point(
+                (int)Math.Round(rect.Left + Math.Max(8, rect.Width / 10.0)),
+                (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+            TryPhysicalClickPoint(point, "Click Date Month Section");
+            Thread.Sleep(100);
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void SendKey(VirtualKeyShort key)
+    {
+        Keyboard.Press(key);
     }
 
     private void AddActionItem(
@@ -4694,6 +4839,70 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     /// <summary>
+    /// Shows a small modal input dialog prompting the user to enter a date value
+    /// for a segmented date picker. Returns the entered text, or null if cancelled.
+    /// </summary>
+    private static string? ShowDatePrompt(string elementLabel)
+    {
+        string? result = null;
+
+        using var form = new Form
+        {
+            Text = "Type date into element",
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterScreen,
+            Width = 400,
+            Height = 145,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            TopMost = true
+        };
+
+        var label = new WinLabel
+        {
+            Text = $"Date to type into \"{elementLabel}\" (MM/DD/YYYY):",
+            Left = 12,
+            Top = 12,
+            Width = 370,
+            AutoSize = true
+        };
+
+        var textBox = new System.Windows.Forms.TextBox
+        {
+            Left = 12,
+            Top = 35,
+            Width = 360
+        };
+
+        var okBtn = new System.Windows.Forms.Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Left = 206,
+            Top = 68,
+            Width = 80
+        };
+
+        var cancelBtn = new System.Windows.Forms.Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Left = 292,
+            Top = 68,
+            Width = 80
+        };
+
+        form.AcceptButton = okBtn;
+        form.CancelButton = cancelBtn;
+        form.Controls.AddRange([label, textBox, okBtn, cancelBtn]);
+
+        if (form.ShowDialog() == DialogResult.OK)
+            result = textBox.Text;
+
+        return result;
+    }
+
+    /// <summary>
     /// Shows a small modal input dialog prompting the user to enter a numeric value to
     /// set on the focused element (e.g. a Slider or Spinner).
     /// Returns the entered text, or <c>null</c> if the user cancelled.
@@ -5144,6 +5353,67 @@ public sealed class RecordingOverlayWindow : Form
     private bool IsTypeCapableElement(AutomationElement? element)
     {
         return TypeCapabilityHelper.IsTypeCapableElement(element, _automation?.ConditionFactory);
+    }
+
+    private static bool IsWinFormsDateTimePicker(AutomationElement element)
+    {
+        var className = SafeElementClassName(element);
+
+        return className.Contains("SysDateTimePick32", StringComparison.OrdinalIgnoreCase) ||
+               className.Contains("WindowsForms10.SysDateTimePick32", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string SafeElementClassName(AutomationElement element)
+    {
+        try
+        {
+            return element.ClassName ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static bool TryParseDateParts(
+        string input,
+        out string month,
+        out string day,
+        out string year)
+    {
+        month = string.Empty;
+        day = string.Empty;
+        year = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(input))
+            return false;
+
+        var cleaned = input.Trim();
+
+        var formats = new[]
+        {
+            "MM/dd/yyyy",
+            "M/d/yyyy",
+            "MM-dd-yyyy",
+            "M-d-yyyy"
+        };
+
+        if (!DateTime.TryParseExact(
+                cleaned,
+                formats,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var date))
+        {
+            if (!DateTime.TryParse(cleaned, CultureInfo.InvariantCulture, DateTimeStyles.None, out date))
+                return false;
+        }
+
+        month = date.Month.ToString("00", CultureInfo.InvariantCulture);
+        day = date.Day.ToString("00", CultureInfo.InvariantCulture);
+        year = date.Year.ToString("0000", CultureInfo.InvariantCulture);
+
+        return true;
     }
 
     private void InspectPointMapping(System.Drawing.Point pt)
