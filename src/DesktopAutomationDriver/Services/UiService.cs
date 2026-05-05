@@ -588,9 +588,9 @@ public class UiService : IUiService
 
         return new
         {
-            switched = true,
-            title = asWindow.Name,
-            automationId = asWindow.AutomationId,
+            title = SafeElementName(asWindow),
+            automationId = SafeElementAutomationId(asWindow),
+            controlType = asWindow.ControlType.ToString(),
             hwnd = SafeWindowHandle(asWindow).ToInt64()
         };
     }
@@ -685,12 +685,12 @@ public class UiService : IUiService
 
         return elements.Select(e => new
         {
-            name = e.Name,
-            automationId = e.AutomationId,
-            className = e.ClassName,
+            name = SafeElementName(e),
+            automationId = SafeElementAutomationId(e),
+            className = SafeElementClassName(e),
             controlType = e.ControlType.ToString(),
             enabled = e.IsEnabled,
-            visible = !e.IsOffscreen
+            visible = SafeIsOffscreen(e) is false
         }).ToList();
     }
 
@@ -742,12 +742,12 @@ public class UiService : IUiService
 
         return filtered.Select(w => new
         {
-            title = w.Name,
-            automationId = w.AutomationId,
-            className = w.ClassName,
-            processId = w.Properties.ProcessId.ValueOrDefault,
+            title = SafeElementName(w),
+            automationId = SafeElementAutomationId(w),
+            className = SafeElementClassName(w),
+            processId = SafeProcessId(w),
             hwnd = SafeWindowHandle(w).ToInt64(),
-            isOffscreen = w.IsOffscreen
+            isOffscreen = SafeIsOffscreen(w)
         }).ToList();
     }
 
@@ -1249,7 +1249,7 @@ public class UiService : IUiService
                         name = SafeElementName(e),
                         automationId = SafeElementAutomationId(e),
                         controlType = e.ControlType.ToString(),
-                        className = e.ClassName,
+                        className = SafeElementClassName(e),
                         bounds = e.BoundingRectangle.ToString(),
                         parentChain = BuildParentChain(e)
                     };
@@ -2593,7 +2593,7 @@ public class UiService : IUiService
                 {
                     session.ActiveWindow = newWindow;
                     _logger.LogInformation(
-                        "Auto-followed new window: '{Title}'", SanitizeValue(newWindow.Name));
+                        "Auto-followed new window: '{Title}'", SafeElementName(newWindow));
                 }
                 else
                 {
@@ -2625,7 +2625,7 @@ public class UiService : IUiService
                             var newVisibleWindows = allDesktopDescendants
                                 .Where(w =>
                                 {
-                                    try { return !w.IsOffscreen; }
+                                    try { return SafeIsOffscreen(w) is false; }
                                     catch { return false; }
                                 })
                                 .ToArray();
@@ -2635,7 +2635,7 @@ public class UiService : IUiService
                                 session.ActiveWindow = newPopup;
                                 _logger.LogInformation(
                                     "Auto-followed popup/dialog window: '{Title}'",
-                                    SanitizeValue(newPopup.Name));
+                                    SafeElementName(newPopup));
                             }
                         }
                         catch (Exception ex)
@@ -2875,12 +2875,12 @@ public class UiService : IUiService
                 {
                     results.Add(new
                     {
-                        title = window.Name,
-                        automationId = window.AutomationId,
-                        className = window.ClassName,
-                        processId = window.Properties.ProcessId.ValueOrDefault,
+                        title = SafeElementName(window),
+                        automationId = SafeElementAutomationId(window),
+                        className = SafeElementClassName(window),
+                        processId = SafeProcessId(window),
                         hwnd = SafeWindowHandle(window).ToInt64(),
-                        isOffscreen = window.IsOffscreen
+                        isOffscreen = SafeIsOffscreen(window)
                     });
                 }
                 catch
@@ -3829,6 +3829,42 @@ public class UiService : IUiService
         catch
         {
             return string.Empty;
+        }
+    }
+
+    private static string SafeElementClassName(AutomationElement element)
+    {
+        try
+        {
+            return SanitizeValue(element.ClassName);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static int? SafeProcessId(AutomationElement element)
+    {
+        try
+        {
+            return element.Properties.ProcessId.ValueOrDefault;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool? SafeIsOffscreen(AutomationElement element)
+    {
+        try
+        {
+            return element.IsOffscreen;
+        }
+        catch
+        {
+            return null;
         }
     }
 
