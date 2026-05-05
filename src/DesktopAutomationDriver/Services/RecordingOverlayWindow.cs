@@ -92,6 +92,7 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxTableAncestorDepth = 5;
     private const int MaxWindowSearchDepth = 5;
     private const int MaxMenuAncestorDepth = 10;
+    // Guard RDP/Citrix sessions from scanning very large UIA trees on the UI thread.
     private const int MaxBoundsFallbackCandidates = 2000;
     private const bool EnableVerboseCoordinateDiagnostics = false;
     private const int CursorTimerIntervalMs = 600;
@@ -3587,8 +3588,8 @@ public sealed class RecordingOverlayWindow : Form
             _popupProbeStartCount,
             _popupProbeStopCount);
 
-        _popupProbeTimer?.Stop();
-        _popupProbeTimer?.Dispose();
+        _popupProbeTimer.Stop();
+        _popupProbeTimer.Dispose();
         _popupProbeTimer = null;
         _popupProbeAttempts = 0;
     }
