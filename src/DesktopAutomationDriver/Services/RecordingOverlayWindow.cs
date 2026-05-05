@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using DesktopAutomationDriver.Models.Recording;
 using FlaUI.Core.AutomationElements;
@@ -91,6 +92,7 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxTableAncestorDepth = 5;
     private const int MaxWindowSearchDepth = 5;
     private const int MaxMenuAncestorDepth = 10;
+    private const bool EnableVerboseCoordinateDiagnostics = false;
 
     /// <summary>Interval in milliseconds between popup-probe timer ticks after an assistive click.</summary>
     private const int PopupProbeIntervalMs = 100;
@@ -269,6 +271,8 @@ public sealed class RecordingOverlayWindow : Form
 
     private UIA3Automation? _automation;
     private System.Windows.Forms.Timer? _cursorTimer;
+    private System.Windows.Forms.Timer? _popupProbeTimer;
+    private int _popupProbeAttempts;
 
     private WinLabel _statusLabel = null!;
 
@@ -307,7 +311,15 @@ public sealed class RecordingOverlayWindow : Form
     private AutomationElement? _lastDetectedPopupWindow;
     private IntPtr _lastDetectedPopupHwnd = IntPtr.Zero;
     private DateTime _lastPopupDetectionUtc = DateTime.MinValue;
+    private DateTime _lastCursorElementRefreshUtc = DateTime.MinValue;
+    private DateTime _lastPopupStatusRefreshUtc = DateTime.MinValue;
+    private System.Drawing.Point _lastCursorPointForStatus = System.Drawing.Point.Empty;
+    private ElementInfo? _lastCursorElementInfo;
     private PointerContextInfo? _currentAssistivePointerContext;
+    private volatile bool _stopRequested;
+    private DateTime _lastBoundsFallbackCacheUtc = DateTime.MinValue;
+    private List<AutomationElement> _boundsFallbackCache = [];
+    private IntPtr _boundsFallbackCacheHwnd = IntPtr.Zero;
 
     /// <summary>
     /// Holds the hook point, live cursor point, and chosen target point for an
@@ -343,6 +355,33 @@ public sealed class RecordingOverlayWindow : Form
     {
         public AutomationElement? Element { get; init; }
         public bool IsInTarget { get; init; }
+    }
+
+    private sealed class PerfScope : IDisposable
+    {
+        private readonly ILogger _logger;
+        private readonly string _name;
+        private readonly Stopwatch _sw;
+
+        public PerfScope(ILogger logger, string name)
+        {
+            _logger = logger;
+            _name = name;
+            _sw = Stopwatch.StartNew();
+        }
+
+        public void Dispose()
+        {
+            _sw.Stop();
+
+            if (_sw.ElapsedMilliseconds > 250)
+            {
+                _logger.LogWarning(
+                    "PERF: {Name} took {ElapsedMs} ms",
+                    _name,
+                    _sw.ElapsedMilliseconds);
+            }
+        }
     }
 
     // ── Drag-tracking helpers ────────────────────────────────────────────────
@@ -433,7 +472,7 @@ public sealed class RecordingOverlayWindow : Form
                 _keyboardHook, _mouseHook);
 
         // Timer to refresh the "cursor on: …" label in Assistive mode
-        _cursorTimer = new System.Windows.Forms.Timer { Interval = 150 };
+        _cursorTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _cursorTimer.Tick += OnCursorTimerTick;
         _cursorTimer.Start();
     }
@@ -442,10 +481,12 @@ public sealed class RecordingOverlayWindow : Form
     {
         _cursorTimer?.Stop();
         _cursorTimer?.Dispose();
+        StopPopupProbeTimer();
 
         _menuSafetyTimer?.Stop();
         _menuSafetyTimer?.Dispose();
         _menuSafetyTimer = null;
+        ClearBoundsFallbackCache();
 
         if (_keyboardHook != IntPtr.Zero)
         {
@@ -468,34 +509,57 @@ public sealed class RecordingOverlayWindow : Form
     // ── Cursor timer (Assistive mode status update) ──────────────────────────
     private void OnCursorTimerTick(object? sender, EventArgs e)
     {
-        if (_service.CurrentMode != RecordingMode.Assistive) return;
+        if (_service.CurrentMode != RecordingMode.Assistive)
+            return;
 
-        // Proactively scan for a child popup window so the overlay updates without
-        // requiring the user to move the mouse over the popup first.
-        var popup = DetectActivePopupWindow();
-        if (popup != null)
+        var now = DateTime.UtcNow;
+        var pt = Cursor.Position;
+
+        if (now - _lastPopupStatusRefreshUtc > TimeSpan.FromMilliseconds(1000))
         {
-            _lastDetectedPopupWindow = popup;
-            _lastDetectedPopupHwnd = AssistivePopupResolver.SafeWindowHandle(popup);
-            _lastPopupDetectionUtc = DateTime.UtcNow;
+            _lastPopupStatusRefreshUtc = now;
 
-            var popupName = popup.Name ?? popup.AutomationId ?? "popup";
-            var popupText = $"● [Popup] {popupName}  Right-click = Popup Actions";
-
-            if (_statusLabel.Text != popupText)
+            var popup = DetectActivePopupWindowLightweight();
+            if (popup != null)
             {
-                _statusLabel.Text = popupText;
-                _logger.LogInformation(
-                    "Overlay popup status updated: {Name}, hwnd=0x{Hwnd:X}",
-                    popupName,
-                    _lastDetectedPopupHwnd.ToInt64());
-            }
+                _lastDetectedPopupWindow = popup;
+                _lastDetectedPopupHwnd = AssistivePopupResolver.SafeWindowHandle(popup);
+                _lastPopupDetectionUtc = now;
 
+                var popupName = SafeElementName(popup);
+                var popupText = $"● [Popup] {popupName} Right-click = Popup Actions";
+
+                if (_statusLabel.Text != popupText)
+                    _statusLabel.Text = popupText;
+
+                return;
+            }
+        }
+
+        var dx = pt.X - _lastCursorPointForStatus.X;
+        var dy = pt.Y - _lastCursorPointForStatus.Y;
+        var movedEnough = (dx * dx + dy * dy) > 64;
+
+        if (!movedEnough &&
+            now - _lastCursorElementRefreshUtc < TimeSpan.FromMilliseconds(800))
+        {
             return;
         }
 
-        var pt = Cursor.Position;
-        var info = _service.GetElementAtPoint(pt);
+        _lastCursorPointForStatus = pt;
+        _lastCursorElementRefreshUtc = now;
+
+        ElementInfo? info = null;
+        try
+        {
+            info = _service.GetElementAtPointLightweight(pt);
+        }
+        catch
+        {
+            info = null;
+        }
+
+        _lastCursorElementInfo = info;
         var name = info?.Name ?? info?.AutomationId ?? info?.ControlType ?? "unknown";
         var ct = info?.ControlType ?? string.Empty;
 
@@ -504,7 +568,7 @@ public sealed class RecordingOverlayWindow : Form
         const int MaxNameLen = 22;
         var displayName = name.Length > MaxNameLen ? name[..MaxNameLen] + "…" : name;
 
-        var text = $"● [{ct}] {displayName}  Right-click  │  Ctrl+RC = Window";
+        var text = $"● [{ct}] {displayName} Right-click │ Ctrl+RC = Window";
         if (_statusLabel.Text != text)
             _statusLabel.Text = text;
     }
@@ -531,6 +595,7 @@ public sealed class RecordingOverlayWindow : Form
                 }
                 if (kbStruct.vkCode == VK_S)
                 {
+                    _stopRequested = true;
                     BeginInvoke(new Action(RequestStop));
                     return (IntPtr)1; // suppress
                 }
@@ -565,6 +630,7 @@ public sealed class RecordingOverlayWindow : Form
         _leftButtonDown = false;
         _awaitingDragTarget = false;
         _dragSourceInfo = null;
+        _stopRequested = false;
 
         _service.SetMode(mode);
 
@@ -582,6 +648,9 @@ public sealed class RecordingOverlayWindow : Form
 
     private void RequestStop()
     {
+        _stopRequested = true;
+        StopPopupProbeTimer();
+        ClearBoundsFallbackCache();
         Close(); // OnFormClosed → _service.OnOverlayClosed() handles export
     }
 
@@ -660,10 +729,6 @@ public sealed class RecordingOverlayWindow : Form
         {
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
-                var hookPoint = ms.pt;
-                var pt = hookPoint;
-                System.Drawing.Point? actualCursorPoint = null;
-
                 // A simulated right-click fired by the "Right Click" action item sets
                 // _suppressNextRButtonDown so the hook does not intercept it.
                 if (_suppressNextRButtonDown)
@@ -672,16 +737,16 @@ public sealed class RecordingOverlayWindow : Form
                     return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
                 }
 
+                var capturedHookPoint = ms.pt;
+                var capturedPoint = capturedHookPoint;
+                System.Drawing.Point? capturedActualCursorPoint = null;
+
                 try
                 {
                     if (GetCursorPos(out var win32CursorPoint))
                     {
-                        _logger.LogInformation(
-                            "Assistive right-click point captured. hookPoint={HookPoint}, actualCursor={ActualCursor}",
-                            hookPoint,
-                            win32CursorPoint);
-                        pt = win32CursorPoint;
-                        actualCursorPoint = win32CursorPoint;
+                        capturedPoint = win32CursorPoint;
+                        capturedActualCursorPoint = win32CursorPoint;
                     }
                 }
                 catch
@@ -689,77 +754,57 @@ public sealed class RecordingOverlayWindow : Form
                     // Keep the low-level hook point when Win32 cursor capture fails.
                 }
 
-                LogScreenAndWindowDiagnostics(pt, "AssistiveRightClick");
-                var pointResolution = ResolveAssistivePoint(hookPoint, actualCursorPoint, pt);
-                _currentAssistivePointerContext = pointResolution.ToPointerContext();
-
                 bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-                if (ctrlHeld)
+                BeginInvoke(new Action(() =>
                 {
-                    BeginInvoke(new Action(() =>
+                    try
                     {
-                        _statusLabel.Text = $"CTRL+RC window menu at {pt.X},{pt.Y}";
+                        if (EnableVerboseCoordinateDiagnostics)
+                            LogScreenAndWindowDiagnostics(capturedPoint, "AssistiveRightClick");
 
-                        try
+                        var pointResolution = ResolveAssistivePoint(
+                            capturedHookPoint,
+                            capturedActualCursorPoint,
+                            capturedPoint);
+
+                        _currentAssistivePointerContext = pointResolution.ToPointerContext();
+
+                        if (ctrlHeld)
                         {
-                            ShowWindowContextMenu(pt);
+                            _statusLabel.Text = $"CTRL+RC window menu at {capturedPoint.X},{capturedPoint.Y}";
+                            ShowWindowContextMenu(capturedPoint);
+                            return;
                         }
-                        catch (Exception ex)
+
+                        if (_awaitingDragTarget)
                         {
-                            _statusLabel.Text = "CTRL+RC window menu failed: " + ex.Message;
-                            _logger.LogError(ex, "CTRL+Right-click window menu failed");
+                            _awaitingDragTarget = false;
+                            var sourceInfo = _dragSourceInfo;
+                            _dragSourceInfo = null;
+                            RecordAssistiveDragTarget(capturedPoint, sourceInfo);
+                            return;
                         }
-                    }));
 
-                    _suppressNextRButtonUp = true;
-                    return (IntPtr)1;
-                }
+                        var capturedElement = pointResolution.ResolvedElement;
 
-                if (_awaitingDragTarget)
-                {
-                    // Second step of assistive drag: the user right-clicked the drop target.
-                    _awaitingDragTarget = false;
-                    var sourceInfo = _dragSourceInfo;
-                    _dragSourceInfo = null;
+                        if (TryShowAssistiveMenuForTargetElement(capturedPoint, capturedElement))
+                            return;
 
-                    // Use a one-tick timer for the same reason as normal right-click handling
-                    // (let native menu/activation messages settle before accessing the UIA tree).
-                    var timer = new System.Windows.Forms.Timer { Interval = ContextMenuDelayMs };
-                    timer.Tick += (_, _) =>
+                        if (IsPopupCurrentlyActive())
+                        {
+                            _statusLabel.Text = $"Target popup detected — showing popup actions at {capturedPoint.X},{capturedPoint.Y}";
+                            ShowWindowContextMenu(capturedPoint);
+                            return;
+                        }
+
+                        ShowOutsideTargetDiagnosticFromPoint(capturedPoint);
+                    }
+                    catch (Exception ex)
                     {
-                        timer.Stop();
-                        timer.Dispose();
-                        RecordAssistiveDragTarget(pt, sourceInfo);
-                    };
-                    timer.Start();
-                }
-                else
-                {
-                    var capturedElement = pointResolution.ResolvedElement;
-
-                    BeginInvoke(new Action(() =>
-                    {
-                        try
-                        {
-                            if (TryShowAssistiveMenuForTargetElement(pt, capturedElement))
-                                return;
-
-                            if (IsPopupCurrentlyActive())
-                            {
-                                _statusLabel.Text = $"Target popup detected — showing popup actions at {pt.X},{pt.Y}";
-                                ShowWindowContextMenu(pt);
-                                return;
-                            }
-
-                            ShowOutsideTargetDiagnosticFromPoint(pt);
-                        }
-                        catch (Exception ex)
-                        {
-                            _statusLabel.Text = "Assistive right-click failed: " + ex.Message;
-                            _logger.LogError(ex, "Assistive right-click failed at {Point}", pt);
-                        }
-                    }));
-                }
+                        _statusLabel.Text = "Assistive right-click failed: " + ex.Message;
+                        _logger.LogError(ex, "Assistive right-click failed at {Point}", capturedPoint);
+                    }
+                }));
 
                 _suppressNextRButtonUp = true;
                 return (IntPtr)1; // suppress the native right-click
@@ -984,7 +1029,8 @@ public sealed class RecordingOverlayWindow : Form
             return false;
         }
 
-        LogScreenAndWindowDiagnostics(pt, "TryShowAssistiveMenuForTargetElement");
+        if (EnableVerboseCoordinateDiagnostics)
+            LogScreenAndWindowDiagnostics(pt, "TryShowAssistiveMenuForTargetElement");
 
         try
         {
@@ -1090,49 +1136,51 @@ public sealed class RecordingOverlayWindow : Form
         System.Drawing.Point pt,
         AutomationElement? preCapturedElement = null)
     {
-        AutomationElement? element = preCapturedElement;
-
-        if (element == null)
+        using (MeasurePerf("ShowAssistiveContextMenuCore"))
         {
-            try { element = _automation!.FromPoint(pt); }
-            catch (Exception ex)
+            AutomationElement? element = preCapturedElement;
+
+            if (element == null)
             {
-                _logger.LogWarning(ex, "Could not get element at point {Pt} for assistive menu", pt);
+                try { element = _automation!.FromPoint(pt); }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not get element at point {Pt} for assistive menu", pt);
+                }
             }
-        }
 
-        // For container controls (e.g. WinForms MenuStrip/MenuBar), FromPoint may return
-        // the parent instead of the specific child under the cursor. Drill down one level.
-        if (element != null && preCapturedElement == null)
-            element = DrillDownToElementAtPoint(element, pt);
+            // For container controls (e.g. WinForms MenuStrip/MenuBar), FromPoint may return
+            // the parent instead of the specific child under the cursor. Drill down one level.
+            if (element != null && preCapturedElement == null)
+                element = DrillDownToElementAtPoint(element, pt);
 
-        if (element == null)
-        {
-            _statusLabel.Text = "No element found at point";
-            return;
-        }
+            if (element == null)
+            {
+                _statusLabel.Text = "No element found at point";
+                return;
+            }
 
-        if (!_service.IsElementInRecordingTarget(element))
-        {
-            LogOutsideTargetDetails(pt, element);
-            ShowOutsideTargetDiagnosticMenu(pt, element);
-            return;
-        }
+            if (!_service.IsElementInRecordingTarget(element))
+            {
+                LogOutsideTargetDetails(pt, element);
+                ShowOutsideTargetDiagnosticMenu(pt, element);
+                return;
+            }
 
-        // Save the original element before any promotion so that the "Type…" and
-        // "Is Editable" menu items are still available when an inner Edit control is
-        // promoted to its parent ComboBox (e.g. a username/password field with history).
-        var originalElement = element;
+            // Save the original element before any promotion so that the "Type…" and
+            // "Is Editable" menu items are still available when an inner Edit control is
+            // promoted to its parent ComboBox (e.g. a username/password field with history).
+            var originalElement = element;
 
-        // If FromPoint returned a structural child of a ComboBox (e.g. the inner Edit
-        // text-box, the dropdown Button, or a ListItem / List from the expanded dropdown),
-        // promote to the ComboBox parent so that the "Options ▶" submenu and
-        // "Type and Select…" items are available.
-        // A ListItem may be nested two levels deep: ComboBox → List → ListItem, so walk
-        // up to 3 levels to find the ComboBox ancestor.
-        if (element != null &&
-            (element.ControlType == ControlType.Edit ||
-             element.ControlType == ControlType.Button ||
+            // If FromPoint returned a structural child of a ComboBox (e.g. the inner Edit
+            // text-box, the dropdown Button, or a ListItem / List from the expanded dropdown),
+            // promote to the ComboBox parent so that the "Options ▶" submenu and
+            // "Type and Select…" items are available.
+            // A ListItem may be nested two levels deep: ComboBox → List → ListItem, so walk
+            // up to 3 levels to find the ComboBox ancestor.
+            if (element != null &&
+                (element.ControlType == ControlType.Edit ||
+                 element.ControlType == ControlType.Button ||
              element.ControlType == ControlType.ListItem ||
              element.ControlType == ControlType.List))
         {
@@ -1475,7 +1523,8 @@ public sealed class RecordingOverlayWindow : Form
                 else
                     BringElementWindowToForeground(element);
                 Thread.Sleep(WindowActivationDelayMs);
-                LogScreenAndWindowDiagnostics(pt, "AssistiveMenuRightClickAction");
+                if (EnableVerboseCoordinateDiagnostics)
+                    LogScreenAndWindowDiagnostics(pt, "AssistiveMenuRightClickAction");
                 // Set the flag so the global hook does not intercept this simulated
                 // right-click and show the assistive context menu a second time.
                 _suppressNextRButtonDown = true;
@@ -2457,6 +2506,7 @@ public sealed class RecordingOverlayWindow : Form
         // topmost so the menu renders above the target application's windows.
         EnsureOverlayVisible();
         menu.Show(pt);
+        }
     }
 
     private void ShowOutsideTargetDiagnosticFromPoint(System.Drawing.Point pt)
@@ -3226,6 +3276,7 @@ public sealed class RecordingOverlayWindow : Form
         _lastDetectedPopupWindow = null;
         _lastDetectedPopupHwnd = IntPtr.Zero;
         _lastPopupDetectionUtc = DateTime.MinValue;
+        ClearBoundsFallbackCache();
     }
 
     /// <summary>
@@ -3257,6 +3308,37 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
+    private AutomationElement? DetectActivePopupWindowLightweight()
+    {
+        if (_automation == null)
+            return null;
+
+        try
+        {
+            var mainHwnd = _service.GetApplicationMainWindowHandle();
+            var foregroundHwnd = GetForegroundWindow();
+
+            if (foregroundHwnd == IntPtr.Zero ||
+                mainHwnd == IntPtr.Zero ||
+                foregroundHwnd == mainHwnd)
+            {
+                return null;
+            }
+
+            var foregroundElement = _automation.FromHandle(foregroundHwnd);
+            var win = foregroundElement != null ? FindWindowAncestorOrSelf(foregroundElement) : null;
+
+            if (win != null && _service.IsElementInRecordingTarget(win))
+                return win;
+        }
+        catch
+        {
+            // lightweight best effort only
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// Attempts to locate an active popup or child dialog window using three strategies:
     /// <list type="number">
@@ -3271,113 +3353,116 @@ public sealed class RecordingOverlayWindow : Form
     /// </summary>
     private AutomationElement? DetectActivePopupWindow()
     {
-        if (_automation == null)
-            return null;
-
-        var mainHwnd = _service.GetApplicationMainWindowHandle();
-        var foregroundHwnd = GetForegroundWindow();
-
-        // 1. Foreground window can be popup ONLY if it belongs to the recording target.
-        if (foregroundHwnd != IntPtr.Zero &&
-            mainHwnd != IntPtr.Zero &&
-            foregroundHwnd != mainHwnd)
+        using (MeasurePerf("DetectActivePopupWindow"))
         {
-            try
+            if (_automation == null)
+                return null;
+
+            var mainHwnd = _service.GetApplicationMainWindowHandle();
+            var foregroundHwnd = GetForegroundWindow();
+
+            // 1. Foreground window can be popup ONLY if it belongs to the recording target.
+            if (foregroundHwnd != IntPtr.Zero &&
+                mainHwnd != IntPtr.Zero &&
+                foregroundHwnd != mainHwnd)
             {
-                var foregroundElement = _automation.FromHandle(foregroundHwnd);
-                var win = foregroundElement != null
-                    ? FindWindowAncestorOrSelf(foregroundElement)
-                    : null;
-
-                if (win != null && _service.IsElementInRecordingTarget(win))
+                try
                 {
-                    _logger.LogInformation(
-                        "Target popup detected from foreground: name={Name}, hwnd=0x{Hwnd:X}",
-                        win.Name,
-                        AssistivePopupResolver.SafeWindowHandle(win).ToInt64());
-                    return win;
-                }
+                    var foregroundElement = _automation.FromHandle(foregroundHwnd);
+                    var win = foregroundElement != null
+                        ? FindWindowAncestorOrSelf(foregroundElement)
+                        : null;
 
-                _logger.LogDebug(
-                    "Ignoring foreground window as popup because it is outside target: hwnd=0x{Hwnd:X}, name={Name}",
-                    foregroundHwnd.ToInt64(),
-                    win?.Name ?? "(no window ancestor found)");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Could not resolve foreground hwnd 0x{Hwnd:X}", foregroundHwnd.ToInt64());
-            }
-        }
-
-        // 2. Child popup under main target window.
-        try
-        {
-            AutomationElement? mainWindow = null;
-
-            if (mainHwnd != IntPtr.Zero)
-                mainWindow = _automation.FromHandle(mainHwnd);
-
-            if (mainWindow != null)
-            {
-                var childPopup = AssistivePopupResolver.DetectChildPopupWindow(mainWindow, _automation);
-
-                if (childPopup != null && _service.IsElementInRecordingTarget(childPopup))
-                {
-                    _logger.LogInformation(
-                        "Target child popup detected: name={Name}, hwnd=0x{Hwnd:X}",
-                        childPopup.Name,
-                        AssistivePopupResolver.SafeWindowHandle(childPopup).ToInt64());
-                    return childPopup;
-                }
-
-                if (childPopup != null)
-                {
-                    _logger.LogDebug(
-                        "Ignoring child popup because it is outside recording target: name={Name}, hwnd=0x{Hwnd:X}",
-                        childPopup.Name,
-                        AssistivePopupResolver.SafeWindowHandle(childPopup).ToInt64());
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Could not detect child popup under main target window");
-        }
-
-        // 3. Cursor fallback: only if window under cursor belongs to target.
-        try
-        {
-            var pt = Cursor.Position;
-            var element = _automation.FromPoint(pt);
-
-            if (element != null)
-            {
-                var win = FindWindowAncestorOrSelf(element);
-
-                if (win != null)
-                {
-                    var winHwnd = AssistivePopupResolver.SafeWindowHandle(win);
-
-                    if (winHwnd != IntPtr.Zero &&
-                        mainHwnd != IntPtr.Zero &&
-                        winHwnd != mainHwnd &&
-                        _service.IsElementInRecordingTarget(win))
+                    if (win != null && _service.IsElementInRecordingTarget(win))
                     {
                         _logger.LogInformation(
-                            "Target popup detected from cursor: name={Name}, hwnd=0x{Hwnd:X}",
+                            "Target popup detected from foreground: name={Name}, hwnd=0x{Hwnd:X}",
                             win.Name,
-                            winHwnd.ToInt64());
+                            AssistivePopupResolver.SafeWindowHandle(win).ToInt64());
                         return win;
+                    }
+
+                    _logger.LogDebug(
+                        "Ignoring foreground window as popup because it is outside target: hwnd=0x{Hwnd:X}, name={Name}",
+                        foregroundHwnd.ToInt64(),
+                        win?.Name ?? "(no window ancestor found)");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Could not resolve foreground hwnd 0x{Hwnd:X}", foregroundHwnd.ToInt64());
+                }
+            }
+
+            // 2. Child popup under main target window.
+            try
+            {
+                AutomationElement? mainWindow = null;
+
+                if (mainHwnd != IntPtr.Zero)
+                    mainWindow = _automation.FromHandle(mainHwnd);
+
+                if (mainWindow != null)
+                {
+                    var childPopup = AssistivePopupResolver.DetectChildPopupWindow(mainWindow, _automation);
+
+                    if (childPopup != null && _service.IsElementInRecordingTarget(childPopup))
+                    {
+                        _logger.LogInformation(
+                            "Target child popup detected: name={Name}, hwnd=0x{Hwnd:X}",
+                            childPopup.Name,
+                            AssistivePopupResolver.SafeWindowHandle(childPopup).ToInt64());
+                        return childPopup;
+                    }
+
+                    if (childPopup != null)
+                    {
+                        _logger.LogDebug(
+                            "Ignoring child popup because it is outside recording target: name={Name}, hwnd=0x{Hwnd:X}",
+                            childPopup.Name,
+                            AssistivePopupResolver.SafeWindowHandle(childPopup).ToInt64());
                     }
                 }
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Could not detect popup from cursor point");
-        }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not detect child popup under main target window");
+            }
 
-        return null;
+            // 3. Cursor fallback: only if window under cursor belongs to target.
+            try
+            {
+                var pt = Cursor.Position;
+                var element = _automation.FromPoint(pt);
+
+                if (element != null)
+                {
+                    var win = FindWindowAncestorOrSelf(element);
+
+                    if (win != null)
+                    {
+                        var winHwnd = AssistivePopupResolver.SafeWindowHandle(win);
+
+                        if (winHwnd != IntPtr.Zero &&
+                            mainHwnd != IntPtr.Zero &&
+                            winHwnd != mainHwnd &&
+                            _service.IsElementInRecordingTarget(win))
+                        {
+                            _logger.LogInformation(
+                                "Target popup detected from cursor: name={Name}, hwnd=0x{Hwnd:X}",
+                                win.Name,
+                                winHwnd.ToInt64());
+                            return win;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not detect popup from cursor point");
+            }
+
+            return null;
+        }
     }
 
     /// <summary>
@@ -3417,16 +3502,22 @@ public sealed class RecordingOverlayWindow : Form
         if (_automation == null)
             return;
 
-        var attempts = 0;
-        var probeTimer = new System.Windows.Forms.Timer { Interval = PopupProbeIntervalMs };
-
-        probeTimer.Tick += (_, _) =>
+        if (_popupProbeTimer != null)
         {
-            attempts++;
+            _popupProbeAttempts = 0;
+            return;
+        }
+
+        _popupProbeAttempts = 0;
+        _popupProbeTimer = new System.Windows.Forms.Timer { Interval = PopupProbeIntervalMs };
+
+        _popupProbeTimer.Tick += (_, _) =>
+        {
+            _popupProbeAttempts++;
 
             try
             {
-                var popup = DetectActivePopupWindow();
+                var popup = DetectActivePopupWindowLightweight();
 
                 if (popup != null)
                 {
@@ -3434,11 +3525,10 @@ public sealed class RecordingOverlayWindow : Form
                     _lastDetectedPopupHwnd = AssistivePopupResolver.SafeWindowHandle(popup);
                     _lastPopupDetectionUtc = DateTime.UtcNow;
 
-                    var popupName = popup.Name ?? popup.AutomationId ?? "popup";
-                    _statusLabel.Text = $"● [Popup] {popupName}  Right-click = Popup Actions";
+                    var popupName = SafeElementName(popup);
+                    _statusLabel.Text = $"● [Popup] {popupName} Right-click = Popup Actions";
 
-                    probeTimer.Stop();
-                    probeTimer.Dispose();
+                    StopPopupProbeTimer();
                     return;
                 }
             }
@@ -3447,14 +3537,19 @@ public sealed class RecordingOverlayWindow : Form
                 // best effort
             }
 
-            if (attempts >= MaxPopupProbeAttempts)
-            {
-                probeTimer.Stop();
-                probeTimer.Dispose();
-            }
+            if (_popupProbeAttempts >= MaxPopupProbeAttempts)
+                StopPopupProbeTimer();
         };
 
-        probeTimer.Start();
+        _popupProbeTimer.Start();
+    }
+
+    private void StopPopupProbeTimer()
+    {
+        _popupProbeTimer?.Stop();
+        _popupProbeTimer?.Dispose();
+        _popupProbeTimer = null;
+        _popupProbeAttempts = 0;
     }
 
     private void EnsureOverlayVisible()
@@ -3581,7 +3676,8 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
-            LogScreenAndWindowDiagnostics(point, $"PhysicalClick:{actionName}");
+            if (EnableVerboseCoordinateDiagnostics)
+                LogScreenAndWindowDiagnostics(point, $"PhysicalClick:{actionName}");
 
             if (targetHwnd != IntPtr.Zero)
             {
@@ -3859,10 +3955,7 @@ public sealed class RecordingOverlayWindow : Form
                 if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
                 {
                     if (TryPhysicalClickPoint(GetElementCenter(rect), actionName))
-                    {
-                        StartPopupProbeAfterAction();
                         return true;
-                    }
                 }
             }
             catch (Exception ex)
@@ -3874,7 +3967,6 @@ public sealed class RecordingOverlayWindow : Form
             try
             {
                 element.Click();
-                StartPopupProbeAfterAction();
                 return true;
             }
             catch (Exception ex)
@@ -3891,7 +3983,6 @@ public sealed class RecordingOverlayWindow : Form
                     if (element.Patterns.Invoke.IsSupported)
                     {
                         element.Patterns.Invoke.Pattern.Invoke();
-                        StartPopupProbeAfterAction();
                         return true;
                     }
                 }
@@ -3916,7 +4007,6 @@ public sealed class RecordingOverlayWindow : Form
             {
                 System.Windows.Forms.SendKeys.SendWait("{ENTER}");
                 _statusLabel.Text = $"{actionName}: fallback Enter";
-                StartPopupProbeAfterAction();
                 return true;
             }
 
@@ -3926,7 +4016,6 @@ public sealed class RecordingOverlayWindow : Form
             {
                 System.Windows.Forms.SendKeys.SendWait("{ESC}");
                 _statusLabel.Text = $"{actionName}: fallback Esc";
-                StartPopupProbeAfterAction();
                 return true;
             }
 
@@ -4059,7 +4148,8 @@ public sealed class RecordingOverlayWindow : Form
 
             if (cancelButton != null)
             {
-                SafeInvokeOrClickElement(cancelButton, "Popup Cancel");
+                if (SafeInvokeOrClickElement(cancelButton, "Popup Cancel"))
+                    StartPopupProbeAfterAction();
                 return;
             }
 
@@ -4669,109 +4759,157 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
+    private IDisposable MeasurePerf(string name)
+    {
+        return new PerfScope(_logger, name);
+    }
+
+    private void ClearBoundsFallbackCache()
+    {
+        _boundsFallbackCache = [];
+        _boundsFallbackCacheHwnd = IntPtr.Zero;
+        _lastBoundsFallbackCacheUtc = DateTime.MinValue;
+    }
+
+    private List<AutomationElement> GetBoundsFallbackCandidates(IntPtr targetHwnd)
+    {
+        var now = DateTime.UtcNow;
+
+        if (_boundsFallbackCacheHwnd == targetHwnd &&
+            now - _lastBoundsFallbackCacheUtc < TimeSpan.FromSeconds(3) &&
+            _boundsFallbackCache.Count > 0)
+        {
+            return _boundsFallbackCache;
+        }
+
+        if (_automation == null || targetHwnd == IntPtr.Zero || _stopRequested)
+            return [];
+
+        var root = _automation.FromHandle(targetHwnd);
+        if (root == null)
+            return [];
+
+        var list = new List<AutomationElement> { root };
+
+        if (_stopRequested)
+            return list;
+
+        list.AddRange(root.FindAllDescendants());
+
+        if (_stopRequested)
+            return [];
+
+        _boundsFallbackCache = list;
+        _boundsFallbackCacheHwnd = targetHwnd;
+        _lastBoundsFallbackCacheUtc = now;
+
+        return list;
+    }
+
     private AutomationElement? FindTargetElementByBoundsFallback(System.Drawing.Point pt)
     {
-        try
+        using (MeasurePerf("FindTargetElementByBoundsFallback"))
         {
-            if (_automation == null)
-                return null;
-
-            var targetHwnd = _service.GetApplicationMainWindowHandle();
-            if (targetHwnd == IntPtr.Zero)
-                return null;
-
-            var root = _automation.FromHandle(targetHwnd);
-            if (root == null)
-                return null;
-
-            var candidates = new List<AutomationElement> { root };
-            candidates.AddRange(root.FindAllDescendants());
-
-            AutomationElement? bestExact = null;
-            double bestExactArea = double.MaxValue;
-            AutomationElement? bestNearest = null;
-            double bestDistance = double.MaxValue;
-
-            foreach (var candidate in candidates)
+            try
             {
-                try
+                if (_automation == null || _stopRequested)
+                    return null;
+
+                var targetHwnd = _service.GetApplicationMainWindowHandle();
+                if (targetHwnd == IntPtr.Zero)
+                    return null;
+
+                var candidates = GetBoundsFallbackCandidates(targetHwnd);
+
+                AutomationElement? bestExact = null;
+                double bestExactArea = double.MaxValue;
+                AutomationElement? bestNearest = null;
+                double bestDistance = double.MaxValue;
+
+                foreach (var candidate in candidates)
                 {
-                    if (!_service.IsElementInRecordingTarget(candidate))
-                        continue;
+                    if (_stopRequested)
+                        return null;
 
-                    if (!IsActionableAssistiveElement(candidate))
-                        continue;
-
-                    var rect = candidate.BoundingRectangle;
-                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
-                        continue;
-
-                    if (pt.X >= rect.Left && pt.X <= rect.Right &&
-                        pt.Y >= rect.Top && pt.Y <= rect.Bottom)
+                    try
                     {
-                        var area = rect.Width * (double)rect.Height;
-                        if (area < bestExactArea)
+                        if (!_service.IsElementInRecordingTarget(candidate))
+                            continue;
+
+                        if (!IsActionableAssistiveElement(candidate))
+                            continue;
+
+                        var rect = candidate.BoundingRectangle;
+                        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                            continue;
+
+                        if (pt.X >= rect.Left && pt.X <= rect.Right &&
+                            pt.Y >= rect.Top && pt.Y <= rect.Bottom)
                         {
-                            bestExactArea = area;
-                            bestExact = candidate;
+                            var area = rect.Width * (double)rect.Height;
+                            if (area < bestExactArea)
+                            {
+                                bestExactArea = area;
+                                bestExact = candidate;
+                            }
+                        }
+
+                        var cx = rect.Left + rect.Width / 2.0;
+                        var cy = rect.Top + rect.Height / 2.0;
+                        var dx = pt.X - cx;
+                        var dy = pt.Y - cy;
+                        var distance = Math.Sqrt(dx * dx + dy * dy);
+
+                        if (distance < bestDistance)
+                        {
+                            bestDistance = distance;
+                            bestNearest = candidate;
                         }
                     }
-
-                    var cx = rect.Left + rect.Width / 2.0;
-                    var cy = rect.Top + rect.Height / 2.0;
-                    var dx = pt.X - cx;
-                    var dy = pt.Y - cy;
-                    var distance = Math.Sqrt(dx * dx + dy * dy);
-
-                    if (distance < bestDistance)
+                    catch
                     {
-                        bestDistance = distance;
-                        bestNearest = candidate;
+                        // Ignore unstable UIA elements during fallback scanning.
                     }
                 }
-                catch
+
+                if (bestExact != null)
                 {
-                    // Ignore unstable UIA elements during fallback scanning.
+                    _logger.LogInformation(
+                        "Bounds fallback exact match. point={Point}, name={Name}, automationId={AutomationId}, controlType={ControlType}, bounds={Bounds}",
+                        pt,
+                        SafeElementName(bestExact),
+                        SafeElementAutomationId(bestExact),
+                        bestExact.ControlType,
+                        bestExact.BoundingRectangle);
+                    return bestExact;
                 }
-            }
 
-            if (bestExact != null)
-            {
-                _logger.LogInformation(
-                    "Bounds fallback exact match. point={Point}, name={Name}, automationId={AutomationId}, controlType={ControlType}, bounds={Bounds}",
+                const double MaxAssistiveFallbackDistance = 150.0;
+                if (bestNearest != null && bestDistance <= MaxAssistiveFallbackDistance)
+                {
+                    _logger.LogInformation(
+                        "Bounds fallback nearest match. point={Point}, distance={Distance}, name={Name}, automationId={AutomationId}, controlType={ControlType}, bounds={Bounds}",
+                        pt,
+                        bestDistance,
+                        SafeElementName(bestNearest),
+                        SafeElementAutomationId(bestNearest),
+                        bestNearest.ControlType,
+                        bestNearest.BoundingRectangle);
+                    return bestNearest;
+                }
+
+                _logger.LogWarning(
+                    "Bounds fallback found no acceptable match. point={Point}, bestDistance={Distance}",
                     pt,
-                    SafeElementName(bestExact),
-                    SafeElementAutomationId(bestExact),
-                    bestExact.ControlType,
-                    bestExact.BoundingRectangle);
-                return bestExact;
-            }
+                    bestDistance);
 
-            const double MaxAssistiveFallbackDistance = 150.0;
-            if (bestNearest != null && bestDistance <= MaxAssistiveFallbackDistance)
+                return null;
+            }
+            catch (Exception ex)
             {
-                _logger.LogInformation(
-                    "Bounds fallback nearest match. point={Point}, distance={Distance}, name={Name}, automationId={AutomationId}, controlType={ControlType}, bounds={Bounds}",
-                    pt,
-                    bestDistance,
-                    SafeElementName(bestNearest),
-                    SafeElementAutomationId(bestNearest),
-                    bestNearest.ControlType,
-                    bestNearest.BoundingRectangle);
-                return bestNearest;
+                _logger.LogWarning(ex, "FindTargetElementByBoundsFallback failed for {Point}", pt);
+                return null;
             }
-
-            _logger.LogWarning(
-                "Bounds fallback found no acceptable match. point={Point}, bestDistance={Distance}",
-                pt,
-                bestDistance);
-
-            return null;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "FindTargetElementByBoundsFallback failed for {Point}", pt);
-            return null;
         }
     }
 
