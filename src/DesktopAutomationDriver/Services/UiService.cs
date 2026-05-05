@@ -590,7 +590,7 @@ public class UiService : IUiService
         {
             title = SafeElementName(asWindow),
             automationId = SafeElementAutomationId(asWindow),
-            controlType = asWindow.ControlType.ToString(),
+            controlType = SafeElementControlType(asWindow),
             hwnd = SafeWindowHandle(asWindow).ToInt64()
         };
     }
@@ -688,8 +688,8 @@ public class UiService : IUiService
             name = SafeElementName(e),
             automationId = SafeElementAutomationId(e),
             className = SafeElementClassName(e),
-            controlType = e.ControlType.ToString(),
-            enabled = e.IsEnabled,
+            controlType = SafeElementControlType(e),
+            enabled = SafeIsEnabled(e),
             visible = SafeIsOffscreen(e) is false
         }).ToList();
     }
@@ -1207,11 +1207,11 @@ public class UiService : IUiService
 
         return parents.Select(parent => new
         {
-            parent = new
-            {
-                name = SafeElementName(parent),
-                automationId = SafeElementAutomationId(parent),
-                parentChain = BuildParentChain(parent)
+                    parent = new
+                    {
+                        name = SafeElementName(parent),
+                        automationId = SafeElementAutomationId(parent),
+                        parentChain = BuildParentChain(parent)
             },
             children = parent
                 .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
@@ -1219,7 +1219,7 @@ public class UiService : IUiService
                 {
                     name = SafeElementName(e),
                     automationId = SafeElementAutomationId(e),
-                    controlType = e.ControlType.ToString(),
+                    controlType = SafeElementControlType(e),
                     parentChain = BuildParentChain(e),
                     patterns = new
                     {
@@ -1248,9 +1248,9 @@ public class UiService : IUiService
                     {
                         name = SafeElementName(e),
                         automationId = SafeElementAutomationId(e),
-                        controlType = e.ControlType.ToString(),
+                        controlType = SafeElementControlType(e),
                         className = SafeElementClassName(e),
-                        bounds = e.BoundingRectangle.ToString(),
+                        bounds = SafeBoundingRectangle(e),
                         parentChain = BuildParentChain(e)
                     };
                 }
@@ -1269,7 +1269,7 @@ public class UiService : IUiService
             {
                 name = SafeElementName(root),
                 automationId = SafeElementAutomationId(root),
-                controlType = root.ControlType.ToString(),
+                controlType = SafeElementControlType(root),
                 hwnd = SafeWindowHandle(root).ToInt64()
             },
             menuItems
@@ -1663,7 +1663,7 @@ public class UiService : IUiService
                 {
                     name = SafeElementName(x),
                     automationId = SafeElementAutomationId(x),
-                    controlType = x.ControlType.ToString(),
+                    controlType = SafeElementControlType(x),
                     parentChain = BuildParentChain(x)
                 }).ToList());
 
@@ -1836,7 +1836,7 @@ public class UiService : IUiService
                     ? "<empty>"
                     : SafeElementAutomationId(current);
 
-                chain.Add($"{current.ControlType}:{name}:{automationId}");
+                chain.Add($"{SafeElementControlType(current)}:{name}:{automationId}");
                 current = current.Parent;
             }
         }
@@ -2786,7 +2786,7 @@ public class UiService : IUiService
     {
         name = SafeElementName(element),
         automationId = SafeElementAutomationId(element),
-        controlType = element.ControlType.ToString(),
+        controlType = SafeElementControlType(element),
         hwnd = SafeWindowHandle(element).ToInt64()
     };
 
@@ -3865,6 +3865,42 @@ public class UiService : IUiService
         catch
         {
             return null;
+        }
+    }
+
+    private static bool? SafeIsEnabled(AutomationElement element)
+    {
+        try
+        {
+            return element.IsEnabled;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string SafeElementControlType(AutomationElement element)
+    {
+        try
+        {
+            return element.ControlType.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string SafeBoundingRectangle(AutomationElement element)
+    {
+        try
+        {
+            return element.BoundingRectangle.ToString();
+        }
+        catch
+        {
+            return string.Empty;
         }
     }
 
