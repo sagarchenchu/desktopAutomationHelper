@@ -2005,6 +2005,7 @@ public class UiService : IUiService
 
         var normalized = value
             .Replace("&amp;", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("&", string.Empty, StringComparison.Ordinal)
             .Replace("_", string.Empty)
             .Replace("\u00A0", " ")
             .Trim();
