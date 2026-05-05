@@ -57,6 +57,12 @@ public interface IRecordingService
     ElementInfo? GetElementAtPoint(System.Drawing.Point point);
 
     /// <summary>
+    /// Lightweight point lookup for assistive status updates and popup probes.
+    /// Must be called from an STA thread.
+    /// </summary>
+    ElementInfo? GetElementAtPointLightweight(System.Drawing.Point point);
+
+    /// <summary>
     /// Returns element information together with its immediate children names.
     /// Must be called from an STA thread.
     /// </summary>
