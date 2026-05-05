@@ -2213,6 +2213,10 @@ public sealed class RecordingOverlayWindow : Form
             {
                 AutomationElement[] children;
                 string childrenMenuLabel;
+                bool isComboBox = element.ControlType == ControlType.ComboBox;
+                bool isMenuRelated = element.ControlType == ControlType.MenuItem
+                    || element.ControlType == ControlType.Menu
+                    || element.ControlType == ControlType.MenuBar;
 
                 using (MeasurePerf("BuildAssistiveMenuChildActions"))
                 {
@@ -2223,11 +2227,6 @@ public sealed class RecordingOverlayWindow : Form
                 // opens the native submenu popup on the message-pump thread which causes
                 // a 10-15 s freeze and visual artefacts.  Their children are accessible
                 // via FindAllChildren() without expansion.
-                bool isComboBox = element.ControlType == ControlType.ComboBox;
-                bool isMenuRelated = element.ControlType == ControlType.MenuItem
-                    || element.ControlType == ControlType.Menu
-                    || element.ControlType == ControlType.MenuBar;
-
                 if (isComboBox && element.Patterns.ExpandCollapse.IsSupported)
                 {
                     try { element.Patterns.ExpandCollapse.Pattern.Expand(); }
@@ -2395,13 +2394,14 @@ public sealed class RecordingOverlayWindow : Form
                             // item's name directly into the displayed value. This covers
                             // custom / owner-drawn combos where neither Click() nor
                             // SelectionItem.Select() update the text.
-                            if (!selected && isComboBox && !string.IsNullOrEmpty(capturedChildInfo.Name))
+                            var selectedName = capturedChildInfo.Name;
+                            if (!selected && isComboBox && !string.IsNullOrEmpty(selectedName))
                             {
                                 try
                                 {
                                     var valuePattern = element.Patterns.Value.PatternOrDefault;
                                     if (valuePattern != null && !valuePattern.IsReadOnly.Value)
-                                        valuePattern.SetValue(capturedChildInfo.Name);
+                                        valuePattern.SetValue(selectedName);
                                 }
                                 catch { /* best effort — Value pattern may not be writable */ }
                             }
