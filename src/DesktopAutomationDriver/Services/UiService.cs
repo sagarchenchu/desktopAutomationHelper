@@ -923,7 +923,8 @@ public class UiService : IUiService
         // sequence unreliable.
         if (!AssistivePopupResolver.TryInvokeOrClick(element, _logger))
             throw new InvalidOperationException(
-                $"Click failed for the requested element: {DescribeLocator(RequireLocator(req))}");
+                "Click failed after trying a physical click and FlaUI click fallback for " +
+                DescribeLocator(RequireLocator(req)));
 
         return null;
     }
