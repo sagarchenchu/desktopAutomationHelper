@@ -1741,65 +1741,44 @@ public sealed class RecordingOverlayWindow : Form
             catch { /* best effort */ }
         }
 
-        // Is Editable — for Edit controls (text boxes), or the inner Edit of a promoted ComboBox.
-        if (editTarget != null)
+        var typeTarget = element != null && IsTypeCapableElement(element)
+            ? element
+            : editTarget;
+        var typeTargetInfo = ReferenceEquals(typeTarget, element)
+            ? elementInfo
+            : editTargetInfo;
+
+        if (typeTarget == null && innerEditElement != null && IsTypeCapableElement(innerEditElement))
         {
-            AddQueryItem(menu, "Is Editable", editTarget, editTargetInfo, ActionType.IsEditable,
-                () => editTarget.Patterns.Value.IsSupported && editTarget.Patterns.Value.Pattern?.IsReadOnly == false);
+            typeTarget = innerEditElement;
+            typeTargetInfo = innerEditInfo;
         }
 
-        // Type — for Edit controls (text boxes), or the inner Edit of a promoted ComboBox.
-        // Exception: do not show "Type" when the target is a disabled Edit control.
-        bool isDisabledEdit = false;
+        // Is Editable — for type-capable controls, including custom/focusable date fields.
+        if (typeTarget != null)
+        {
+            AddQueryItem(menu, "Is Editable", typeTarget, typeTargetInfo, ActionType.IsEditable,
+                () => IsTypeCapableElement(typeTarget));
+        }
+
+        // Type — for controls that can accept keyboard text, including focusable
+        // Pane/Custom/Text date fields that UIA does not expose as Edit controls.
+        bool isDisabledTypeTarget = false;
         try
         {
-            isDisabledEdit = editTarget != null &&
-                             editTarget.ControlType == ControlType.Edit &&
-                             !editTarget.IsEnabled;
+            isDisabledTypeTarget = typeTarget != null && !typeTarget.IsEnabled;
         }
         catch { /* best effort; if we can't determine, show Type */ }
 
-        if (editTarget != null && !isDisabledEdit)
+        if (typeTarget != null && !isDisabledTypeTarget)
         {
             menu.Items.Add(new ToolStripSeparator());
-            var typeItem = new ToolStripMenuItem("Type…");
-            typeItem.Click += (_, _) =>
-            {
-                var text = ShowTypePrompt(editTargetInfo?.Name ?? editTargetInfo?.AutomationId ?? "element");
-                if (text == null) return; // user cancelled
-
-                var elementLabel = ElementInfo.GetLabel(editTargetInfo);
-                try
-                {
-                    if (editTarget.Patterns.Value.IsSupported)
-                        editTarget.Patterns.Value.Pattern.SetValue(text);
-                    else
-                    {
-                        editTarget.Focus();
-                        System.Windows.Forms.SendKeys.SendWait(EscapeForSendKeys(text));
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Type action failed for element \"{Label}\"", elementLabel);
-                }
-
-                // Use single quotes in the description to avoid breaking the string when text contains double quotes
-                var displayText = text.Replace("'", "\\'", StringComparison.Ordinal);
-                _service.AddAction(new RecordedAction
-                {
-                    ActionType = ActionType.Type,
-                    Mode = RecordingMode.Assistive,
-                    Element = editTargetInfo,
-                    Value = text,
-                    Description = $"Type '{displayText}' into {elementLabel}"
-                });
-                UpdateStatusAfterAction($"Type into [{editTargetInfo?.ControlType}] {elementLabel}");
-            };
-            menu.Items.Add(typeItem);
+            AddAssistiveTypeItem(menu, "Type…", typeTarget, typeTargetInfo, clearFirst: false);
+            AddAssistiveTypeItem(menu, "Clear + Type…", typeTarget, typeTargetInfo, clearFirst: true);
 
             // Clear — only for writable Edit controls
-            if (editTarget.Patterns.Value.IsSupported &&
+            if (editTarget != null &&
+                editTarget.Patterns.Value.IsSupported &&
                 editTarget.Patterns.Value.PatternOrDefault?.IsReadOnly == false)
             {
                 AddActionItem(menu, "Clear", editTarget, editTargetInfo, ActionType.ClearText,
@@ -1810,19 +1789,22 @@ public sealed class RecordingOverlayWindow : Form
                     });
             }
 
-            // Get Text — read the current text / value of the Edit field
-            AddQueryItem(menu, "Get Text", editTarget, editTargetInfo, ActionType.GetValue,
-                () =>
-                {
-                    try
+            if (editTarget != null)
+            {
+                // Get Text — read the current text / value of the Edit field
+                AddQueryItem(menu, "Get Text", editTarget, editTargetInfo, ActionType.GetValue,
+                    () =>
                     {
-                        var valuePat = editTarget.Patterns.Value.PatternOrDefault;
-                        if (valuePat != null)
-                            return !string.IsNullOrEmpty(valuePat.Value);
-                    }
-                    catch { /* best effort */ }
-                    return false;
-                });
+                        try
+                        {
+                            var valuePat = editTarget.Patterns.Value.PatternOrDefault;
+                            if (valuePat != null)
+                                return !string.IsNullOrEmpty(valuePat.Value);
+                        }
+                        catch { /* best effort */ }
+                        return false;
+                    });
+            }
         }
 
         // Type and Select — only for editable ComboBox controls (autocomplete / filter pattern)
@@ -3851,6 +3833,105 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
+    private void AddAssistiveTypeItem(
+        ContextMenuStrip menu,
+        string label,
+        AutomationElement element,
+        ElementInfo? info,
+        bool clearFirst)
+    {
+        var item = new ToolStripMenuItem(label);
+
+        item.Click += (_, _) =>
+        {
+            var text = ShowTypePrompt(info?.Name ?? info?.AutomationId ?? "element");
+            if (text == null)
+                return;
+
+            RunAssistiveActionAfterMenuClose(label, () =>
+            {
+                if (!PerformAssistiveType(element, info, text, clearFirst))
+                {
+                    _logger.LogWarning(
+                        "Assistive type action '{Label}' was not recorded because execution failed. Element={Element}",
+                        label,
+                        ElementInfo.GetLabel(info));
+                    return;
+                }
+
+                var elementLabel = ElementInfo.GetLabel(info);
+                var displayText = text.Replace("'", "\\'", StringComparison.Ordinal);
+                var description = clearFirst
+                    ? $"Clear and type '{displayText}' into {elementLabel}"
+                    : $"Type '{displayText}' into {elementLabel}";
+
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Type,
+                    Mode = RecordingMode.Assistive,
+                    Element = info,
+                    Value = text,
+                    PointerContext = ClonePointerContext(_currentAssistivePointerContext),
+                    Description = description
+                });
+
+                UpdateStatusAfterAction($"{label.TrimEnd('…')} into [{info?.ControlType}] {elementLabel}");
+            });
+        };
+
+        menu.Items.Add(item);
+    }
+
+    private bool PerformAssistiveType(
+        AutomationElement element,
+        ElementInfo? info,
+        string value,
+        bool clearFirst)
+    {
+        if (string.IsNullOrEmpty(value))
+            return false;
+
+        try
+        {
+            BringElementWindowToForeground(element);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            var focused = TypeCapabilityHelper.TryFocusElement(element);
+            if (!focused || TypeCapabilityHelper.ShouldClickBeforeTyping(element))
+            {
+                try
+                {
+                    var rect = element.BoundingRectangle;
+                    if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+                        TryPhysicalClickPoint(GetElementCenter(rect), "Focus for Type");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Focus click fallback failed for Type on {Name}", info?.Name);
+                }
+
+                Thread.Sleep(TypeCapabilityHelper.TypeFocusSettleMs);
+            }
+
+            if (clearFirst)
+            {
+                System.Windows.Forms.SendKeys.SendWait("^a");
+                Thread.Sleep(TypeCapabilityHelper.SelectAllDelayMs);
+            }
+
+            Keyboard.Type(value);
+
+            _statusLabel.Text = $"Typed into {info?.ControlType} {info?.Name}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Assistive type failed for {Name}", info?.Name);
+            _statusLabel.Text = "Type failed: " + ex.Message;
+            return false;
+        }
+    }
+
     private void AddActionItem(
         ContextMenuStrip menu,
         string label,
@@ -5058,6 +5139,11 @@ public sealed class RecordingOverlayWindow : Form
         {
             return false;
         }
+    }
+
+    private bool IsTypeCapableElement(AutomationElement? element)
+    {
+        return TypeCapabilityHelper.IsTypeCapableElement(element, _automation?.ConditionFactory);
     }
 
     private void InspectPointMapping(System.Drawing.Point pt)
