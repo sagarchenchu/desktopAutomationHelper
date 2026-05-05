@@ -917,24 +917,13 @@ public class UiService : IUiService
     private object? Click(UiRequest req)
     {
         var element = FindWithRetry(req);
-        // Prefer the UIA Invoke pattern: it triggers the element's primary action
-        // synchronously on the application's UI thread with no mouse-movement
-        // overhead, which is significantly faster than a simulated mouse click.
-        if (element.Patterns.Invoke.IsSupported)
-        {
-            try
-            {
-                element.Patterns.Invoke.Pattern.Invoke();
-                return null;
-            }
-            catch (Exception ex) when (ex is FlaUI.Core.Exceptions.ElementNotAvailableException
-                                    || ex is COMException)
-            {
-                _logger.LogWarning(ex, "InvokePattern.Invoke() failed; falling back to element.Click()");
-            }
-        }
+        // Prefer a physical click / FlaUI click fallback here instead of InvokePattern.
+        // Native Win32 and modal-dialog buttons can throw COM 0x80040201 or become
+        // unavailable during Invoke(), which makes the old Invoke->element.Click()
+        // sequence unreliable.
+        if (!AssistivePopupResolver.TryInvokeOrClick(element, _logger))
+            throw new InvalidOperationException("Click failed for the requested element.");
 
-        element.Click();
         return null;
     }
 
