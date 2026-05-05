@@ -31,6 +31,14 @@ public class UiService : IUiService
     /// keyboard or mouse input, to allow the OS to finish the window-activation sequence.
     /// </summary>
     private const int WindowActivationDelayMs = 100;
+    /// <summary>
+    /// Brief pause after <c>SetCursorPos</c> so Windows finishes moving the cursor before
+    /// the left-button input events are sent.
+    /// </summary>
+    private const int CursorPositionStabilityDelayMs = 30;
+    private const int MenuExpandDelayMs = 250;
+    private const int MenuActionDelayMs = 150;
+    private const int MenuFocusDelayMs = 75;
 
     // Named keys for the "sendkeys" operation (AutoIt / keyboard-shorthand format).
     private static readonly Dictionary<string, VirtualKeyShort> NamedKeys =
@@ -114,6 +122,7 @@ public class UiService : IUiService
             "isenabled"      => IsEnabled(request),
             "isvisible"      => IsVisible(request),
             "isclickable"    => IsClickable(request),
+            "iseditable"     => IsEditable(request),
             "ischecked"      => IsChecked(request),
             "getvalue"       => GetValue(request),
             "gettext"        => GetText(request),
@@ -132,21 +141,23 @@ public class UiService : IUiService
             "getposition" => GetPosition(request),
 
             // ----- Element Actions -----
-            "click"       => Click(request),
-            "doubleclick" => DoubleClick(request),
-            "rightclick"  => RightClick(request),
-            "hover"       => Hover(request),
-            "focus"       => Focus(request),
-            "type"        => TypeText(request),
-            "clear"       => Clear(request),
-            "sendkeys"    => SendKeys(request),
-            "scroll"      => Scroll(request),
-            "check"       => Check(request),
-            "uncheck"     => Uncheck(request),
-            "select"          => Select(request),
-            "selectaid"       => SelectByAid(request),
-            "typeandselect"   => TypeAndSelect(request),
-            "clickgridcell"   => ClickGridCell(request),
+            "click"            => Click(request),
+            "clickmenu"        => ClickMenuPath(request),
+            "clickmenupath"    => ClickMenuPath(request),
+            "doubleclick"      => DoubleClick(request),
+            "rightclick"       => RightClick(request),
+            "hover"            => Hover(request),
+            "focus"            => Focus(request),
+            "type"             => TypeText(request),
+            "clear"            => Clear(request),
+            "sendkeys"         => SendKeys(request),
+            "scroll"           => Scroll(request),
+            "check"            => Check(request),
+            "uncheck"          => Uncheck(request),
+            "select"           => Select(request),
+            "selectaid"        => SelectByAid(request),
+            "typeandselect"    => TypeAndSelect(request),
+            "clickgridcell"    => ClickGridCell(request),
             "doubleclickgridcell" => DoubleClickGridCell(request),
             "draganddrop"     => DragAndDrop(request),
 
@@ -776,6 +787,12 @@ public class UiService : IUiService
         return new { clickable = element.IsEnabled && !element.IsOffscreen };
     }
 
+    private object? IsEditable(UiRequest req)
+    {
+        var element = FindWithRetry(req);
+        return new { editable = IsElementEditable(element) };
+    }
+
     private object? IsChecked(UiRequest req)
     {
         var element = FindWithRetry(req);
@@ -917,14 +934,154 @@ public class UiService : IUiService
     private object? Click(UiRequest req)
     {
         var element = FindWithRetry(req);
-        // Prefer a physical click with FlaUI click fallback here instead of InvokePattern.
-        // Native Win32 and modal-dialog buttons can throw COM 0x80040201 or become
-        // unavailable during Invoke(), which makes the old Invoke->element.Click()
-        // sequence unreliable.
-        if (!AssistivePopupResolver.TryInvokeOrClick(element, _logger))
-            throw new InvalidOperationException(
-                "Click failed after trying a physical click and FlaUI click fallback for " +
-                DescribeLocator(RequireLocator(req)));
+
+        if (element.ControlType == ControlType.MenuItem)
+            return ClickMenuItem(element, req);
+
+        if (TryPhysicalClick(element, "Click"))
+            return null;
+
+        if (TryElementClick(element, "Click"))
+            return null;
+
+        if (TryInvokePattern(element, "Click"))
+            return null;
+
+        throw new InvalidOperationException(
+            $"Click failed after trying physical click, FlaUI click, and InvokePattern for " +
+            $"name='{SafeElementName(element)}' controlType={element.ControlType}");
+    }
+
+    private object? ClickMenuItem(AutomationElement menuItem, UiRequest _)
+    {
+        _logger.LogInformation(
+            "ClickMenuItem requested. name={Name}, automationId={AutomationId}, controlType={ControlType}",
+            SafeElementName(menuItem),
+            SafeElementAutomationId(menuItem),
+            menuItem.ControlType);
+
+        BringElementWindowToForeground(menuItem);
+
+        try
+        {
+            if (menuItem.Patterns.ExpandCollapse.IsSupported)
+            {
+                var state = menuItem.Patterns.ExpandCollapse.Pattern.ExpandCollapseState;
+                if (state != ExpandCollapseState.Expanded)
+                {
+                    menuItem.Patterns.ExpandCollapse.Pattern.Expand();
+                    Thread.Sleep(MenuExpandDelayMs);
+
+                    _logger.LogInformation("MenuItem expanded: {Name}", SafeElementName(menuItem));
+                    return null;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "MenuItem ExpandCollapse failed; trying click strategies");
+        }
+
+        try
+        {
+            if (menuItem.Patterns.SelectionItem.IsSupported)
+            {
+                menuItem.Patterns.SelectionItem.Pattern.Select();
+                Thread.Sleep(MenuActionDelayMs);
+                return null;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "MenuItem SelectionItem.Select failed");
+        }
+
+        try
+        {
+            menuItem.Click();
+            Thread.Sleep(MenuActionDelayMs);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "MenuItem element.Click failed");
+        }
+
+        try
+        {
+            menuItem.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(MenuActionDelayMs);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "MenuItem Enter fallback failed");
+        }
+
+        if (TryInstantPhysicalClick(menuItem, "MenuItemClick"))
+            return null;
+
+        throw new InvalidOperationException(
+            $"MenuItem click failed for '{SafeElementName(menuItem)}'. " +
+            "For submenu navigation use operation='clickmenupath' with value='Parent>Child'.");
+    }
+
+    private object? ClickMenuPath(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("'value' is required for clickmenupath. Example: File>Open>Recent");
+
+        var session = RequireSession();
+        var root = GetWindowRoot(session);
+        var cf = session.Automation.ConditionFactory;
+        var normalizedValue = System.Net.WebUtility.HtmlDecode(req.Value);
+        var parts = normalizedValue
+            .Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        if (parts.Count == 0)
+            throw new ArgumentException("clickmenupath value did not contain menu items.");
+
+        AutomationElement searchRoot = root;
+
+        for (int i = 0; i < parts.Count; i++)
+        {
+            var name = parts[i];
+            var isLast = i == parts.Count - 1;
+
+            var item = FindMenuItemByName(searchRoot, cf, name);
+            if (item == null)
+            {
+                var desktop = session.Automation.GetDesktop();
+                item = FindMenuItemByName(desktop, cf, name);
+            }
+
+            if (item == null)
+            {
+                throw new InvalidOperationException(
+                    $"Menu path failed. Menu item '{name}' was not found. Path='{SanitizeValue(normalizedValue)}'");
+            }
+
+            _logger.LogInformation(
+                "Menu path step {Index}/{Count}: clicking/expanding '{Name}'",
+                i + 1,
+                parts.Count,
+                name);
+
+            if (!isLast)
+            {
+                OpenMenuItem(item);
+                Thread.Sleep(MenuExpandDelayMs);
+                searchRoot = session.Automation.GetDesktop();
+            }
+            else
+            {
+                ActivateMenuItem(item);
+                Thread.Sleep(MenuActionDelayMs);
+            }
+        }
 
         return null;
     }
@@ -1250,6 +1407,104 @@ public class UiService : IUiService
         comboElement.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
 
         return null;
+    }
+
+    private static AutomationElement? FindMenuItemByName(
+        AutomationElement root,
+        ConditionFactory cf,
+        string name)
+    {
+        try
+        {
+            if (root.ControlType == ControlType.MenuItem &&
+                string.Equals(root.Name?.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return root;
+            }
+
+            return root.FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                .FirstOrDefault(e =>
+                    string.Equals(e.Name?.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void OpenMenuItem(AutomationElement item)
+    {
+        BringElementWindowToForeground(item);
+
+        try
+        {
+            if (item.Patterns.ExpandCollapse.IsSupported)
+            {
+                item.Patterns.ExpandCollapse.Pattern.Expand();
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "OpenMenuItem Expand failed for {Name}", SafeElementName(item));
+        }
+
+        try
+        {
+            item.Click();
+            return;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "OpenMenuItem Click failed for {Name}", SafeElementName(item));
+        }
+
+        TryInstantPhysicalClick(item, "OpenMenuItem");
+    }
+
+    private void ActivateMenuItem(AutomationElement item)
+    {
+        BringElementWindowToForeground(item);
+
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ActivateMenuItem Invoke failed for {Name}", SafeElementName(item));
+        }
+
+        try
+        {
+            item.Click();
+            return;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ActivateMenuItem Click failed for {Name}", SafeElementName(item));
+        }
+
+        try
+        {
+            item.Focus();
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            return;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ActivateMenuItem Enter failed for {Name}", SafeElementName(item));
+        }
+
+        if (!TryInstantPhysicalClick(item, "ActivateMenuItem"))
+        {
+            throw new InvalidOperationException(
+                $"Failed to activate menu item '{SafeElementName(item)}'");
+        }
     }
 
     private object? DragAndDrop(UiRequest req)
@@ -2693,6 +2948,227 @@ public class UiService : IUiService
         return null;
     }
 
+    private static bool IsElementEditable(AutomationElement element)
+    {
+        if (!element.IsEnabled)
+            return false;
+
+        var valuePattern = element.Patterns.Value.PatternOrDefault;
+        if (valuePattern != null)
+            return !valuePattern.IsReadOnly;
+
+        return element.ControlType == ControlType.Edit || element.ControlType == ControlType.Document;
+    }
+
+    private bool TryPhysicalClick(AutomationElement element, string actionName) =>
+        TryInstantPhysicalClick(element, actionName);
+
+    private bool TryElementClick(AutomationElement element, string actionName)
+    {
+        try
+        {
+            BringElementWindowToForeground(element);
+            element.Click();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ActionName}: element.Click failed", actionName);
+            return false;
+        }
+    }
+
+    private bool TryInvokePattern(AutomationElement element, string actionName)
+    {
+        try
+        {
+            if (!element.Patterns.Invoke.IsSupported)
+                return false;
+
+            element.Patterns.Invoke.Pattern.Invoke();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ActionName}: InvokePattern failed", actionName);
+            return false;
+        }
+    }
+
+    private bool TryInstantPhysicalClick(AutomationElement element, string actionName)
+    {
+        try
+        {
+            BringElementWindowToForeground(element);
+
+            var rect = element.BoundingRectangle;
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+            {
+                _logger.LogWarning(
+                    "{ActionName}: invalid bounding rectangle for name={Name}, controlType={ControlType}",
+                    actionName,
+                    SafeElementName(element),
+                    element.ControlType);
+                return false;
+            }
+
+            var point = new Point(
+                (int)Math.Round(rect.Left + (rect.Width / 2.0)),
+                (int)Math.Round(rect.Top + (rect.Height / 2.0)));
+
+            _logger.LogInformation(
+                "{ActionName}: instant physical click at {Point}, name={Name}, automationId={AutomationId}, controlType={ControlType}",
+                actionName,
+                point,
+                SafeElementName(element),
+                SafeElementAutomationId(element),
+                element.ControlType);
+
+            return SendInstantLeftClick(point, actionName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ActionName}: instant physical click failed", actionName);
+            return false;
+        }
+    }
+
+    private bool SendInstantLeftClick(Point point, string actionName)
+    {
+        try
+        {
+            if (!SetCursorPos((int)point.X, (int)point.Y))
+            {
+                _logger.LogWarning(
+                    "{ActionName}: SetCursorPos failed. LastError={Error}",
+                    actionName,
+                    Marshal.GetLastWin32Error());
+                return false;
+            }
+
+            Thread.Sleep(CursorPositionStabilityDelayMs);
+
+            var inputs = new[]
+            {
+                new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    U = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx = 0,
+                            dy = 0,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_LEFTDOWN,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                },
+                new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    U = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx = 0,
+                            dy = 0,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_LEFTUP,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                }
+            };
+
+            var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+            if (sent != inputs.Length)
+            {
+                _logger.LogWarning(
+                    "{ActionName}: SendInput failed. sent={Sent}, expected={Expected}, LastError={Error}",
+                    actionName,
+                    sent,
+                    inputs.Length,
+                    Marshal.GetLastWin32Error());
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ActionName}: SendInstantLeftClick failed", actionName);
+            return false;
+        }
+    }
+
+    private void BringElementWindowToForeground(AutomationElement? element)
+    {
+        if (element == null)
+            return;
+
+        bool activated = false;
+        try
+        {
+            var hwnd = element.Properties.NativeWindowHandle.Value;
+            if (hwnd != IntPtr.Zero)
+            {
+                var root = GetAncestor(hwnd, GA_ROOT);
+                if (root != IntPtr.Zero)
+                    activated = SetForegroundWindow(root);
+            }
+        }
+        catch
+        {
+            // Best effort only.
+        }
+
+        if (!activated)
+        {
+            try
+            {
+                var pid = element.Properties.ProcessId.Value;
+                var proc = System.Diagnostics.Process.GetProcessById(pid);
+                var mainHwnd = proc.MainWindowHandle;
+                if (mainHwnd != IntPtr.Zero)
+                    SetForegroundWindow(mainHwnd);
+            }
+            catch
+            {
+                // Best effort only.
+            }
+        }
+
+        Thread.Sleep(WindowActivationDelayMs);
+    }
+
+    private static string SafeElementName(AutomationElement element)
+    {
+        try
+        {
+            return SanitizeValue(element.Name);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string SafeElementAutomationId(AutomationElement element)
+    {
+        try
+        {
+            return SanitizeValue(element.AutomationId);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
     /// <summary>
     /// Strips control characters from a user-supplied string before it is
     /// written to a log message to prevent log-injection attacks.
@@ -2701,6 +3177,48 @@ public class UiService : IUiService
         System.Text.RegularExpressions.Regex.Replace(
             value ?? string.Empty, @"[\r\n\t]", "_");
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint type;
+        public InputUnion U;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)]
+        public MOUSEINPUT mi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    private const uint INPUT_MOUSE = 0;
+    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    private const uint GA_ROOT = 2;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr GetForegroundWindow();
 }
