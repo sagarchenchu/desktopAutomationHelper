@@ -1386,25 +1386,25 @@ public class UiService : IUiService
         Thread.Sleep(WindowActivationDelayMs);
 
         ClickDatePickerMonthSection(element);
-        Thread.Sleep(100);
+        Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerClickDelayMs);
 
         Keyboard.Press(VirtualKeyShort.HOME);
-        Thread.Sleep(75);
+        Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Type(month);
-        Thread.Sleep(75);
+        Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Press(VirtualKeyShort.RIGHT);
-        Thread.Sleep(75);
+        Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Type(day);
-        Thread.Sleep(75);
+        Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Press(VirtualKeyShort.RIGHT);
-        Thread.Sleep(75);
+        Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Type(year);
-        Thread.Sleep(75);
+        Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Press(VirtualKeyShort.RETURN);
 
