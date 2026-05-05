@@ -1358,7 +1358,15 @@ public class UiService : IUiService
             throw new ArgumentException("'value' is required for 'type'.");
 
         var element = FindWithRetry(req);
-        element.Focus();
+        BringElementWindowToForeground(element);
+
+        var focused = TypeCapabilityHelper.TryFocusElement(element);
+        if (!focused || TypeCapabilityHelper.ShouldClickBeforeTyping(element))
+        {
+            TryPhysicalClick(element, "Focus for Type");
+            Thread.Sleep(TypeCapabilityHelper.TypeFocusSettleMs);
+        }
+
         Keyboard.Type(req.Value);
         return null;
     }
@@ -1812,17 +1820,26 @@ public class UiService : IUiService
             var directChildren = FindDirectChildrenByControlType(current, ControlType.MenuItem);
 
             _logger.LogInformation(
-                "Looking for direct child. parent={Parent}, lookingFor={LookingFor}, children={Children}",
+                "Looking for direct child. parent={Parent}, lookingFor={LookingFor}, childCount={ChildCount}",
                 SafeElementName(current),
                 nextName,
-                directChildren.Select(x => new
-                {
-                    name = SafeElementName(x),
-                    automationId = SafeElementAutomationId(x),
-                    nameNorm = NormalizeMenuText(SafeElementName(x)),
-                    expectedNorm = NormalizeMenuText(nextName),
-                    isMatch = MenuTextMatches(x, nextName)
-                }).ToList());
+                directChildren.Count);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Looking for direct child details. parent={Parent}, lookingFor={LookingFor}, children={Children}",
+                    SafeElementName(current),
+                    nextName,
+                    directChildren.Select(x => new
+                    {
+                        name = SafeElementName(x),
+                        automationId = SafeElementAutomationId(x),
+                        nameNorm = NormalizeMenuText(SafeElementName(x)),
+                        expectedNorm = NormalizeMenuText(nextName),
+                        isMatch = MenuTextMatches(x, nextName)
+                    }).ToList());
+            }
 
             var next = directChildren.FirstOrDefault(e => MenuTextMatches(e, nextName));
 
@@ -1833,17 +1850,26 @@ public class UiService : IUiService
                     .ToList();
 
                 _logger.LogInformation(
-                    "Looking for descendant child. parent={Parent}, lookingFor={LookingFor}, descendants={Descendants}",
+                    "Looking for descendant child. parent={Parent}, lookingFor={LookingFor}, descendantCount={DescendantCount}",
                     SafeElementName(current),
                     nextName,
-                    descendants.Select(x => new
-                    {
-                        name = SafeElementName(x),
-                        automationId = SafeElementAutomationId(x),
-                        nameNorm = NormalizeMenuText(SafeElementName(x)),
-                        expectedNorm = NormalizeMenuText(nextName),
-                        isMatch = MenuTextMatches(x, nextName)
-                    }).ToList());
+                    descendants.Count);
+
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "Looking for descendant child details. parent={Parent}, lookingFor={LookingFor}, descendants={Descendants}",
+                        SafeElementName(current),
+                        nextName,
+                        descendants.Select(x => new
+                        {
+                            name = SafeElementName(x),
+                            automationId = SafeElementAutomationId(x),
+                            nameNorm = NormalizeMenuText(SafeElementName(x)),
+                            expectedNorm = NormalizeMenuText(nextName),
+                            isMatch = MenuTextMatches(x, nextName)
+                        }).ToList());
+                }
 
                 next = descendants.FirstOrDefault(e => MenuTextMatches(e, nextName));
             }
@@ -3716,10 +3742,13 @@ public class UiService : IUiService
         return null;
     }
 
-    private static bool IsElementEditable(AutomationElement element)
+    private bool IsElementEditable(AutomationElement element)
     {
         if (!element.IsEnabled)
             return false;
+
+        if (TypeCapabilityHelper.IsTypeCapableElement(element, _ctx.ActiveSession?.Automation.ConditionFactory))
+            return true;
 
         var valuePattern = element.Patterns.Value.PatternOrDefault;
         if (valuePattern != null)
