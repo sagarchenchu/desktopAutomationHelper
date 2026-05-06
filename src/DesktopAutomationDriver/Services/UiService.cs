@@ -733,7 +733,7 @@ public class UiService : IUiService
             total,
             returned = limited.Count,
             limit,
-            truncated = total > limited.Count
+            truncated = total > limit
         };
     }
 
@@ -1336,7 +1336,7 @@ public class UiService : IUiService
             total,
             returned = menuItems.Count,
             limit,
-            truncated = total > menuItems.Count
+            truncated = total > limit
         };
     }
 
