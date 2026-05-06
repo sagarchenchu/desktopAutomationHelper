@@ -4018,7 +4018,7 @@ public sealed class RecordingOverlayWindow : Form
 
             if (!WinFormsDateTimePickerHelper.TryParseDateParts(value, out var month, out var day, out var year))
             {
-                _statusLabel.Text = "Invalid date. Use MM/DD/YYYY.";
+                _statusLabel.Text = "Invalid date. Use MM/DD/YYYY or MM-DD-YYYY.";
                 return false;
             }
 
