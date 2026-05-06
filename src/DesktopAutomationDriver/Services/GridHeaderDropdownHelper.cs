@@ -8,10 +8,10 @@ internal static class GridHeaderDropdownHelper
 {
     public const int DropdownOpenDelayMs = 300;
     public const int DropdownRetryDelayMs = 250;
-    public const int HeaderListVerticalTolerancePx = 5;
-    public const int HeaderListHorizontalTolerancePx = 20;
+    public const int HeaderListVerticalTolerancePx = 10;
+    public const int HeaderListHorizontalTolerancePx = 50;
 
-    private static readonly int[] DropdownIconOffsetsPx = [8, 12, 16, 22];
+    private static readonly int[] DropdownIconOffsetsPx = [8, 12, 16, 22, 28];
 
     public static bool IsGridHeaderElement(AutomationElement element)
     {

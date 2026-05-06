@@ -20,6 +20,10 @@ namespace DesktopAutomationDriver.Services;
 /// </summary>
 public sealed class RecordingService : IRecordingService, IDisposable
 {
+    // Keep assistive point lookups responsive by returning only the first visible target children;
+    // larger child sets are intentionally truncated for menu/status previews.
+    private const int MaxChildrenAtPoint = 30;
+
     private readonly ILogger<RecordingService> _logger;
     private readonly IUiSessionContext _sessionContext;
 
@@ -400,9 +404,15 @@ public sealed class RecordingService : IRecordingService, IDisposable
         {
             var element = _automation.FromPoint(point);
             if (element == null) return (null, Array.Empty<ElementInfo>());
+            element = RecordingOverlayWindow.DrillDownToElementAtPoint(element, point);
+
+            if (!IsElementInRecordingTarget(element))
+                return (null, Array.Empty<ElementInfo>());
 
             var info = RecordingOverlayWindow.BuildElementInfo(element);
             var childInfos = element.FindAllChildren()
+                .Where(IsElementInRecordingTarget)
+                .Take(MaxChildrenAtPoint)
                 .Select(RecordingOverlayWindow.BuildElementInfo)
                 .ToArray();
             return (info, childInfos);

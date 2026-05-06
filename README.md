@@ -277,7 +277,8 @@ These operations require **both** `locator` and `locator2`.
 | `rightclick` | `locator` | Right-click the element | `null` |
 | `hover` | `locator` | Move the mouse pointer over the element | `null` |
 | `focus` | `locator` | Give keyboard focus to the element | `null` |
-| `type` | `locator`, `value` | Type text into the element | `null` |
+| `type` | `locator`, `value` | Type text into the element; SysDateTimePick32 date pickers use segmented date typing | `null` or typed date metadata |
+| `typedate` | `locator`, `value` | Type a date into a WinForms SysDateTimePick32 date picker as MM → DD → YYYY segments | `{ "typed": true, "strategy": "date-segments", ... }` |
 | `clear` | `locator` | Clear the text content of an Edit element | `null` |
 | `sendkeys` | `locator`, `value` | Send key sequences, e.g. `{ENTER}`, `{TAB}`, `{F5}` | `null` |
 | `scroll` | `locator` | Scroll the element into view | `null` |
@@ -288,6 +289,8 @@ These operations require **both** `locator` and `locator2`.
 | `typeandselect` | `locator`, `value` | Type a filter string and select the first matching dropdown item | `null` |
 | `clickgridcell` | `locator`, `index` (row), `columnIndex` (col) | Click a grid cell at the given row/column | `null` |
 | `doubleclickgridcell` | `locator`, `index` (row), `columnIndex` (col) | Double-click a grid cell at the given row/column | `null` |
+| `openheaderdropdown` | `locator` | Click the right edge of a grid header and list popup dropdown items | `{ "opened": true, "listFound": true/false, "items": [...] }` |
+| `selectheaderdropdownitem` | `locator`, `value` | Open a grid header dropdown and select a matching ListItem | `{ "selected": "...", "header": "..." }` |
 | `draganddrop` | `locator` (source), `locator2` (target) | Drag the source element and drop it onto the target element | `null` |
 
 #### draganddrop — request example
