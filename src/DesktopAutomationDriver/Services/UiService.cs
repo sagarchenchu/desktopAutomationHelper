@@ -1382,7 +1382,7 @@ public class UiService : IUiService
             throw new ArgumentException("Date value is required.");
 
         if (!WinFormsDateTimePickerHelper.TryParseDateParts(value, out var month, out var day, out var year))
-            throw new ArgumentException("Invalid date value. Use MM/DD/YYYY.");
+            throw new ArgumentException("Invalid date value. Use MM/DD/YYYY or MM-DD-YYYY.");
 
         BringElementWindowToForeground(element);
         Thread.Sleep(WindowActivationDelayMs);
