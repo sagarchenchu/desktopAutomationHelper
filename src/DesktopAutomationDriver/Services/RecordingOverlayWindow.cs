@@ -4045,99 +4045,118 @@ public sealed class RecordingOverlayWindow : Form
         AutomationElement headerElement,
         ElementInfo? headerInfo)
     {
-        const string label = "Open Header Dropdown";
+        var dropdownMenu = new ToolStripMenuItem("Open Header Dropdown");
+
+        AddHeaderDropdownRegionItem(dropdownMenu, "Lower Right", HeaderDropdownRegion.LowerRight, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(dropdownMenu, "Upper Right", HeaderDropdownRegion.UpperRight, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(dropdownMenu, "Center Right", HeaderDropdownRegion.CenterRight, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(dropdownMenu, "Lower Left", HeaderDropdownRegion.LowerLeft, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(dropdownMenu, "Upper Left", HeaderDropdownRegion.UpperLeft, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(dropdownMenu, "Center", HeaderDropdownRegion.Center, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(dropdownMenu, "Probe All", HeaderDropdownRegion.ProbeAll, headerElement, headerInfo);
+
+        menu.Items.Add(dropdownMenu);
+    }
+
+    private void AddHeaderDropdownRegionItem(
+        ToolStripMenuItem parentMenu,
+        string label,
+        HeaderDropdownRegion region,
+        AutomationElement headerElement,
+        ElementInfo? headerInfo)
+    {
         var item = new ToolStripMenuItem(label);
 
         item.Click += (_, _) =>
         {
-            RunAssistiveActionAfterMenuClose(label, () =>
+            RunAssistiveActionAfterMenuClose($"Open Header Dropdown / {label}", () =>
             {
-                if (!OpenHeaderDropdown(headerElement, headerInfo))
+                if (!OpenHeaderDropdownAssistive(headerElement, headerInfo, region))
                 {
                     _logger.LogWarning(
-                        "Assistive header dropdown action was not recorded because execution failed. Element={Element}",
-                        ElementInfo.GetLabel(headerInfo));
-                    return;
+                        "Assistive header dropdown action was not recorded because execution failed. Element={Element}, region={Region}",
+                        ElementInfo.GetLabel(headerInfo),
+                        region);
                 }
-
-                var headerName = SafeElementName(headerElement) ?? ElementInfo.GetLabel(headerInfo);
-                _service.AddAction(new RecordedAction
-                {
-                    ActionType = ActionType.Click,
-                    Mode = RecordingMode.Assistive,
-                    Element = headerInfo,
-                    Operation = "openheaderdropdown",
-                    Value = headerName,
-                    PointerContext = ClonePointerContext(_currentAssistivePointerContext),
-                    Description = $"Open dropdown for grid header {headerName}"
-                });
-
-                UpdateStatusAfterAction($"Opened header dropdown for {headerName}");
             });
         };
 
-        menu.Items.Add(item);
+        parentMenu.DropDownItems.Add(item);
     }
 
-    private bool OpenHeaderDropdown(AutomationElement headerElement, ElementInfo? info)
+    private bool OpenHeaderDropdownAssistive(
+        AutomationElement headerElement,
+        ElementInfo? headerInfo,
+        HeaderDropdownRegion region)
     {
         try
         {
             BringElementWindowToForeground(headerElement);
             Thread.Sleep(WindowActivationDelayMs);
 
-            var rect = headerElement.BoundingRectangle;
-
-            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
-            {
-                _statusLabel.Text = "Header dropdown failed: invalid bounds";
-                return false;
-            }
-
-            AutomationElement? popupList = null;
-            foreach (var clickPoint in GridHeaderDropdownHelper.GetDropdownClickPoints(rect))
-            {
-                _logger.LogInformation(
-                    "Opening grid header dropdown. header={Header}, bounds={Bounds}, clickPoint={ClickPoint}",
-                    SafeElementName(headerElement),
-                    rect,
-                    clickPoint);
-
-                if (!TryPhysicalClickPoint(clickPoint, "Open Header Dropdown"))
-                    continue;
-
-                Thread.Sleep(GridHeaderDropdownHelper.DropdownRetryDelayMs);
-
-                popupList = FindRecentlyOpenedListNearHeader(headerElement);
-                if (popupList != null)
-                    break;
-            }
+            var popupList = TryOpenHeaderDropdown(headerElement, region);
+            var headerName = SafeElementName(headerElement) ?? ElementInfo.GetLabel(headerInfo);
 
             if (popupList != null)
             {
-                _statusLabel.Text = $"Header dropdown opened: {SafeElementName(headerElement)}";
-                ShowHeaderDropdownItemsMenu(Cursor.Position, popupList, headerElement, info);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Click,
+                    Mode = RecordingMode.Assistive,
+                    Element = headerInfo ?? BuildElementInfo(headerElement),
+                    Operation = "openheaderdropdown",
+                    Value = region.ToString(),
+                    PointerContext = ClonePointerContext(_currentAssistivePointerContext),
+                    Description = $"Open header dropdown for {headerName} at {region}"
+                });
+
+                _statusLabel.Text = $"Header dropdown opened: {headerName}";
+                ShowHeaderDropdownItemsMenu(Cursor.Position, popupList, headerElement, headerInfo, region);
+                UpdateStatusAfterAction($"Opened header dropdown for {headerName} at {region}");
                 return true;
             }
 
-            Thread.Sleep(GridHeaderDropdownHelper.DropdownOpenDelayMs);
-            popupList = FindRecentlyOpenedListNearHeader(headerElement);
-            if (popupList != null)
-            {
-                _statusLabel.Text = $"Header dropdown opened: {SafeElementName(headerElement)}";
-                ShowHeaderDropdownItemsMenu(Cursor.Position, popupList, headerElement, info);
-                return true;
-            }
-
-            _statusLabel.Text = $"Header dropdown click sent: {SafeElementName(headerElement)}";
+            _statusLabel.Text = $"Header dropdown click sent: {headerName}";
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "OpenHeaderDropdown failed for {Header}", info?.Name);
+            _logger.LogError(ex, "OpenHeaderDropdown failed for {Header} at {Region}", headerInfo?.Name, region);
             _statusLabel.Text = "Header dropdown failed: " + ex.Message;
             return false;
         }
+    }
+
+    private AutomationElement? TryOpenHeaderDropdown(
+        AutomationElement headerElement,
+        HeaderDropdownRegion region)
+    {
+        var rect = headerElement.BoundingRectangle;
+
+        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+            throw new InvalidOperationException("Header has invalid bounding rectangle.");
+
+        foreach (var (candidateRegion, clickPoint) in GridHeaderDropdownHelper.GetCandidatePoints(rect, region))
+        {
+            _logger.LogInformation(
+                "Opening grid header dropdown. header={Header}, bounds={Bounds}, region={Region}, clickPoint={ClickPoint}",
+                SafeElementName(headerElement),
+                rect,
+                candidateRegion,
+                clickPoint);
+
+            if (!TryPhysicalClickPoint(clickPoint, "Open Header Dropdown"))
+                continue;
+
+            Thread.Sleep(GridHeaderDropdownHelper.DropdownRetryDelayMs);
+
+            var popupList = FindRecentlyOpenedListNearHeader(headerElement);
+            if (popupList != null)
+                return popupList;
+        }
+
+        Thread.Sleep(GridHeaderDropdownHelper.DropdownOpenDelayMs);
+        return FindRecentlyOpenedListNearHeader(headerElement);
     }
 
     private AutomationElement? FindRecentlyOpenedListNearHeader(AutomationElement headerElement)
@@ -4206,7 +4225,8 @@ public sealed class RecordingOverlayWindow : Form
         System.Drawing.Point pt,
         AutomationElement list,
         AutomationElement headerElement,
-        ElementInfo? headerInfo)
+        ElementInfo? headerInfo,
+        HeaderDropdownRegion region)
     {
         var menu = new NoActivateContextMenuStrip { ShowImageMargin = false };
         menu.Font = new Font("Segoe UI", 10f);
@@ -4254,10 +4274,10 @@ public sealed class RecordingOverlayWindow : Form
                         ActionType = ActionType.Click,
                         Mode = RecordingMode.Assistive,
                         Element = BuildElementInfo(capturedItem),
-                        TargetElement = headerInfo,
+                        TargetElement = headerInfo ?? BuildElementInfo(headerElement),
                         Operation = "selectheaderdropdownitem",
                         Value = capturedName,
-                        Description = $"Select '{capturedName}' from {headerInfo?.Name} header dropdown"
+                        Description = $"Select '{capturedName}' from {headerInfo?.Name} header dropdown opened at {region}"
                     });
 
                     UpdateStatusAfterAction($"Selected dropdown item {capturedName}");
