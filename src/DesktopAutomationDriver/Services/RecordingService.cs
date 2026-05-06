@@ -20,6 +20,8 @@ namespace DesktopAutomationDriver.Services;
 /// </summary>
 public sealed class RecordingService : IRecordingService, IDisposable
 {
+    // Keep assistive point lookups responsive by returning only the first visible target children;
+    // larger child sets are intentionally truncated for menu/status previews.
     private const int MaxChildrenAtPoint = 30;
 
     private readonly ILogger<RecordingService> _logger;

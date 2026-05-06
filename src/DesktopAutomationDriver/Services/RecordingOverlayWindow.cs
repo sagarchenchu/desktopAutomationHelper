@@ -680,6 +680,8 @@ public sealed class RecordingOverlayWindow : Form
             {
                 var pt = ms.pt;
 
+                // UIA point lookup is deferred out of the low-level hook to avoid blocking
+                // global mouse input; transient controls may disappear before BeginInvoke runs.
                 // Store state for drag detection. The click is recorded now; if the
                 // mouse moves beyond DragThresholdPixels before button-up, the click
                 // action will be replaced by a DragAndDrop action.
