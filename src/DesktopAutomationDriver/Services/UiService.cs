@@ -2747,7 +2747,8 @@ public class UiService : IUiService
                 SafeElementClassName(header));
         }
 
-        var list = OpenHeaderDropdownAndFindList(header, HeaderDropdownRegion.LowerRight);
+        var region = GridHeaderDropdownHelper.ParseRegion(req.ClickRegion);
+        var list = OpenHeaderDropdownAndFindList(header, region);
         if (list == null)
             throw new InvalidOperationException("Header dropdown list was not found after opening.");
 
