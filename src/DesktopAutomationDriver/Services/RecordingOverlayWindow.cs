@@ -3887,6 +3887,7 @@ public sealed class RecordingOverlayWindow : Form
                     ActionType = ActionType.Type,
                     Mode = RecordingMode.Assistive,
                     Element = info,
+                    Operation = "typedate",
                     Value = value,
                     PointerContext = ClonePointerContext(_currentAssistivePointerContext),
                     Description = description
