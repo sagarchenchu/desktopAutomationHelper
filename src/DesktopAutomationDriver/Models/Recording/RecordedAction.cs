@@ -60,4 +60,7 @@ public class RecordedAction
     /// Primarily populated for assistive and right-click-driven actions.
     /// </summary>
     public PointerContextInfo? PointerContext { get; set; }
+
+    /// <summary>Additional operation-specific values captured for playback/export.</summary>
+    public Dictionary<string, string>? Metadata { get; set; }
 }
