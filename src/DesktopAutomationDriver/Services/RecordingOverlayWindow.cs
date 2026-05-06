@@ -40,6 +40,7 @@ public sealed class RecordingOverlayWindow : Form
     private const byte VK_A = 0x41;
     private const byte VK_S = 0x53;
     private const byte VK_W = 0x57;
+    private const string SelectAllSendKeys = "^a";
 
     [StructLayout(LayoutKind.Sequential)]
     private struct KBDLLHOOKSTRUCT
@@ -1522,6 +1523,24 @@ public sealed class RecordingOverlayWindow : Form
                     elementInfo?.AutomationId,
                     capturedClickPoint);
             });
+
+        if (element != null && GridHeaderDropdownHelper.IsGridHeaderElement(element))
+        {
+            AddActionItem(menu, "Click Header / Sort", element, elementInfo, ActionType.Click,
+                () =>
+                {
+                    var rect = element.BoundingRectangle;
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        throw new InvalidOperationException("Header has invalid bounding rectangle.");
+
+                    var center = GetElementCenter(rect);
+                    if (!TryPhysicalClickPoint(center, "Click Header / Sort", capturedClickHwnd))
+                        throw new InvalidOperationException("Click Header / Sort failed.");
+                });
+
+            AddHeaderDropdownActionItem(menu, element, elementInfo);
+        }
+
         AddActionItem(menu, "Double Click", element, elementInfo, ActionType.DoubleClick,
             () =>
             {
@@ -1773,6 +1792,12 @@ public sealed class RecordingOverlayWindow : Form
         if (typeTarget != null && !isDisabledTypeTarget)
         {
             menu.Items.Add(new ToolStripSeparator());
+            if (WinFormsDateTimePickerHelper.IsDateTimePicker(typeTarget))
+            {
+                AddAssistiveDateTypeItem(menu, "Type Date…", typeTarget, typeTargetInfo, clearFirst: false);
+                AddAssistiveDateTypeItem(menu, "Clear + Type Date…", typeTarget, typeTargetInfo, clearFirst: true);
+            }
+
             AddAssistiveTypeItem(menu, "Type…", typeTarget, typeTargetInfo, clearFirst: false);
             AddAssistiveTypeItem(menu, "Clear + Type…", typeTarget, typeTargetInfo, clearFirst: true);
 
@@ -3882,6 +3907,54 @@ public sealed class RecordingOverlayWindow : Form
         menu.Items.Add(item);
     }
 
+    private void AddAssistiveDateTypeItem(
+        ContextMenuStrip menu,
+        string label,
+        AutomationElement element,
+        ElementInfo? info,
+        bool clearFirst)
+    {
+        var item = new ToolStripMenuItem(label);
+
+        item.Click += (_, _) =>
+        {
+            var value = ShowDatePrompt(info?.Name ?? info?.AutomationId ?? "date element");
+            if (value == null)
+                return;
+
+            RunAssistiveActionAfterMenuClose(label, () =>
+            {
+                if (!PerformAssistiveDateType(element, info, value, clearFirst))
+                {
+                    _logger.LogWarning(
+                        "Assistive date type action '{Label}' was not recorded because execution failed. Element={Element}",
+                        label,
+                        ElementInfo.GetLabel(info));
+                    return;
+                }
+
+                var elementLabel = ElementInfo.GetLabel(info);
+                var description = clearFirst
+                    ? $"Clear and type date {value} into {elementLabel}"
+                    : $"Type date {value} into {elementLabel}";
+
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Type,
+                    Mode = RecordingMode.Assistive,
+                    Element = info,
+                    Value = value,
+                    PointerContext = ClonePointerContext(_currentAssistivePointerContext),
+                    Description = description
+                });
+
+                UpdateStatusAfterAction($"{label.TrimEnd('…')} into [{info?.ControlType}] {elementLabel}");
+            });
+        };
+
+        menu.Items.Add(item);
+    }
+
     private bool PerformAssistiveType(
         AutomationElement element,
         ElementInfo? info,
@@ -3930,6 +4003,326 @@ public sealed class RecordingOverlayWindow : Form
             _statusLabel.Text = "Type failed: " + ex.Message;
             return false;
         }
+    }
+
+    private bool PerformAssistiveDateType(
+        AutomationElement element,
+        ElementInfo? info,
+        string value,
+        bool clearFirst)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            if (!WinFormsDateTimePickerHelper.TryParseDateParts(value, out var month, out var day, out var year))
+            {
+                _statusLabel.Text = "Invalid date. Use MM/DD/YYYY or MM-DD-YYYY.";
+                return false;
+            }
+
+            BringElementWindowToForeground(element);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            ClickDatePickerMonthSection(element);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerClickDelayMs);
+
+            if (clearFirst)
+            {
+                System.Windows.Forms.SendKeys.SendWait(SelectAllSendKeys);
+                Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
+            }
+
+            SendKey(VirtualKeyShort.HOME);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
+
+            Keyboard.Type(month);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
+
+            SendKey(VirtualKeyShort.RIGHT);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
+
+            Keyboard.Type(day);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
+
+            SendKey(VirtualKeyShort.RIGHT);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
+
+            Keyboard.Type(year);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
+
+            SendKey(VirtualKeyShort.RETURN);
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerCommitDelayMs);
+
+            _statusLabel.Text = $"Typed date {month}/{day}/{year}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Date typing failed for {Name}", info?.Name);
+            _statusLabel.Text = "Date typing failed: " + ex.Message;
+            return false;
+        }
+    }
+
+    private bool ClickDatePickerMonthSection(AutomationElement element)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                return false;
+
+            var point = WinFormsDateTimePickerHelper.GetMonthSectionPoint(rect);
+
+            TryPhysicalClickPoint(point, "Click Date Month Section");
+            Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerClickDelayMs);
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void SendKey(VirtualKeyShort key)
+    {
+        Keyboard.Press(key);
+    }
+
+    private void AddHeaderDropdownActionItem(
+        ContextMenuStrip menu,
+        AutomationElement headerElement,
+        ElementInfo? headerInfo)
+    {
+        const string label = "Open Header Dropdown";
+        var item = new ToolStripMenuItem(label);
+
+        item.Click += (_, _) =>
+        {
+            RunAssistiveActionAfterMenuClose(label, () =>
+            {
+                if (!OpenHeaderDropdown(headerElement, headerInfo))
+                {
+                    _logger.LogWarning(
+                        "Assistive header dropdown action was not recorded because execution failed. Element={Element}",
+                        ElementInfo.GetLabel(headerInfo));
+                    return;
+                }
+
+                var headerName = SafeElementName(headerElement) ?? ElementInfo.GetLabel(headerInfo);
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Click,
+                    Mode = RecordingMode.Assistive,
+                    Element = headerInfo,
+                    Operation = "openheaderdropdown",
+                    Value = headerName,
+                    PointerContext = ClonePointerContext(_currentAssistivePointerContext),
+                    Description = $"Open dropdown for grid header {headerName}"
+                });
+
+                UpdateStatusAfterAction($"Opened header dropdown for {headerName}");
+            });
+        };
+
+        menu.Items.Add(item);
+    }
+
+    private bool OpenHeaderDropdown(AutomationElement headerElement, ElementInfo? info)
+    {
+        try
+        {
+            BringElementWindowToForeground(headerElement);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            var rect = headerElement.BoundingRectangle;
+
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+            {
+                _statusLabel.Text = "Header dropdown failed: invalid bounds";
+                return false;
+            }
+
+            AutomationElement? popupList = null;
+            foreach (var clickPoint in GridHeaderDropdownHelper.GetDropdownClickPoints(rect))
+            {
+                _logger.LogInformation(
+                    "Opening grid header dropdown. header={Header}, bounds={Bounds}, clickPoint={ClickPoint}",
+                    SafeElementName(headerElement),
+                    rect,
+                    clickPoint);
+
+                if (!TryPhysicalClickPoint(clickPoint, "Open Header Dropdown"))
+                    continue;
+
+                Thread.Sleep(GridHeaderDropdownHelper.DropdownRetryDelayMs);
+
+                popupList = FindRecentlyOpenedListNearHeader(headerElement);
+                if (popupList != null)
+                    break;
+            }
+
+            if (popupList != null)
+            {
+                _statusLabel.Text = $"Header dropdown opened: {SafeElementName(headerElement)}";
+                ShowHeaderDropdownItemsMenu(Cursor.Position, popupList, headerElement, info);
+                return true;
+            }
+
+            Thread.Sleep(GridHeaderDropdownHelper.DropdownOpenDelayMs);
+            popupList = FindRecentlyOpenedListNearHeader(headerElement);
+            if (popupList != null)
+            {
+                _statusLabel.Text = $"Header dropdown opened: {SafeElementName(headerElement)}";
+                ShowHeaderDropdownItemsMenu(Cursor.Position, popupList, headerElement, info);
+                return true;
+            }
+
+            _statusLabel.Text = $"Header dropdown click sent: {SafeElementName(headerElement)}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "OpenHeaderDropdown failed for {Header}", info?.Name);
+            _statusLabel.Text = "Header dropdown failed: " + ex.Message;
+            return false;
+        }
+    }
+
+    private AutomationElement? FindRecentlyOpenedListNearHeader(AutomationElement headerElement)
+    {
+        try
+        {
+            if (_automation == null)
+                return null;
+
+            var headerRect = headerElement.BoundingRectangle;
+            var desktop = _automation.GetDesktop();
+            var cf = _automation.ConditionFactory;
+
+            var lists = desktop.FindAllDescendants(cf.ByControlType(ControlType.List));
+
+            foreach (var list in lists)
+            {
+                try
+                {
+                    var rect = list.BoundingRectangle;
+
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        continue;
+
+                    if (GridHeaderDropdownHelper.IsListNearHeader(rect, headerRect))
+                    {
+                        _logger.LogInformation(
+                            "Found header dropdown List near header. list={List}, bounds={Bounds}",
+                            SafeElementName(list),
+                            rect);
+
+                        return list;
+                    }
+                }
+                catch
+                {
+                    // Ignore unstable popup elements.
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindRecentlyOpenedListNearHeader failed");
+        }
+
+        return null;
+    }
+
+    private List<AutomationElement> GetListItems(AutomationElement list)
+    {
+        try
+        {
+            var cf = _automation!.ConditionFactory;
+
+            return list
+                .FindAllDescendants(cf.ByControlType(ControlType.ListItem))
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private void ShowHeaderDropdownItemsMenu(
+        System.Drawing.Point pt,
+        AutomationElement list,
+        AutomationElement headerElement,
+        ElementInfo? headerInfo)
+    {
+        var menu = new NoActivateContextMenuStrip { ShowImageMargin = false };
+        menu.Font = new Font("Segoe UI", 10f);
+
+        menu.Items.Add(new ToolStripMenuItem(
+            $"Header Dropdown: {SafeElementName(headerElement)}")
+        {
+            Enabled = false,
+            ForeColor = Color.DarkSlateGray
+        });
+
+        menu.Items.Add(new ToolStripSeparator());
+
+        var items = GetListItems(list);
+        if (items.Count == 0)
+        {
+            menu.Items.Add(new ToolStripMenuItem("(no dropdown items detected)") { Enabled = false });
+        }
+
+        foreach (var listItem in items)
+        {
+            var itemName = SafeElementName(listItem);
+            if (string.IsNullOrWhiteSpace(itemName))
+                itemName = SafeElementAutomationId(listItem);
+            if (string.IsNullOrWhiteSpace(itemName))
+                itemName = "(unnamed item)";
+
+            var capturedItem = listItem;
+            var capturedName = itemName;
+
+            var mi = new ToolStripMenuItem(capturedName);
+            mi.Click += (_, _) =>
+            {
+                RunAssistiveActionAfterMenuClose($"Select dropdown item {capturedName}", () =>
+                {
+                    var rect = capturedItem.BoundingRectangle;
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        throw new InvalidOperationException("Dropdown item has invalid bounding rectangle.");
+
+                    if (!TryPhysicalClickPoint(GetElementCenter(rect), $"Select dropdown item {capturedName}"))
+                        throw new InvalidOperationException($"Failed to click dropdown item '{capturedName}'.");
+
+                    _service.AddAction(new RecordedAction
+                    {
+                        ActionType = ActionType.Click,
+                        Mode = RecordingMode.Assistive,
+                        Element = BuildElementInfo(capturedItem),
+                        TargetElement = headerInfo,
+                        Operation = "selectheaderdropdownitem",
+                        Value = capturedName,
+                        Description = $"Select '{capturedName}' from {headerInfo?.Name} header dropdown"
+                    });
+
+                    UpdateStatusAfterAction($"Selected dropdown item {capturedName}");
+                });
+            };
+
+            menu.Items.Add(mi);
+        }
+
+        AddCloseItem(menu);
+        EnsureOverlayVisible();
+        menu.Show(pt);
     }
 
     private void AddActionItem(
@@ -4679,6 +5072,70 @@ public sealed class RecordingOverlayWindow : Form
             Text = "Cancel",
             DialogResult = DialogResult.Cancel,
             Left = 278,
+            Top = 68,
+            Width = 80
+        };
+
+        form.AcceptButton = okBtn;
+        form.CancelButton = cancelBtn;
+        form.Controls.AddRange([label, textBox, okBtn, cancelBtn]);
+
+        if (form.ShowDialog() == DialogResult.OK)
+            result = textBox.Text;
+
+        return result;
+    }
+
+    /// <summary>
+    /// Shows a small modal input dialog prompting the user to enter a date value
+    /// for a segmented date picker. Returns the entered text, or null if cancelled.
+    /// </summary>
+    private static string? ShowDatePrompt(string elementLabel)
+    {
+        string? result = null;
+
+        using var form = new Form
+        {
+            Text = "Type date into element",
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterScreen,
+            Width = 400,
+            Height = 145,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            TopMost = true
+        };
+
+        var label = new WinLabel
+        {
+            Text = $"Date to type into \"{elementLabel}\" (MM/DD/YYYY):",
+            Left = 12,
+            Top = 12,
+            Width = 370,
+            AutoSize = true
+        };
+
+        var textBox = new System.Windows.Forms.TextBox
+        {
+            Left = 12,
+            Top = 35,
+            Width = 360
+        };
+
+        var okBtn = new System.Windows.Forms.Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Left = 206,
+            Top = 68,
+            Width = 80
+        };
+
+        var cancelBtn = new System.Windows.Forms.Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Left = 292,
             Top = 68,
             Width = 80
         };
