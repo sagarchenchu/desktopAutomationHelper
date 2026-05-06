@@ -32,6 +32,12 @@ public class UiRequest
     public string? Value { get; set; }
 
     /// <summary>
+    /// Optional header dropdown click region for header dropdown operations.
+    /// Defaults to LowerRight when omitted.
+    /// </summary>
+    public string? ClickRegion { get; set; }
+
+    /// <summary>
     /// Zero-based index used by the "select" operation to pick a ComboBox item by position,
     /// and by "clickGridCell" to specify the row index.
     /// </summary>

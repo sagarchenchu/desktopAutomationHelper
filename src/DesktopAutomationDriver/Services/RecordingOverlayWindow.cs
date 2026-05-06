@@ -4221,6 +4221,197 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
+    private bool ActivateDropdownListItem(AutomationElement item, string itemName)
+    {
+        try
+        {
+            if (TryPhysicalClickPoint(GetElementCenter(item.BoundingRectangle), $"Select dropdown item {itemName}"))
+            {
+                Thread.Sleep(150);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item physical click failed for {Item}", itemName);
+        }
+
+        try
+        {
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                item.Patterns.SelectionItem.Pattern.Select();
+                Thread.Sleep(150);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item SelectionItem.Select failed for {Item}", itemName);
+        }
+
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                Thread.Sleep(150);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item Invoke failed for {Item}", itemName);
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(75);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(150);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item Focus+Enter failed for {Item}", itemName);
+        }
+
+        try
+        {
+            item.Click();
+            Thread.Sleep(150);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item FlaUI Click failed for {Item}", itemName);
+        }
+
+        return false;
+    }
+
+    private AutomationElement? FindDropdownListItemByName(AutomationElement list, string itemName)
+    {
+        try
+        {
+            var cf = _automation!.ConditionFactory;
+
+            var items = list.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
+
+            return items.FirstOrDefault(x =>
+                string.Equals(
+                    NormalizeMenuText(SafeElementName(x)),
+                    NormalizeMenuText(itemName),
+                    StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindDropdownListItemByName failed for {Item}", itemName);
+            return null;
+        }
+    }
+
+    private static string NormalizeMenuText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var normalized = value
+            .Replace("&", string.Empty)
+            .Replace("_", string.Empty)
+            .Replace("\u00A0", " ")
+            .Trim();
+
+        while (normalized.Contains("  "))
+            normalized = normalized.Replace("  ", " ");
+
+        return normalized;
+    }
+
+    private bool SelectHeaderDropdownItemAssistive(
+        AutomationElement headerElement,
+        ElementInfo? headerInfo,
+        HeaderDropdownRegion region,
+        string itemName)
+    {
+        try
+        {
+            BringElementWindowToForeground(headerElement);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            var list = TryOpenHeaderDropdown(headerElement, region);
+
+            if (list == null)
+            {
+                _logger.LogWarning(
+                    "Could not reopen header dropdown for item selection. header={Header}, region={Region}, item={Item}",
+                    SafeElementName(headerElement),
+                    region,
+                    itemName);
+
+                return false;
+            }
+
+            var item = FindDropdownListItemByName(list, itemName);
+
+            if (item == null)
+            {
+                var available = GetListItems(list)
+                    .Select(SafeElementName)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToList();
+
+                _logger.LogWarning(
+                    "Dropdown item not found after reopening. header={Header}, region={Region}, requested={Item}, available={Available}",
+                    SafeElementName(headerElement),
+                    region,
+                    itemName,
+                    available);
+
+                return false;
+            }
+
+            if (!ActivateDropdownListItem(item, itemName))
+            {
+                _logger.LogWarning(
+                    "Dropdown item activation failed. header={Header}, region={Region}, item={Item}",
+                    SafeElementName(headerElement),
+                    region,
+                    itemName);
+
+                return false;
+            }
+
+            _service.AddAction(new RecordedAction
+            {
+                ActionType = ActionType.Click,
+                Mode = RecordingMode.Assistive,
+                Element = BuildElementInfo(item),
+                TargetElement = headerInfo ?? BuildElementInfo(headerElement),
+                Operation = "selectheaderdropdownitem",
+                Value = itemName,
+                PointerContext = ClonePointerContext(_currentAssistivePointerContext),
+                Description = $"Select '{itemName}' from {headerInfo?.Name ?? SafeElementName(headerElement)} header dropdown opened at {region}"
+            });
+
+            UpdateStatusAfterAction($"Selected dropdown item {itemName}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "SelectHeaderDropdownItemAssistive failed. header={Header}, region={Region}, item={Item}",
+                headerInfo?.Name ?? SafeElementName(headerElement),
+                region,
+                itemName);
+
+            _statusLabel.Text = "Dropdown item select failed: " + ex.Message;
+            return false;
+        }
+    }
+
     private void ShowHeaderDropdownItemsMenu(
         System.Drawing.Point pt,
         AutomationElement list,
@@ -4254,7 +4445,6 @@ public sealed class RecordingOverlayWindow : Form
             if (string.IsNullOrWhiteSpace(itemName))
                 itemName = "(unnamed item)";
 
-            var capturedItem = listItem;
             var capturedName = itemName;
 
             var mi = new ToolStripMenuItem(capturedName);
@@ -4262,25 +4452,17 @@ public sealed class RecordingOverlayWindow : Form
             {
                 RunAssistiveActionAfterMenuClose($"Select dropdown item {capturedName}", () =>
                 {
-                    var rect = capturedItem.BoundingRectangle;
-                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
-                        throw new InvalidOperationException("Dropdown item has invalid bounding rectangle.");
+                    var success = SelectHeaderDropdownItemAssistive(
+                        headerElement,
+                        headerInfo,
+                        region,
+                        capturedName);
 
-                    if (!TryPhysicalClickPoint(GetElementCenter(rect), $"Select dropdown item {capturedName}"))
-                        throw new InvalidOperationException($"Failed to click dropdown item '{capturedName}'.");
-
-                    _service.AddAction(new RecordedAction
+                    if (!success)
                     {
-                        ActionType = ActionType.Click,
-                        Mode = RecordingMode.Assistive,
-                        Element = BuildElementInfo(capturedItem),
-                        TargetElement = headerInfo ?? BuildElementInfo(headerElement),
-                        Operation = "selectheaderdropdownitem",
-                        Value = capturedName,
-                        Description = $"Select '{capturedName}' from {headerInfo?.Name} header dropdown opened at {region}"
-                    });
-
-                    UpdateStatusAfterAction($"Selected dropdown item {capturedName}");
+                        throw new InvalidOperationException(
+                            $"Failed to select header dropdown item '{capturedName}'.");
+                    }
                 });
             };
 
