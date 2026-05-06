@@ -173,6 +173,8 @@ public class UiService : IUiService
             "typeandselect"    => TypeAndSelect(request),
             "clickgridcell"    => ClickGridCell(request),
             "doubleclickgridcell" => DoubleClickGridCell(request),
+            "openheaderdropdown" => OpenHeaderDropdown(request),
+            "selectheaderdropdownitem" => SelectHeaderDropdownItem(request),
             "draganddrop"     => DragAndDrop(request),
 
             // ----- Alert / Dialog Handling -----
@@ -2572,6 +2574,73 @@ public class UiService : IUiService
         return null;
     }
 
+    private object? OpenHeaderDropdown(UiRequest req)
+    {
+        var header = FindWithRetry(req);
+
+        if (!GridHeaderDropdownHelper.IsGridHeaderElement(header))
+            throw new InvalidOperationException("openheaderdropdown requires Header/HeaderItem element.");
+
+        var list = OpenHeaderDropdownAndFindList(header);
+
+        if (list == null)
+        {
+            return new
+            {
+                opened = true,
+                listFound = false,
+                header = SafeElementName(header)
+            };
+        }
+
+        var items = GetListItems(list)
+            .Select(x => SafeElementName(x))
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToList();
+
+        return new
+        {
+            opened = true,
+            listFound = true,
+            header = SafeElementName(header),
+            items
+        };
+    }
+
+    private object? SelectHeaderDropdownItem(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("value is required for selectheaderdropdownitem.");
+
+        var header = FindWithRetry(req);
+
+        if (!GridHeaderDropdownHelper.IsGridHeaderElement(header))
+            throw new InvalidOperationException("selectheaderdropdownitem requires Header/HeaderItem element.");
+
+        var list = OpenHeaderDropdownAndFindList(header);
+        if (list == null)
+            throw new InvalidOperationException("Header dropdown list was not found after opening.");
+
+        var item = GetListItems(list)
+            .FirstOrDefault(x =>
+                string.Equals(
+                    NormalizeMenuText(SafeElementName(x)),
+                    NormalizeMenuText(req.Value),
+                    StringComparison.OrdinalIgnoreCase));
+
+        if (item == null)
+            throw new InvalidOperationException($"Dropdown item '{req.Value}' was not found.");
+
+        if (!TryInstantPhysicalClick(item, $"SelectHeaderDropdownItem {req.Value}"))
+            throw new InvalidOperationException($"Failed to click dropdown item '{req.Value}'.");
+
+        return new
+        {
+            selected = req.Value,
+            header = SafeElementName(header)
+        };
+    }
+
     /// <summary>
     /// Locates the cell at <c>req.Index</c> (row) / <c>req.ColumnIndex</c> (column) and
     /// performs either a single click or a double-click depending on <paramref name="doubleClick"/>.
@@ -3933,6 +4002,97 @@ public class UiService : IUiService
         {
             _logger.LogWarning(ex, "Click Date Month Section failed");
             return false;
+        }
+    }
+
+    private AutomationElement? OpenHeaderDropdownAndFindList(AutomationElement header)
+    {
+        BringElementWindowToForeground(header);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        var rect = header.BoundingRectangle;
+
+        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+            throw new InvalidOperationException("Header has invalid bounding rectangle.");
+
+        AutomationElement? list = null;
+        foreach (var point in GridHeaderDropdownHelper.GetDropdownClickPoints(rect))
+        {
+            _logger.LogInformation(
+                "Opening grid header dropdown. header={Header}, bounds={Bounds}, clickPoint={ClickPoint}",
+                SafeElementName(header),
+                rect,
+                point);
+
+            SendInstantLeftClick(point, "OpenHeaderDropdown");
+            Thread.Sleep(GridHeaderDropdownHelper.DropdownRetryDelayMs);
+
+            list = FindRecentlyOpenedListNearHeader(header);
+            if (list != null)
+                return list;
+        }
+
+        Thread.Sleep(GridHeaderDropdownHelper.DropdownOpenDelayMs);
+        return FindRecentlyOpenedListNearHeader(header);
+    }
+
+    private AutomationElement? FindRecentlyOpenedListNearHeader(AutomationElement header)
+    {
+        try
+        {
+            var session = RequireSession();
+            var headerRect = header.BoundingRectangle;
+            var desktop = session.Automation.GetDesktop();
+            var cf = session.Automation.ConditionFactory;
+
+            var lists = desktop.FindAllDescendants(cf.ByControlType(ControlType.List));
+
+            foreach (var list in lists)
+            {
+                try
+                {
+                    var rect = list.BoundingRectangle;
+
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        continue;
+
+                    if (GridHeaderDropdownHelper.IsListNearHeader(rect, headerRect))
+                    {
+                        _logger.LogInformation(
+                            "Found header dropdown List near header. list={List}, bounds={Bounds}",
+                            SafeElementName(list),
+                            rect);
+
+                        return list;
+                    }
+                }
+                catch
+                {
+                    // Ignore unstable popup elements.
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindRecentlyOpenedListNearHeader failed");
+        }
+
+        return null;
+    }
+
+    private List<AutomationElement> GetListItems(AutomationElement list)
+    {
+        try
+        {
+            var cf = RequireSession().Automation.ConditionFactory;
+
+            return list
+                .FindAllDescendants(cf.ByControlType(ControlType.ListItem))
+                .ToList();
+        }
+        catch
+        {
+            return [];
         }
     }
 
