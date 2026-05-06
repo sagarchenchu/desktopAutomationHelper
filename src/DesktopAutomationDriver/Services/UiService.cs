@@ -2692,6 +2692,7 @@ public class UiService : IUiService
     private object? OpenHeaderDropdown(UiRequest req)
     {
         var header = FindWithRetry(req);
+        var region = GridHeaderDropdownHelper.ParseRegion(req.Value);
 
         if (!GridHeaderDropdownHelper.IsGridHeaderElement(header))
         {
@@ -2702,7 +2703,7 @@ public class UiService : IUiService
                 SafeElementClassName(header));
         }
 
-        var list = OpenHeaderDropdownAndFindList(header);
+        var list = OpenHeaderDropdownAndFindList(header, region);
 
         if (list == null)
         {
@@ -2710,7 +2711,8 @@ public class UiService : IUiService
             {
                 opened = true,
                 listFound = false,
-                header = SafeElementName(header)
+                header = SafeElementName(header),
+                region = region.ToString()
             };
         }
 
@@ -2724,6 +2726,7 @@ public class UiService : IUiService
             opened = true,
             listFound = true,
             header = SafeElementName(header),
+            region = region.ToString(),
             items
         };
     }
@@ -2744,7 +2747,7 @@ public class UiService : IUiService
                 SafeElementClassName(header));
         }
 
-        var list = OpenHeaderDropdownAndFindList(header);
+        var list = OpenHeaderDropdownAndFindList(header, HeaderDropdownRegion.LowerRight);
         if (list == null)
             throw new InvalidOperationException("Header dropdown list was not found after opening.");
 
@@ -4185,7 +4188,9 @@ public class UiService : IUiService
         }
     }
 
-    private AutomationElement? OpenHeaderDropdownAndFindList(AutomationElement header)
+    private AutomationElement? OpenHeaderDropdownAndFindList(
+        AutomationElement header,
+        HeaderDropdownRegion region)
     {
         BringElementWindowToForeground(header);
         Thread.Sleep(WindowActivationDelayMs);
@@ -4196,12 +4201,13 @@ public class UiService : IUiService
             throw new InvalidOperationException("Header has invalid bounding rectangle.");
 
         AutomationElement? list = null;
-        foreach (var point in GridHeaderDropdownHelper.GetDropdownClickPoints(rect))
+        foreach (var (candidateRegion, point) in GridHeaderDropdownHelper.GetCandidatePoints(rect, region))
         {
             _logger.LogInformation(
-                "Opening grid header dropdown. header={Header}, bounds={Bounds}, clickPoint={ClickPoint}",
+                "Opening grid header dropdown. header={Header}, bounds={Bounds}, region={Region}, clickPoint={ClickPoint}",
                 SafeElementName(header),
                 rect,
+                candidateRegion,
                 point);
 
             SendInstantLeftClick(point, "OpenHeaderDropdown");
