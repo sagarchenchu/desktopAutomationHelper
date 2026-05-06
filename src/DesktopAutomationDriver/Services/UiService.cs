@@ -39,11 +39,18 @@ public class UiService : IUiService
     private const int MenuExpandDelayMs = 250;
     private const int MenuActionDelayMs = 150;
     private const int MenuFocusDelayMs = 75;
+    private const int DefaultListResponseLimit = 500;
+    private const int MaxListResponseLimit = 5000;
     private const string DesktopRootName = "Desktop";
     private const string DesktopRootNameWithSuffix = "Desktop1";
     private const string InvalidMenuRootMessage =
         "menupath search root resolved to Desktop. This is invalid. " +
         "Pass a MenuBar locator or switch to the application window first.";
+    private static readonly TimeSpan FindWindowCacheDuration = TimeSpan.FromSeconds(5);
+    private static readonly object FindWindowCacheLock = new();
+    private static readonly Dictionary<string, CachedWindowMatch> FindWindowCache = new();
+
+    private sealed record CachedWindowMatch(AutomationElement Element, DateTime ExpiresAt);
 
     // Named keys for the "sendkeys" operation (AutoIt / keyboard-shorthand format).
     private static readonly Dictionary<string, VirtualKeyShort> NamedKeys =
@@ -163,6 +170,7 @@ public class UiService : IUiService
             "hover"            => Hover(request),
             "focus"            => Focus(request),
             "type"             => TypeText(request),
+            "typedate"         => TypeDate(request),
             "clear"            => Clear(request),
             "sendkeys"         => SendKeys(request),
             "scroll"           => Scroll(request),
@@ -275,17 +283,28 @@ public class UiService : IUiService
     private static AutomationElement? FindWindowByTitle(
         AutomationElement root, ConditionFactory cf, string title)
     {
+        var cacheKey = BuildFindWindowCacheKey("root", root, title);
+        if (TryGetCachedWindow(cacheKey, title, out var cached))
+            return cached;
+
+        AutomationElement? Cache(AutomationElement? match)
+        {
+            if (match != null)
+                StoreCachedWindow(cacheKey, match);
+            return match;
+        }
+
         var windowCondition = cf.ByControlType(ControlType.Window);
 
         // Fast path: top-level windows are direct children of the Desktop.
         var topLevel = root.FindAllChildren(windowCondition)
             .FirstOrDefault(w => TitleContains(w, title));
-        if (topLevel != null) return topLevel;
+        if (topLevel != null) return Cache(topLevel);
 
         // Fallback: owned/child windows may be nested beneath their parent in the UIA tree
         // (e.g. a dialog opened from a child window).
-        return root.FindAllDescendants(windowCondition)
-            .FirstOrDefault(w => TitleContains(w, title));
+        return Cache(root.FindAllDescendants(windowCondition)
+            .FirstOrDefault(w => TitleContains(w, title)));
     }
 
     /// <summary>
@@ -411,11 +430,22 @@ public class UiService : IUiService
     /// </summary>
     private static AutomationElement? FindWindowByTitle(AutomationSession session, string titleFragment)
     {
+        var cacheKey = BuildFindWindowCacheKey(session, titleFragment);
+        if (TryGetCachedWindow(cacheKey, titleFragment, out var cached))
+            return cached;
+
+        AutomationElement? Cache(AutomationElement? match)
+        {
+            if (match != null)
+                StoreCachedWindow(cacheKey, match);
+            return match;
+        }
+
         var cf = session.Automation.ConditionFactory;
         var windowCondition = cf.ByControlType(ControlType.Window);
 
         if (session.ActiveWindow != null && TitleContains(session.ActiveWindow, titleFragment))
-            return session.ActiveWindow;
+            return Cache(session.ActiveWindow);
 
         if (session.ActiveWindow != null)
         {
@@ -425,7 +455,7 @@ public class UiService : IUiService
                     .FindAllDescendants(windowCondition)
                     .FirstOrDefault(w => TitleContains(w, titleFragment));
                 if (activeDescendant != null)
-                    return activeDescendant;
+                    return Cache(activeDescendant);
             }
             catch
             {
@@ -439,13 +469,13 @@ public class UiService : IUiService
             if (mainWindow != null)
             {
                 if (TitleContains(mainWindow, titleFragment))
-                    return mainWindow;
+                    return Cache(mainWindow);
 
                 var mainDescendant = mainWindow
                     .FindAllDescendants(windowCondition)
                     .FirstOrDefault(w => TitleContains(w, titleFragment));
                 if (mainDescendant != null)
-                    return mainDescendant;
+                    return Cache(mainDescendant);
             }
         }
         catch
@@ -458,7 +488,7 @@ public class UiService : IUiService
             var topLevel = session.Application.GetAllTopLevelWindows(session.Automation)
                 .FirstOrDefault(w => TitleContains(w, titleFragment));
             if (topLevel != null)
-                return topLevel;
+                return Cache(topLevel);
         }
         catch
         {
@@ -473,7 +503,7 @@ public class UiService : IUiService
                     .FindAllDescendants(windowCondition)
                     .FirstOrDefault(w => TitleContains(w, titleFragment));
                 if (nested != null)
-                    return nested;
+                    return Cache(nested);
             }
         }
         catch
@@ -489,7 +519,7 @@ public class UiService : IUiService
                 .FindAllChildren(windowCondition)
                 .FirstOrDefault(w => TitleContains(w, titleFragment));
             if (desktopChild != null)
-                return desktopChild;
+                return Cache(desktopChild);
         }
         catch
         {
@@ -498,11 +528,11 @@ public class UiService : IUiService
 
         try
         {
-            return desktop == null
+            return Cache(desktop == null
                 ? null
                 : desktop
                 .FindAllDescendants(windowCondition)
-                .FirstOrDefault(w => TitleContains(w, titleFragment));
+                .FirstOrDefault(w => TitleContains(w, titleFragment)));
         }
         catch
         {
@@ -674,6 +704,7 @@ public class UiService : IUiService
         var session = RequireSession();
         var root = GetWindowRoot(session);
         var cf = session.Automation.ConditionFactory;
+        var limit = GetListResponseLimit(req);
 
         AutomationElement[] elements;
         if (!string.IsNullOrWhiteSpace(req.Value))
@@ -686,7 +717,8 @@ public class UiService : IUiService
             elements = root.FindAllDescendants();
         }
 
-        return elements.Select(e => new
+        var total = elements.Length;
+        var limited = elements.Take(limit).Select(e => new
         {
             name = SafeElementName(e),
             automationId = SafeElementAutomationId(e),
@@ -695,6 +727,15 @@ public class UiService : IUiService
             enabled = SafeIsEnabled(e),
             visible = SafeIsOffscreen(e) is false
         }).ToList();
+
+        return new
+        {
+            elements = limited,
+            total,
+            returned = limited.Count,
+            limit,
+            truncated = total > limit
+        };
     }
 
     private object? ListWindows(UiRequest req)
@@ -720,23 +761,26 @@ public class UiService : IUiService
             // Ignore unstable application window enumerations.
         }
 
-        try
+        if (req.IncludeDesktopDescendants == true)
         {
-            var desktopDescendants = session.Automation.GetDesktop()
-                .FindAllDescendants(cf.ByControlType(ControlType.Window));
-
-            foreach (var window in desktopDescendants)
+            try
             {
-                var hwnd = SafeWindowHandle(window).ToInt64();
-                if (hwnd != 0 && seenHandles.Add(hwnd))
+                var desktopDescendants = session.Automation.GetDesktop()
+                    .FindAllDescendants(cf.ByControlType(ControlType.Window));
+
+                foreach (var window in desktopDescendants)
                 {
-                    windows.Add(window);
+                    var hwnd = SafeWindowHandle(window).ToInt64();
+                    if (hwnd != 0 && seenHandles.Add(hwnd))
+                    {
+                        windows.Add(window);
+                    }
                 }
             }
-        }
-        catch
-        {
-            // Ignore unstable desktop window enumerations.
+            catch
+            {
+                // Ignore unstable desktop window enumerations.
+            }
         }
 
         IEnumerable<AutomationElement> filtered = windows;
@@ -752,6 +796,14 @@ public class UiService : IUiService
             hwnd = SafeWindowHandle(w).ToInt64(),
             isOffscreen = SafeIsOffscreen(w)
         }).ToList();
+    }
+
+    private static int GetListResponseLimit(UiRequest req)
+    {
+        if (req.Limit is not { } requested || requested <= 0)
+            return DefaultListResponseLimit;
+
+        return Math.Min(requested, MaxListResponseLimit);
     }
 
     // =========================================================================
@@ -1240,9 +1292,14 @@ public class UiService : IUiService
         var session = RequireSession();
         var root = GetSearchRootForMenuOperation(req, session);
         var cf = session.Automation.ConditionFactory;
+        var limit = GetListResponseLimit(req);
 
-        var menuItems = root
+        var allMenuItems = root
             .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+            .ToList();
+
+        var menuItems = allMenuItems
+            .Take(limit)
             .Select(e =>
             {
                 try
@@ -1266,6 +1323,7 @@ public class UiService : IUiService
             .Where(x => x != null)
             .ToList();
 
+        var total = allMenuItems.Count;
         return new
         {
             root = new
@@ -1275,7 +1333,11 @@ public class UiService : IUiService
                 controlType = SafeElementControlType(root),
                 hwnd = SafeWindowHandle(root).ToInt64()
             },
-            menuItems
+            menuItems,
+            total,
+            returned = menuItems.Count,
+            limit,
+            truncated = total > limit
         };
     }
 
@@ -1361,7 +1423,7 @@ public class UiService : IUiService
 
         var element = FindWithRetry(req);
         if (WinFormsDateTimePickerHelper.IsDateTimePicker(element))
-            return TypeDatePicker(element, req.Value);
+            return TypeDate(element, req.Value);
 
         BringElementWindowToForeground(element);
 
@@ -1376,7 +1438,26 @@ public class UiService : IUiService
         return null;
     }
 
-    private object? TypeDatePicker(AutomationElement element, string? value)
+    private object? TypeDate(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("Date value is required.");
+
+        var element = FindWithRetry(req);
+
+        if (!WinFormsDateTimePickerHelper.IsDateTimePicker(element))
+        {
+            _logger.LogWarning(
+                "typedate called on non-DateTimePicker. name={Name}, className={ClassName}, controlType={ControlType}",
+                SafeElementName(element),
+                SafeElementClassName(element),
+                element.ControlType);
+        }
+
+        return TypeDate(element, req.Value);
+    }
+
+    private object? TypeDate(AutomationElement element, string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
             throw new ArgumentException("Date value is required.");
@@ -1410,7 +1491,18 @@ public class UiService : IUiService
 
         Keyboard.Press(VirtualKeyShort.RETURN);
 
-        return null;
+        return new
+        {
+            typed = true,
+            strategy = "date-segments",
+            value = $"{month}/{day}/{year}",
+            element = new
+            {
+                name = SafeElementName(element),
+                className = SafeElementClassName(element),
+                controlType = element.ControlType.ToString()
+            }
+        };
     }
 
     private object? Clear(UiRequest req)
@@ -1751,38 +1843,53 @@ public class UiService : IUiService
                 : allMenuItems;
 
             _logger.LogInformation(
-                "FindLogicalMenuPath: path={Path}, rootName={RootName}, rootControlType={RootControlType}, totalMenuItems={Total}, topLevelCount={TopLevelCount}, topLevelItems={TopLevelItems}",
+                "FindLogicalMenuPath: path={Path}, rootName={RootName}, rootControlType={RootControlType}, totalMenuItems={Total}, topLevelCount={TopLevelCount}",
                 string.Join(" > ", parts),
                 SafeElementName(root),
                 root.ControlType,
                 allMenuItems.Count,
-                topLevelItems.Count,
-                topLevelItems.Select(x => new
-                {
-                    name = SafeElementName(x),
-                    automationId = SafeElementAutomationId(x),
-                    nameNorm = NormalizeMenuText(SafeElementName(x)),
-                    expectedNorm = NormalizeMenuText(parts[0]),
-                    isMatch = MenuTextMatches(x, parts[0]),
-                    childCount = SafeMenuItemChildCount(x, cf)
-                }).ToList());
+                topLevelItems.Count);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "FindLogicalMenuPath top-level details: path={Path}, topLevelItems={TopLevelItems}",
+                    string.Join(" > ", parts),
+                    topLevelItems.Select(x => new
+                    {
+                        name = SafeElementName(x),
+                        automationId = SafeElementAutomationId(x),
+                        nameNorm = NormalizeMenuText(SafeElementName(x)),
+                        expectedNorm = NormalizeMenuText(parts[0]),
+                        isMatch = MenuTextMatches(x, parts[0]),
+                        childCount = SafeMenuItemChildCount(x, cf)
+                    }).ToList());
+            }
 
             var parentCandidates = topLevelItems
                 .Where(e => MenuTextMatches(e, parts[0]))
                 .ToList();
 
             _logger.LogInformation(
-                "FindLogicalMenuPath: parent candidates for '{Parent}' = {Candidates}",
+                "FindLogicalMenuPath: parent candidate count for '{Parent}' = {CandidateCount}",
                 parts[0],
-                parentCandidates.Select(x => new
-                {
-                    name = SafeElementName(x),
-                    automationId = SafeElementAutomationId(x),
-                    nameNorm = NormalizeMenuText(SafeElementName(x)),
-                    expectedNorm = NormalizeMenuText(parts[0]),
-                    isMatch = MenuTextMatches(x, parts[0]),
-                    childCount = SafeMenuItemChildCount(x, cf)
-                }).ToList());
+                parentCandidates.Count);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "FindLogicalMenuPath parent candidate details for '{Parent}' = {Candidates}",
+                    parts[0],
+                    parentCandidates.Select(x => new
+                    {
+                        name = SafeElementName(x),
+                        automationId = SafeElementAutomationId(x),
+                        nameNorm = NormalizeMenuText(SafeElementName(x)),
+                        expectedNorm = NormalizeMenuText(parts[0]),
+                        isMatch = MenuTextMatches(x, parts[0]),
+                        childCount = SafeMenuItemChildCount(x, cf)
+                    }).ToList());
+            }
 
             foreach (var candidate in parentCandidates)
             {
@@ -1813,17 +1920,25 @@ public class UiService : IUiService
                     .ToList();
 
                 _logger.LogWarning(
-                    "FindLogicalMenuPath direct path failed. Leaf matches for '{Leaf}' = {Matches}",
+                    "FindLogicalMenuPath direct path failed. Leaf match count for '{Leaf}' = {MatchCount}",
                     leafName,
-                    leafMatches.Select(x => new
-                    {
-                        name = SafeElementName(x),
-                        automationId = SafeElementAutomationId(x),
-                        nameNorm = NormalizeMenuText(SafeElementName(x)),
-                        expectedNorm = NormalizeMenuText(leafName),
-                        isMatch = MenuTextMatches(x, leafName),
-                        parentChain = BuildParentChain(x)
-                    }).ToList());
+                    leafMatches.Count);
+
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "FindLogicalMenuPath leaf match details for '{Leaf}' = {Matches}",
+                        leafName,
+                        leafMatches.Select(x => new
+                        {
+                            name = SafeElementName(x),
+                            automationId = SafeElementAutomationId(x),
+                            nameNorm = NormalizeMenuText(SafeElementName(x)),
+                            expectedNorm = NormalizeMenuText(leafName),
+                            isMatch = MenuTextMatches(x, leafName),
+                            parentChain = BuildParentChain(x)
+                        }).ToList());
+                }
 
                 if (leafMatches.Count == 1)
                 {
@@ -2579,7 +2694,13 @@ public class UiService : IUiService
         var header = FindWithRetry(req);
 
         if (!GridHeaderDropdownHelper.IsGridHeaderElement(header))
-            throw new InvalidOperationException("openheaderdropdown requires Header/HeaderItem element.");
+        {
+            _logger.LogWarning(
+                "openheaderdropdown called on non-header. name={Name}, controlType={ControlType}, className={ClassName}",
+                SafeElementName(header),
+                header.ControlType,
+                SafeElementClassName(header));
+        }
 
         var list = OpenHeaderDropdownAndFindList(header);
 
@@ -2615,7 +2736,13 @@ public class UiService : IUiService
         var header = FindWithRetry(req);
 
         if (!GridHeaderDropdownHelper.IsGridHeaderElement(header))
-            throw new InvalidOperationException("selectheaderdropdownitem requires Header/HeaderItem element.");
+        {
+            _logger.LogWarning(
+                "selectheaderdropdownitem called on non-header. name={Name}, controlType={ControlType}, className={ClassName}",
+                SafeElementName(header),
+                header.ControlType,
+                SafeElementClassName(header));
+        }
 
         var list = OpenHeaderDropdownAndFindList(header);
         if (list == null)
@@ -2629,7 +2756,15 @@ public class UiService : IUiService
                     StringComparison.OrdinalIgnoreCase));
 
         if (item == null)
-            throw new InvalidOperationException($"Dropdown item '{req.Value}' was not found.");
+        {
+            var available = GetListItems(list)
+                .Select(x => SafeElementName(x))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToList();
+
+            throw new InvalidOperationException(
+                $"Dropdown item '{req.Value}' was not found. Available: {string.Join(", ", available)}");
+        }
 
         if (!TryInstantPhysicalClick(item, $"SelectHeaderDropdownItem {req.Value}"))
             throw new InvalidOperationException($"Failed to click dropdown item '{req.Value}'.");
@@ -3097,6 +3232,51 @@ public class UiService : IUiService
         {
             return false;
         }
+    }
+
+    private static string BuildFindWindowCacheKey(AutomationSession session, string titleFragment) =>
+        string.Join(
+            "|",
+            "session",
+            session.SessionId,
+            session.Application.ProcessId,
+            NormalizeTitle(titleFragment).ToUpperInvariant());
+
+    private static string BuildFindWindowCacheKey(string scope, AutomationElement root, string titleFragment) =>
+        string.Join(
+            "|",
+            scope,
+            SafeWindowHandle(root).ToInt64(),
+            SafeProcessId(root)?.ToString() ?? "unknown",
+            NormalizeTitle(titleFragment).ToUpperInvariant());
+
+    private static bool TryGetCachedWindow(
+        string cacheKey,
+        string titleFragment,
+        out AutomationElement? cached)
+    {
+        lock (FindWindowCacheLock)
+        {
+            if (FindWindowCache.TryGetValue(cacheKey, out var entry))
+            {
+                if (entry.ExpiresAt > DateTime.UtcNow && TitleContains(entry.Element, titleFragment))
+                {
+                    cached = entry.Element;
+                    return true;
+                }
+
+                FindWindowCache.Remove(cacheKey);
+            }
+        }
+
+        cached = null;
+        return false;
+    }
+
+    private static void StoreCachedWindow(string cacheKey, AutomationElement element)
+    {
+        lock (FindWindowCacheLock)
+            FindWindowCache[cacheKey] = new CachedWindowMatch(element, DateTime.UtcNow + FindWindowCacheDuration);
     }
 
     private static List<object> SnapshotWindowTitles(AutomationBase automation)
