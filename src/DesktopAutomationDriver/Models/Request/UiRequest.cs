@@ -41,4 +41,14 @@ public class UiRequest
     /// Zero-based column index used by the "clickGridCell" operation.
     /// </summary>
     public int? ColumnIndex { get; set; }
+
+    /// <summary>
+    /// Optional maximum number of items returned by list-style operations.
+    /// </summary>
+    public int? Limit { get; set; }
+
+    /// <summary>
+    /// When true, listwindows also scans desktop descendants. Defaults to false.
+    /// </summary>
+    public bool? IncludeDesktopDescendants { get; set; }
 }
