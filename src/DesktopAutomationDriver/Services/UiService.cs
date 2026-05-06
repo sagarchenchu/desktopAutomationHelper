@@ -52,6 +52,16 @@ public class UiService : IUiService
 
     private sealed record CachedWindowMatch(AutomationElement Element, DateTime ExpiresAt);
 
+    private enum DropdownItemClickRegion
+    {
+        LeftCenter,
+        Center,
+        RightCenter,
+        UpperLeft,
+        LowerLeft,
+        ProbeAll
+    }
+
     // Named keys for the "sendkeys" operation (AutoIt / keyboard-shorthand format).
     private static readonly Dictionary<string, VirtualKeyShort> NamedKeys =
         new(StringComparer.OrdinalIgnoreCase)
@@ -2748,6 +2758,7 @@ public class UiService : IUiService
         }
 
         var region = GridHeaderDropdownHelper.ParseRegion(req.ClickRegion);
+        var itemRegion = ParseDropdownItemRegion(req.ItemRegion);
         var list = OpenHeaderDropdownAndFindList(header, region);
         if (list == null)
             throw new InvalidOperationException("Header dropdown list was not found after opening.");
@@ -2770,13 +2781,15 @@ public class UiService : IUiService
                 $"Dropdown item '{req.Value}' was not found. Available: {string.Join(", ", available)}");
         }
 
-        if (!TryInstantPhysicalClick(item, $"SelectHeaderDropdownItem {req.Value}"))
-            throw new InvalidOperationException($"Failed to click dropdown item '{req.Value}'.");
+        if (!ActivateDropdownListItem(item, req.Value, itemRegion))
+            throw new InvalidOperationException($"Failed to click dropdown item '{req.Value}' with region {itemRegion}.");
 
         return new
         {
             selected = req.Value,
-            header = SafeElementName(header)
+            header = SafeElementName(header),
+            headerRegion = region.ToString(),
+            itemRegion = itemRegion.ToString()
         };
     }
 
@@ -4281,6 +4294,191 @@ public class UiService : IUiService
         {
             return [];
         }
+    }
+
+    private bool ActivateDropdownListItem(
+        AutomationElement item,
+        string itemName,
+        DropdownItemClickRegion region = DropdownItemClickRegion.LeftCenter)
+    {
+        var rect = item.BoundingRectangle;
+
+        foreach (var candidateRegion in GetDropdownItemRegionOrder(region))
+        {
+            try
+            {
+                var point = GetDropdownItemClickPoint(rect, candidateRegion);
+
+                _logger.LogInformation(
+                    "Trying dropdown item click. item={Item}, region={Region}, point={Point}, bounds={Bounds}",
+                    itemName,
+                    candidateRegion,
+                    point,
+                    rect);
+
+                if (SendInstantLeftClick(point, $"SelectHeaderDropdownItem {itemName} at {candidateRegion}"))
+                {
+                    Thread.Sleep(250);
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Dropdown item physical click failed for {Item} at region {Region}",
+                    itemName,
+                    candidateRegion);
+            }
+        }
+
+        try
+        {
+            if (item.Patterns.Toggle.IsSupported)
+            {
+                item.Patterns.Toggle.Pattern.Toggle();
+                Thread.Sleep(150);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item Toggle failed for {Item}", itemName);
+        }
+
+        try
+        {
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                item.Patterns.SelectionItem.Pattern.Select();
+                Thread.Sleep(150);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item SelectionItem.Select failed for {Item}", itemName);
+        }
+
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                Thread.Sleep(150);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item Invoke failed for {Item}", itemName);
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.SPACE);
+            Thread.Sleep(150);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item Focus+Space failed for {Item}", itemName);
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(150);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item Focus+Enter failed for {Item}", itemName);
+        }
+
+        return false;
+    }
+
+    private static Point GetDropdownItemClickPoint(
+        RectangleF rect,
+        DropdownItemClickRegion region)
+    {
+        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+            throw new InvalidOperationException("Dropdown ListItem has invalid bounding rectangle.");
+
+        var padX = Math.Max(6, Math.Min(18, rect.Width / 10));
+        var padY = Math.Max(3, Math.Min(8, rect.Height / 4));
+
+        return region switch
+        {
+            DropdownItemClickRegion.LeftCenter => new Point(
+                (int)Math.Round(rect.Left + padX),
+                (int)Math.Round(rect.Top + rect.Height / 2)),
+
+            DropdownItemClickRegion.Center => new Point(
+                (int)Math.Round(rect.Left + rect.Width / 2),
+                (int)Math.Round(rect.Top + rect.Height / 2)),
+
+            DropdownItemClickRegion.RightCenter => new Point(
+                (int)Math.Round(rect.Right - padX),
+                (int)Math.Round(rect.Top + rect.Height / 2)),
+
+            DropdownItemClickRegion.UpperLeft => new Point(
+                (int)Math.Round(rect.Left + padX),
+                (int)Math.Round(rect.Top + padY)),
+
+            DropdownItemClickRegion.LowerLeft => new Point(
+                (int)Math.Round(rect.Left + padX),
+                (int)Math.Round(rect.Bottom - padY)),
+
+            _ => new Point(
+                (int)Math.Round(rect.Left + padX),
+                (int)Math.Round(rect.Top + rect.Height / 2))
+        };
+    }
+
+    private static IReadOnlyList<DropdownItemClickRegion> GetDropdownItemRegionOrder(
+        DropdownItemClickRegion region)
+    {
+        if (region != DropdownItemClickRegion.ProbeAll)
+            return new[] { region };
+
+        return new[]
+        {
+            DropdownItemClickRegion.LeftCenter,
+            DropdownItemClickRegion.UpperLeft,
+            DropdownItemClickRegion.LowerLeft,
+            DropdownItemClickRegion.Center,
+            DropdownItemClickRegion.RightCenter
+        };
+    }
+
+    private static DropdownItemClickRegion ParseDropdownItemRegion(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return DropdownItemClickRegion.LeftCenter;
+
+        var normalized = value
+            .Trim()
+            .Replace("-", string.Empty)
+            .Replace("_", string.Empty)
+            .Replace(" ", string.Empty)
+            .ToLowerInvariant();
+
+        return normalized switch
+        {
+            "leftcenter" or "left" => DropdownItemClickRegion.LeftCenter,
+            "center" => DropdownItemClickRegion.Center,
+            "rightcenter" or "right" => DropdownItemClickRegion.RightCenter,
+            "upperleft" or "topleft" => DropdownItemClickRegion.UpperLeft,
+            "lowerleft" or "bottomleft" => DropdownItemClickRegion.LowerLeft,
+            "probeall" or "all" or "auto" => DropdownItemClickRegion.ProbeAll,
+            _ => DropdownItemClickRegion.LeftCenter
+        };
     }
 
     private bool SendInstantLeftClick(Point point, string actionName)

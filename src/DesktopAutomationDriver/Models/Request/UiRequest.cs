@@ -38,6 +38,12 @@ public class UiRequest
     public string? ClickRegion { get; set; }
 
     /// <summary>
+    /// Optional dropdown ListItem click region for header dropdown item selection.
+    /// Defaults to LeftCenter when omitted.
+    /// </summary>
+    public string? ItemRegion { get; set; }
+
+    /// <summary>
     /// Zero-based index used by the "select" operation to pick a ComboBox item by position,
     /// and by "clickGridCell" to specify the row index.
     /// </summary>

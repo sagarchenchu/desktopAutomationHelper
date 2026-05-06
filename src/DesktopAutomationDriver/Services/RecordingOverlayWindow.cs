@@ -202,6 +202,17 @@ public sealed class RecordingOverlayWindow : Form
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetCursorPos(int X, int Y);
 
+
+    private enum DropdownItemClickRegion
+    {
+        LeftCenter,
+        Center,
+        RightCenter,
+        UpperLeft,
+        LowerLeft,
+        ProbeAll
+    }
+
     [DllImport("user32.dll")]
     private static extern IntPtr WindowFromPoint(System.Drawing.Point point);
 
@@ -4221,19 +4232,54 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
-    private bool ActivateDropdownListItem(AutomationElement item, string itemName)
+    private bool ActivateDropdownListItem(
+        AutomationElement item,
+        string itemName,
+        DropdownItemClickRegion region = DropdownItemClickRegion.LeftCenter)
     {
+        var rect = item.BoundingRectangle;
+
+        foreach (var candidateRegion in GetDropdownItemRegionOrder(region))
+        {
+            try
+            {
+                var point = GetDropdownItemClickPoint(rect, candidateRegion);
+
+                _logger.LogInformation(
+                    "Trying dropdown item click. item={Item}, region={Region}, point={Point}, bounds={Bounds}",
+                    itemName,
+                    candidateRegion,
+                    point,
+                    rect);
+
+                if (TryPhysicalClickPoint(point, $"Select dropdown item {itemName} at {candidateRegion}"))
+                {
+                    Thread.Sleep(250);
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Dropdown item physical click failed for {Item} at region {Region}",
+                    itemName,
+                    candidateRegion);
+            }
+        }
+
         try
         {
-            if (TryPhysicalClickPoint(GetElementCenter(item.BoundingRectangle), $"Select dropdown item {itemName}"))
+            if (item.Patterns.Toggle.IsSupported)
             {
+                item.Patterns.Toggle.Pattern.Toggle();
                 Thread.Sleep(150);
                 return true;
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Dropdown item physical click failed for {Item}", itemName);
+            _logger.LogWarning(ex, "Dropdown item Toggle failed for {Item}", itemName);
         }
 
         try
@@ -4268,6 +4314,19 @@ public sealed class RecordingOverlayWindow : Form
         {
             item.Focus();
             Thread.Sleep(75);
+            Keyboard.Press(VirtualKeyShort.SPACE);
+            Thread.Sleep(150);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item Focus+Space failed for {Item}", itemName);
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(75);
             Keyboard.Press(VirtualKeyShort.RETURN);
             Thread.Sleep(150);
             return true;
@@ -4289,6 +4348,84 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         return false;
+    }
+
+    private static System.Drawing.Point GetDropdownItemClickPoint(
+        System.Drawing.RectangleF rect,
+        DropdownItemClickRegion region)
+    {
+        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+            throw new InvalidOperationException("Dropdown ListItem has invalid bounding rectangle.");
+
+        var padX = Math.Max(6, Math.Min(18, rect.Width / 10));
+        var padY = Math.Max(3, Math.Min(8, rect.Height / 4));
+
+        return region switch
+        {
+            DropdownItemClickRegion.LeftCenter => new System.Drawing.Point(
+                (int)Math.Round(rect.Left + padX),
+                (int)Math.Round(rect.Top + rect.Height / 2)),
+
+            DropdownItemClickRegion.Center => new System.Drawing.Point(
+                (int)Math.Round(rect.Left + rect.Width / 2),
+                (int)Math.Round(rect.Top + rect.Height / 2)),
+
+            DropdownItemClickRegion.RightCenter => new System.Drawing.Point(
+                (int)Math.Round(rect.Right - padX),
+                (int)Math.Round(rect.Top + rect.Height / 2)),
+
+            DropdownItemClickRegion.UpperLeft => new System.Drawing.Point(
+                (int)Math.Round(rect.Left + padX),
+                (int)Math.Round(rect.Top + padY)),
+
+            DropdownItemClickRegion.LowerLeft => new System.Drawing.Point(
+                (int)Math.Round(rect.Left + padX),
+                (int)Math.Round(rect.Bottom - padY)),
+
+            _ => new System.Drawing.Point(
+                (int)Math.Round(rect.Left + padX),
+                (int)Math.Round(rect.Top + rect.Height / 2))
+        };
+    }
+
+    private static IReadOnlyList<DropdownItemClickRegion> GetDropdownItemRegionOrder(
+        DropdownItemClickRegion region)
+    {
+        if (region != DropdownItemClickRegion.ProbeAll)
+            return new[] { region };
+
+        return new[]
+        {
+            DropdownItemClickRegion.LeftCenter,
+            DropdownItemClickRegion.UpperLeft,
+            DropdownItemClickRegion.LowerLeft,
+            DropdownItemClickRegion.Center,
+            DropdownItemClickRegion.RightCenter
+        };
+    }
+
+    private static DropdownItemClickRegion ParseDropdownItemRegion(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return DropdownItemClickRegion.LeftCenter;
+
+        var normalized = value
+            .Trim()
+            .Replace("-", string.Empty)
+            .Replace("_", string.Empty)
+            .Replace(" ", string.Empty)
+            .ToLowerInvariant();
+
+        return normalized switch
+        {
+            "leftcenter" or "left" => DropdownItemClickRegion.LeftCenter,
+            "center" => DropdownItemClickRegion.Center,
+            "rightcenter" or "right" => DropdownItemClickRegion.RightCenter,
+            "upperleft" or "topleft" => DropdownItemClickRegion.UpperLeft,
+            "lowerleft" or "bottomleft" => DropdownItemClickRegion.LowerLeft,
+            "probeall" or "all" or "auto" => DropdownItemClickRegion.ProbeAll,
+            _ => DropdownItemClickRegion.LeftCenter
+        };
     }
 
     private AutomationElement? FindDropdownListItemByName(AutomationElement list, string itemName)
@@ -4333,7 +4470,8 @@ public sealed class RecordingOverlayWindow : Form
         AutomationElement headerElement,
         ElementInfo? headerInfo,
         HeaderDropdownRegion region,
-        string itemName)
+        string itemName,
+        DropdownItemClickRegion itemRegion = DropdownItemClickRegion.LeftCenter)
     {
         try
         {
@@ -4372,13 +4510,14 @@ public sealed class RecordingOverlayWindow : Form
                 return false;
             }
 
-            if (!ActivateDropdownListItem(item, itemName))
+            if (!ActivateDropdownListItem(item, itemName, itemRegion))
             {
                 _logger.LogWarning(
-                    "Dropdown item activation failed. header={Header}, region={Region}, item={Item}",
+                    "Dropdown item activation failed. header={Header}, headerRegion={HeaderRegion}, item={Item}, itemRegion={ItemRegion}",
                     SafeElementName(headerElement),
                     region,
-                    itemName);
+                    itemName,
+                    itemRegion);
 
                 return false;
             }
@@ -4392,7 +4531,12 @@ public sealed class RecordingOverlayWindow : Form
                 Operation = "selectheaderdropdownitem",
                 Value = itemName,
                 PointerContext = ClonePointerContext(_currentAssistivePointerContext),
-                Description = $"Select '{itemName}' from {headerInfo?.Name ?? SafeElementName(headerElement)} header dropdown opened at {region}"
+                Description = $"Select '{itemName}' from {headerInfo?.Name ?? SafeElementName(headerElement)} header dropdown opened at {region}, item region {itemRegion}",
+                Metadata = new Dictionary<string, string>
+                {
+                    ["headerRegion"] = region.ToString(),
+                    ["itemRegion"] = itemRegion.ToString()
+                }
             });
 
             UpdateStatusAfterAction($"Selected dropdown item {itemName}");
@@ -4402,10 +4546,11 @@ public sealed class RecordingOverlayWindow : Form
         {
             _logger.LogError(
                 ex,
-                "SelectHeaderDropdownItemAssistive failed. header={Header}, region={Region}, item={Item}",
+                "SelectHeaderDropdownItemAssistive failed. header={Header}, headerRegion={HeaderRegion}, item={Item}, itemRegion={ItemRegion}",
                 headerInfo?.Name ?? SafeElementName(headerElement),
                 region,
-                itemName);
+                itemName,
+                itemRegion);
 
             _statusLabel.Text = "Dropdown item select failed: " + ex.Message;
             return false;
@@ -4446,32 +4591,83 @@ public sealed class RecordingOverlayWindow : Form
                 itemName = "(unnamed item)";
 
             var capturedName = itemName;
+            var valueMenu = new ToolStripMenuItem(capturedName);
 
-            var mi = new ToolStripMenuItem(capturedName);
-            mi.Click += (_, _) =>
-            {
-                RunAssistiveActionAfterMenuClose($"Select dropdown item {capturedName}", () =>
-                {
-                    var success = SelectHeaderDropdownItemAssistive(
-                        headerElement,
-                        headerInfo,
-                        region,
-                        capturedName);
+            AddDropdownItemRegionAction(
+                valueMenu,
+                "Select Left / Checkbox Area",
+                DropdownItemClickRegion.LeftCenter,
+                headerElement,
+                headerInfo,
+                region,
+                capturedName);
 
-                    if (!success)
-                    {
-                        throw new InvalidOperationException(
-                            $"Failed to select header dropdown item '{capturedName}'.");
-                    }
-                });
-            };
+            AddDropdownItemRegionAction(
+                valueMenu,
+                "Select Center",
+                DropdownItemClickRegion.Center,
+                headerElement,
+                headerInfo,
+                region,
+                capturedName);
 
-            menu.Items.Add(mi);
+            AddDropdownItemRegionAction(
+                valueMenu,
+                "Select Right",
+                DropdownItemClickRegion.RightCenter,
+                headerElement,
+                headerInfo,
+                region,
+                capturedName);
+
+            AddDropdownItemRegionAction(
+                valueMenu,
+                "Probe All",
+                DropdownItemClickRegion.ProbeAll,
+                headerElement,
+                headerInfo,
+                region,
+                capturedName);
+
+            menu.Items.Add(valueMenu);
         }
 
         AddCloseItem(menu);
         EnsureOverlayVisible();
         menu.Show(pt);
+    }
+
+    private void AddDropdownItemRegionAction(
+        ToolStripMenuItem parent,
+        string label,
+        DropdownItemClickRegion itemRegion,
+        AutomationElement headerElement,
+        ElementInfo? headerInfo,
+        HeaderDropdownRegion headerRegion,
+        string itemName)
+    {
+        var mi = new ToolStripMenuItem(label);
+
+        mi.Click += (_, _) =>
+        {
+            RunAssistiveActionAfterMenuClose($"Select dropdown item {itemName} / {label}", () =>
+            {
+                var success = SelectHeaderDropdownItemAssistive(
+                    headerElement,
+                    headerInfo,
+                    headerRegion,
+                    itemName,
+                    itemRegion);
+
+                if (!success)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to select header dropdown item '{itemName}' with region {itemRegion}.");
+                }
+            });
+        };
+
+        parent.DropDownItems.Add(mi);
     }
 
     private void AddActionItem(
