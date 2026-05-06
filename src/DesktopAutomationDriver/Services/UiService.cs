@@ -170,6 +170,7 @@ public class UiService : IUiService
             "hover"            => Hover(request),
             "focus"            => Focus(request),
             "type"             => TypeText(request),
+            "typedate"         => TypeDate(request),
             "clear"            => Clear(request),
             "sendkeys"         => SendKeys(request),
             "scroll"           => Scroll(request),
@@ -1422,7 +1423,7 @@ public class UiService : IUiService
 
         var element = FindWithRetry(req);
         if (WinFormsDateTimePickerHelper.IsDateTimePicker(element))
-            return TypeDatePicker(element, req.Value);
+            return TypeDate(element, req.Value);
 
         BringElementWindowToForeground(element);
 
@@ -1437,7 +1438,26 @@ public class UiService : IUiService
         return null;
     }
 
-    private object? TypeDatePicker(AutomationElement element, string? value)
+    private object? TypeDate(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("Date value is required.");
+
+        var element = FindWithRetry(req);
+
+        if (!WinFormsDateTimePickerHelper.IsDateTimePicker(element))
+        {
+            _logger.LogWarning(
+                "typedate called on non-DateTimePicker. name={Name}, className={ClassName}, controlType={ControlType}",
+                SafeElementName(element),
+                SafeElementClassName(element),
+                element.ControlType);
+        }
+
+        return TypeDate(element, req.Value);
+    }
+
+    private object? TypeDate(AutomationElement element, string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
             throw new ArgumentException("Date value is required.");
@@ -1471,7 +1491,18 @@ public class UiService : IUiService
 
         Keyboard.Press(VirtualKeyShort.RETURN);
 
-        return null;
+        return new
+        {
+            typed = true,
+            strategy = "date-segments",
+            value = $"{month}/{day}/{year}",
+            element = new
+            {
+                name = SafeElementName(element),
+                className = SafeElementClassName(element),
+                controlType = element.ControlType.ToString()
+            }
+        };
     }
 
     private object? Clear(UiRequest req)
@@ -2663,7 +2694,13 @@ public class UiService : IUiService
         var header = FindWithRetry(req);
 
         if (!GridHeaderDropdownHelper.IsGridHeaderElement(header))
-            throw new InvalidOperationException("openheaderdropdown requires Header/HeaderItem element.");
+        {
+            _logger.LogWarning(
+                "openheaderdropdown called on non-header. name={Name}, controlType={ControlType}, className={ClassName}",
+                SafeElementName(header),
+                header.ControlType,
+                SafeElementClassName(header));
+        }
 
         var list = OpenHeaderDropdownAndFindList(header);
 
@@ -2699,7 +2736,13 @@ public class UiService : IUiService
         var header = FindWithRetry(req);
 
         if (!GridHeaderDropdownHelper.IsGridHeaderElement(header))
-            throw new InvalidOperationException("selectheaderdropdownitem requires Header/HeaderItem element.");
+        {
+            _logger.LogWarning(
+                "selectheaderdropdownitem called on non-header. name={Name}, controlType={ControlType}, className={ClassName}",
+                SafeElementName(header),
+                header.ControlType,
+                SafeElementClassName(header));
+        }
 
         var list = OpenHeaderDropdownAndFindList(header);
         if (list == null)
@@ -2713,7 +2756,15 @@ public class UiService : IUiService
                     StringComparison.OrdinalIgnoreCase));
 
         if (item == null)
-            throw new InvalidOperationException($"Dropdown item '{req.Value}' was not found.");
+        {
+            var available = GetListItems(list)
+                .Select(x => SafeElementName(x))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToList();
+
+            throw new InvalidOperationException(
+                $"Dropdown item '{req.Value}' was not found. Available: {string.Join(", ", available)}");
+        }
 
         if (!TryInstantPhysicalClick(item, $"SelectHeaderDropdownItem {req.Value}"))
             throw new InvalidOperationException($"Failed to click dropdown item '{req.Value}'.");
