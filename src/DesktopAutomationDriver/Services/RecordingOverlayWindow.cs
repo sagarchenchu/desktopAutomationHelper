@@ -679,18 +679,13 @@ public sealed class RecordingOverlayWindow : Form
             if (wParam == (IntPtr)WM_LBUTTONDOWN)
             {
                 var pt = ms.pt;
-                // Capture element info eagerly in the hook callback, before the hook
-                // returns and the application processes the click (which may close a
-                // dialog before BeginInvoke executes, e.g. a Save As "Save"/"Cancel" button).
-                ElementInfo? eagerInfo = null;
-                try { eagerInfo = _service.GetElementAtPoint(pt); } catch { /* best effort */ }
 
                 // Store state for drag detection. The click is recorded now; if the
                 // mouse moves beyond DragThresholdPixels before button-up, the click
                 // action will be replaced by a DragAndDrop action.
-                BeginDragTracking(pt, eagerInfo);
+                BeginDragTracking(pt, null);
 
-                BeginInvoke(new Action(() => RecordPassiveClick(pt, eagerInfo, ActionType.Click)));
+                BeginInvoke(new Action(() => RecordPassiveClick(pt, null, ActionType.Click)));
             }
             else if (wParam == (IntPtr)WM_LBUTTONDBLCLK)
             {
@@ -698,9 +693,7 @@ public sealed class RecordingOverlayWindow : Form
                 // trigger drag detection since WM_LBUTTONDBLCLK already recorded the action.
                 _leftButtonDown = false;
                 var pt = ms.pt;
-                ElementInfo? eagerInfo = null;
-                try { eagerInfo = _service.GetElementAtPoint(pt); } catch { /* best effort */ }
-                BeginInvoke(new Action(() => RecordPassiveClick(pt, eagerInfo, ActionType.DoubleClick)));
+                BeginInvoke(new Action(() => RecordPassiveClick(pt, null, ActionType.DoubleClick)));
             }
             else if (wParam == (IntPtr)WM_MOUSEMOVE && _leftButtonDown)
             {
@@ -720,19 +713,19 @@ public sealed class RecordingOverlayWindow : Form
                     // Significant movement: upgrade the earlier Click to a DragAndDrop.
                     var upPt = ms.pt;
                     var sourceInfo = _mouseDownEagerInfo;
-                    ElementInfo? targetInfo = null;
-                    try { targetInfo = _service.GetElementAtPoint(upPt); } catch { /* best effort */ }
-                    BeginInvoke(new Action(() => RecordPassiveDrag(sourceInfo, targetInfo)));
+                    BeginInvoke(new Action(() =>
+                    {
+                        ElementInfo? targetInfo = null;
+                        try { targetInfo = _service.GetElementAtPoint(upPt); } catch { /* best effort */ }
+                        RecordPassiveDrag(sourceInfo, targetInfo);
+                    }));
                 }
                 // Small movement: the Click already recorded on mouse-down is correct; nothing to do.
             }
             else if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
                 var pt = ms.pt;
-                // Capture element info eagerly before the hook returns (same reason as left-click).
-                ElementInfo? eagerInfo = null;
-                try { eagerInfo = _service.GetElementAtPoint(pt); } catch { /* best effort */ }
-                BeginInvoke(new Action(() => RecordPassiveRightClick(pt, eagerInfo)));
+                BeginInvoke(new Action(() => RecordPassiveRightClick(pt, null)));
                 // Intentionally NOT suppressed — the native right-click is passed through so
                 // the application can display its own context menu if it has one.
             }
@@ -1593,81 +1586,75 @@ public sealed class RecordingOverlayWindow : Form
         };
         menu.Items.Add(dragDropItem);
 
-        // Sub-Menu Items — when the right-clicked element is a MenuItem that has child
-        // MenuItems in the UIA tree (e.g. "QA" with children "1", "2", "3").
-        //
-        // Background: clicking a top-level MenuItem (e.g. "QA") causes WinForms to create a
-        // floating ControlType=Menu element ("QADropDown") at the desktop level.  That element
-        // has no UIA children — the sub-MenuItems remain children of "QA" in the UIA tree — but
-        // the dynamically-created popup makes it hard to click sub-items via a second right-click.
-        //
-        // This flyout lets the user pick the sub-item directly from the assistive context menu
-        // shown on the *first* right-click (on the parent "QA" item), before any popup appears.
-        // The click handler navigates the full path from the stable MenuBar anchor, re-fetching
-        // fresh UIA elements at each step — the same approach used by the existing top-level
-        // Click action for deep sub-menu paths (popupMenuBarRef / popupMenuPath).
+        // Sub-Menu Items — lazy-built when the flyout opens so right-click stays responsive.
         if (element?.ControlType == ControlType.MenuItem && _automation != null)
         {
-            try
+            var subMenuFlyout = new ToolStripMenuItem("Sub-Menu Items ▶");
+            subMenuFlyout.DropDownOpening += (_, _) =>
             {
-                using (MeasurePerf("BuildAssistiveMenuChildActions"))
+                subMenuFlyout.DropDownItems.Clear();
+                try
                 {
-                    var cf = _automation.ConditionFactory;
-                    var subItems = element.FindAllChildren(cf.ByControlType(ControlType.MenuItem));
-
-                if (subItems.Length > 0)
-                {
-                    // Walk up from element to the MenuBar to build a stable anchor and a
-                    // top-down path of MenuItem infos (e.g. element="QA" → ["QA"]).
-                    AutomationElement? subMenuBarRef = null;
-                    var parentMenuPath = new List<ElementInfo>();
-                    try
+                    using (MeasurePerf("BuildAssistiveMenuChildActions"))
                     {
-                        var pathElements = new List<ElementInfo>();
-                        var cur = element;
-                        for (int d = 0; d < MaxMenuAncestorDepth; d++)
+                        var cf = _automation.ConditionFactory;
+                        var subItems = element.FindAllChildren(cf.ByControlType(ControlType.MenuItem));
+
+                        if (subItems.Length == 0)
                         {
-                            if (cur.ControlType == ControlType.MenuItem)
-                                pathElements.Add(BuildElementInfo(cur));
-                            else if (cur.ControlType == ControlType.MenuBar)
-                            {
-                                subMenuBarRef = cur;
-                                pathElements.Reverse(); // collected bottom-up; reverse to top-down
-                                var skippedSegments = pathElements.Count(info =>
-                                    string.IsNullOrWhiteSpace(GetLogicalMenuPathSegment(info)));
-                                parentMenuPath = pathElements
-                                    .Where(info => !string.IsNullOrWhiteSpace(GetLogicalMenuPathSegment(info)))
-                                    .ToList();
-                                if (skippedSegments > 0)
-                                {
-                                    _logger.LogWarning(
-                                        "Logical menu path omitted {Count} unnamed segment(s) while recording submenu selection.",
-                                        skippedSegments);
-                                }
-                                break;
-                            }
-                            var par = cur.Parent;
-                            if (par == null) break;
-                            cur = par;
+                            subMenuFlyout.DropDownItems.Add(new ToolStripMenuItem("(none)") { Enabled = false });
+                            return;
                         }
-                    }
-                    catch { /* best effort */ }
 
-                    // Only offer the flyout when we have a valid MenuBar anchor; without it
-                    // we cannot re-locate fresh elements after the popup closes.
-                    if (subMenuBarRef != null)
-                    {
+                        AutomationElement? subMenuBarRef = null;
+                        var parentMenuPath = new List<ElementInfo>();
+                        try
+                        {
+                            var pathElements = new List<ElementInfo>();
+                            var cur = element;
+                            for (int d = 0; d < MaxMenuAncestorDepth; d++)
+                            {
+                                if (cur.ControlType == ControlType.MenuItem)
+                                    pathElements.Add(BuildElementInfo(cur));
+                                else if (cur.ControlType == ControlType.MenuBar)
+                                {
+                                    subMenuBarRef = cur;
+                                    pathElements.Reverse();
+                                    var skippedSegments = pathElements.Count(info =>
+                                        string.IsNullOrWhiteSpace(GetLogicalMenuPathSegment(info)));
+                                    parentMenuPath = pathElements
+                                        .Where(info => !string.IsNullOrWhiteSpace(GetLogicalMenuPathSegment(info)))
+                                        .ToList();
+                                    if (skippedSegments > 0)
+                                    {
+                                        _logger.LogWarning(
+                                            "Logical menu path omitted {Count} unnamed segment(s) while recording submenu selection.",
+                                            skippedSegments);
+                                    }
+                                    break;
+                                }
+                                var par = cur.Parent;
+                                if (par == null) break;
+                                cur = par;
+                            }
+                        }
+                        catch { /* best effort */ }
+
+                        if (subMenuBarRef == null)
+                        {
+                            subMenuFlyout.DropDownItems.Add(new ToolStripMenuItem("(unavailable)") { Enabled = false });
+                            return;
+                        }
+
                         var capturedMenuBarRef = subMenuBarRef;
                         var capturedParentMenuPath = parentMenuPath;
 
-                        var subMenuFlyout = new ToolStripMenuItem("Sub-Menu Items ▶");
                         foreach (var subItem in subItems.Take(MaxChildrenToDisplay))
                         {
                             var subItemInfo = BuildElementInfo(subItem);
                             var subItemName = subItemInfo.Name ?? subItemInfo.AutomationId ?? "(unnamed)";
                             var subItemEntry = new ToolStripMenuItem(subItemName);
                             var capturedSubItemInfo = subItemInfo;
-                            var capturedSubItemName = subItemName;
                             var capturedMenuPath = new List<ElementInfo>(capturedParentMenuPath) { capturedSubItemInfo };
                             var capturedMenuPathValue = string.Join(
                                 ">",
@@ -1703,13 +1690,14 @@ public sealed class RecordingOverlayWindow : Form
                         if (subItems.Length > MaxChildrenToDisplay)
                             subMenuFlyout.DropDownItems.Add(
                                 new ToolStripMenuItem($"… and {subItems.Length - MaxChildrenToDisplay} more") { Enabled = false });
-
-                        menu.Items.Add(subMenuFlyout);
                     }
                 }
+                catch
+                {
+                    subMenuFlyout.DropDownItems.Add(new ToolStripMenuItem("(unavailable)") { Enabled = false });
                 }
-            }
-            catch { /* best effort */ }
+            };
+            menu.Items.Add(subMenuFlyout);
         }
 
         menu.Items.Add(new ToolStripSeparator());
@@ -2211,106 +2199,86 @@ public sealed class RecordingOverlayWindow : Form
                     FlaUI.Core.Definitions.ScrollAmount.SmallIncrement));
         }
 
-        // ── Children submenu (for container controls and expandable edit/combo fields) ───
+        // ── Children/Options submenu, lazy-built when opened ─────────────────────────
         // Note: ComboBox is checked explicitly here rather than being added to IsContainer()
         // because IsContainer() is also used by DrillDownToElementAtPoint() — drilling into
         // a ComboBox's structural children (Edit, Button, List) would break element identification.
         if (element != null && (IsContainer(element.ControlType) || element.ControlType == ControlType.ComboBox || element.Patterns.ExpandCollapse.IsSupported))
         {
-            try
+            var isComboBox = element.ControlType == ControlType.ComboBox;
+            var childrenMenu = new ToolStripMenuItem(isComboBox ? "Options ▶" : "Children ▶");
+            childrenMenu.DropDownOpening += (_, _) =>
             {
-                AutomationElement[] children;
-                string childrenMenuLabel;
-                bool isComboBox = element.ControlType == ControlType.ComboBox;
-                bool isMenuRelated = element.ControlType == ControlType.MenuItem
-                    || element.ControlType == ControlType.Menu
-                    || element.ControlType == ControlType.MenuBar;
-
-                using (MeasurePerf("BuildAssistiveMenuChildActions"))
+                childrenMenu.DropDownItems.Clear();
+                try
                 {
-                // For ComboBox controls expand the dropdown to materialise list items,
-                // then collapse immediately so the user does not see the dropdown open
-                // while the context menu is being built.
-                // Do NOT expand MenuItem / Menu / MenuBar elements: expanding them
-                // opens the native submenu popup on the message-pump thread which causes
-                // a 10-15 s freeze and visual artefacts.  Their children are accessible
-                // via FindAllChildren() without expansion.
-                if (isComboBox && element.Patterns.ExpandCollapse.IsSupported)
-                {
-                    try { element.Patterns.ExpandCollapse.Pattern.Expand(); }
-                    catch { /* best effort */ }
-                    Thread.Sleep(300); // brief pause so list items materialize
-                }
+                    AutomationElement[] children;
+                    string childrenMenuLabel;
+                    bool isMenuRelated = element.ControlType == ControlType.MenuItem
+                        || element.ControlType == ControlType.Menu
+                        || element.ControlType == ControlType.MenuBar;
 
-                // For ComboBox elements, retrieve the ListItem descendants (the actual
-                // dropdown options) rather than the immediate structural children
-                // (Edit, Button, List) which are not useful to the user.
-                if (isComboBox && _automation != null)
-                {
-                    var cf = _automation.ConditionFactory;
-
-                    // First try: ListItem descendants directly under the ComboBox.
-                    children = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
-                    childrenMenuLabel = children.Length > 0 ? "Options ▶" : "Children ▶";
-
-                    if (children.Length == 0)
+                    using (MeasurePerf("BuildAssistiveMenuChildActions"))
                     {
-                        // Second try: find the List child and enumerate its children.
-                        // Many combo implementations nest items inside a List container.
-                        var listChild = element.FindFirstDescendant(cf.ByControlType(ControlType.List));
-                        if (listChild != null)
+                        if (isComboBox && element.Patterns.ExpandCollapse.IsSupported)
                         {
-                            children = listChild.FindAllChildren();
+                            try { element.Patterns.ExpandCollapse.Pattern.Expand(); }
+                            catch { /* best effort */ }
+                            Thread.Sleep(300);
+                        }
+
+                        if (isComboBox && _automation != null)
+                        {
+                            var cf = _automation.ConditionFactory;
+                            children = element.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
+                            childrenMenuLabel = children.Length > 0 ? "Options ▶" : "Children ▶";
+
+                            if (children.Length == 0)
+                            {
+                                var listChild = element.FindFirstDescendant(cf.ByControlType(ControlType.List));
+                                if (listChild != null)
+                                {
+                                    children = listChild.FindAllChildren();
+                                    if (children.Length > 0)
+                                        childrenMenuLabel = "Options ▶";
+                                }
+                            }
+
+                            if (children.Length == 0)
+                                children = element.FindAllChildren();
+
                             if (children.Length > 0)
-                                childrenMenuLabel = "Options ▶";
+                            {
+                                var seen = new HashSet<(string, string)>();
+                                children = children.Where(c =>
+                                {
+                                    var key = (c.Name ?? string.Empty, c.AutomationId ?? string.Empty);
+                                    return seen.Add(key);
+                                }).ToArray();
+                            }
+
+                            try { element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
+                            catch { /* best effort */ }
+                        }
+                        else if (isMenuRelated && _automation != null)
+                        {
+                            children = element.FindAllChildren();
+                            childrenMenuLabel = "Children ▶";
+                        }
+                        else
+                        {
+                            children = element.FindAllChildren();
+                            childrenMenuLabel = "Children ▶";
                         }
                     }
 
-                    // Last resort: immediate children of the ComboBox.
+                    childrenMenu.Text = childrenMenuLabel;
                     if (children.Length == 0)
-                        children = element.FindAllChildren();
-
-                    // Deduplicate: some ComboBox UIA implementations expose the same
-                    // logical option at multiple levels of the accessibility tree
-                    // (e.g. once as a ListItem descendant and again as a child of a
-                    // nested List container). Remove subsequent occurrences of any
-                    // (Name, AutomationId) pair so the menu shows each option once.
-                    // Use ordinal (case-sensitive) comparison to preserve distinct
-                    // options whose names differ only in letter case.
-                    if (children.Length > 0)
                     {
-                        var seen = new HashSet<(string, string)>();
-                        children = children.Where(c =>
-                        {
-                            var key = (c.Name ?? string.Empty, c.AutomationId ?? string.Empty);
-                            return seen.Add(key);
-                        }).ToArray();
+                        childrenMenu.DropDownItems.Add(new ToolStripMenuItem("(none)") { Enabled = false });
+                        return;
                     }
 
-                    // Collapse the dropdown so it does not remain open while the context
-                    // menu is visible (the user would see an expanded combo behind the menu).
-                    try { element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
-                    catch { /* best effort */ }
-                }
-                else if (isMenuRelated && _automation != null)
-                {
-                    // For menu elements enumerate children without expanding so that no
-                    // submenu popup is opened.  The UIA tree exposes sub-items even while
-                    // the menu is visually collapsed.
-                    children = element.FindAllChildren();
-                    childrenMenuLabel = "Children ▶";
-                }
-                else
-                {
-                    children = element.FindAllChildren();
-                    childrenMenuLabel = "Children ▶";
-                }
-                }
-
-                if (children.Length > 0)
-                {
-                    menu.Items.Add(new ToolStripSeparator());
-                    var childrenMenu = new ToolStripMenuItem(childrenMenuLabel);
                     foreach (var child in children.Take(MaxChildrenToDisplay))
                     {
                         var childInfo = BuildElementInfo(child);
@@ -2320,15 +2288,10 @@ public sealed class RecordingOverlayWindow : Form
 
                         childItem.Click += (_, _) =>
                         {
-                            // Re-expand the parent so that fresh list items are materialised
-                            // in the UIA tree before we attempt to select one.  The item
-                            // reference captured during menu construction is stale once the
-                            // dropdown has been collapsed, so we re-locate it by name or
-                            // AutomationId after expanding.
                             try { element.Patterns.ExpandCollapse.PatternOrDefault?.Expand(); }
                             catch { /* best effort */ }
 
-                            Thread.Sleep(200); // 200 ms lets UIA child elements re-materialise after Expand()
+                            Thread.Sleep(200);
 
                             bool selected = false;
                             if (_automation != null)
@@ -2336,9 +2299,6 @@ public sealed class RecordingOverlayWindow : Form
                                 try
                                 {
                                     var cf = _automation.ConditionFactory;
-
-                                    // Try to find a fresh reference by AutomationId first,
-                                    // then fall back to matching by Name.
                                     AutomationElement? freshItem = null;
                                     if (!string.IsNullOrEmpty(capturedChildInfo.AutomationId))
                                         freshItem = element.FindFirstDescendant(
@@ -2352,15 +2312,8 @@ public sealed class RecordingOverlayWindow : Form
                                     if (freshItem != null)
                                     {
                                         freshItem.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
-
-                                        // Strategy 1: Click() — reliably triggers ComboBox
-                                        // selection events and updates the displayed value.
                                         freshItem.Click();
 
-                                        // Strategy 2: Also call SelectionItem.Select() to
-                                        // ensure the selection state is committed in case
-                                        // Click() alone did not fully populate the ComboBox
-                                        // (e.g. WPF or custom combo implementations).
                                         try { freshItem.Patterns.SelectionItem.PatternOrDefault?.Select(); }
                                         catch { /* best effort */ }
 
@@ -2373,10 +2326,8 @@ public sealed class RecordingOverlayWindow : Form
 
                             if (!selected)
                             {
-                                // Fallback: use the (possibly stale) original reference.
                                 try
                                 {
-                                    // Try SelectionItem.Select() first on the original ref.
                                     if (child.Patterns.SelectionItem.IsSupported)
                                         child.Patterns.SelectionItem.Pattern.Select();
                                     else
@@ -2387,7 +2338,6 @@ public sealed class RecordingOverlayWindow : Form
                                 }
                                 catch
                                 {
-                                    // Last resort: click the stale reference.
                                     try
                                     {
                                         child.Click();
@@ -2397,11 +2347,6 @@ public sealed class RecordingOverlayWindow : Form
                                 }
                             }
 
-                            // Final fallback: if the ComboBox supports the Value pattern
-                            // and no prior strategy confirmed success, write the selected
-                            // item's name directly into the displayed value. This covers
-                            // custom / owner-drawn combos where neither Click() nor
-                            // SelectionItem.Select() update the text.
                             var selectedName = capturedChildInfo.Name;
                             if (!selected && isComboBox && !string.IsNullOrEmpty(selectedName))
                             {
@@ -2414,15 +2359,9 @@ public sealed class RecordingOverlayWindow : Form
                                 catch { /* best effort — Value pattern may not be writable */ }
                             }
 
-                            // Ensure the dropdown is collapsed regardless of the path taken.
                             try { element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
                             catch { /* best effort */ }
 
-                            // Record against the parent element (e.g. the ComboBox) so the
-                            // locator targets the container, not the transient list item.
-                            // Use AutomationId or ClassName to describe the parent combo box
-                            // because its Name may reflect the currently displayed value and
-                            // would be confusing in the recorded description.
                             var itemLabel = capturedChildInfo.Name ?? capturedChildInfo.AutomationId ?? "(item)";
                             string parentLabel;
                             if (!string.IsNullOrEmpty(elementInfo?.AutomationId))
@@ -2445,10 +2384,15 @@ public sealed class RecordingOverlayWindow : Form
                     }
                     if (children.Length > MaxChildrenToDisplay)
                         childrenMenu.DropDownItems.Add(new ToolStripMenuItem($"… and {children.Length - MaxChildrenToDisplay} more") { Enabled = false });
-                    menu.Items.Add(childrenMenu);
                 }
-            }
-            catch { /* best effort */ }
+                catch
+                {
+                    childrenMenu.DropDownItems.Clear();
+                    childrenMenu.DropDownItems.Add(new ToolStripMenuItem("(unavailable)") { Enabled = false });
+                }
+            };
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(childrenMenu);
         }
 
         // ── Popup Windows ▶ — sibling child Window elements of the current window ─────
