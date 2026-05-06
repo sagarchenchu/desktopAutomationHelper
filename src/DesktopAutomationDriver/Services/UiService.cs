@@ -39,6 +39,14 @@ public class UiService : IUiService
     private const int MenuExpandDelayMs = 250;
     private const int MenuActionDelayMs = 150;
     private const int MenuFocusDelayMs = 75;
+    private const int DropdownItemPhysicalClickSettleMs = 250;
+    private const int DropdownItemFallbackDelayMs = 150;
+    private const int DropdownItemMinPadX = 6;
+    private const int DropdownItemMaxPadX = 18;
+    private const int DropdownItemPadXDivisor = 10;
+    private const int DropdownItemMinPadY = 3;
+    private const int DropdownItemMaxPadY = 8;
+    private const int DropdownItemPadYDivisor = 4;
     private const int DefaultListResponseLimit = 500;
     private const int MaxListResponseLimit = 5000;
     private const string DesktopRootName = "Desktop";
@@ -4302,6 +4310,7 @@ public class UiService : IUiService
         DropdownItemClickRegion region = DropdownItemClickRegion.LeftCenter)
     {
         var rect = item.BoundingRectangle;
+        var safeItemName = SanitizeValue(itemName);
 
         foreach (var candidateRegion in GetDropdownItemRegionOrder(region))
         {
@@ -4311,14 +4320,14 @@ public class UiService : IUiService
 
                 _logger.LogInformation(
                     "Trying dropdown item click. item={Item}, region={Region}, point={Point}, bounds={Bounds}",
-                    itemName,
+                    safeItemName,
                     candidateRegion,
                     point,
                     rect);
 
-                if (SendInstantLeftClick(point, $"SelectHeaderDropdownItem {itemName} at {candidateRegion}"))
+                if (SendInstantLeftClick(point, $"SelectHeaderDropdownItem {safeItemName} at {candidateRegion}"))
                 {
-                    Thread.Sleep(250);
+                    Thread.Sleep(DropdownItemPhysicalClickSettleMs);
                     return true;
                 }
             }
@@ -4327,7 +4336,7 @@ public class UiService : IUiService
                 _logger.LogWarning(
                     ex,
                     "Dropdown item physical click failed for {Item} at region {Region}",
-                    itemName,
+                    safeItemName,
                     candidateRegion);
             }
         }
@@ -4337,13 +4346,13 @@ public class UiService : IUiService
             if (item.Patterns.Toggle.IsSupported)
             {
                 item.Patterns.Toggle.Pattern.Toggle();
-                Thread.Sleep(150);
+                Thread.Sleep(DropdownItemFallbackDelayMs);
                 return true;
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Dropdown item Toggle failed for {Item}", itemName);
+            _logger.LogWarning(ex, "Dropdown item Toggle failed for {Item}", safeItemName);
         }
 
         try
@@ -4351,13 +4360,13 @@ public class UiService : IUiService
             if (item.Patterns.SelectionItem.IsSupported)
             {
                 item.Patterns.SelectionItem.Pattern.Select();
-                Thread.Sleep(150);
+                Thread.Sleep(DropdownItemFallbackDelayMs);
                 return true;
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Dropdown item SelectionItem.Select failed for {Item}", itemName);
+            _logger.LogWarning(ex, "Dropdown item SelectionItem.Select failed for {Item}", safeItemName);
         }
 
         try
@@ -4365,13 +4374,13 @@ public class UiService : IUiService
             if (item.Patterns.Invoke.IsSupported)
             {
                 item.Patterns.Invoke.Pattern.Invoke();
-                Thread.Sleep(150);
+                Thread.Sleep(DropdownItemFallbackDelayMs);
                 return true;
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Dropdown item Invoke failed for {Item}", itemName);
+            _logger.LogWarning(ex, "Dropdown item Invoke failed for {Item}", safeItemName);
         }
 
         try
@@ -4379,12 +4388,12 @@ public class UiService : IUiService
             item.Focus();
             Thread.Sleep(MenuFocusDelayMs);
             Keyboard.Press(VirtualKeyShort.SPACE);
-            Thread.Sleep(150);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Dropdown item Focus+Space failed for {Item}", itemName);
+            _logger.LogWarning(ex, "Dropdown item Focus+Space failed for {Item}", safeItemName);
         }
 
         try
@@ -4392,12 +4401,12 @@ public class UiService : IUiService
             item.Focus();
             Thread.Sleep(MenuFocusDelayMs);
             Keyboard.Press(VirtualKeyShort.RETURN);
-            Thread.Sleep(150);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Dropdown item Focus+Enter failed for {Item}", itemName);
+            _logger.LogWarning(ex, "Dropdown item Focus+Enter failed for {Item}", safeItemName);
         }
 
         return false;
@@ -4410,8 +4419,8 @@ public class UiService : IUiService
         if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
             throw new InvalidOperationException("Dropdown ListItem has invalid bounding rectangle.");
 
-        var padX = Math.Max(6, Math.Min(18, rect.Width / 10));
-        var padY = Math.Max(3, Math.Min(8, rect.Height / 4));
+        var padX = Math.Max(DropdownItemMinPadX, Math.Min(DropdownItemMaxPadX, rect.Width / DropdownItemPadXDivisor));
+        var padY = Math.Max(DropdownItemMinPadY, Math.Min(DropdownItemMaxPadY, rect.Height / DropdownItemPadYDivisor));
 
         return region switch
         {

@@ -154,6 +154,14 @@ public sealed class RecordingOverlayWindow : Form
     /// Delay in milliseconds between focusing a logical menu item and sending Enter.
     /// </summary>
     private const int MenuFocusDelayMs = 75;
+    private const int DropdownItemPhysicalClickSettleMs = 250;
+    private const int DropdownItemFallbackDelayMs = 150;
+    private const int DropdownItemMinPadX = 6;
+    private const int DropdownItemMaxPadX = 18;
+    private const int DropdownItemPadXDivisor = 10;
+    private const int DropdownItemMinPadY = 3;
+    private const int DropdownItemMaxPadY = 8;
+    private const int DropdownItemPadYDivisor = 4;
 
     /// <summary>
     /// Delay in milliseconds between selecting a context menu action and executing
@@ -4254,7 +4262,7 @@ public sealed class RecordingOverlayWindow : Form
 
                 if (TryPhysicalClickPoint(point, $"Select dropdown item {itemName} at {candidateRegion}"))
                 {
-                    Thread.Sleep(250);
+                    Thread.Sleep(DropdownItemPhysicalClickSettleMs);
                     return true;
                 }
             }
@@ -4273,7 +4281,7 @@ public sealed class RecordingOverlayWindow : Form
             if (item.Patterns.Toggle.IsSupported)
             {
                 item.Patterns.Toggle.Pattern.Toggle();
-                Thread.Sleep(150);
+                Thread.Sleep(DropdownItemFallbackDelayMs);
                 return true;
             }
         }
@@ -4287,7 +4295,7 @@ public sealed class RecordingOverlayWindow : Form
             if (item.Patterns.SelectionItem.IsSupported)
             {
                 item.Patterns.SelectionItem.Pattern.Select();
-                Thread.Sleep(150);
+                Thread.Sleep(DropdownItemFallbackDelayMs);
                 return true;
             }
         }
@@ -4301,7 +4309,7 @@ public sealed class RecordingOverlayWindow : Form
             if (item.Patterns.Invoke.IsSupported)
             {
                 item.Patterns.Invoke.Pattern.Invoke();
-                Thread.Sleep(150);
+                Thread.Sleep(DropdownItemFallbackDelayMs);
                 return true;
             }
         }
@@ -4313,9 +4321,9 @@ public sealed class RecordingOverlayWindow : Form
         try
         {
             item.Focus();
-            Thread.Sleep(75);
+            Thread.Sleep(MenuFocusDelayMs);
             Keyboard.Press(VirtualKeyShort.SPACE);
-            Thread.Sleep(150);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
             return true;
         }
         catch (Exception ex)
@@ -4326,9 +4334,9 @@ public sealed class RecordingOverlayWindow : Form
         try
         {
             item.Focus();
-            Thread.Sleep(75);
+            Thread.Sleep(MenuFocusDelayMs);
             Keyboard.Press(VirtualKeyShort.RETURN);
-            Thread.Sleep(150);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
             return true;
         }
         catch (Exception ex)
@@ -4339,7 +4347,7 @@ public sealed class RecordingOverlayWindow : Form
         try
         {
             item.Click();
-            Thread.Sleep(150);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
             return true;
         }
         catch (Exception ex)
@@ -4357,8 +4365,8 @@ public sealed class RecordingOverlayWindow : Form
         if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
             throw new InvalidOperationException("Dropdown ListItem has invalid bounding rectangle.");
 
-        var padX = Math.Max(6, Math.Min(18, rect.Width / 10));
-        var padY = Math.Max(3, Math.Min(8, rect.Height / 4));
+        var padX = Math.Max(DropdownItemMinPadX, Math.Min(DropdownItemMaxPadX, rect.Width / DropdownItemPadXDivisor));
+        var padY = Math.Max(DropdownItemMinPadY, Math.Min(DropdownItemMaxPadY, rect.Height / DropdownItemPadYDivisor));
 
         return region switch
         {
