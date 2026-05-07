@@ -166,6 +166,12 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxRightEdgeMinOffsetPx = 8;
     private const int ComboBoxRightEdgeMaxOffsetPx = 20;
     private const int ComboBoxRightEdgeOffsetDivisor = 8;
+    private const int ComboBoxDropdownVerticalTolerancePx = 30;
+    private const int MaxComboBoxItemsForTextSelection = 500;
+    private const int ComboBoxKeyboardTypeaheadInitialDelayMs = 150;
+    private const int ComboBoxKeyboardTypeaheadSettleDelayMs = 250;
+    private const int TextPromptDialogWidth = 380;
+    private const int TextPromptDialogHeight = 145;
 
     /// <summary>
     /// Delay in milliseconds between selecting a context menu action and executing
@@ -4188,7 +4194,7 @@ public sealed class RecordingOverlayWindow : Form
                         continue;
 
                     var nearCombo =
-                        rect.Top >= comboRect.Bottom - 30 &&
+                        rect.Top >= comboRect.Bottom - ComboBoxDropdownVerticalTolerancePx &&
                         rect.Left <= comboRect.Right + 150 &&
                         rect.Right >= comboRect.Left - 150;
 
@@ -4334,7 +4340,7 @@ public sealed class RecordingOverlayWindow : Form
 
             Thread.Sleep(MenuNavigationDelayMs);
 
-            var item = FindDynamicComboBoxItems(comboBox, maxItems: 500)
+            var item = FindDynamicComboBoxItems(comboBox, maxItems: MaxComboBoxItemsForTextSelection)
                 .FirstOrDefault(x =>
                     string.Equals(
                         NormalizeMenuText(SafeElementName(x)),
@@ -4398,13 +4404,13 @@ public sealed class RecordingOverlayWindow : Form
             if (!OpenComboBoxDropdown(comboBox))
                 return false;
 
-            Thread.Sleep(150);
+            Thread.Sleep(ComboBoxKeyboardTypeaheadInitialDelayMs);
 
             Keyboard.Type(itemName);
-            Thread.Sleep(250);
+            Thread.Sleep(ComboBoxKeyboardTypeaheadSettleDelayMs);
 
             Keyboard.Press(VirtualKeyShort.RETURN);
-            Thread.Sleep(250);
+            Thread.Sleep(ComboBoxKeyboardTypeaheadSettleDelayMs);
 
             _logger.LogInformation(
                 "ComboBox selected by keyboard typeahead. combo={Combo}, item={Item}",
@@ -6574,8 +6580,8 @@ public sealed class RecordingOverlayWindow : Form
             Text = title,
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterScreen,
-            Width = 380,
-            Height = 145,
+            Width = TextPromptDialogWidth,
+            Height = TextPromptDialogHeight,
             MaximizeBox = false,
             MinimizeBox = false,
             TopMost = true
