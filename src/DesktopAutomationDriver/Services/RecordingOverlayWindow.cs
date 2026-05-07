@@ -90,6 +90,7 @@ public sealed class RecordingOverlayWindow : Form
 
     /// <summary>Maximum number of child elements shown in the "Children ▶" submenu.</summary>
     private const int MaxChildrenToDisplay = 30;
+    private const int MaxAssistiveDropdownItemsToDisplay = 25;
     private const int MaxTableAncestorDepth = 5;
     private const int MaxWindowSearchDepth = 5;
     private const int MaxMenuAncestorDepth = 10;
@@ -3976,16 +3977,40 @@ public sealed class RecordingOverlayWindow : Form
     {
         var dynamicMenu = new ToolStripMenuItem("Open Dynamic ComboBox");
 
-        var openAndList = new ToolStripMenuItem("Open and List Items");
-        openAndList.Click += (_, _) =>
+        var selectByText = new ToolStripMenuItem("Select by Text...");
+        selectByText.Click += (_, _) =>
         {
-            RunAssistiveActionAfterMenuClose($"Open dynamic ComboBox {SafeElementName(comboBox)}", () =>
+            RunAssistiveActionAfterMenuClose($"Select ComboBox item by text", () =>
             {
-                OpenDynamicComboBoxAndShowItems(comboBox, comboInfo);
+                var itemName = PromptForTextValue("Enter ComboBox item text:");
+
+                if (string.IsNullOrWhiteSpace(itemName))
+                    return;
+
+                var success = SelectDynamicComboBoxItemAssistive(
+                    comboBox,
+                    comboInfo,
+                    itemName.Trim());
+
+                if (!success)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to select ComboBox item '{itemName}'.");
+                }
             });
         };
 
-        dynamicMenu.DropDownItems.Add(openAndList);
+        var showFirst25 = new ToolStripMenuItem("Show First 25 Items");
+        showFirst25.Click += (_, _) =>
+        {
+            RunAssistiveActionAfterMenuClose($"Open ComboBox and show first items", () =>
+            {
+                OpenDynamicComboBoxAndShowItems(comboBox, comboInfo, maxItems: MaxAssistiveDropdownItemsToDisplay);
+            });
+        };
+
+        dynamicMenu.DropDownItems.Add(selectByText);
+        dynamicMenu.DropDownItems.Add(showFirst25);
         menu.Items.Add(dynamicMenu);
     }
 
@@ -4115,7 +4140,8 @@ public sealed class RecordingOverlayWindow : Form
 
     private void OpenDynamicComboBoxAndShowItems(
         AutomationElement comboBox,
-        ElementInfo? comboInfo)
+        ElementInfo? comboInfo,
+        int maxItems = MaxAssistiveDropdownItemsToDisplay)
     {
         var comboName = SafeElementName(comboBox);
 
@@ -4129,7 +4155,9 @@ public sealed class RecordingOverlayWindow : Form
 
         Thread.Sleep(MenuNavigationDelayMs);
 
-        var items = FindDynamicComboBoxItems(comboBox);
+        var items = FindDynamicComboBoxItems(comboBox, maxItems + 1)
+            .Take(maxItems + 1)
+            .ToList();
         if (items.Count == 0)
         {
             throw new InvalidOperationException(
@@ -4139,7 +4167,53 @@ public sealed class RecordingOverlayWindow : Form
         ShowDynamicComboBoxItemsMenu(Cursor.Position, comboBox, comboInfo, items);
     }
 
-    private List<AutomationElement> FindDynamicComboBoxItems(AutomationElement comboBox)
+    private AutomationElement? FindDynamicComboBoxList(AutomationElement comboBox)
+    {
+        try
+        {
+            if (_automation == null)
+                return null;
+
+            var comboRect = comboBox.BoundingRectangle;
+            var desktop = _automation.GetDesktop();
+            var cf = _automation.ConditionFactory;
+
+            var lists = desktop.FindAllDescendants(cf.ByControlType(ControlType.List));
+
+            foreach (var list in lists)
+            {
+                try
+                {
+                    var rect = list.BoundingRectangle;
+
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        continue;
+
+                    var nearCombo =
+                        rect.Top >= comboRect.Bottom - 30 &&
+                        rect.Left <= comboRect.Right + 150 &&
+                        rect.Right >= comboRect.Left - 150;
+
+                    if (nearCombo)
+                        return list;
+                }
+                catch
+                {
+                    // ignore unstable list
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindDynamicComboBoxList failed");
+        }
+
+        return null;
+    }
+
+    private List<AutomationElement> FindDynamicComboBoxItems(
+        AutomationElement comboBox,
+        int maxItems = 50)
     {
         try
         {
@@ -4148,94 +4222,27 @@ public sealed class RecordingOverlayWindow : Form
 
             var logicalItems = GetLogicalComboBoxItems(comboBox);
             if (logicalItems.Count > 0)
-                return logicalItems;
+                return logicalItems.Take(maxItems).ToList();
 
-            var comboRect = comboBox.BoundingRectangle;
-            var desktop = _automation.GetDesktop();
+            var list = FindDynamicComboBoxList(comboBox);
+            if (list == null)
+                return [];
+
             var cf = _automation.ConditionFactory;
 
-            var allItems = desktop.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
-            var candidates = new List<AutomationElement>();
-
-            foreach (var item in allItems)
-            {
-                try
-                {
-                    var name = SafeElementName(item);
-                    var aid = SafeElementAutomationId(item);
-
-                    if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(aid))
-                        continue;
-
-                    var rect = item.BoundingRectangle;
-                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
-                        continue;
-
-                    var nearCombo =
-                        rect.Top >= comboRect.Bottom - 20 &&
-                        rect.Left <= comboRect.Right + 100 &&
-                        rect.Right >= comboRect.Left - 100;
-
-                    var belowOrOverlay = rect.Top >= comboRect.Top - 10;
-
-                    if (nearCombo || belowOrOverlay)
-                        candidates.Add(item);
-                }
-                catch
-                {
-                    // ignore unstable UIA item
-                }
-            }
-
-            if (candidates.Count > 0)
-            {
-                _logger.LogInformation(
-                    "Found dynamic ComboBox items. combo={Combo}, count={Count}, itemNames={Items}",
-                    SafeElementName(comboBox),
-                    candidates.Count,
-                    candidates.Select(x => SafeElementName(x)).ToList());
-                return candidates;
-            }
-
-            var lists = desktop.FindAllDescendants(cf.ByControlType(ControlType.List));
-            foreach (var list in lists)
-            {
-                try
-                {
-                    var rect = list.BoundingRectangle;
-                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
-                        continue;
-
-                    var nearCombo =
-                        rect.Top >= comboRect.Bottom - 20 &&
-                        rect.Left <= comboRect.Right + 150 &&
-                        rect.Right >= comboRect.Left - 150;
-
-                    if (!nearCombo)
-                        continue;
-
-                    var listItems = list
-                        .FindAllDescendants(cf.ByControlType(ControlType.ListItem))
-                        .Where(x =>
-                            !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
-                            !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
-                        .ToList();
-
-                    if (listItems.Count > 0)
-                        return listItems;
-                }
-                catch
-                {
-                    // ignore
-                }
-            }
+            return list
+                .FindAllDescendants(cf.ByControlType(ControlType.ListItem))
+                .Where(x =>
+                    !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
+                    !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
+                .Take(maxItems)
+                .ToList();
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "FindDynamicComboBoxItems failed for {Combo}", SafeElementName(comboBox));
+            return [];
         }
-
-        return [];
     }
 
     private void ShowDynamicComboBoxItemsMenu(
@@ -4257,7 +4264,9 @@ public sealed class RecordingOverlayWindow : Form
 
         menu.Items.Add(new ToolStripSeparator());
 
-        foreach (var item in items)
+        var displayItems = items.Take(MaxAssistiveDropdownItemsToDisplay).ToList();
+
+        foreach (var item in displayItems)
         {
             var itemName = SafeElementName(item);
             if (string.IsNullOrWhiteSpace(itemName))
@@ -4280,6 +4289,15 @@ public sealed class RecordingOverlayWindow : Form
             menu.Items.Add(menuItem);
         }
 
+        if (items.Count > MaxAssistiveDropdownItemsToDisplay)
+        {
+            menu.Items.Add(new ToolStripMenuItem(
+                $"Showing first {MaxAssistiveDropdownItemsToDisplay}. Use Select by Text...")
+            {
+                Enabled = false
+            });
+        }
+
         AddCloseItem(menu);
         EnsureOverlayVisible();
         menu.Show(pt);
@@ -4292,6 +4310,24 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
+            if (TrySelectComboBoxByKeyboard(comboBox, itemName))
+            {
+                _service.AddAction(new RecordedAction
+                {
+                    ActionType = ActionType.Click,
+                    Mode = RecordingMode.Assistive,
+                    Element = comboInfo ?? BuildElementInfo(comboBox),
+                    TargetElement = comboInfo ?? BuildElementInfo(comboBox),
+                    Operation = "selectcomboboxitem",
+                    Value = itemName,
+                    Description = $"Select ComboBox item '{itemName}' from {comboInfo?.Name ?? SafeElementName(comboBox)} using keyboard typeahead",
+                    PointerContext = ClonePointerContext(_currentAssistivePointerContext)
+                });
+
+                UpdateStatusAfterAction($"Selected ComboBox item {itemName}");
+                return true;
+            }
+
             BringElementWindowToForeground(comboBox);
             Thread.Sleep(WindowActivationDelayMs);
 
@@ -4300,7 +4336,7 @@ public sealed class RecordingOverlayWindow : Form
 
             Thread.Sleep(MenuNavigationDelayMs);
 
-            var item = FindDynamicComboBoxItems(comboBox)
+            var item = FindDynamicComboBoxItems(comboBox, maxItems: 500)
                 .FirstOrDefault(x =>
                     string.Equals(
                         NormalizeMenuText(SafeElementName(x)),
@@ -4313,7 +4349,7 @@ public sealed class RecordingOverlayWindow : Form
 
             if (item == null)
             {
-                var available = FindDynamicComboBoxItems(comboBox)
+                var available = FindDynamicComboBoxItems(comboBox, maxItems: MaxAssistiveDropdownItemsToDisplay)
                     .Select(SafeElementName)
                     .ToList();
 
@@ -4348,6 +4384,40 @@ public sealed class RecordingOverlayWindow : Form
         {
             _logger.LogError(ex, "SelectDynamicComboBoxItemAssistive failed");
             _statusLabel.Text = "ComboBox item select failed: " + ex.Message;
+            return false;
+        }
+    }
+
+    private bool TrySelectComboBoxByKeyboard(
+        AutomationElement comboBox,
+        string itemName)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!OpenComboBoxDropdown(comboBox))
+                return false;
+
+            Thread.Sleep(150);
+
+            Keyboard.Type(itemName);
+            Thread.Sleep(250);
+
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(250);
+
+            _logger.LogInformation(
+                "ComboBox selected by keyboard typeahead. combo={Combo}, item={Item}",
+                SafeElementName(comboBox),
+                itemName);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "TrySelectComboBoxByKeyboard failed for {Item}", itemName);
             return false;
         }
     }
@@ -4608,22 +4678,47 @@ public sealed class RecordingOverlayWindow : Form
     {
         var dynamicMenu = new ToolStripMenuItem("Open Dynamic Menu");
 
-        var openAndList = new ToolStripMenuItem("Open and List Items");
-        openAndList.Click += (_, _) =>
+        var selectByText = new ToolStripMenuItem("Select by Text...");
+        selectByText.Click += (_, _) =>
         {
-            RunAssistiveActionAfterMenuClose($"Open dynamic menu {SafeElementName(parentMenuItem)}", () =>
+            RunAssistiveActionAfterMenuClose($"Select dynamic menu item by text", () =>
             {
-                OpenDynamicMenuAndShowItems(parentMenuItem, parentInfo);
+                var childName = PromptForTextValue("Enter child menu item name:");
+
+                if (string.IsNullOrWhiteSpace(childName))
+                    return;
+
+                var success = SelectDynamicMenuItemAssistive(
+                    parentMenuItem,
+                    parentInfo,
+                    childName.Trim());
+
+                if (!success)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to select dynamic menu item '{childName}'.");
+                }
             });
         };
 
-        dynamicMenu.DropDownItems.Add(openAndList);
+        var showFirst25 = new ToolStripMenuItem("Show First 25 Items");
+        showFirst25.Click += (_, _) =>
+        {
+            RunAssistiveActionAfterMenuClose($"Open dynamic menu and show first items", () =>
+            {
+                OpenDynamicMenuAndShowItems(parentMenuItem, parentInfo, maxItems: MaxAssistiveDropdownItemsToDisplay);
+            });
+        };
+
+        dynamicMenu.DropDownItems.Add(selectByText);
+        dynamicMenu.DropDownItems.Add(showFirst25);
         menu.Items.Add(dynamicMenu);
     }
 
     private void OpenDynamicMenuAndShowItems(
         AutomationElement parentMenuItem,
-        ElementInfo? parentInfo)
+        ElementInfo? parentInfo,
+        int maxItems = MaxAssistiveDropdownItemsToDisplay)
     {
         BringElementWindowToForeground(parentMenuItem);
         Thread.Sleep(WindowActivationDelayMs);
@@ -4636,7 +4731,7 @@ public sealed class RecordingOverlayWindow : Form
             parentName,
             parentRect);
 
-        if (!OpenMenuParent(parentMenuItem))
+        if (!OpenMenuParentForDynamicSelection(parentMenuItem))
             throw new InvalidOperationException($"Failed to open dynamic menu '{parentName}'.");
 
         Thread.Sleep(MenuNavigationDelayMs);
@@ -4648,7 +4743,9 @@ public sealed class RecordingOverlayWindow : Form
                 $"Dynamic menu dropdown was not found after opening '{parentName}'.");
         }
 
-        var items = GetDynamicDropdownMenuItems(dropdown);
+        var items = GetDynamicDropdownMenuItems(dropdown)
+            .Take(maxItems + 1)
+            .ToList();
         if (items.Count == 0)
         {
             throw new InvalidOperationException(
@@ -4656,6 +4753,63 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         ShowDynamicDropdownItemsMenu(Cursor.Position, parentMenuItem, parentInfo, items);
+    }
+
+    private bool OpenMenuParentForDynamicSelection(AutomationElement menuItem)
+    {
+        try
+        {
+            BringElementWindowToForeground(menuItem);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            var rect = menuItem.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new System.Drawing.Point(
+                    rect.Left + rect.Width / 2,
+                    rect.Top + rect.Height / 2);
+
+                if (TryPhysicalClickPoint(point, $"Open dynamic menu parent {SafeElementName(menuItem)}"))
+                {
+                    Thread.Sleep(MenuNavigationDelayMs);
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Physical open dynamic menu parent failed");
+        }
+
+        try
+        {
+            if (menuItem.Patterns.ExpandCollapse.IsSupported)
+            {
+                menuItem.Patterns.ExpandCollapse.Pattern.Expand();
+                Thread.Sleep(MenuNavigationDelayMs);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ExpandCollapse open dynamic menu parent failed");
+        }
+
+        try
+        {
+            menuItem.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(MenuNavigationDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Focus+Enter open dynamic menu parent failed");
+        }
+
+        return false;
     }
 
     private bool OpenMenuParent(AutomationElement menuItem)
@@ -4828,7 +4982,9 @@ public sealed class RecordingOverlayWindow : Form
 
         menu.Items.Add(new ToolStripSeparator());
 
-        foreach (var item in items)
+        var displayItems = items.Take(MaxAssistiveDropdownItemsToDisplay).ToList();
+
+        foreach (var item in displayItems)
         {
             var itemName = SafeElementName(item);
 
@@ -4861,6 +5017,15 @@ public sealed class RecordingOverlayWindow : Form
             menu.Items.Add(menuItem);
         }
 
+        if (items.Count > MaxAssistiveDropdownItemsToDisplay)
+        {
+            menu.Items.Add(new ToolStripMenuItem(
+                $"Showing first {MaxAssistiveDropdownItemsToDisplay}. Use Select by Text...")
+            {
+                Enabled = false
+            });
+        }
+
         AddCloseItem(menu);
         EnsureOverlayVisible();
         menu.Show(pt);
@@ -4876,7 +5041,7 @@ public sealed class RecordingOverlayWindow : Form
             BringElementWindowToForeground(parentMenuItem);
             Thread.Sleep(WindowActivationDelayMs);
 
-            if (!OpenMenuParent(parentMenuItem))
+            if (!OpenMenuParentForDynamicSelection(parentMenuItem))
                 return false;
 
             Thread.Sleep(MenuNavigationDelayMs);
@@ -4907,7 +5072,7 @@ public sealed class RecordingOverlayWindow : Form
                 return false;
             }
 
-            if (!ActivateMenuItemElement(item, childName))
+            if (!ActivateDynamicLeafMenuItem(item, childName))
                 return false;
 
             _service.AddAction(new RecordedAction
@@ -4931,6 +5096,77 @@ public sealed class RecordingOverlayWindow : Form
             _statusLabel.Text = "Dynamic menu select failed: " + ex.Message;
             return false;
         }
+    }
+
+    private bool ActivateDynamicLeafMenuItem(AutomationElement item, string itemName)
+    {
+        try
+        {
+            var rect = item.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new System.Drawing.Point(
+                    rect.Left + rect.Width / 2,
+                    rect.Top + rect.Height / 2);
+
+                _logger.LogInformation(
+                    "Clicking dynamic leaf menu item. item={Item}, point={Point}, bounds={Bounds}",
+                    itemName,
+                    point,
+                    rect);
+
+                if (TryPhysicalClickPoint(point, $"Click dynamic menu item {itemName}"))
+                {
+                    Thread.Sleep(MenuNavigationDelayMs);
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Physical click failed for dynamic menu item {Item}", itemName);
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(MenuNavigationDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Focus+Enter failed for dynamic menu item {Item}", itemName);
+        }
+
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                Thread.Sleep(MenuNavigationDelayMs);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Invoke failed for dynamic menu item {Item}", itemName);
+        }
+
+        try
+        {
+            item.Click();
+            Thread.Sleep(MenuNavigationDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FlaUI Click failed for dynamic menu item {Item}", itemName);
+        }
+
+        return false;
     }
 
     private bool ActivateMenuItemElement(AutomationElement item, string itemName)
@@ -5528,7 +5764,9 @@ public sealed class RecordingOverlayWindow : Form
             menu.Items.Add(new ToolStripMenuItem("(no dropdown items detected)") { Enabled = false });
         }
 
-        foreach (var listItem in items)
+        var displayItems = items.Take(MaxAssistiveDropdownItemsToDisplay).ToList();
+
+        foreach (var listItem in displayItems)
         {
             var itemName = SafeElementName(listItem);
             if (string.IsNullOrWhiteSpace(itemName))
@@ -5576,6 +5814,15 @@ public sealed class RecordingOverlayWindow : Form
                 capturedName);
 
             menu.Items.Add(valueMenu);
+        }
+
+        if (items.Count > MaxAssistiveDropdownItemsToDisplay)
+        {
+            menu.Items.Add(new ToolStripMenuItem(
+                $"Showing first {MaxAssistiveDropdownItemsToDisplay}. Use Select by Text...")
+            {
+                Enabled = false
+            });
         }
 
         AddCloseItem(menu);
@@ -6311,6 +6558,74 @@ public sealed class RecordingOverlayWindow : Form
             }
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Shows a small modal input dialog prompting the user to enter arbitrary text.
+    /// </summary>
+    private static string? PromptForTextValue(string prompt)
+    {
+        return ShowTextPrompt("Select by Text", prompt);
+    }
+
+    private static string? ShowTextPrompt(string title, string prompt)
+    {
+        string? result = null;
+
+        using var form = new Form
+        {
+            Text = title,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterScreen,
+            Width = 380,
+            Height = 145,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            TopMost = true
+        };
+
+        var label = new WinLabel
+        {
+            Text = prompt,
+            Left = 12,
+            Top = 12,
+            Width = 350,
+            AutoSize = true
+        };
+
+        var textBox = new System.Windows.Forms.TextBox
+        {
+            Left = 12,
+            Top = 35,
+            Width = 340
+        };
+
+        var okBtn = new System.Windows.Forms.Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Left = 192,
+            Top = 68,
+            Width = 80
+        };
+
+        var cancelBtn = new System.Windows.Forms.Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Left = 278,
+            Top = 68,
+            Width = 80
+        };
+
+        form.AcceptButton = okBtn;
+        form.CancelButton = cancelBtn;
+        form.Controls.AddRange([label, textBox, okBtn, cancelBtn]);
+
+        if (form.ShowDialog() == DialogResult.OK)
+            result = textBox.Text;
+
+        return result;
     }
 
     /// <summary>
