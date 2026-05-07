@@ -177,6 +177,7 @@ internal static class GridHeaderDropdownHelper
             };
         }
 
+        // Prioritize right-side dropdown affordances; CenterLeft is intentionally omitted for header dropdown probing.
         var order = new[]
         {
             HeaderDropdownRegion.RightIcon1,

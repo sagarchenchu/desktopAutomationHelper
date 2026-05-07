@@ -5067,7 +5067,7 @@ public class UiService : IUiService
     {
         try
         {
-            // Access BoundingRectangle to confirm the item is still available in the automation tree.
+            // Access BoundingRectangle; stale dropdown items throw before pattern checks.
             _ = item.BoundingRectangle;
         }
         catch
