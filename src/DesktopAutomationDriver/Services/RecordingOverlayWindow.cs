@@ -4693,9 +4693,9 @@ public sealed class RecordingOverlayWindow : Form
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
                 var point = new System.Drawing.Point(
-                    rect.Left + Math.Max(
+                    (int)Math.Round(rect.Left + (double)Math.Max(
                         ComboBoxLeftEdgeMinOffsetPx,
-                        Math.Min(ComboBoxLeftEdgeMaxOffsetPx, rect.Width / ComboBoxLeftEdgeOffsetDivisor)),
+                        Math.Min(ComboBoxLeftEdgeMaxOffsetPx, rect.Width / ComboBoxLeftEdgeOffsetDivisor))),
                     rect.Top + rect.Height / 2);
 
                 if (TryPhysicalClickPoint(point, $"Select ComboBox item {itemName}"))
