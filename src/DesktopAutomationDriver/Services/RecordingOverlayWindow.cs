@@ -4263,7 +4263,7 @@ public sealed class RecordingOverlayWindow : Form
         return null;
     }
 
-    private bool IsComboListNearCombo(AutomationElement list, FlaUI.Core.Shapes.Rectangle comboRect)
+    private bool IsComboListNearCombo(AutomationElement list, System.Drawing.Rectangle comboRect)
     {
         try
         {

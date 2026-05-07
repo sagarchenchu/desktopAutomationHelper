@@ -4675,7 +4675,7 @@ public class UiService : IUiService
         return null;
     }
 
-    private bool IsComboListNearCombo(AutomationElement list, FlaUI.Core.Shapes.Rectangle comboRect)
+    private bool IsComboListNearCombo(AutomationElement list, Rectangle comboRect)
     {
         try
         {
