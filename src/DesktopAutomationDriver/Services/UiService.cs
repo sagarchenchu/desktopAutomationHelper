@@ -2818,9 +2818,33 @@ public class UiService : IUiService
         }
 
         var rawValue = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
-        var childName = rawValue.Contains('>')
-            ? rawValue.Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault()
-            : rawValue;
+        var pathSegments = rawValue
+            .Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        var childName = pathSegments[^1];
+
+        if (pathSegments.Count > 1)
+        {
+            var requestedParent = pathSegments[0];
+            var parentNameMatches = string.Equals(
+                NormalizeMenuText(requestedParent),
+                NormalizeMenuText(SafeElementName(parentMenuItem)),
+                StringComparison.OrdinalIgnoreCase);
+            var parentAutomationIdMatches = string.Equals(
+                NormalizeMenuText(requestedParent),
+                NormalizeMenuText(SafeElementAutomationId(parentMenuItem)),
+                StringComparison.OrdinalIgnoreCase);
+
+            if (!parentNameMatches && !parentAutomationIdMatches)
+            {
+                _logger.LogWarning(
+                    "selectdynamicmenuitem parent segment does not match locator target. requestedParent={RequestedParent}, locatorName={LocatorName}, locatorAutomationId={LocatorAutomationId}",
+                    SanitizeValue(requestedParent),
+                    SafeElementName(parentMenuItem),
+                    SafeElementAutomationId(parentMenuItem));
+            }
+        }
 
         if (string.IsNullOrWhiteSpace(childName))
             throw new ArgumentException("selectdynamicmenuitem requires a child menu item name in value.");
@@ -2833,7 +2857,7 @@ public class UiService : IUiService
         if (!OpenDynamicMenuParent(parentMenuItem))
             throw new InvalidOperationException($"Failed to open dynamic menu '{SafeElementName(parentMenuItem)}'.");
 
-        Thread.Sleep(300);
+        Thread.Sleep(MenuExpandDelayMs);
 
         var dropdown = FindDynamicMenuDropdown(session, parentMenuItem);
         if (dropdown == null)

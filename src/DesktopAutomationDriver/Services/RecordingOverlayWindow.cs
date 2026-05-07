@@ -1613,7 +1613,7 @@ public sealed class RecordingOverlayWindow : Form
 
             if (logicalChildren.Count > 0)
             {
-                AddLogicalMenuChildrenSubmenu(menu, element, elementInfo, logicalChildren);
+                AddLogicalMenuChildrenSubmenu(menu, element, logicalChildren);
             }
             else
             {
@@ -3993,11 +3993,8 @@ public sealed class RecordingOverlayWindow : Form
     private void AddLogicalMenuChildrenSubmenu(
         ContextMenuStrip menu,
         AutomationElement parentMenuItem,
-        ElementInfo? parentInfo,
         List<AutomationElement> logicalChildren)
     {
-        _ = parentInfo;
-
         var subMenuFlyout = new ToolStripMenuItem("Sub-Menu Items ▶");
         subMenuFlyout.DropDownOpening += (_, _) =>
         {
@@ -4155,7 +4152,7 @@ public sealed class RecordingOverlayWindow : Form
         if (!OpenMenuParent(parentMenuItem))
             throw new InvalidOperationException($"Failed to open dynamic menu '{parentName}'.");
 
-        Thread.Sleep(300);
+        Thread.Sleep(MenuNavigationDelayMs);
 
         var dropdown = FindDynamicMenuDropdown(parentMenuItem);
         if (dropdown == null)
@@ -4171,7 +4168,7 @@ public sealed class RecordingOverlayWindow : Form
                 $"Dynamic menu dropdown '{SafeElementName(dropdown)}' opened but no MenuItems were found.");
         }
 
-        ShowDynamicDropdownItemsMenu(Cursor.Position, parentMenuItem, parentInfo, dropdown, items);
+        ShowDynamicDropdownItemsMenu(Cursor.Position, parentMenuItem, parentInfo, items);
     }
 
     private bool OpenMenuParent(AutomationElement menuItem)
@@ -4329,11 +4326,8 @@ public sealed class RecordingOverlayWindow : Form
         System.Drawing.Point pt,
         AutomationElement parentMenuItem,
         ElementInfo? parentInfo,
-        AutomationElement dropdown,
         List<AutomationElement> items)
     {
-        _ = dropdown;
-
         var menu = new NoActivateContextMenuStrip { ShowImageMargin = false };
         menu.Font = new Font("Segoe UI", 10f);
 
@@ -4398,7 +4392,7 @@ public sealed class RecordingOverlayWindow : Form
             if (!OpenMenuParent(parentMenuItem))
                 return false;
 
-            Thread.Sleep(300);
+            Thread.Sleep(MenuNavigationDelayMs);
 
             var dropdown = FindDynamicMenuDropdown(parentMenuItem);
             if (dropdown == null)
@@ -4459,7 +4453,7 @@ public sealed class RecordingOverlayWindow : Form
             if (item.Patterns.Invoke.IsSupported)
             {
                 item.Patterns.Invoke.Pattern.Invoke();
-                Thread.Sleep(150);
+                Thread.Sleep(DropdownItemFallbackDelayMs);
                 return true;
             }
         }
@@ -4480,7 +4474,7 @@ public sealed class RecordingOverlayWindow : Form
 
                 if (TryPhysicalClickPoint(point, $"Click menu item {itemName}"))
                 {
-                    Thread.Sleep(150);
+                    Thread.Sleep(DropdownItemFallbackDelayMs);
                     return true;
                 }
             }
@@ -4494,7 +4488,7 @@ public sealed class RecordingOverlayWindow : Form
         {
             item.Focus();
             Keyboard.Press(VirtualKeyShort.RETURN);
-            Thread.Sleep(150);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
             return true;
         }
         catch (Exception ex)
@@ -4505,7 +4499,7 @@ public sealed class RecordingOverlayWindow : Form
         try
         {
             item.Click();
-            Thread.Sleep(150);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
             return true;
         }
         catch (Exception ex)
