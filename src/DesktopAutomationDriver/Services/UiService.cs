@@ -202,6 +202,7 @@ public class UiService : IUiService
             "openheaderdropdown" => OpenHeaderDropdown(request),
             "selectheaderdropdownitem" => SelectHeaderDropdownItem(request),
             "selectdynamicmenuitem" => SelectDynamicMenuItem(request),
+            "selectcomboboxitem" => SelectComboBoxItem(request),
             "draganddrop"     => DragAndDrop(request),
 
             // ----- Alert / Dialog Handling -----
@@ -2895,6 +2896,67 @@ public class UiService : IUiService
         };
     }
 
+    private object? SelectComboBoxItem(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("value is required for selectcomboboxitem.");
+
+        var comboBox = FindWithRetry(req);
+        if (!IsComboBoxElement(comboBox))
+        {
+            _logger.LogWarning(
+                "selectcomboboxitem called on non-ComboBox. name={Name}, controlType={ControlType}, className={ClassName}",
+                SafeElementName(comboBox),
+                comboBox.ControlType,
+                SafeElementClassName(comboBox));
+        }
+
+        var itemName = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
+        if (string.IsNullOrWhiteSpace(itemName))
+            throw new ArgumentException("selectcomboboxitem requires a non-empty value.");
+
+        var session = RequireSession();
+
+        if (!OpenComboBoxDropdown(session, comboBox))
+            throw new InvalidOperationException($"Failed to open ComboBox '{SafeElementName(comboBox)}'.");
+
+        Thread.Sleep(MenuExpandDelayMs);
+
+        var item = FindDynamicComboBoxItems(session, comboBox)
+            .FirstOrDefault(x =>
+                string.Equals(
+                    NormalizeMenuText(SafeElementName(x)),
+                    NormalizeMenuText(itemName),
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(
+                    NormalizeMenuText(SafeElementAutomationId(x)),
+                    NormalizeMenuText(itemName),
+                    StringComparison.OrdinalIgnoreCase));
+
+        if (item == null)
+        {
+            var available = FindDynamicComboBoxItems(session, comboBox)
+                .Select(SafeElementName)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToList();
+
+            throw new InvalidOperationException(
+                $"ComboBox item '{itemName}' was not found. Available: {string.Join(", ", available)}");
+        }
+
+        if (!ActivateComboBoxListItem(item, itemName))
+            throw new InvalidOperationException($"Failed to activate ComboBox item '{itemName}'.");
+
+        try { comboBox.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
+        catch { /* best effort */ }
+
+        return new
+        {
+            selected = itemName,
+            comboBox = SafeElementName(comboBox)
+        };
+    }
+
     /// <summary>
     /// Locates the cell at <c>req.Index</c> (row) / <c>req.ColumnIndex</c> (column) and
     /// performs either a single click or a double-click depending on <paramref name="doubleClick"/>.
@@ -4302,6 +4364,318 @@ public class UiService : IUiService
             _logger.LogWarning(ex, "Click Date Month Section failed");
             return false;
         }
+    }
+
+    private static bool IsComboBoxElement(AutomationElement element)
+    {
+        try
+        {
+            return element.ControlType == ControlType.ComboBox;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private List<AutomationElement> GetLogicalComboBoxItems(AutomationSession session, AutomationElement comboBox)
+    {
+        try
+        {
+            var cf = session.Automation.ConditionFactory;
+
+            return comboBox
+                .FindAllDescendants(cf.ByControlType(ControlType.ListItem))
+                .Where(x =>
+                    !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
+                    !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "GetLogicalComboBoxItems failed for {Combo}", SafeElementName(comboBox));
+            return [];
+        }
+    }
+
+    private bool OpenComboBoxDropdown(AutomationSession session, AutomationElement comboBox)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (comboBox.Patterns.ExpandCollapse.IsSupported)
+            {
+                var pattern = comboBox.Patterns.ExpandCollapse.Pattern;
+                if (pattern.ExpandCollapseState != ExpandCollapseState.Expanded)
+                {
+                    pattern.Expand();
+                    Thread.Sleep(MenuExpandDelayMs);
+                }
+
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ComboBox ExpandCollapse failed for {Combo}", SafeElementName(comboBox));
+        }
+
+        try
+        {
+            var openButton = FindComboBoxOpenButton(session, comboBox);
+            if (openButton != null)
+            {
+                var rect = openButton.BoundingRectangle;
+                if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+                {
+                    var point = new Point(
+                        (int)Math.Round(rect.Left + (rect.Width / 2.0)),
+                        (int)Math.Round(rect.Top + (rect.Height / 2.0)));
+
+                    if (SendInstantLeftClick(point, $"Open ComboBox button {SafeElementName(comboBox)}"))
+                    {
+                        Thread.Sleep(MenuExpandDelayMs);
+                        return true;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ComboBox open button click failed for {Combo}", SafeElementName(comboBox));
+        }
+
+        try
+        {
+            var rect = comboBox.BoundingRectangle;
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round((double)rect.Right - Math.Max(8d, Math.Min(20d, (double)rect.Width / 8d))),
+                    (int)Math.Round(rect.Top + (rect.Height / 2.0)));
+
+                if (SendInstantLeftClick(point, $"Open ComboBox right edge {SafeElementName(comboBox)}"))
+                {
+                    Thread.Sleep(MenuExpandDelayMs);
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ComboBox right-edge click failed for {Combo}", SafeElementName(comboBox));
+        }
+
+        try
+        {
+            comboBox.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.F4);
+            Thread.Sleep(MenuExpandDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ComboBox F4 open failed for {Combo}", SafeElementName(comboBox));
+        }
+
+        try
+        {
+            comboBox.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.ALT);
+            Keyboard.Press(VirtualKeyShort.DOWN);
+            Thread.Sleep(MenuExpandDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ComboBox Alt+Down open failed for {Combo}", SafeElementName(comboBox));
+        }
+
+        return false;
+    }
+
+    private AutomationElement? FindComboBoxOpenButton(AutomationSession session, AutomationElement comboBox)
+    {
+        try
+        {
+            var cf = session.Automation.ConditionFactory;
+
+            return comboBox
+                .FindAllDescendants(cf.ByControlType(ControlType.Button))
+                .FirstOrDefault(x =>
+                {
+                    var name = SafeElementName(x);
+                    var aid = SafeElementAutomationId(x);
+
+                    return (!string.IsNullOrWhiteSpace(name) && name.Contains("Open", StringComparison.OrdinalIgnoreCase))
+                           || (!string.IsNullOrWhiteSpace(aid) && aid.Contains("Open", StringComparison.OrdinalIgnoreCase))
+                           || string.IsNullOrWhiteSpace(name);
+                });
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private List<AutomationElement> FindDynamicComboBoxItems(AutomationSession session, AutomationElement comboBox)
+    {
+        try
+        {
+            var logicalItems = GetLogicalComboBoxItems(session, comboBox);
+            if (logicalItems.Count > 0)
+                return logicalItems;
+
+            var comboRect = comboBox.BoundingRectangle;
+            var desktop = session.Automation.GetDesktop();
+            var cf = session.Automation.ConditionFactory;
+
+            var allItems = desktop.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
+            var candidates = new List<AutomationElement>();
+
+            foreach (var item in allItems)
+            {
+                try
+                {
+                    var name = SafeElementName(item);
+                    var aid = SafeElementAutomationId(item);
+
+                    if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(aid))
+                        continue;
+
+                    var rect = item.BoundingRectangle;
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        continue;
+
+                    var nearCombo =
+                        rect.Top >= comboRect.Bottom - 20 &&
+                        rect.Left <= comboRect.Right + 100 &&
+                        rect.Right >= comboRect.Left - 100;
+
+                    var belowOrOverlay = rect.Top >= comboRect.Top - 10;
+
+                    if (nearCombo || belowOrOverlay)
+                        candidates.Add(item);
+                }
+                catch
+                {
+                    // ignore unstable UIA item
+                }
+            }
+
+            if (candidates.Count > 0)
+                return candidates;
+
+            var lists = desktop.FindAllDescendants(cf.ByControlType(ControlType.List));
+            foreach (var list in lists)
+            {
+                try
+                {
+                    var rect = list.BoundingRectangle;
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        continue;
+
+                    var nearCombo =
+                        rect.Top >= comboRect.Bottom - 20 &&
+                        rect.Left <= comboRect.Right + 150 &&
+                        rect.Right >= comboRect.Left - 150;
+
+                    if (!nearCombo)
+                        continue;
+
+                    var listItems = list
+                        .FindAllDescendants(cf.ByControlType(ControlType.ListItem))
+                        .Where(x =>
+                            !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
+                            !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
+                        .ToList();
+
+                    if (listItems.Count > 0)
+                        return listItems;
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindDynamicComboBoxItems failed for {Combo}", SafeElementName(comboBox));
+        }
+
+        return [];
+    }
+
+    private bool ActivateComboBoxListItem(AutomationElement item, string itemName)
+    {
+        try
+        {
+            var rect = item.BoundingRectangle;
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round(rect.Left + (rect.Width / 2.0)),
+                    (int)Math.Round(rect.Top + (rect.Height / 2.0)));
+
+                if (SendInstantLeftClick(point, $"Select ComboBox item {itemName}"))
+                {
+                    Thread.Sleep(MenuActionDelayMs);
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ComboBox ListItem physical click failed for {Item}", itemName);
+        }
+
+        try
+        {
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                item.Patterns.SelectionItem.Pattern.Select();
+                Thread.Sleep(MenuActionDelayMs);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ComboBox ListItem SelectionItem failed for {Item}", itemName);
+        }
+
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                Thread.Sleep(MenuActionDelayMs);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ComboBox ListItem Invoke failed for {Item}", itemName);
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(MenuActionDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ComboBox ListItem Focus+Enter failed for {Item}", itemName);
+        }
+
+        return false;
     }
 
     private bool OpenDynamicMenuParent(AutomationElement menuItem)
