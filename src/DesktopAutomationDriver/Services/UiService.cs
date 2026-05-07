@@ -50,6 +50,8 @@ public class UiService : IUiService
     private const int ComboBoxRightEdgeMinOffsetPx = 8;
     private const int ComboBoxRightEdgeMaxOffsetPx = 20;
     private const int ComboBoxRightEdgeOffsetDivisor = 8;
+    private const int ComboBoxDropdownVerticalTolerancePx = 30;
+    private const int MaxWindowSearchDepth = 5;
     private const int MaxAssistiveDropdownItemsToDisplay = 25;
     private const int DefaultListResponseLimit = 500;
     private const int MaxListResponseLimit = 5000;
@@ -2884,7 +2886,7 @@ public class UiService : IUiService
 
         if (item == null)
         {
-            var available = GetDynamicDropdownMenuItems(session, dropdown)
+            var available = GetDynamicDropdownMenuItems(session, dropdown, MaxAssistiveDropdownItemsToDisplay)
                 .Select(x => SafeElementName(x))
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToList();
@@ -4396,24 +4398,96 @@ public class UiService : IUiService
         }
     }
 
-    private List<AutomationElement> GetLogicalComboBoxItems(AutomationSession session, AutomationElement comboBox)
+    private AutomationElement? GetSearchRootForDynamicPopup(
+        AutomationSession session,
+        AutomationElement sourceElement)
     {
+        try
+        {
+            var foregroundHwnd = GetForegroundWindow();
+
+            if (foregroundHwnd != IntPtr.Zero)
+            {
+                var foreground = session.Automation.FromHandle(foregroundHwnd);
+                if (foreground != null)
+                    return foreground;
+            }
+        }
+        catch
+        {
+            // continue
+        }
+
+        try
+        {
+            return FindWindowAncestorOrSelf(sourceElement);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static AutomationElement? FindWindowAncestorOrSelf(AutomationElement element)
+    {
+        try
+        {
+            var current = element;
+
+            for (int i = 0; i < MaxWindowSearchDepth && current != null; i++)
+            {
+                if (current.ControlType == ControlType.Window)
+                    return current;
+
+                current = current.Parent;
+            }
+        }
+        catch
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private List<AutomationElement> GetLogicalComboBoxItems(
+        AutomationSession session,
+        AutomationElement comboBox,
+        int maxItems)
+    {
+        var results = new List<AutomationElement>();
+
         try
         {
             var cf = session.Automation.ConditionFactory;
 
-            return comboBox
-                .FindAllDescendants(cf.ByControlType(ControlType.ListItem))
-                .Where(x =>
-                    !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
-                    !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
-                .ToList();
+            foreach (var child in comboBox.FindAllChildren(cf.ByControlType(ControlType.ListItem)))
+            {
+                if (IsNamedListItem(child))
+                    results.Add(child);
+
+                if (results.Count >= maxItems)
+                    return results;
+            }
+
+            if (results.Count == 0)
+            {
+                foreach (var item in comboBox.FindAllDescendants(cf.ByControlType(ControlType.ListItem)))
+                {
+                    if (IsNamedListItem(item))
+                        results.Add(item);
+
+                    if (results.Count >= maxItems)
+                        return results;
+                }
+            }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "GetLogicalComboBoxItems failed for {Combo}", SafeElementName(comboBox));
-            return [];
         }
+
+        return results;
     }
 
     private bool OpenComboBoxDropdown(AutomationSession session, AutomationElement comboBox)
@@ -4549,88 +4623,15 @@ public class UiService : IUiService
     {
         try
         {
-            var logicalItems = GetLogicalComboBoxItems(session, comboBox);
+            var logicalItems = GetLogicalComboBoxItems(session, comboBox, maxItems);
             if (logicalItems.Count > 0)
-                return logicalItems.Take(maxItems).ToList();
+                return logicalItems;
 
-            var comboRect = comboBox.BoundingRectangle;
-            var desktop = session.Automation.GetDesktop();
-            var cf = session.Automation.ConditionFactory;
+            var list = FindDynamicComboBoxList(session, comboBox);
+            if (list == null)
+                return [];
 
-            var allItems = desktop.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
-            var candidates = new List<AutomationElement>();
-
-            foreach (var item in allItems)
-            {
-                try
-                {
-                    var name = SafeElementName(item);
-                    var aid = SafeElementAutomationId(item);
-
-                    if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(aid))
-                        continue;
-
-                    var rect = item.BoundingRectangle;
-                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
-                        continue;
-
-                    var nearCombo =
-                        rect.Top >= comboRect.Bottom - 20 &&
-                        rect.Left <= comboRect.Right + 100 &&
-                        rect.Right >= comboRect.Left - 100;
-
-                    var belowOrOverlay = rect.Top >= comboRect.Top - 10;
-
-                    if (nearCombo || belowOrOverlay)
-                    {
-                        candidates.Add(item);
-
-                        if (candidates.Count >= maxItems)
-                            return candidates;
-                    }
-                }
-                catch
-                {
-                    // ignore unstable UIA item
-                }
-            }
-
-            if (candidates.Count > 0)
-                return candidates;
-
-            var lists = desktop.FindAllDescendants(cf.ByControlType(ControlType.List));
-            foreach (var list in lists)
-            {
-                try
-                {
-                    var rect = list.BoundingRectangle;
-                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
-                        continue;
-
-                    var nearCombo =
-                        rect.Top >= comboRect.Bottom - 20 &&
-                        rect.Left <= comboRect.Right + 150 &&
-                        rect.Right >= comboRect.Left - 150;
-
-                    if (!nearCombo)
-                        continue;
-
-                    var listItems = list
-                        .FindAllDescendants(cf.ByControlType(ControlType.ListItem))
-                        .Where(x =>
-                            !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
-                            !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
-                        .Take(maxItems)
-                        .ToList();
-
-                    if (listItems.Count > 0)
-                        return listItems;
-                }
-                catch
-                {
-                    // ignore
-                }
-            }
+            return GetListItemsBounded(session, list, maxItems);
         }
         catch (Exception ex)
         {
@@ -4638,6 +4639,111 @@ public class UiService : IUiService
         }
 
         return [];
+    }
+
+    private AutomationElement? FindDynamicComboBoxList(AutomationSession session, AutomationElement comboBox)
+    {
+        try
+        {
+            var comboRect = comboBox.BoundingRectangle;
+            var root = GetSearchRootForDynamicPopup(session, comboBox) ?? session.Automation.GetDesktop();
+            var cf = session.Automation.ConditionFactory;
+
+            foreach (var list in root.FindAllChildren(cf.ByControlType(ControlType.List)))
+            {
+                if (IsComboListNearCombo(list, comboRect))
+                    return list;
+            }
+
+            var checkedCount = 0;
+            foreach (var list in root.FindAllDescendants(cf.ByControlType(ControlType.List)))
+            {
+                checkedCount++;
+
+                if (checkedCount > 100)
+                    break;
+
+                if (IsComboListNearCombo(list, comboRect))
+                    return list;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindDynamicComboBoxList failed");
+        }
+
+        return null;
+    }
+
+    private bool IsComboListNearCombo(AutomationElement list, FlaUI.Core.Shapes.Rectangle comboRect)
+    {
+        try
+        {
+            var rect = list.BoundingRectangle;
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                return false;
+
+            return rect.Top >= comboRect.Bottom - ComboBoxDropdownVerticalTolerancePx &&
+                   rect.Left <= comboRect.Right + 150 &&
+                   rect.Right >= comboRect.Left - 150;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private List<AutomationElement> GetListItemsBounded(
+        AutomationSession session,
+        AutomationElement list,
+        int maxItems)
+    {
+        var results = new List<AutomationElement>();
+
+        try
+        {
+            var cf = session.Automation.ConditionFactory;
+
+            foreach (var child in list.FindAllChildren(cf.ByControlType(ControlType.ListItem)))
+            {
+                if (IsNamedListItem(child))
+                    results.Add(child);
+
+                if (results.Count >= maxItems)
+                    return results;
+            }
+
+            if (results.Count == 0)
+            {
+                foreach (var item in list.FindAllDescendants(cf.ByControlType(ControlType.ListItem)))
+                {
+                    if (IsNamedListItem(item))
+                        results.Add(item);
+
+                    if (results.Count >= maxItems)
+                        return results;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "GetListItemsBounded failed");
+        }
+
+        return results;
+    }
+
+    private bool IsNamedListItem(AutomationElement item)
+    {
+        try
+        {
+            return !string.IsNullOrWhiteSpace(SafeElementName(item)) ||
+                   !string.IsNullOrWhiteSpace(SafeElementAutomationId(item));
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private string GetComboBoxCurrentValue(AutomationSession session, AutomationElement comboBox)
@@ -4741,7 +4847,7 @@ public class UiService : IUiService
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
                 var point = new Point(
-                    (int)Math.Round(rect.Left + (rect.Width / 2.0)),
+                    rect.Left + Math.Max(8, Math.Min(20, rect.Width / 10)),
                     (int)Math.Round(rect.Top + (rect.Height / 2.0)));
 
                 if (SendInstantLeftClick(point, $"Select ComboBox item {itemName}"))
@@ -4833,14 +4939,8 @@ public class UiService : IUiService
         {
             var parentName = SafeElementName(parentMenuItem);
             var parentRect = parentMenuItem.BoundingRectangle;
-            var desktop = session.Automation.GetDesktop();
-            var cf = session.Automation.ConditionFactory;
 
-            var possibleContainers = new List<AutomationElement>();
-            possibleContainers.AddRange(desktop.FindAllDescendants(cf.ByControlType(ControlType.ToolBar)));
-            possibleContainers.AddRange(desktop.FindAllDescendants(cf.ByControlType(ControlType.Menu)));
-            possibleContainers.AddRange(desktop.FindAllDescendants(cf.ByControlType(ControlType.Pane)));
-            possibleContainers.AddRange(desktop.FindAllDescendants(cf.ByControlType(ControlType.Custom)));
+            var possibleContainers = FindDynamicMenuDropdownCandidates(session, parentMenuItem);
 
             foreach (var container in possibleContainers)
             {
@@ -4863,9 +4963,12 @@ public class UiService : IUiService
                         rect.Left <= parentRect.Right + 100 &&
                         rect.Right >= parentRect.Left - 100;
 
-                    var hasMenuItems = GetDynamicDropdownMenuItems(session, container).Count > 0;
+                    if (!nameLooksLikeDropdown && !nearParent)
+                        continue;
 
-                    if ((nameLooksLikeDropdown || nearParent) && hasMenuItems)
+                    var hasMenuItems = GetDynamicDropdownMenuItems(session, container, maxItems: 1).Count > 0;
+
+                    if (hasMenuItems)
                     {
                         _logger.LogInformation(
                             "Found dynamic menu dropdown. parent={Parent}, dropdown={Dropdown}, controlType={ControlType}, bounds={Bounds}",
@@ -4891,24 +4994,129 @@ public class UiService : IUiService
         return null;
     }
 
+    private List<AutomationElement> FindDynamicMenuDropdownCandidates(
+        AutomationSession session,
+        AutomationElement parentMenuItem,
+        int maxCandidates = 80)
+    {
+        var results = new List<AutomationElement>();
+
+        try
+        {
+            var root = GetSearchRootForDynamicPopup(session, parentMenuItem) ?? session.Automation.GetDesktop();
+            var cf = session.Automation.ConditionFactory;
+
+            var controlTypes = new[]
+            {
+                ControlType.ToolBar,
+                ControlType.Menu,
+                ControlType.Pane,
+                ControlType.Custom,
+                ControlType.Window
+            };
+
+            foreach (var ct in controlTypes)
+            {
+                foreach (var child in root.FindAllChildren(cf.ByControlType(ct)))
+                {
+                    results.Add(child);
+                    if (results.Count >= maxCandidates)
+                        return results;
+                }
+            }
+
+            foreach (var ct in controlTypes)
+            {
+                foreach (var item in root.FindAllDescendants(cf.ByControlType(ct)))
+                {
+                    results.Add(item);
+                    if (results.Count >= maxCandidates)
+                        return results;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindDynamicMenuDropdownCandidates failed");
+        }
+
+        return results;
+    }
+
     private List<AutomationElement> GetDynamicDropdownMenuItems(
         AutomationSession session,
-        AutomationElement dropdown)
+        AutomationElement dropdown,
+        int maxItems = int.MaxValue)
     {
+        var results = new List<AutomationElement>();
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+
         try
         {
             var cf = session.Automation.ConditionFactory;
 
-            return dropdown
-                .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
-                .Where(x =>
-                    !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
-                    !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
-                .ToList();
+            foreach (var child in dropdown.FindAllChildren(cf.ByControlType(ControlType.MenuItem)))
+            {
+                AddMenuItemIfValid(child, results, seenKeys);
+
+                if (results.Count >= maxItems)
+                    return results;
+            }
+
+            if (results.Count == 0)
+            {
+                foreach (var item in dropdown.FindAllDescendants(cf.ByControlType(ControlType.MenuItem)))
+                {
+                    AddMenuItemIfValid(item, results, seenKeys);
+
+                    if (results.Count >= maxItems)
+                        return results;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "GetDynamicDropdownMenuItems bounded scan failed");
+        }
+
+        return results;
+    }
+
+    private void AddMenuItemIfValid(
+        AutomationElement item,
+        List<AutomationElement> results,
+        HashSet<string> seenKeys)
+    {
+        if (string.IsNullOrWhiteSpace(SafeElementName(item)) &&
+            string.IsNullOrWhiteSpace(SafeElementAutomationId(item)))
+            return;
+
+        var key = GetElementDedupeKey(item);
+
+        if (key != null && !seenKeys.Add(key))
+            return;
+
+        results.Add(item);
+    }
+
+    private static string? GetElementDedupeKey(AutomationElement item)
+    {
+        try
+        {
+            var rect = item.BoundingRectangle;
+            return string.Join(
+                "|",
+                item.ControlType,
+                SafeElementAutomationId(item),
+                SafeElementName(item),
+                rect.Left,
+                rect.Top,
+                rect.Width,
+                rect.Height);
         }
         catch
         {
-            return [];
+            return null;
         }
     }
 
