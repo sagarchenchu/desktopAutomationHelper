@@ -5084,6 +5084,7 @@ public sealed class RecordingOverlayWindow : Form
     private List<AutomationElement> GetDynamicDropdownMenuItems(AutomationElement dropdown, int maxItems = int.MaxValue)
     {
         var results = new List<AutomationElement>();
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
 
         try
         {
@@ -5097,7 +5098,7 @@ public sealed class RecordingOverlayWindow : Form
                 if (_stopRequested)
                     break;
 
-                if (IsNamedActionableMenuItem(child))
+                if (IsNamedActionableMenuItem(child) && seenKeys.Add(GetElementDedupeKey(child)))
                     results.Add(child);
 
                 if (results.Count >= maxItems)
@@ -5112,6 +5113,9 @@ public sealed class RecordingOverlayWindow : Form
                 if (!IsNamedActionableMenuItem(item))
                     continue;
 
+                if (!seenKeys.Add(GetElementDedupeKey(item)))
+                    continue;
+
                 results.Add(item);
 
                 if (results.Count >= maxItems)
@@ -5124,6 +5128,27 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         return results;
+    }
+
+    private static string GetElementDedupeKey(AutomationElement item)
+    {
+        try
+        {
+            var rect = item.BoundingRectangle;
+            return string.Join(
+                "|",
+                item.ControlType,
+                SafeElementAutomationId(item),
+                SafeElementName(item),
+                rect.Left,
+                rect.Top,
+                rect.Width,
+                rect.Height);
+        }
+        catch
+        {
+            return Guid.NewGuid().ToString("N");
+        }
     }
 
     private bool IsNamedActionableMenuItem(AutomationElement item)
