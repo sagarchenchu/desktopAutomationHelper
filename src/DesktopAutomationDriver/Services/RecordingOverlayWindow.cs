@@ -4315,76 +4315,54 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
-            if (TrySelectComboBoxByKeyboard(comboBox, itemName))
-            {
-                _service.AddAction(new RecordedAction
-                {
-                    ActionType = ActionType.Click,
-                    Mode = RecordingMode.Assistive,
-                    Element = comboInfo ?? BuildElementInfo(comboBox),
-                    TargetElement = comboInfo ?? BuildElementInfo(comboBox),
-                    Operation = "selectcomboboxitem",
-                    Value = itemName,
-                    Description =
-                        $"Select ComboBox item '{itemName}' from {comboInfo?.Name ?? SafeElementName(comboBox)} using keyboard typeahead",
-                    PointerContext = ClonePointerContext(_currentAssistivePointerContext)
-                });
-
-                UpdateStatusAfterAction($"Selected ComboBox item {itemName}");
-                return true;
-            }
-
             BringElementWindowToForeground(comboBox);
             Thread.Sleep(WindowActivationDelayMs);
 
-            if (!OpenComboBoxDropdown(comboBox))
-                return false;
+            TryFocusOrClickComboBox(comboBox);
+            Thread.Sleep(100);
 
-            Thread.Sleep(MenuNavigationDelayMs);
-
-            var item = FindDynamicComboBoxItems(comboBox, maxItems: MaxComboBoxItemsForTextSelection)
-                .FirstOrDefault(x =>
-                    string.Equals(
-                        NormalizeMenuText(SafeElementName(x)),
-                        NormalizeMenuText(itemName),
-                        StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(
-                        NormalizeMenuText(SafeElementAutomationId(x)),
-                        NormalizeMenuText(itemName),
-                        StringComparison.OrdinalIgnoreCase));
-
-            if (item == null)
+            if (OpenComboBoxDropdown(comboBox))
             {
-                var available = FindDynamicComboBoxItems(comboBox, maxItems: MaxAssistiveDropdownItemsToDisplay)
-                    .Select(SafeElementName)
-                    .ToList();
+                Thread.Sleep(MenuNavigationDelayMs);
 
-                _logger.LogWarning(
-                    "ComboBox item not found. combo={Combo}, item={Item}, available={Available}",
-                    SafeElementName(comboBox),
-                    itemName,
-                    available);
+                var item = FindDynamicComboBoxItems(comboBox, maxItems: MaxComboBoxItemsForTextSelection)
+                    .FirstOrDefault(x =>
+                        string.Equals(
+                            NormalizeMenuText(SafeElementName(x)),
+                            NormalizeMenuText(itemName),
+                            StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(
+                            NormalizeMenuText(SafeElementAutomationId(x)),
+                            NormalizeMenuText(itemName),
+                            StringComparison.OrdinalIgnoreCase));
 
-                return false;
+                if (item != null && ActivateComboBoxListItem(item, itemName))
+                {
+                    Thread.Sleep(300);
+
+                    if (VerifyComboBoxSelectedValue(comboBox, itemName))
+                    {
+                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "listitem-click");
+                        return true;
+                    }
+
+                    _logger.LogWarning(
+                        "ComboBox ListItem click did not select expected value. requested={Requested}, actual={Actual}",
+                        itemName,
+                        GetComboBoxCurrentValue(comboBox));
+                }
             }
 
-            if (!ActivateComboBoxListItem(item, itemName))
-                return false;
-
-            _service.AddAction(new RecordedAction
+            if (TrySelectComboBoxByKeyboard(comboBox, itemName))
             {
-                ActionType = ActionType.Click,
-                Mode = RecordingMode.Assistive,
-                Element = BuildElementInfo(item),
-                TargetElement = comboInfo ?? BuildElementInfo(comboBox),
-                Operation = "selectcomboboxitem",
-                Value = itemName,
-                Description = $"Select ComboBox item '{itemName}' from {comboInfo?.Name ?? SafeElementName(comboBox)}",
-                PointerContext = ClonePointerContext(_currentAssistivePointerContext)
-            });
+                RecordComboBoxSelection(comboBox, comboInfo, itemName, "keyboard-typeahead");
+                return true;
+            }
 
-            UpdateStatusAfterAction($"Selected ComboBox item {itemName}");
-            return true;
+            _statusLabel.Text =
+                $"ComboBox selection failed. Expected '{itemName}', actual '{GetComboBoxCurrentValue(comboBox)}'.";
+
+            return false;
         }
         catch (Exception ex)
         {
@@ -4403,10 +4381,24 @@ public sealed class RecordingOverlayWindow : Form
             BringElementWindowToForeground(comboBox);
             Thread.Sleep(WindowActivationDelayMs);
 
+            TryFocusOrClickComboBox(comboBox);
+            Thread.Sleep(100);
+
             if (!OpenComboBoxDropdown(comboBox))
                 return false;
 
             Thread.Sleep(ComboBoxKeyboardTypeaheadInitialDelayMs);
+
+            var list = FindDynamicComboBoxList(comboBox);
+            if (list == null)
+            {
+                _logger.LogWarning(
+                    "ComboBox typeahead skipped because dropdown list was not detected. combo={Combo}, item={Item}",
+                    SafeElementName(comboBox),
+                    itemName);
+
+                return false;
+            }
 
             Keyboard.Type(itemName);
             Thread.Sleep(ComboBoxKeyboardTypeaheadSettleDelayMs);
@@ -4414,18 +4406,162 @@ public sealed class RecordingOverlayWindow : Form
             Keyboard.Press(VirtualKeyShort.RETURN);
             Thread.Sleep(ComboBoxKeyboardTypeaheadSettleDelayMs);
 
-            _logger.LogInformation(
-                "ComboBox selected by keyboard typeahead. combo={Combo}, item={Item}",
-                SafeElementName(comboBox),
-                itemName);
-
-            return true;
+            return VerifyComboBoxSelectedValue(comboBox, itemName);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "TrySelectComboBoxByKeyboard failed for {Item}", itemName);
             return false;
         }
+    }
+
+    private string GetComboBoxCurrentValue(AutomationElement comboBox)
+    {
+        try
+        {
+            if (comboBox.Patterns.Value.IsSupported)
+            {
+                var value = comboBox.Patterns.Value.Pattern.Value;
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value.Trim();
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            var name = SafeElementName(comboBox);
+            if (!string.IsNullOrWhiteSpace(name))
+                return name.Trim();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            if (_automation != null)
+            {
+                var cf = _automation.ConditionFactory;
+
+                var editChild = comboBox.FindFirstDescendant(cf.ByControlType(ControlType.Edit));
+                if (editChild != null)
+                {
+                    try
+                    {
+                        if (editChild.Patterns.Value.IsSupported)
+                        {
+                            var editValue = editChild.Patterns.Value.Pattern.Value;
+                            if (!string.IsNullOrWhiteSpace(editValue))
+                                return editValue.Trim();
+                        }
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
+
+                    var editName = SafeElementName(editChild);
+                    if (!string.IsNullOrWhiteSpace(editName))
+                        return editName.Trim();
+                }
+
+                var textChild = comboBox.FindFirstDescendant(cf.ByControlType(ControlType.Text));
+                if (textChild != null)
+                {
+                    var text = SafeElementName(textChild);
+                    if (!string.IsNullOrWhiteSpace(text))
+                        return text.Trim();
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return string.Empty;
+    }
+
+    private bool VerifyComboBoxSelectedValue(
+        AutomationElement comboBox,
+        string expectedValue)
+    {
+        var actual = GetComboBoxCurrentValue(comboBox);
+
+        var expectedNorm = NormalizeMenuText(expectedValue);
+        var actualNorm = NormalizeMenuText(actual);
+
+        var matched = string.Equals(
+            actualNorm,
+            expectedNorm,
+            StringComparison.OrdinalIgnoreCase);
+
+        _logger.LogInformation(
+            "ComboBox selection verification. expected={Expected}, actual={Actual}, matched={Matched}",
+            expectedValue,
+            actual,
+            matched);
+
+        return matched;
+    }
+
+    private bool TryFocusOrClickComboBox(AutomationElement comboBox)
+    {
+        try
+        {
+            comboBox.Focus();
+            return true;
+        }
+        catch
+        {
+            // continue
+        }
+
+        try
+        {
+            var rect = comboBox.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new System.Drawing.Point(
+                    rect.Left + Math.Max(8, rect.Width / 4),
+                    rect.Top + rect.Height / 2);
+
+                return TryPhysicalClickPoint(point, $"Focus ComboBox {SafeElementName(comboBox)}");
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return false;
+    }
+
+    private void RecordComboBoxSelection(
+        AutomationElement comboBox,
+        ElementInfo? comboInfo,
+        string itemName,
+        string strategy)
+    {
+        _service.AddAction(new RecordedAction
+        {
+            ActionType = ActionType.Click,
+            Mode = RecordingMode.Assistive,
+            Element = comboInfo ?? BuildElementInfo(comboBox),
+            TargetElement = comboInfo ?? BuildElementInfo(comboBox),
+            Operation = "selectcomboboxitem",
+            Value = itemName,
+            Description = $"Select ComboBox item '{itemName}' from {comboInfo?.Name ?? SafeElementName(comboBox)} using {strategy}",
+            PointerContext = ClonePointerContext(_currentAssistivePointerContext)
+        });
+
+        UpdateStatusAfterAction($"Selected ComboBox item {itemName}");
     }
 
     private bool ActivateComboBoxListItem(AutomationElement item, string itemName)
@@ -4947,24 +5083,59 @@ public sealed class RecordingOverlayWindow : Form
 
     private List<AutomationElement> GetDynamicDropdownMenuItems(AutomationElement dropdown, int maxItems = int.MaxValue)
     {
+        var results = new List<AutomationElement>();
+
         try
         {
             if (_automation == null)
-                return [];
+                return results;
 
             var cf = _automation.ConditionFactory;
 
-            return dropdown
-                .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
-                .Where(x =>
-                    !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
-                    !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
-                .Take(maxItems)
-                .ToList();
+            foreach (var child in dropdown.FindAllChildren(cf.ByControlType(ControlType.MenuItem)))
+            {
+                if (_stopRequested)
+                    break;
+
+                if (IsNamedActionableMenuItem(child))
+                    results.Add(child);
+
+                if (results.Count >= maxItems)
+                    return results;
+            }
+
+            foreach (var item in dropdown.FindAllDescendants(cf.ByControlType(ControlType.MenuItem)))
+            {
+                if (_stopRequested)
+                    break;
+
+                if (!IsNamedActionableMenuItem(item))
+                    continue;
+
+                results.Add(item);
+
+                if (results.Count >= maxItems)
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "GetDynamicDropdownMenuItems bounded scan failed");
+        }
+
+        return results;
+    }
+
+    private bool IsNamedActionableMenuItem(AutomationElement item)
+    {
+        try
+        {
+            return !string.IsNullOrWhiteSpace(SafeElementName(item)) ||
+                   !string.IsNullOrWhiteSpace(SafeElementAutomationId(item));
         }
         catch
         {
-            return [];
+            return false;
         }
     }
 
