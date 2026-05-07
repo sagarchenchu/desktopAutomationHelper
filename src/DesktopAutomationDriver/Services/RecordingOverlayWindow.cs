@@ -5440,7 +5440,14 @@ public sealed class RecordingOverlayWindow : Form
                 if (TryPhysicalClickPoint(point, $"Select dropdown item {itemName} at {candidateRegion}"))
                 {
                     Thread.Sleep(DropdownItemPhysicalClickSettleMs);
-                    return true;
+
+                    if (VerifyHeaderDropdownItemSelection(item, itemName))
+                        return true;
+
+                    _logger.LogWarning(
+                        "Dropdown item physical click was sent but selection was not verified. item={Item}, region={Region}",
+                        itemName,
+                        candidateRegion);
                 }
             }
             catch (Exception ex)
@@ -5455,11 +5462,43 @@ public sealed class RecordingOverlayWindow : Form
 
         try
         {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.SPACE);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
+
+            if (VerifyHeaderDropdownItemSelection(item, itemName))
+                return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item Focus+Space failed for {Item}", itemName);
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
+
+            if (VerifyHeaderDropdownItemSelection(item, itemName))
+                return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item Focus+Enter failed for {Item}", itemName);
+        }
+
+        try
+        {
             if (item.Patterns.Toggle.IsSupported)
             {
                 item.Patterns.Toggle.Pattern.Toggle();
                 Thread.Sleep(DropdownItemFallbackDelayMs);
-                return true;
+
+                if (VerifyHeaderDropdownItemSelection(item, itemName))
+                    return true;
             }
         }
         catch (Exception ex)
@@ -5473,7 +5512,9 @@ public sealed class RecordingOverlayWindow : Form
             {
                 item.Patterns.SelectionItem.Pattern.Select();
                 Thread.Sleep(DropdownItemFallbackDelayMs);
-                return true;
+
+                if (VerifyHeaderDropdownItemSelection(item, itemName))
+                    return true;
             }
         }
         catch (Exception ex)
@@ -5487,7 +5528,9 @@ public sealed class RecordingOverlayWindow : Form
             {
                 item.Patterns.Invoke.Pattern.Invoke();
                 Thread.Sleep(DropdownItemFallbackDelayMs);
-                return true;
+
+                if (VerifyHeaderDropdownItemSelection(item, itemName))
+                    return true;
             }
         }
         catch (Exception ex)
@@ -5497,35 +5540,11 @@ public sealed class RecordingOverlayWindow : Form
 
         try
         {
-            item.Focus();
-            Thread.Sleep(MenuFocusDelayMs);
-            Keyboard.Press(VirtualKeyShort.SPACE);
-            Thread.Sleep(DropdownItemFallbackDelayMs);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Dropdown item Focus+Space failed for {Item}", itemName);
-        }
-
-        try
-        {
-            item.Focus();
-            Thread.Sleep(MenuFocusDelayMs);
-            Keyboard.Press(VirtualKeyShort.RETURN);
-            Thread.Sleep(DropdownItemFallbackDelayMs);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Dropdown item Focus+Enter failed for {Item}", itemName);
-        }
-
-        try
-        {
             item.Click();
             Thread.Sleep(DropdownItemFallbackDelayMs);
-            return true;
+
+            if (VerifyHeaderDropdownItemSelection(item, itemName))
+                return true;
         }
         catch (Exception ex)
         {
@@ -5533,6 +5552,85 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         return false;
+    }
+
+    private bool VerifyHeaderDropdownItemSelection(
+        AutomationElement item,
+        string itemName)
+    {
+        try
+        {
+            if (!IsElementStillAvailable(item))
+            {
+                _logger.LogInformation(
+                    "Dropdown item selection verified because item is no longer available. item={Item}",
+                    itemName);
+
+                return true;
+            }
+        }
+        catch
+        {
+            return true;
+        }
+
+        try
+        {
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                var selected = item.Patterns.SelectionItem.Pattern.IsSelected;
+
+                if (selected)
+                {
+                    _logger.LogInformation(
+                        "Dropdown item selection verified by SelectionItem.IsSelected. item={Item}",
+                        itemName);
+
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            if (item.Patterns.Toggle.IsSupported)
+            {
+                var state = item.Patterns.Toggle.Pattern.ToggleState;
+
+                if (state == ToggleState.On)
+                {
+                    _logger.LogInformation(
+                        "Dropdown item selection verified by ToggleState.On. item={Item}",
+                        itemName);
+
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return false;
+    }
+
+    private bool IsElementStillAvailable(AutomationElement item)
+    {
+        try
+        {
+            _ = item.BoundingRectangle;
+            _ = item.ControlType;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static System.Drawing.Point GetDropdownItemClickPoint(

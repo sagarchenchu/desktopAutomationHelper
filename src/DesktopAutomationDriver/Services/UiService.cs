@@ -4956,7 +4956,14 @@ public class UiService : IUiService
                 if (SendInstantLeftClick(point, $"SelectHeaderDropdownItem {safeItemName} at {candidateRegion}"))
                 {
                     Thread.Sleep(DropdownItemPhysicalClickSettleMs);
-                    return true;
+
+                    if (VerifyHeaderDropdownItemSelection(item, safeItemName))
+                        return true;
+
+                    _logger.LogWarning(
+                        "Dropdown item physical click was sent but selection was not verified. item={Item}, region={Region}",
+                        safeItemName,
+                        candidateRegion);
                 }
             }
             catch (Exception ex)
@@ -4971,11 +4978,43 @@ public class UiService : IUiService
 
         try
         {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.SPACE);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
+
+            if (VerifyHeaderDropdownItemSelection(item, safeItemName))
+                return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item Focus+Space failed for {Item}", safeItemName);
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
+
+            if (VerifyHeaderDropdownItemSelection(item, safeItemName))
+                return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Dropdown item Focus+Enter failed for {Item}", safeItemName);
+        }
+
+        try
+        {
             if (item.Patterns.Toggle.IsSupported)
             {
                 item.Patterns.Toggle.Pattern.Toggle();
                 Thread.Sleep(DropdownItemFallbackDelayMs);
-                return true;
+
+                if (VerifyHeaderDropdownItemSelection(item, safeItemName))
+                    return true;
             }
         }
         catch (Exception ex)
@@ -4989,7 +5028,9 @@ public class UiService : IUiService
             {
                 item.Patterns.SelectionItem.Pattern.Select();
                 Thread.Sleep(DropdownItemFallbackDelayMs);
-                return true;
+
+                if (VerifyHeaderDropdownItemSelection(item, safeItemName))
+                    return true;
             }
         }
         catch (Exception ex)
@@ -5003,7 +5044,9 @@ public class UiService : IUiService
             {
                 item.Patterns.Invoke.Pattern.Invoke();
                 Thread.Sleep(DropdownItemFallbackDelayMs);
-                return true;
+
+                if (VerifyHeaderDropdownItemSelection(item, safeItemName))
+                    return true;
             }
         }
         catch (Exception ex)
@@ -5011,32 +5054,45 @@ public class UiService : IUiService
             _logger.LogWarning(ex, "Dropdown item Invoke failed for {Item}", safeItemName);
         }
 
+        return false;
+    }
+
+    private bool VerifyHeaderDropdownItemSelection(
+        AutomationElement item,
+        string itemName)
+    {
         try
         {
-            item.Focus();
-            Thread.Sleep(MenuFocusDelayMs);
-            Keyboard.Press(VirtualKeyShort.SPACE);
-            Thread.Sleep(DropdownItemFallbackDelayMs);
-            return true;
+            _ = item.BoundingRectangle;
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogWarning(ex, "Dropdown item Focus+Space failed for {Item}", safeItemName);
+            return true;
         }
 
         try
         {
-            item.Focus();
-            Thread.Sleep(MenuFocusDelayMs);
-            Keyboard.Press(VirtualKeyShort.RETURN);
-            Thread.Sleep(DropdownItemFallbackDelayMs);
-            return true;
+            if (item.Patterns.SelectionItem.IsSupported &&
+                item.Patterns.SelectionItem.Pattern.IsSelected)
+                return true;
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogWarning(ex, "Dropdown item Focus+Enter failed for {Item}", safeItemName);
+            // ignore
         }
 
+        try
+        {
+            if (item.Patterns.Toggle.IsSupported &&
+                item.Patterns.Toggle.Pattern.ToggleState == ToggleState.On)
+                return true;
+        }
+        catch
+        {
+            // ignore
+        }
+
+        _logger.LogWarning("Dropdown item selection could not be verified. item={Item}", itemName);
         return false;
     }
 
