@@ -4421,7 +4421,7 @@ public sealed class RecordingOverlayWindow : Form
         {
             if (comboBox.Patterns.Value.IsSupported)
             {
-                var value = comboBox.Patterns.Value.Pattern.Value;
+                string value = comboBox.Patterns.Value.Pattern.Value;
                 if (!string.IsNullOrWhiteSpace(value))
                     return value.Trim();
             }
@@ -4455,7 +4455,7 @@ public sealed class RecordingOverlayWindow : Form
                     {
                         if (editChild.Patterns.Value.IsSupported)
                         {
-                            var editValue = editChild.Patterns.Value.Pattern.Value;
+                            string editValue = editChild.Patterns.Value.Pattern.Value;
                             if (!string.IsNullOrWhiteSpace(editValue))
                                 return editValue.Trim();
                         }
@@ -4885,7 +4885,7 @@ public sealed class RecordingOverlayWindow : Form
                 $"Dynamic menu dropdown was not found after opening '{parentName}'.");
         }
 
-        var items = GetDynamicDropdownMenuItems(dropdown, maxItems + 1);
+        var items = GetDynamicDropdownMenuItems(dropdown, maxItems);
         if (items.Count == 0)
         {
             throw new InvalidOperationException(
