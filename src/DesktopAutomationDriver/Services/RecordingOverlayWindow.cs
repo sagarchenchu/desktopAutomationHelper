@@ -5558,19 +5558,12 @@ public sealed class RecordingOverlayWindow : Form
         AutomationElement item,
         string itemName)
     {
-        try
+        if (!IsElementStillAvailable(item))
         {
-            if (!IsElementStillAvailable(item))
-            {
-                _logger.LogInformation(
-                    "Dropdown item selection verified because item is no longer available. item={Item}",
-                    itemName);
+            _logger.LogInformation(
+                "Dropdown item selection verified because item is no longer available. item={Item}",
+                itemName);
 
-                return true;
-            }
-        }
-        catch
-        {
             return true;
         }
 
@@ -5623,6 +5616,7 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
+            // Access UIA properties to confirm the item is still available in the automation tree.
             _ = item.BoundingRectangle;
             _ = item.ControlType;
             return true;
