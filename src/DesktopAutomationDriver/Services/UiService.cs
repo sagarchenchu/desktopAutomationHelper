@@ -47,6 +47,9 @@ public class UiService : IUiService
     private const int DropdownItemMinPadY = 3;
     private const int DropdownItemMaxPadY = 8;
     private const int DropdownItemPadYDivisor = 4;
+    private const int ComboBoxRightEdgeMinOffsetPx = 8;
+    private const int ComboBoxRightEdgeMaxOffsetPx = 20;
+    private const int ComboBoxRightEdgeOffsetDivisor = 8;
     private const int DefaultListResponseLimit = 500;
     private const int MaxListResponseLimit = 5000;
     private const string DesktopRootName = "Desktop";
@@ -4453,7 +4456,9 @@ public class UiService : IUiService
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
                 var point = new Point(
-                    (int)Math.Round((double)rect.Right - Math.Max(8d, Math.Min(20d, (double)rect.Width / 8d))),
+                    (int)Math.Round((double)rect.Right - Math.Max(
+                        ComboBoxRightEdgeMinOffsetPx,
+                        Math.Min(ComboBoxRightEdgeMaxOffsetPx, rect.Width / ComboBoxRightEdgeOffsetDivisor))),
                     (int)Math.Round(rect.Top + (rect.Height / 2.0)));
 
                 if (SendInstantLeftClick(point, $"Open ComboBox right edge {SafeElementName(comboBox)}"))

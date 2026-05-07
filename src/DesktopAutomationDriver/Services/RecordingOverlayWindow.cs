@@ -162,6 +162,9 @@ public sealed class RecordingOverlayWindow : Form
     private const int DropdownItemMinPadY = 3;
     private const int DropdownItemMaxPadY = 8;
     private const int DropdownItemPadYDivisor = 4;
+    private const int ComboBoxRightEdgeMinOffsetPx = 8;
+    private const int ComboBoxRightEdgeMaxOffsetPx = 20;
+    private const int ComboBoxRightEdgeOffsetDivisor = 8;
 
     /// <summary>
     /// Delay in milliseconds between selecting a context menu action and executing
@@ -4034,9 +4037,12 @@ public sealed class RecordingOverlayWindow : Form
             var rect = comboBox.BoundingRectangle;
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
+                var center = GetElementCenter(rect);
                 var point = new System.Drawing.Point(
-                    rect.Right - Math.Max(8, Math.Min(20, rect.Width / 8)),
-                    rect.Top + rect.Height / 2);
+                    (int)Math.Round((double)rect.Right - Math.Max(
+                        ComboBoxRightEdgeMinOffsetPx,
+                        Math.Min(ComboBoxRightEdgeMaxOffsetPx, (double)rect.Width / ComboBoxRightEdgeOffsetDivisor))),
+                    center.Y);
 
                 if (TryPhysicalClickPoint(point, $"Open ComboBox right edge {SafeElementName(comboBox)}"))
                 {
@@ -4353,9 +4359,7 @@ public sealed class RecordingOverlayWindow : Form
             var rect = item.BoundingRectangle;
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
-                var point = new System.Drawing.Point(
-                    rect.Left + rect.Width / 2,
-                    rect.Top + rect.Height / 2);
+                var point = GetElementCenter(rect);
 
                 if (TryPhysicalClickPoint(point, $"Select ComboBox item {itemName}"))
                 {
@@ -4526,7 +4530,36 @@ public sealed class RecordingOverlayWindow : Form
                                 BringElementWindowToForeground(capturedMenuBarRef);
                                 Thread.Sleep(WindowActivationDelayMs);
 
-                                if (!TryActivateLogicalMenuItem(subItem, $"Logical menu path {capturedMenuPathValue}"))
+                                AutomationElement? freshSubItem = null;
+                                if (_automation != null)
+                                {
+                                    try
+                                    {
+                                        var cf = _automation.ConditionFactory;
+                                        if (!string.IsNullOrWhiteSpace(capturedSubItemInfo.AutomationId))
+                                        {
+                                            freshSubItem = capturedMenuBarRef.FindFirstDescendant(
+                                                cf.ByControlType(ControlType.MenuItem)
+                                                    .And(cf.ByAutomationId(capturedSubItemInfo.AutomationId)));
+                                        }
+
+                                        if (freshSubItem == null && !string.IsNullOrWhiteSpace(capturedSubItemInfo.Name))
+                                        {
+                                            freshSubItem = capturedMenuBarRef.FindFirstDescendant(
+                                                cf.ByControlType(ControlType.MenuItem)
+                                                    .And(cf.ByName(capturedSubItemInfo.Name)));
+                                        }
+                                    }
+                                    catch
+                                    {
+                                        // best effort; fallback below
+                                    }
+                                }
+
+                                if (freshSubItem == null)
+                                    throw new InvalidOperationException($"Menu path element '{capturedMenuPathValue}' was not available.");
+
+                                if (!TryActivateLogicalMenuItem(freshSubItem, $"Logical menu path {capturedMenuPathValue}"))
                                 {
                                     throw new InvalidOperationException(
                                         $"Failed to activate logical menu path '{capturedMenuPathValue}'.");
