@@ -13,6 +13,11 @@ public enum HeaderDropdownRegion
     CenterLeft,
     CenterRight,
     Center,
+    RightIcon1,
+    RightIcon2,
+    RightIcon3,
+    RightIcon4,
+    ProbeRightIcons,
     ProbeAll
 }
 
@@ -66,9 +71,34 @@ internal static class GridHeaderDropdownHelper
             "centerleft" or "middleleft" => HeaderDropdownRegion.CenterLeft,
             "centerright" or "middleright" => HeaderDropdownRegion.CenterRight,
             "center" or "middle" => HeaderDropdownRegion.Center,
+            "righticon1" or "icon1" or "farright" => HeaderDropdownRegion.RightIcon1,
+            "righticon2" or "icon2" or "secondfromright" => HeaderDropdownRegion.RightIcon2,
+            "righticon3" or "icon3" or "thirdfromright" => HeaderDropdownRegion.RightIcon3,
+            "righticon4" or "icon4" or "fourthfromright" => HeaderDropdownRegion.RightIcon4,
+            "proberighticons" or "probeicons" or "righticons" => HeaderDropdownRegion.ProbeRightIcons,
             "probeall" or "all" or "auto" => HeaderDropdownRegion.ProbeAll,
             _ => HeaderDropdownRegion.LowerRight
         };
+    }
+
+    public static Point GetRightIconSlotPoint(RectangleF rect, int slotFromRight)
+    {
+        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+            throw new InvalidOperationException("Header has invalid bounding rectangle.");
+
+        // Assumes standard 16px icon spacing in owner-drawn Windows UI headers.
+        const int iconSlotWidth = 16;
+
+        var safeSlot = Math.Max(1, slotFromRight);
+        var x = rect.Right - ((safeSlot - 1) * iconSlotWidth) - (iconSlotWidth / 2f);
+        var y = rect.Top + rect.Height / 2f;
+
+        x = Math.Max(rect.Left + 3, Math.Min(rect.Right - 3, x));
+        y = Math.Max(rect.Top + 3, Math.Min(rect.Bottom - 3, y));
+
+        return new Point(
+            (int)Math.Round(x),
+            (int)Math.Round(y));
     }
 
     public static Point GetClickPoint(RectangleF rect, HeaderDropdownRegion region)
@@ -109,9 +139,12 @@ internal static class GridHeaderDropdownHelper
                 (int)Math.Round(rect.Left + rect.Width / 2),
                 (int)Math.Round(rect.Top + rect.Height / 2)),
 
-            _ => new Point(
-                (int)Math.Round(rect.Right - padX),
-                (int)Math.Round(rect.Bottom - padY))
+            HeaderDropdownRegion.RightIcon1 => GetRightIconSlotPoint(rect, 1),
+            HeaderDropdownRegion.RightIcon2 => GetRightIconSlotPoint(rect, 2),
+            HeaderDropdownRegion.RightIcon3 => GetRightIconSlotPoint(rect, 3),
+            HeaderDropdownRegion.RightIcon4 => GetRightIconSlotPoint(rect, 4),
+
+            _ => GetRightIconSlotPoint(rect, 1)
         };
     }
 
@@ -119,6 +152,24 @@ internal static class GridHeaderDropdownHelper
         RectangleF rect,
         HeaderDropdownRegion region)
     {
+        if (region == HeaderDropdownRegion.ProbeRightIcons)
+        {
+            var rightIconOrder = new[]
+            {
+                HeaderDropdownRegion.RightIcon1,
+                HeaderDropdownRegion.RightIcon2,
+                HeaderDropdownRegion.RightIcon3,
+                HeaderDropdownRegion.RightIcon4,
+                HeaderDropdownRegion.CenterRight,
+                HeaderDropdownRegion.LowerRight,
+                HeaderDropdownRegion.UpperRight
+            };
+
+            return rightIconOrder
+                .Select(r => (r, GetClickPoint(rect, r)))
+                .ToList();
+        }
+
         if (region != HeaderDropdownRegion.ProbeAll)
         {
             return new[]
@@ -127,14 +178,18 @@ internal static class GridHeaderDropdownHelper
             };
         }
 
+        // Prioritize right-side dropdown affordances; CenterLeft is intentionally omitted for header dropdown probing.
         var order = new[]
         {
+            HeaderDropdownRegion.RightIcon1,
+            HeaderDropdownRegion.RightIcon2,
+            HeaderDropdownRegion.RightIcon3,
+            HeaderDropdownRegion.RightIcon4,
             HeaderDropdownRegion.LowerRight,
             HeaderDropdownRegion.UpperRight,
             HeaderDropdownRegion.CenterRight,
             HeaderDropdownRegion.LowerLeft,
             HeaderDropdownRegion.UpperLeft,
-            HeaderDropdownRegion.CenterLeft,
             HeaderDropdownRegion.Center
         };
 

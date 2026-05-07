@@ -33,7 +33,7 @@ public class UiRequest
 
     /// <summary>
     /// Optional header dropdown click region for header dropdown operations.
-    /// Defaults to LowerRight when omitted.
+    /// Defaults to LowerRight when omitted. Supports corner regions and right icon slots.
     /// </summary>
     public string? ClickRegion { get; set; }
 
