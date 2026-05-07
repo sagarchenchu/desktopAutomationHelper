@@ -13,10 +13,12 @@ public enum HeaderDropdownRegion
     CenterLeft,
     CenterRight,
     Center,
+
     RightIcon1,
     RightIcon2,
     RightIcon3,
     RightIcon4,
+
     ProbeRightIcons,
     ProbeAll
 }
@@ -86,12 +88,12 @@ internal static class GridHeaderDropdownHelper
         if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
             throw new InvalidOperationException("Header has invalid bounding rectangle.");
 
-        // Assumes standard 16px icon spacing in owner-drawn Windows UI headers.
         const int iconSlotWidth = 16;
 
         var safeSlot = Math.Max(1, slotFromRight);
-        var x = rect.Right - ((safeSlot - 1) * iconSlotWidth) - (iconSlotWidth / 2f);
-        var y = rect.Top + rect.Height / 2f;
+
+        var x = rect.Right - ((safeSlot - 1) * iconSlotWidth) - (iconSlotWidth / 2);
+        var y = rect.Top + rect.Height / 2;
 
         x = Math.Max(rect.Left + 3, Math.Min(rect.Right - 3, x));
         y = Math.Max(rect.Top + 3, Math.Min(rect.Bottom - 3, y));
@@ -154,7 +156,7 @@ internal static class GridHeaderDropdownHelper
     {
         if (region == HeaderDropdownRegion.ProbeRightIcons)
         {
-            var rightIconOrder = new[]
+            var order = new[]
             {
                 HeaderDropdownRegion.RightIcon1,
                 HeaderDropdownRegion.RightIcon2,
@@ -165,37 +167,36 @@ internal static class GridHeaderDropdownHelper
                 HeaderDropdownRegion.UpperRight
             };
 
-            return rightIconOrder
+            return order
                 .Select(r => (r, GetClickPoint(rect, r)))
                 .ToList();
         }
 
-        if (region != HeaderDropdownRegion.ProbeAll)
+        if (region == HeaderDropdownRegion.ProbeAll)
         {
-            return new[]
+            var order = new[]
             {
-                (region, GetClickPoint(rect, region))
+                HeaderDropdownRegion.RightIcon1,
+                HeaderDropdownRegion.RightIcon2,
+                HeaderDropdownRegion.RightIcon3,
+                HeaderDropdownRegion.RightIcon4,
+                HeaderDropdownRegion.LowerRight,
+                HeaderDropdownRegion.UpperRight,
+                HeaderDropdownRegion.CenterRight,
+                HeaderDropdownRegion.LowerLeft,
+                HeaderDropdownRegion.UpperLeft,
+                HeaderDropdownRegion.Center
             };
+
+            return order
+                .Select(r => (r, GetClickPoint(rect, r)))
+                .ToList();
         }
 
-        // Prioritize right-side dropdown affordances; CenterLeft is intentionally omitted for header dropdown probing.
-        var order = new[]
+        return new[]
         {
-            HeaderDropdownRegion.RightIcon1,
-            HeaderDropdownRegion.RightIcon2,
-            HeaderDropdownRegion.RightIcon3,
-            HeaderDropdownRegion.RightIcon4,
-            HeaderDropdownRegion.LowerRight,
-            HeaderDropdownRegion.UpperRight,
-            HeaderDropdownRegion.CenterRight,
-            HeaderDropdownRegion.LowerLeft,
-            HeaderDropdownRegion.UpperLeft,
-            HeaderDropdownRegion.Center
+            (region, GetClickPoint(rect, region))
         };
-
-        return order
-            .Select(r => (r, GetClickPoint(rect, r)))
-            .ToList();
     }
 
     public static IReadOnlyList<Point> GetDropdownClickPoints(RectangleF rect)
