@@ -201,6 +201,7 @@ public class UiService : IUiService
             "doubleclickgridcell" => DoubleClickGridCell(request),
             "openheaderdropdown" => OpenHeaderDropdown(request),
             "selectheaderdropdownitem" => SelectHeaderDropdownItem(request),
+            "selectdynamicmenuitem" => SelectDynamicMenuItem(request),
             "draganddrop"     => DragAndDrop(request),
 
             // ----- Alert / Dialog Handling -----
@@ -2801,6 +2802,75 @@ public class UiService : IUiService
         };
     }
 
+    private object? SelectDynamicMenuItem(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("value is required for selectdynamicmenuitem.");
+
+        var parentMenuItem = FindWithRetry(req);
+        if (parentMenuItem.ControlType != ControlType.MenuItem)
+        {
+            _logger.LogWarning(
+                "selectdynamicmenuitem called on non-MenuItem. name={Name}, controlType={ControlType}, className={ClassName}",
+                SafeElementName(parentMenuItem),
+                parentMenuItem.ControlType,
+                SafeElementClassName(parentMenuItem));
+        }
+
+        var rawValue = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
+        var childName = rawValue.Contains('>')
+            ? rawValue.Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault()
+            : rawValue;
+
+        if (string.IsNullOrWhiteSpace(childName))
+            throw new ArgumentException("selectdynamicmenuitem requires a child menu item name in value.");
+
+        var session = RequireSession();
+
+        BringElementWindowToForeground(parentMenuItem);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        if (!OpenDynamicMenuParent(parentMenuItem))
+            throw new InvalidOperationException($"Failed to open dynamic menu '{SafeElementName(parentMenuItem)}'.");
+
+        Thread.Sleep(300);
+
+        var dropdown = FindDynamicMenuDropdown(session, parentMenuItem);
+        if (dropdown == null)
+        {
+            throw new InvalidOperationException(
+                $"Dynamic menu dropdown was not found after opening '{SafeElementName(parentMenuItem)}'.");
+        }
+
+        var item = GetDynamicDropdownMenuItems(session, dropdown)
+            .FirstOrDefault(x =>
+                string.Equals(
+                    NormalizeMenuText(SafeElementName(x)),
+                    NormalizeMenuText(childName),
+                    StringComparison.OrdinalIgnoreCase));
+
+        if (item == null)
+        {
+            var available = GetDynamicDropdownMenuItems(session, dropdown)
+                .Select(x => SafeElementName(x))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToList();
+
+            throw new InvalidOperationException(
+                $"Dynamic menu item '{childName}' was not found. Available: {string.Join(", ", available)}");
+        }
+
+        if (!ActivateDynamicMenuItem(item, childName))
+            throw new InvalidOperationException($"Failed to activate dynamic menu item '{childName}'.");
+
+        return new
+        {
+            selected = childName,
+            parent = SafeElementName(parentMenuItem),
+            dropdown = SafeElementName(dropdown)
+        };
+    }
+
     /// <summary>
     /// Locates the cell at <c>req.Index</c> (row) / <c>req.ColumnIndex</c> (column) and
     /// performs either a single click or a double-click depending on <paramref name="doubleClick"/>.
@@ -4208,6 +4278,161 @@ public class UiService : IUiService
             _logger.LogWarning(ex, "Click Date Month Section failed");
             return false;
         }
+    }
+
+    private bool OpenDynamicMenuParent(AutomationElement menuItem)
+    {
+        try
+        {
+            if (menuItem.Patterns.ExpandCollapse.IsSupported)
+            {
+                menuItem.Patterns.ExpandCollapse.Pattern.Expand();
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ExpandCollapse failed for dynamic menu parent {Menu}", SafeElementName(menuItem));
+        }
+
+        try
+        {
+            ActivateMenuItem(menuItem);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ActivateMenuItem failed for dynamic menu parent {Menu}", SafeElementName(menuItem));
+            return false;
+        }
+    }
+
+    private AutomationElement? FindDynamicMenuDropdown(AutomationSession session, AutomationElement parentMenuItem)
+    {
+        try
+        {
+            var parentName = SafeElementName(parentMenuItem);
+            var parentRect = parentMenuItem.BoundingRectangle;
+            var desktop = session.Automation.GetDesktop();
+            var cf = session.Automation.ConditionFactory;
+
+            var possibleContainers = new List<AutomationElement>();
+            possibleContainers.AddRange(desktop.FindAllDescendants(cf.ByControlType(ControlType.ToolBar)));
+            possibleContainers.AddRange(desktop.FindAllDescendants(cf.ByControlType(ControlType.Menu)));
+            possibleContainers.AddRange(desktop.FindAllDescendants(cf.ByControlType(ControlType.Pane)));
+            possibleContainers.AddRange(desktop.FindAllDescendants(cf.ByControlType(ControlType.Custom)));
+
+            foreach (var container in possibleContainers)
+            {
+                try
+                {
+                    var name = SafeElementName(container);
+                    var rect = container.BoundingRectangle;
+
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        continue;
+
+                    var nameLooksLikeDropdown =
+                        !string.IsNullOrWhiteSpace(parentName) &&
+                        !string.IsNullOrWhiteSpace(name) &&
+                        name.Contains(parentName, StringComparison.OrdinalIgnoreCase) &&
+                        name.Contains("DropDown", StringComparison.OrdinalIgnoreCase);
+
+                    var nearParent =
+                        rect.Top >= parentRect.Bottom - 10 &&
+                        rect.Left <= parentRect.Right + 100 &&
+                        rect.Right >= parentRect.Left - 100;
+
+                    var hasMenuItems = GetDynamicDropdownMenuItems(session, container).Count > 0;
+
+                    if ((nameLooksLikeDropdown || nearParent) && hasMenuItems)
+                    {
+                        _logger.LogInformation(
+                            "Found dynamic menu dropdown. parent={Parent}, dropdown={Dropdown}, controlType={ControlType}, bounds={Bounds}",
+                            parentName,
+                            name,
+                            container.ControlType,
+                            rect);
+
+                        return container;
+                    }
+                }
+                catch
+                {
+                    // ignore unstable UIA element
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindDynamicMenuDropdown failed in UiService");
+        }
+
+        return null;
+    }
+
+    private List<AutomationElement> GetDynamicDropdownMenuItems(
+        AutomationSession session,
+        AutomationElement dropdown)
+    {
+        try
+        {
+            var cf = session.Automation.ConditionFactory;
+
+            return dropdown
+                .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                .Where(x =>
+                    !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
+                    !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private bool ActivateDynamicMenuItem(AutomationElement item, string itemName)
+    {
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                Thread.Sleep(MenuActionDelayMs);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Invoke failed for dynamic menu item {Item}", itemName);
+        }
+
+        try
+        {
+            item.Click();
+            Thread.Sleep(MenuActionDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Click failed for dynamic menu item {Item}", itemName);
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(MenuActionDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Focus+Enter failed for dynamic menu item {Item}", itemName);
+        }
+
+        return TryInstantPhysicalClick(item, $"SelectDynamicMenuItem {itemName}");
     }
 
     private AutomationElement? OpenHeaderDropdownAndFindList(

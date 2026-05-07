@@ -1607,118 +1607,18 @@ public sealed class RecordingOverlayWindow : Form
         };
         menu.Items.Add(dragDropItem);
 
-        // Sub-Menu Items — lazy-built when the flyout opens so right-click stays responsive.
-        if (element?.ControlType == ControlType.MenuItem && _automation != null)
+        if (element?.ControlType == ControlType.MenuItem)
         {
-            var subMenuFlyout = new ToolStripMenuItem("Sub-Menu Items ▶");
-            subMenuFlyout.DropDownOpening += (_, _) =>
+            var logicalChildren = GetLogicalChildMenuItems(element);
+
+            if (logicalChildren.Count > 0)
             {
-                subMenuFlyout.DropDownItems.Clear();
-                try
-                {
-                    using (MeasurePerf("BuildAssistiveMenuChildActions"))
-                    {
-                        var cf = _automation.ConditionFactory;
-                        var subItems = element.FindAllChildren(cf.ByControlType(ControlType.MenuItem));
-
-                        if (subItems.Length == 0)
-                        {
-                            subMenuFlyout.DropDownItems.Add(new ToolStripMenuItem("(none)") { Enabled = false });
-                            return;
-                        }
-
-                        AutomationElement? subMenuBarRef = null;
-                        var parentMenuPath = new List<ElementInfo>();
-                        try
-                        {
-                            var pathElements = new List<ElementInfo>();
-                            var cur = element;
-                            for (int d = 0; d < MaxMenuAncestorDepth; d++)
-                            {
-                                if (cur.ControlType == ControlType.MenuItem)
-                                    pathElements.Add(BuildElementInfo(cur));
-                                else if (cur.ControlType == ControlType.MenuBar)
-                                {
-                                    subMenuBarRef = cur;
-                                    pathElements.Reverse();
-                                    var skippedSegments = pathElements.Count(info =>
-                                        string.IsNullOrWhiteSpace(GetLogicalMenuPathSegment(info)));
-                                    parentMenuPath = pathElements
-                                        .Where(info => !string.IsNullOrWhiteSpace(GetLogicalMenuPathSegment(info)))
-                                        .ToList();
-                                    if (skippedSegments > 0)
-                                    {
-                                        _logger.LogWarning(
-                                            "Logical menu path omitted {Count} unnamed segment(s) while recording submenu selection.",
-                                            skippedSegments);
-                                    }
-                                    break;
-                                }
-                                var par = cur.Parent;
-                                if (par == null) break;
-                                cur = par;
-                            }
-                        }
-                        catch { /* best effort */ }
-
-                        if (subMenuBarRef == null)
-                        {
-                            subMenuFlyout.DropDownItems.Add(new ToolStripMenuItem("(unavailable)") { Enabled = false });
-                            return;
-                        }
-
-                        var capturedMenuBarRef = subMenuBarRef;
-                        var capturedParentMenuPath = parentMenuPath;
-
-                        foreach (var subItem in subItems.Take(MaxChildrenToDisplay))
-                        {
-                            var subItemInfo = BuildElementInfo(subItem);
-                            var subItemName = subItemInfo.Name ?? subItemInfo.AutomationId ?? "(unnamed)";
-                            var subItemEntry = new ToolStripMenuItem(subItemName);
-                            var capturedSubItemInfo = subItemInfo;
-                            var capturedMenuPath = new List<ElementInfo>(capturedParentMenuPath) { capturedSubItemInfo };
-                            var capturedMenuPathValue = string.Join(
-                                ">",
-                                capturedMenuPath
-                                    .Select(GetLogicalMenuPathSegment)
-                                    .Where(segment => !string.IsNullOrWhiteSpace(segment)));
-
-                            subItemEntry.Click += (_, _) =>
-                            {
-                                BringElementWindowToForeground(capturedMenuBarRef);
-                                Thread.Sleep(WindowActivationDelayMs);
-
-                                if (!TryActivateLogicalMenuItem(subItem, $"Logical menu path {capturedMenuPathValue}"))
-                                    throw new InvalidOperationException($"Failed to activate logical menu path '{capturedMenuPathValue}'.");
-
-                                _service.AddAction(new RecordedAction
-                                {
-                                    ActionType = ActionType.MenuPathClick,
-                                    Operation = "clicklogicalmenupath",
-                                    Mode = RecordingMode.Assistive,
-                                    Element = capturedSubItemInfo,
-                                    Value = capturedMenuPathValue,
-                                    MenuPath = capturedMenuPath,
-                                    PointerContext = ClonePointerContext(_currentAssistivePointerContext),
-                                    Description = $"Click menu path {capturedMenuPathValue}"
-                                });
-                                UpdateStatusAfterAction($"Menu path [{capturedSubItemInfo.ControlType}] {capturedMenuPathValue}");
-                                StartPopupProbeAfterAction();
-                            };
-                            subMenuFlyout.DropDownItems.Add(subItemEntry);
-                        }
-
-                        if (subItems.Length > MaxChildrenToDisplay)
-                            subMenuFlyout.DropDownItems.Add(
-                                new ToolStripMenuItem($"… and {subItems.Length - MaxChildrenToDisplay} more") { Enabled = false });
-                    }
-                }
-                catch
-                {
-                    subMenuFlyout.DropDownItems.Add(new ToolStripMenuItem("(unavailable)") { Enabled = false });
-                }
-            };
-            menu.Items.Add(subMenuFlyout);
+                AddLogicalMenuChildrenSubmenu(menu, element, elementInfo, logicalChildren);
+            }
+            else
+            {
+                AddDynamicMenuDropdownSubmenu(menu, element, elementInfo);
+            }
         }
 
         menu.Items.Add(new ToolStripSeparator());
@@ -4057,6 +3957,563 @@ public sealed class RecordingOverlayWindow : Form
     private static void SendKey(VirtualKeyShort key)
     {
         Keyboard.Press(key);
+    }
+
+    private List<AutomationElement> GetLogicalChildMenuItems(AutomationElement menuItem)
+    {
+        try
+        {
+            if (_automation == null)
+                return [];
+
+            var cf = _automation.ConditionFactory;
+
+            return menuItem
+                .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                .Where(x =>
+                {
+                    try
+                    {
+                        return !ReferenceEquals(x, menuItem);
+                    }
+                    catch
+                    {
+                        return true;
+                    }
+                })
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "GetLogicalChildMenuItems failed for {Menu}", SafeElementName(menuItem));
+            return [];
+        }
+    }
+
+    private void AddLogicalMenuChildrenSubmenu(
+        ContextMenuStrip menu,
+        AutomationElement parentMenuItem,
+        ElementInfo? parentInfo,
+        List<AutomationElement> logicalChildren)
+    {
+        _ = parentInfo;
+
+        var subMenuFlyout = new ToolStripMenuItem("Sub-Menu Items ▶");
+        subMenuFlyout.DropDownOpening += (_, _) =>
+        {
+            subMenuFlyout.DropDownItems.Clear();
+            try
+            {
+                using (MeasurePerf("BuildAssistiveMenuChildActions"))
+                {
+                    if (logicalChildren.Count == 0)
+                    {
+                        subMenuFlyout.DropDownItems.Add(new ToolStripMenuItem("(none)") { Enabled = false });
+                        return;
+                    }
+
+                    AutomationElement? subMenuBarRef = null;
+                    var parentMenuPath = new List<ElementInfo>();
+                    try
+                    {
+                        var pathElements = new List<ElementInfo>();
+                        var cur = parentMenuItem;
+                        for (int d = 0; d < MaxMenuAncestorDepth; d++)
+                        {
+                            if (cur.ControlType == ControlType.MenuItem)
+                                pathElements.Add(BuildElementInfo(cur));
+                            else if (cur.ControlType == ControlType.MenuBar)
+                            {
+                                subMenuBarRef = cur;
+                                pathElements.Reverse();
+                                var skippedSegments = pathElements.Count(info =>
+                                    string.IsNullOrWhiteSpace(GetLogicalMenuPathSegment(info)));
+                                parentMenuPath = pathElements
+                                    .Where(info => !string.IsNullOrWhiteSpace(GetLogicalMenuPathSegment(info)))
+                                    .ToList();
+                                if (skippedSegments > 0)
+                                {
+                                    _logger.LogWarning(
+                                        "Logical menu path omitted {Count} unnamed segment(s) while recording submenu selection.",
+                                        skippedSegments);
+                                }
+                                break;
+                            }
+                            var par = cur.Parent;
+                            if (par == null) break;
+                            cur = par;
+                        }
+                    }
+                    catch { /* best effort */ }
+
+                    if (subMenuBarRef == null)
+                    {
+                        subMenuFlyout.DropDownItems.Add(new ToolStripMenuItem("(unavailable)") { Enabled = false });
+                        return;
+                    }
+
+                    var capturedMenuBarRef = subMenuBarRef;
+                    var capturedParentMenuPath = parentMenuPath;
+
+                    foreach (var subItem in logicalChildren.Take(MaxChildrenToDisplay))
+                    {
+                        var subItemInfo = BuildElementInfo(subItem);
+                        var subItemName = subItemInfo.Name ?? subItemInfo.AutomationId ?? "(unnamed)";
+                        var subItemEntry = new ToolStripMenuItem(subItemName);
+                        var capturedSubItemInfo = subItemInfo;
+                        var capturedMenuPath = new List<ElementInfo>(capturedParentMenuPath) { capturedSubItemInfo };
+                        var capturedMenuPathValue = string.Join(
+                            ">",
+                            capturedMenuPath
+                                .Select(GetLogicalMenuPathSegment)
+                                .Where(segment => !string.IsNullOrWhiteSpace(segment)));
+
+                        subItemEntry.Click += (_, _) =>
+                        {
+                            RunAssistiveActionAfterMenuClose($"Click menu path {capturedMenuPathValue}", () =>
+                            {
+                                BringElementWindowToForeground(capturedMenuBarRef);
+                                Thread.Sleep(WindowActivationDelayMs);
+
+                                if (!TryActivateLogicalMenuItem(subItem, $"Logical menu path {capturedMenuPathValue}"))
+                                {
+                                    throw new InvalidOperationException(
+                                        $"Failed to activate logical menu path '{capturedMenuPathValue}'.");
+                                }
+
+                                _service.AddAction(new RecordedAction
+                                {
+                                    ActionType = ActionType.MenuPathClick,
+                                    Operation = "clicklogicalmenupath",
+                                    Mode = RecordingMode.Assistive,
+                                    Element = capturedSubItemInfo,
+                                    Value = capturedMenuPathValue,
+                                    MenuPath = capturedMenuPath,
+                                    PointerContext = ClonePointerContext(_currentAssistivePointerContext),
+                                    Description = $"Click menu path {capturedMenuPathValue}"
+                                });
+                                UpdateStatusAfterAction($"Menu path [{capturedSubItemInfo.ControlType}] {capturedMenuPathValue}");
+                                StartPopupProbeAfterAction();
+                            });
+                        };
+                        subMenuFlyout.DropDownItems.Add(subItemEntry);
+                    }
+
+                    if (logicalChildren.Count > MaxChildrenToDisplay)
+                    {
+                        subMenuFlyout.DropDownItems.Add(
+                            new ToolStripMenuItem($"… and {logicalChildren.Count - MaxChildrenToDisplay} more")
+                            {
+                                Enabled = false
+                            });
+                    }
+                }
+            }
+            catch
+            {
+                subMenuFlyout.DropDownItems.Add(new ToolStripMenuItem("(unavailable)") { Enabled = false });
+            }
+        };
+        menu.Items.Add(subMenuFlyout);
+    }
+
+    private void AddDynamicMenuDropdownSubmenu(
+        ContextMenuStrip menu,
+        AutomationElement parentMenuItem,
+        ElementInfo? parentInfo)
+    {
+        var dynamicMenu = new ToolStripMenuItem("Open Dynamic Menu");
+
+        var openAndList = new ToolStripMenuItem("Open and List Items");
+        openAndList.Click += (_, _) =>
+        {
+            RunAssistiveActionAfterMenuClose($"Open dynamic menu {SafeElementName(parentMenuItem)}", () =>
+            {
+                OpenDynamicMenuAndShowItems(parentMenuItem, parentInfo);
+            });
+        };
+
+        dynamicMenu.DropDownItems.Add(openAndList);
+        menu.Items.Add(dynamicMenu);
+    }
+
+    private void OpenDynamicMenuAndShowItems(
+        AutomationElement parentMenuItem,
+        ElementInfo? parentInfo)
+    {
+        BringElementWindowToForeground(parentMenuItem);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        var parentName = SafeElementName(parentMenuItem);
+        var parentRect = parentMenuItem.BoundingRectangle;
+
+        _logger.LogInformation(
+            "Opening dynamic menu. parent={Parent}, bounds={Bounds}",
+            parentName,
+            parentRect);
+
+        if (!OpenMenuParent(parentMenuItem))
+            throw new InvalidOperationException($"Failed to open dynamic menu '{parentName}'.");
+
+        Thread.Sleep(300);
+
+        var dropdown = FindDynamicMenuDropdown(parentMenuItem);
+        if (dropdown == null)
+        {
+            throw new InvalidOperationException(
+                $"Dynamic menu dropdown was not found after opening '{parentName}'.");
+        }
+
+        var items = GetDynamicDropdownMenuItems(dropdown);
+        if (items.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Dynamic menu dropdown '{SafeElementName(dropdown)}' opened but no MenuItems were found.");
+        }
+
+        ShowDynamicDropdownItemsMenu(Cursor.Position, parentMenuItem, parentInfo, dropdown, items);
+    }
+
+    private bool OpenMenuParent(AutomationElement menuItem)
+    {
+        try
+        {
+            if (menuItem.Patterns.ExpandCollapse.IsSupported)
+            {
+                menuItem.Patterns.ExpandCollapse.Pattern.Expand();
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ExpandCollapse failed for menu {Menu}", SafeElementName(menuItem));
+        }
+
+        try
+        {
+            var rect = menuItem.BoundingRectangle;
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new System.Drawing.Point(
+                    rect.Left + rect.Width / 2,
+                    rect.Top + rect.Height / 2);
+
+                if (TryPhysicalClickPoint(point, $"Open menu parent {SafeElementName(menuItem)}"))
+                    return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Physical open menu parent failed for {Menu}", SafeElementName(menuItem));
+        }
+
+        try
+        {
+            menuItem.Click();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FlaUI Click failed for menu parent {Menu}", SafeElementName(menuItem));
+        }
+
+        try
+        {
+            menuItem.Focus();
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Focus+Enter failed for menu parent {Menu}", SafeElementName(menuItem));
+        }
+
+        return false;
+    }
+
+    private AutomationElement? FindDynamicMenuDropdown(AutomationElement parentMenuItem)
+    {
+        try
+        {
+            if (_automation == null)
+                return null;
+
+            var parentName = SafeElementName(parentMenuItem);
+            var parentRect = parentMenuItem.BoundingRectangle;
+            var desktop = _automation.GetDesktop();
+            var cf = _automation.ConditionFactory;
+
+            var possibleContainers = new List<AutomationElement>();
+
+            possibleContainers.AddRange(
+                desktop.FindAllDescendants(cf.ByControlType(ControlType.ToolBar)));
+            possibleContainers.AddRange(
+                desktop.FindAllDescendants(cf.ByControlType(ControlType.Menu)));
+            possibleContainers.AddRange(
+                desktop.FindAllDescendants(cf.ByControlType(ControlType.Pane)));
+            possibleContainers.AddRange(
+                desktop.FindAllDescendants(cf.ByControlType(ControlType.Custom)));
+
+            foreach (var container in possibleContainers)
+            {
+                try
+                {
+                    var name = SafeElementName(container);
+                    var rect = container.BoundingRectangle;
+
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        continue;
+
+                    var nameLooksLikeDropdown =
+                        !string.IsNullOrWhiteSpace(parentName) &&
+                        !string.IsNullOrWhiteSpace(name) &&
+                        name.Contains(parentName, StringComparison.OrdinalIgnoreCase) &&
+                        name.Contains("DropDown", StringComparison.OrdinalIgnoreCase);
+
+                    var nearParent =
+                        rect.Top >= parentRect.Bottom - 10 &&
+                        rect.Left <= parentRect.Right + 100 &&
+                        rect.Right >= parentRect.Left - 100;
+
+                    var hasMenuItems = GetDynamicDropdownMenuItems(container).Count > 0;
+
+                    if ((nameLooksLikeDropdown || nearParent) && hasMenuItems)
+                    {
+                        _logger.LogInformation(
+                            "Found dynamic menu dropdown. parent={Parent}, dropdown={Dropdown}, controlType={ControlType}, bounds={Bounds}",
+                            parentName,
+                            name,
+                            container.ControlType,
+                            rect);
+
+                        return container;
+                    }
+                }
+                catch
+                {
+                    // ignore unstable UIA element
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindDynamicMenuDropdown failed");
+        }
+
+        return null;
+    }
+
+    private List<AutomationElement> GetDynamicDropdownMenuItems(AutomationElement dropdown)
+    {
+        try
+        {
+            if (_automation == null)
+                return [];
+
+            var cf = _automation.ConditionFactory;
+
+            return dropdown
+                .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+                .Where(x =>
+                    !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
+                    !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private void ShowDynamicDropdownItemsMenu(
+        System.Drawing.Point pt,
+        AutomationElement parentMenuItem,
+        ElementInfo? parentInfo,
+        AutomationElement dropdown,
+        List<AutomationElement> items)
+    {
+        _ = dropdown;
+
+        var menu = new NoActivateContextMenuStrip { ShowImageMargin = false };
+        menu.Font = new Font("Segoe UI", 10f);
+
+        var parentName = SafeElementName(parentMenuItem);
+
+        menu.Items.Add(new ToolStripMenuItem($"Dynamic Menu: {parentName}")
+        {
+            Enabled = false,
+            ForeColor = Color.DarkSlateGray
+        });
+
+        menu.Items.Add(new ToolStripSeparator());
+
+        foreach (var item in items)
+        {
+            var itemName = SafeElementName(item);
+
+            if (string.IsNullOrWhiteSpace(itemName))
+                itemName = SafeElementAutomationId(item);
+
+            if (string.IsNullOrWhiteSpace(itemName))
+                itemName = "(unnamed item)";
+
+            var capturedName = itemName;
+            var menuItem = new ToolStripMenuItem(capturedName);
+
+            menuItem.Click += (_, _) =>
+            {
+                RunAssistiveActionAfterMenuClose($"Select dynamic menu item {parentName}>{capturedName}", () =>
+                {
+                    var success = SelectDynamicMenuItemAssistive(
+                        parentMenuItem,
+                        parentInfo,
+                        capturedName);
+
+                    if (!success)
+                    {
+                        throw new InvalidOperationException(
+                            $"Failed to select dynamic menu item '{parentName}>{capturedName}'.");
+                    }
+                });
+            };
+
+            menu.Items.Add(menuItem);
+        }
+
+        AddCloseItem(menu);
+        EnsureOverlayVisible();
+        menu.Show(pt);
+    }
+
+    private bool SelectDynamicMenuItemAssistive(
+        AutomationElement parentMenuItem,
+        ElementInfo? parentInfo,
+        string childName)
+    {
+        try
+        {
+            BringElementWindowToForeground(parentMenuItem);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!OpenMenuParent(parentMenuItem))
+                return false;
+
+            Thread.Sleep(300);
+
+            var dropdown = FindDynamicMenuDropdown(parentMenuItem);
+            if (dropdown == null)
+                return false;
+
+            var item = GetDynamicDropdownMenuItems(dropdown)
+                .FirstOrDefault(x =>
+                    string.Equals(
+                        NormalizeMenuText(SafeElementName(x)),
+                        NormalizeMenuText(childName),
+                        StringComparison.OrdinalIgnoreCase));
+
+            if (item == null)
+            {
+                var available = GetDynamicDropdownMenuItems(dropdown)
+                    .Select(SafeElementName)
+                    .ToList();
+
+                _logger.LogWarning(
+                    "Dynamic menu child not found. parent={Parent}, child={Child}, available={Available}",
+                    SafeElementName(parentMenuItem),
+                    childName,
+                    available);
+
+                return false;
+            }
+
+            if (!ActivateMenuItemElement(item, childName))
+                return false;
+
+            _service.AddAction(new RecordedAction
+            {
+                ActionType = ActionType.Click,
+                Mode = RecordingMode.Assistive,
+                Element = BuildElementInfo(item),
+                TargetElement = parentInfo ?? BuildElementInfo(parentMenuItem),
+                Operation = "selectdynamicmenuitem",
+                Value = $"{SafeElementName(parentMenuItem)}>{childName}",
+                Description = $"Select dynamic menu item {SafeElementName(parentMenuItem)}>{childName}",
+                PointerContext = ClonePointerContext(_currentAssistivePointerContext)
+            });
+
+            UpdateStatusAfterAction($"Selected menu item {SafeElementName(parentMenuItem)}>{childName}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SelectDynamicMenuItemAssistive failed");
+            _statusLabel.Text = "Dynamic menu select failed: " + ex.Message;
+            return false;
+        }
+    }
+
+    private bool ActivateMenuItemElement(AutomationElement item, string itemName)
+    {
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                Thread.Sleep(150);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Invoke failed for menu item {Item}", itemName);
+        }
+
+        try
+        {
+            var rect = item.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new System.Drawing.Point(
+                    rect.Left + rect.Width / 2,
+                    rect.Top + rect.Height / 2);
+
+                if (TryPhysicalClickPoint(point, $"Click menu item {itemName}"))
+                {
+                    Thread.Sleep(150);
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Physical click failed for menu item {Item}", itemName);
+        }
+
+        try
+        {
+            item.Focus();
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(150);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Focus+Enter failed for menu item {Item}", itemName);
+        }
+
+        try
+        {
+            item.Click();
+            Thread.Sleep(150);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FlaUI Click failed for menu item {Item}", itemName);
+        }
+
+        return false;
     }
 
     private void AddHeaderDropdownActionItem(
