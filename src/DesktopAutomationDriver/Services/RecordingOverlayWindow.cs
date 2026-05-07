@@ -4155,9 +4155,7 @@ public sealed class RecordingOverlayWindow : Form
 
         Thread.Sleep(MenuNavigationDelayMs);
 
-        var items = FindDynamicComboBoxItems(comboBox, maxItems + 1)
-            .Take(maxItems + 1)
-            .ToList();
+        var items = FindDynamicComboBoxItems(comboBox, maxItems + 1);
         if (items.Count == 0)
         {
             throw new InvalidOperationException(
@@ -4743,9 +4741,7 @@ public sealed class RecordingOverlayWindow : Form
                 $"Dynamic menu dropdown was not found after opening '{parentName}'.");
         }
 
-        var items = GetDynamicDropdownMenuItems(dropdown)
-            .Take(maxItems + 1)
-            .ToList();
+        var items = GetDynamicDropdownMenuItems(dropdown, maxItems + 1);
         if (items.Count == 0)
         {
             throw new InvalidOperationException(
@@ -4913,7 +4909,7 @@ public sealed class RecordingOverlayWindow : Form
                         rect.Left <= parentRect.Right + 100 &&
                         rect.Right >= parentRect.Left - 100;
 
-                    var hasMenuItems = GetDynamicDropdownMenuItems(container).Count > 0;
+                    var hasMenuItems = GetDynamicDropdownMenuItems(container, maxItems: 1).Count > 0;
 
                     if ((nameLooksLikeDropdown || nearParent) && hasMenuItems)
                     {
@@ -4941,7 +4937,7 @@ public sealed class RecordingOverlayWindow : Form
         return null;
     }
 
-    private List<AutomationElement> GetDynamicDropdownMenuItems(AutomationElement dropdown)
+    private List<AutomationElement> GetDynamicDropdownMenuItems(AutomationElement dropdown, int maxItems = int.MaxValue)
     {
         try
         {
@@ -4955,6 +4951,7 @@ public sealed class RecordingOverlayWindow : Form
                 .Where(x =>
                     !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
                     !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
+                .Take(maxItems)
                 .ToList();
         }
         catch
@@ -5059,7 +5056,7 @@ public sealed class RecordingOverlayWindow : Form
 
             if (item == null)
             {
-                var available = GetDynamicDropdownMenuItems(dropdown)
+                var available = GetDynamicDropdownMenuItems(dropdown, maxItems: MaxAssistiveDropdownItemsToDisplay)
                     .Select(SafeElementName)
                     .ToList();
 
