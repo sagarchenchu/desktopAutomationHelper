@@ -50,6 +50,7 @@ public class UiService : IUiService
     private const int ComboBoxRightEdgeMinOffsetPx = 8;
     private const int ComboBoxRightEdgeMaxOffsetPx = 20;
     private const int ComboBoxRightEdgeOffsetDivisor = 8;
+    private const int MaxAssistiveDropdownItemsToDisplay = 25;
     private const int DefaultListResponseLimit = 500;
     private const int MaxListResponseLimit = 5000;
     private const string DesktopRootName = "Desktop";
@@ -2942,17 +2943,25 @@ public class UiService : IUiService
 
         if (item == null)
         {
-            var available = FindDynamicComboBoxItems(session, comboBox)
+            var available = FindDynamicComboBoxItems(session, comboBox, maxItems: MaxAssistiveDropdownItemsToDisplay)
                 .Select(SafeElementName)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToList();
 
             throw new InvalidOperationException(
-                $"ComboBox item '{itemName}' was not found. Available: {string.Join(", ", available)}");
+                $"ComboBox item '{itemName}' was not found. Available first {MaxAssistiveDropdownItemsToDisplay}: {string.Join(", ", available)}");
         }
 
         if (!ActivateComboBoxListItem(item, itemName))
             throw new InvalidOperationException($"Failed to activate ComboBox item '{itemName}'.");
+
+        Thread.Sleep(300);
+
+        if (!VerifyComboBoxSelectedValue(session, comboBox, itemName))
+        {
+            throw new InvalidOperationException(
+                $"ComboBox selected value did not match requested item. Requested='{itemName}', Actual='{GetComboBoxCurrentValue(session, comboBox)}'");
+        }
 
         try { comboBox.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
         catch { /* best effort */ }
@@ -2960,7 +2969,9 @@ public class UiService : IUiService
         return new
         {
             selected = itemName,
-            comboBox = SafeElementName(comboBox)
+            actual = GetComboBoxCurrentValue(session, comboBox),
+            comboBox = SafeElementName(comboBox),
+            verified = true
         };
     }
 
@@ -4531,13 +4542,16 @@ public class UiService : IUiService
         }
     }
 
-    private List<AutomationElement> FindDynamicComboBoxItems(AutomationSession session, AutomationElement comboBox)
+    private List<AutomationElement> FindDynamicComboBoxItems(
+        AutomationSession session,
+        AutomationElement comboBox,
+        int maxItems = int.MaxValue)
     {
         try
         {
             var logicalItems = GetLogicalComboBoxItems(session, comboBox);
             if (logicalItems.Count > 0)
-                return logicalItems;
+                return logicalItems.Take(maxItems).ToList();
 
             var comboRect = comboBox.BoundingRectangle;
             var desktop = session.Automation.GetDesktop();
@@ -4568,7 +4582,12 @@ public class UiService : IUiService
                     var belowOrOverlay = rect.Top >= comboRect.Top - 10;
 
                     if (nearCombo || belowOrOverlay)
+                    {
                         candidates.Add(item);
+
+                        if (candidates.Count >= maxItems)
+                            return candidates;
+                    }
                 }
                 catch
                 {
@@ -4601,6 +4620,7 @@ public class UiService : IUiService
                         .Where(x =>
                             !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
                             !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
+                        .Take(maxItems)
                         .ToList();
 
                     if (listItems.Count > 0)
@@ -4618,6 +4638,99 @@ public class UiService : IUiService
         }
 
         return [];
+    }
+
+    private string GetComboBoxCurrentValue(AutomationSession session, AutomationElement comboBox)
+    {
+        try
+        {
+            if (comboBox.Patterns.Value.IsSupported)
+            {
+                string value = comboBox.Patterns.Value.Pattern.Value;
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value.Trim();
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            var name = SafeElementName(comboBox);
+            if (!string.IsNullOrWhiteSpace(name))
+                return name.Trim();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            var cf = session.Automation.ConditionFactory;
+
+            var editChild = comboBox.FindFirstDescendant(cf.ByControlType(ControlType.Edit));
+            if (editChild != null)
+            {
+                try
+                {
+                    if (editChild.Patterns.Value.IsSupported)
+                    {
+                        string editValue = editChild.Patterns.Value.Pattern.Value;
+                        if (!string.IsNullOrWhiteSpace(editValue))
+                            return editValue.Trim();
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+
+                var editName = SafeElementName(editChild);
+                if (!string.IsNullOrWhiteSpace(editName))
+                    return editName.Trim();
+            }
+
+            var textChild = comboBox.FindFirstDescendant(cf.ByControlType(ControlType.Text));
+            if (textChild != null)
+            {
+                var text = SafeElementName(textChild);
+                if (!string.IsNullOrWhiteSpace(text))
+                    return text.Trim();
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return string.Empty;
+    }
+
+    private bool VerifyComboBoxSelectedValue(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string expectedValue)
+    {
+        var actual = GetComboBoxCurrentValue(session, comboBox);
+
+        var expectedNorm = NormalizeMenuText(expectedValue);
+        var actualNorm = NormalizeMenuText(actual);
+
+        var matched = string.Equals(
+            actualNorm,
+            expectedNorm,
+            StringComparison.OrdinalIgnoreCase);
+
+        _logger.LogInformation(
+            "ComboBox selection verification. expected={Expected}, actual={Actual}, matched={Matched}",
+            expectedValue,
+            actual,
+            matched);
+
+        return matched;
     }
 
     private bool ActivateComboBoxListItem(AutomationElement item, string itemName)
