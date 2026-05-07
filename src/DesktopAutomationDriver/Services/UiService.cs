@@ -4851,9 +4851,9 @@ public class UiService : IUiService
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
                 var point = new Point(
-                    rect.Left + Math.Max(
+                    (int)Math.Round(rect.Left + (double)Math.Max(
                         ComboBoxLeftEdgeMinOffsetPx,
-                        Math.Min(ComboBoxLeftEdgeMaxOffsetPx, rect.Width / ComboBoxLeftEdgeOffsetDivisor)),
+                        Math.Min(ComboBoxLeftEdgeMaxOffsetPx, rect.Width / ComboBoxLeftEdgeOffsetDivisor))),
                     (int)Math.Round(rect.Top + (rect.Height / 2.0)));
 
                 if (SendInstantLeftClick(point, $"Select ComboBox item {itemName}"))
