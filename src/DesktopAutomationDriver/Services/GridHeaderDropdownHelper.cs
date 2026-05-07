@@ -86,6 +86,7 @@ internal static class GridHeaderDropdownHelper
         if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
             throw new InvalidOperationException("Header has invalid bounding rectangle.");
 
+        // Assumes standard 16px icon spacing in owner-drawn Windows UI headers.
         const int iconSlotWidth = 16;
 
         var safeSlot = Math.Max(1, slotFromRight);

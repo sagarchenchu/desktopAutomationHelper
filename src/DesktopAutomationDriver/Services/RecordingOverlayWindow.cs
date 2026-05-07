@@ -4161,6 +4161,7 @@ public sealed class RecordingOverlayWindow : Form
 
         Thread.Sleep(MenuNavigationDelayMs);
 
+        // Fetch maxItems + 1 to detect whether the dropdown has more items than the display limit.
         var items = FindDynamicComboBoxItems(comboBox, maxItems + 1);
         if (items.Count == 0)
         {
@@ -4296,7 +4297,7 @@ public sealed class RecordingOverlayWindow : Form
         if (items.Count > MaxAssistiveDropdownItemsToDisplay)
         {
             menu.Items.Add(new ToolStripMenuItem(
-                $"Showing first {MaxAssistiveDropdownItemsToDisplay}. Use Select by Text...")
+                $"Showing first {MaxAssistiveDropdownItemsToDisplay}. To select other items, use \"Select by Text\" above.")
             {
                 Enabled = false
             });
@@ -5657,7 +5658,7 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
-            // Access BoundingRectangle and ControlType to confirm the item is still available in the automation tree.
+            // Access both BoundingRectangle and ControlType to confirm the item is still available in the automation tree.
             _ = item.BoundingRectangle;
             _ = item.ControlType;
             return true;
