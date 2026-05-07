@@ -5098,7 +5098,8 @@ public sealed class RecordingOverlayWindow : Form
                 if (_stopRequested)
                     break;
 
-                if (IsNamedActionableMenuItem(child) && seenKeys.Add(GetElementDedupeKey(child)))
+                var childKey = GetElementDedupeKey(child);
+                if (IsNamedActionableMenuItem(child) && (childKey == null || seenKeys.Add(childKey)))
                     results.Add(child);
 
                 if (results.Count >= maxItems)
@@ -5113,7 +5114,8 @@ public sealed class RecordingOverlayWindow : Form
                 if (!IsNamedActionableMenuItem(item))
                     continue;
 
-                if (!seenKeys.Add(GetElementDedupeKey(item)))
+                var itemKey = GetElementDedupeKey(item);
+                if (itemKey != null && !seenKeys.Add(itemKey))
                     continue;
 
                 results.Add(item);
@@ -5130,7 +5132,7 @@ public sealed class RecordingOverlayWindow : Form
         return results;
     }
 
-    private static string GetElementDedupeKey(AutomationElement item)
+    private static string? GetElementDedupeKey(AutomationElement item)
     {
         try
         {
@@ -5147,7 +5149,7 @@ public sealed class RecordingOverlayWindow : Form
         }
         catch
         {
-            return Guid.NewGuid().ToString("N");
+            return null;
         }
     }
 
