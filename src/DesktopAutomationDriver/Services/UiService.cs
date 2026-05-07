@@ -4646,7 +4646,7 @@ public class UiService : IUiService
         {
             if (comboBox.Patterns.Value.IsSupported)
             {
-                var value = comboBox.Patterns.Value.Pattern.Value;
+                string value = comboBox.Patterns.Value.Pattern.Value;
                 if (!string.IsNullOrWhiteSpace(value))
                     return value.Trim();
             }
@@ -4678,7 +4678,7 @@ public class UiService : IUiService
                 {
                     if (editChild.Patterns.Value.IsSupported)
                     {
-                        var editValue = editChild.Patterns.Value.Pattern.Value;
+                        string editValue = editChild.Patterns.Value.Pattern.Value;
                         if (!string.IsNullOrWhiteSpace(editValue))
                             return editValue.Trim();
                     }
