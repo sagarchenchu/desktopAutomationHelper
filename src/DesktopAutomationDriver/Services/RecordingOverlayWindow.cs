@@ -4324,7 +4324,8 @@ public sealed class RecordingOverlayWindow : Form
                     TargetElement = comboInfo ?? BuildElementInfo(comboBox),
                     Operation = "selectcomboboxitem",
                     Value = itemName,
-                    Description = $"Select ComboBox item '{itemName}' from {comboInfo?.Name ?? SafeElementName(comboBox)} using keyboard typeahead",
+                    Description =
+                        $"Select ComboBox item '{itemName}' from {comboInfo?.Name ?? SafeElementName(comboBox)} using keyboard typeahead",
                     PointerContext = ClonePointerContext(_currentAssistivePointerContext)
                 });
 
@@ -5616,7 +5617,7 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
-            // Access UIA properties to confirm the item is still available in the automation tree.
+            // Access multiple UIA properties to robustly confirm the item is still available in the automation tree.
             _ = item.BoundingRectangle;
             _ = item.ControlType;
             return true;

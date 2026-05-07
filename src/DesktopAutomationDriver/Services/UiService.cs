@@ -5063,7 +5063,7 @@ public class UiService : IUiService
     {
         try
         {
-            // Access a UIA property to confirm the item is still available in the automation tree.
+            // Access BoundingRectangle to confirm the item is still available in the automation tree.
             _ = item.BoundingRectangle;
         }
         catch
