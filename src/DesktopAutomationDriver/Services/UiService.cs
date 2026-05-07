@@ -2715,7 +2715,7 @@ public class UiService : IUiService
     private object? OpenHeaderDropdown(UiRequest req)
     {
         var header = FindWithRetry(req);
-        var region = GridHeaderDropdownHelper.ParseRegion(req.Value);
+        var region = GridHeaderDropdownHelper.ParseRegion(req.Value ?? req.ClickRegion);
 
         if (!GridHeaderDropdownHelper.IsGridHeaderElement(header))
         {
@@ -2735,7 +2735,8 @@ public class UiService : IUiService
                 opened = true,
                 listFound = false,
                 header = SafeElementName(header),
-                region = region.ToString()
+                region = region.ToString(),
+                clickRegion = region.ToString()
             };
         }
 
@@ -2750,6 +2751,7 @@ public class UiService : IUiService
             listFound = true,
             header = SafeElementName(header),
             region = region.ToString(),
+            clickRegion = region.ToString(),
             items
         };
     }
@@ -2802,7 +2804,9 @@ public class UiService : IUiService
             selected = req.Value,
             header = SafeElementName(header),
             headerRegion = region.ToString(),
-            itemRegion = itemRegion.ToString()
+            itemRegion = itemRegion.ToString(),
+            headerClickRegion = region.ToString(),
+            itemClickRegion = itemRegion.ToString()
         };
     }
 
