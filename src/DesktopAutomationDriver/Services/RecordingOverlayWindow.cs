@@ -5657,7 +5657,7 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
-            // Access multiple UIA properties to robustly confirm the item is still available in the automation tree.
+            // Access BoundingRectangle and ControlType to confirm the item is still available in the automation tree.
             _ = item.BoundingRectangle;
             _ = item.ControlType;
             return true;
