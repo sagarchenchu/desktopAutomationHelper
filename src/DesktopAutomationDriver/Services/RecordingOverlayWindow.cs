@@ -5243,14 +5243,50 @@ public sealed class RecordingOverlayWindow : Form
         ElementInfo? headerInfo)
     {
         var dropdownMenu = new ToolStripMenuItem("Open Header Dropdown");
+        var iconSlotsMenu = new ToolStripMenuItem("By Right Icon Slot");
 
-        AddHeaderDropdownRegionItem(dropdownMenu, "Lower Right", HeaderDropdownRegion.LowerRight, headerElement, headerInfo);
-        AddHeaderDropdownRegionItem(dropdownMenu, "Upper Right", HeaderDropdownRegion.UpperRight, headerElement, headerInfo);
-        AddHeaderDropdownRegionItem(dropdownMenu, "Center Right", HeaderDropdownRegion.CenterRight, headerElement, headerInfo);
-        AddHeaderDropdownRegionItem(dropdownMenu, "Lower Left", HeaderDropdownRegion.LowerLeft, headerElement, headerInfo);
-        AddHeaderDropdownRegionItem(dropdownMenu, "Upper Left", HeaderDropdownRegion.UpperLeft, headerElement, headerInfo);
-        AddHeaderDropdownRegionItem(dropdownMenu, "Center", HeaderDropdownRegion.Center, headerElement, headerInfo);
-        AddHeaderDropdownRegionItem(dropdownMenu, "Probe All", HeaderDropdownRegion.ProbeAll, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(
+            iconSlotsMenu,
+            "Right Icon 1 / Far Right",
+            HeaderDropdownRegion.RightIcon1,
+            headerElement,
+            headerInfo);
+        AddHeaderDropdownRegionItem(iconSlotsMenu, "Right Icon 2",
+            HeaderDropdownRegion.RightIcon2, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(iconSlotsMenu, "Right Icon 3",
+            HeaderDropdownRegion.RightIcon3, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(iconSlotsMenu, "Right Icon 4",
+            HeaderDropdownRegion.RightIcon4, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(
+            iconSlotsMenu,
+            "Probe Right Icons",
+            HeaderDropdownRegion.ProbeRightIcons,
+            headerElement,
+            headerInfo);
+
+        dropdownMenu.DropDownItems.Add(iconSlotsMenu);
+
+        var cornerMenu = new ToolStripMenuItem("By Corner");
+
+        AddHeaderDropdownRegionItem(cornerMenu, "Lower Right",
+            HeaderDropdownRegion.LowerRight, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(cornerMenu, "Upper Right",
+            HeaderDropdownRegion.UpperRight, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(
+            cornerMenu,
+            "Center Right",
+            HeaderDropdownRegion.CenterRight,
+            headerElement,
+            headerInfo);
+        AddHeaderDropdownRegionItem(cornerMenu, "Lower Left",
+            HeaderDropdownRegion.LowerLeft, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(cornerMenu, "Upper Left",
+            HeaderDropdownRegion.UpperLeft, headerElement, headerInfo);
+        AddHeaderDropdownRegionItem(cornerMenu, "Center", HeaderDropdownRegion.Center, headerElement, headerInfo);
+
+        dropdownMenu.DropDownItems.Add(cornerMenu);
+        AddHeaderDropdownRegionItem(dropdownMenu, "Probe All",
+            HeaderDropdownRegion.ProbeAll, headerElement, headerInfo);
 
         menu.Items.Add(dropdownMenu);
     }
@@ -5304,7 +5340,11 @@ public sealed class RecordingOverlayWindow : Form
                     Operation = "openheaderdropdown",
                     Value = region.ToString(),
                     PointerContext = ClonePointerContext(_currentAssistivePointerContext),
-                    Description = $"Open header dropdown for {headerName} at {region}"
+                    Description = $"Open header dropdown for {headerName} at {region}",
+                    Metadata = new Dictionary<string, string>
+                    {
+                        ["clickRegion"] = region.ToString()
+                    }
                 });
 
                 _statusLabel.Text = $"Header dropdown opened: {headerName}";
@@ -5812,6 +5852,8 @@ public sealed class RecordingOverlayWindow : Form
                 Description = $"Select '{itemName}' from {headerInfo?.Name ?? SafeElementName(headerElement)} header dropdown opened at {region}, item region {itemRegion}",
                 Metadata = new Dictionary<string, string>
                 {
+                    ["headerClickRegion"] = region.ToString(),
+                    ["itemClickRegion"] = itemRegion.ToString(),
                     ["headerRegion"] = region.ToString(),
                     ["itemRegion"] = itemRegion.ToString()
                 }
