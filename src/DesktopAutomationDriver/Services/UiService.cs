@@ -50,7 +50,11 @@ public class UiService : IUiService
     private const int ComboBoxRightEdgeMinOffsetPx = 8;
     private const int ComboBoxRightEdgeMaxOffsetPx = 20;
     private const int ComboBoxRightEdgeOffsetDivisor = 8;
+    private const int ComboBoxLeftEdgeMinOffsetPx = 8;
+    private const int ComboBoxLeftEdgeMaxOffsetPx = 20;
+    private const int ComboBoxLeftEdgeOffsetDivisor = 10;
     private const int ComboBoxDropdownVerticalTolerancePx = 30;
+    private const int MaxComboBoxDropdownListCandidates = 100;
     private const int MaxWindowSearchDepth = 5;
     private const int MaxAssistiveDropdownItemsToDisplay = 25;
     private const int DefaultListResponseLimit = 500;
@@ -4660,7 +4664,7 @@ public class UiService : IUiService
             {
                 checkedCount++;
 
-                if (checkedCount > 100)
+                if (checkedCount > MaxComboBoxDropdownListCandidates)
                     break;
 
                 if (IsComboListNearCombo(list, comboRect))
@@ -4847,7 +4851,9 @@ public class UiService : IUiService
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
                 var point = new Point(
-                    rect.Left + Math.Max(8, Math.Min(20, rect.Width / 10)),
+                    rect.Left + Math.Max(
+                        ComboBoxLeftEdgeMinOffsetPx,
+                        Math.Min(ComboBoxLeftEdgeMaxOffsetPx, rect.Width / ComboBoxLeftEdgeOffsetDivisor)),
                     (int)Math.Round(rect.Top + (rect.Height / 2.0)));
 
                 if (SendInstantLeftClick(point, $"Select ComboBox item {itemName}"))

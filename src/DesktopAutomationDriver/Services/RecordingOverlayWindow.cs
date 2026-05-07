@@ -166,7 +166,11 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxRightEdgeMinOffsetPx = 8;
     private const int ComboBoxRightEdgeMaxOffsetPx = 20;
     private const int ComboBoxRightEdgeOffsetDivisor = 8;
+    private const int ComboBoxLeftEdgeMinOffsetPx = 8;
+    private const int ComboBoxLeftEdgeMaxOffsetPx = 20;
+    private const int ComboBoxLeftEdgeOffsetDivisor = 10;
     private const int ComboBoxDropdownVerticalTolerancePx = 30;
+    private const int MaxComboBoxDropdownListCandidates = 100;
     private const int MaxComboBoxItemsForTextSelection = 500;
     private const int ComboBoxKeyboardTypeaheadInitialDelayMs = 150;
     private const int ComboBoxKeyboardTypeaheadSettleDelayMs = 250;
@@ -4248,7 +4252,7 @@ public sealed class RecordingOverlayWindow : Form
             {
                 checkedCount++;
 
-                if (checkedCount > 100)
+                if (checkedCount > MaxComboBoxDropdownListCandidates)
                     break;
 
                 if (IsComboListNearCombo(list, comboRect))
@@ -4689,7 +4693,9 @@ public sealed class RecordingOverlayWindow : Form
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
                 var point = new System.Drawing.Point(
-                    rect.Left + Math.Max(8, Math.Min(20, rect.Width / 10)),
+                    rect.Left + Math.Max(
+                        ComboBoxLeftEdgeMinOffsetPx,
+                        Math.Min(ComboBoxLeftEdgeMaxOffsetPx, rect.Width / ComboBoxLeftEdgeOffsetDivisor)),
                     rect.Top + rect.Height / 2);
 
                 if (TryPhysicalClickPoint(point, $"Select ComboBox item {itemName}"))
