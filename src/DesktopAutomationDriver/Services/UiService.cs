@@ -5067,7 +5067,7 @@ public class UiService : IUiService
     {
         try
         {
-            // Access BoundingRectangle; stale dropdown items throw before pattern checks.
+            // Access BoundingRectangle; if the item is stale, the dropdown was likely dismissed after selection.
             _ = item.BoundingRectangle;
         }
         catch
