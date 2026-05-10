@@ -176,134 +176,255 @@ Full API reference: see [Controllers/ElementController.cs](src/DesktopAutomation
 
 All desktop automation operations are exposed through a single endpoint:
 
-```
+```http
 POST http://127.0.0.1:{user-port}/ui
 Authorization: Bearer <token>
 Content-Type: application/json
 ```
 
-**Request envelope:**
+`GET /ui` is also routed to the same handler, but normal clients should use `POST`
+because the operation data is supplied as JSON in the request body.
+
+### Request envelope
 
 ```json
 {
   "operation": "<operation-name>",
-  "locator":  { "automationId": "...", "name": "...", "className": "...", "controlType": "...", "xpath": "..." },
-  "locator2": { "automationId": "...", "name": "...", "className": "...", "controlType": "...", "xpath": "..." },
+  "locator": {
+    "mode": "logical",
+    "automationId": "...",
+    "name": "...",
+    "className": "...",
+    "controlType": "...",
+    "xpath": "..."
+  },
+  "locator2": {
+    "automationId": "...",
+    "name": "...",
+    "className": "...",
+    "controlType": "...",
+    "xpath": "..."
+  },
   "value": "...",
+  "clickRegion": "LowerRight",
+  "itemRegion": "LeftCenter",
   "index": 0,
-  "columnIndex": 0
+  "columnIndex": 0,
+  "limit": 50,
+  "includeDesktopDescendants": false
 }
 ```
 
-All fields except `operation` are optional and depend on the operation being used.
+| Field | Type | Used by | Notes |
+|---|---|---|---|
+| `operation` | string | all operations | Required. Case-insensitive. |
+| `locator` | object | element/menu/grid operations | Primary element locator. Multiple non-null properties are combined with AND logic. |
+| `locator2` | object | position and drag/drop operations | Secondary element locator. |
+| `value` | string | operation-specific | Executable path, text, key sequence, timeout, menu path, item name, window title, screenshot path, etc. |
+| `clickRegion` | string | header dropdown operations | Optional header click target. Defaults to `LowerRight`. |
+| `itemRegion` | string | header dropdown item selection | Optional list-item click target. Defaults to `LeftCenter`. |
+| `index` | number | combo/grid operations | Zero-based combo item index or grid row index. |
+| `columnIndex` | number | grid operations | Zero-based grid column index. |
+| `limit` | number | list/debug operations | Optional maximum number of returned items. |
+| `includeDesktopDescendants` | boolean | `listwindows` | When true, also scans desktop descendants. Defaults to false. |
 
-**Success response:**
+### Response formats
+
+Success:
 
 ```json
-{ "status": 0, "value": { ... } }
+{ "success": true, "value": { } }
 ```
 
-**Error response:**
+Client/request errors return `400`; not-found/operation failures return `404`; unexpected
+failures return `500`. Error responses include a message and may include a failure
+screenshot path if screenshot capture is configured:
 
 ```json
-{ "status": 400, "value": { "error": "...", "message": "..." } }
+{
+  "success": false,
+  "value": null,
+  "error": "'operation' is required.",
+  "screenshotPath": "C:\\...\\failure.png"
+}
 ```
 
----
+### Locator reference
 
-### Session & Window Management
+All `locator` and `locator2` objects support these properties:
+
+| Property | Description |
+|---|---|
+| `mode` | Optional mode hint. Menu operations can use `"logical"` for logical menu traversal. |
+| `automationId` | UIA AutomationId property. |
+| `name` | UIA Name property, exact match. |
+| `className` | UIA ClassName property. |
+| `controlType` | UIA control type string, e.g. `Button`, `Edit`, `ComboBox`, `MenuItem`. |
+| `xpath` | XPath-style expression. When set, all other locator properties are ignored. |
+
+XPath examples:
+
+```text
+//Button[@Name='OK']
+//*[@AutomationId='myId']
+//ComboBox[@Name='Status']/ListItem[@Name='Active']
+//Edit[@AutomationId='search' and @Name='Search']
+//ListItem[@Name='Item'][2]
+```
+
+### `/ui` operations
+
+#### Session, window, and inspection
 
 | Operation | Required fields | Description | Response `value` |
 |---|---|---|---|
-| `launch` | `value` (exe path) | Launch an application and start a session | `{ "sessionId": "...", "app": "..." }` |
-| `close` / `quit` | — | Close the active application and session | `null` |
-| `closewindow` | `value` (partial title) | Close a window by partial title match | `null` |
-| `maximize` | — | Maximize the active window | `null` |
-| `minimize` | — | Minimize the active window | `null` |
-| `switchwindow` | `value` (partial title) | Focus a window by partial title match | `null` |
-| `refresh` | — | Re-attach to the main window of the active application | `null` |
-| `screenshot` | `value` (optional file path) | Take a screenshot; returns Base64 PNG or saves to file | `{ "screenshot": "<base64>" }` |
-| `listelements` | `locator` | List all matching elements and their properties | `{ "elements": [ ... ] }` |
-| `listwindows` | — | List all top-level windows visible on the desktop | `{ "windows": [ ... ] }` |
+| `launch` | `value` | Launch an executable and make it the active session. | `{ "sessionId": "...", "app": "..." }` |
+| `close`, `quit` | — | Close the active application/session. | `null` |
+| `closewindow` | `value` | Close a window whose title contains `value`. | `null` |
+| `maximize` | — | Maximize the active session window. | `null` |
+| `minimize` | — | Minimize the active session window. | `null` |
+| `switchwindow` | `value` | Focus/attach to a window whose title contains `value`. | Window/session metadata. |
+| `switchwinodw`, `switch_window`, `switchto` | `value` | Aliases for `switchwindow`. | Window/session metadata. |
+| `refresh` | — | Re-attach to the active application's main window. | Session/window metadata. |
+| `screenshot` | optional `value` | Take a screenshot. If `value` is a file path, save it there; otherwise return Base64 PNG. | `{ "screenshot": "<base64>" }` or file metadata |
+| `listelements` | optional `locator`, `limit` | List matching elements and properties. | `{ "elements": [ ... ] }` |
+| `listwindows` | optional `includeDesktopDescendants`, `limit` | List visible top-level windows; optionally include desktop descendants. | `{ "windows": [ ... ] }` |
+| `getcurrentroot` | optional `locator` | Debug the active root/window context. | Root/window metadata. |
+| `findlocator` | `locator` | Debug locator resolution and return matched element metadata. | Element metadata. |
 
-**Example — launch:**
+#### Element query
+
+| Operation | Required fields | Description | Response `value` |
+|---|---|---|---|
+| `exists` | `locator` | Check whether an element exists without waiting. | `{ "exists": true/false }` |
+| `waitfor` | `locator`, `value` | Wait up to `value` seconds for an element. | `{ "found": true/false }` |
+| `isenabled` | `locator` | Check whether an element is enabled. | `{ "isEnabled": true/false }` |
+| `isvisible` | `locator` | Check whether an element is visible. | `{ "isVisible": true/false }` |
+| `isclickable` | `locator` | Check whether an element is visible and enabled. | `{ "isClickable": true/false }` |
+| `iseditable` | `locator` | Check whether an element supports text editing/value input. | `{ "isEditable": true/false }` |
+| `ischecked` | `locator` | Check checkbox/toggle state. | `{ "isChecked": true/false }` |
+| `getvalue` | `locator` | Read the UIA Value pattern value. | `{ "value": "..." }` |
+| `gettext` | `locator` | Read visible text/name/value text. | `{ "text": "..." }` |
+| `getname` | `locator` | Read UIA Name. | `{ "name": "..." }` |
+| `getcontroltype` | `locator` | Read UIA ControlType. | `{ "controlType": "Button" }` |
+| `getselected` | `locator` | Read selected combo/list item. | `{ "selected": "..." }` |
+| `gettable`, `gettabledata` | `locator` | Read grid/table headers and row data. | `{ "headers": [...], "rows": [[...], ...] }` |
+| `gettableheaders` | `locator` | Read only grid/table headers. | `{ "headers": [...] }` |
+
+#### Position comparison
+
+These operations require both `locator` and `locator2`.
+
+| Operation | Description | Response `value` |
+|---|---|---|
+| `isrightof` | Whether element 1 is to the right of element 2. | `{ "isRightOf": true/false }` |
+| `isleftof` | Whether element 1 is to the left of element 2. | `{ "isLeftOf": true/false }` |
+| `isabove` | Whether element 1 is above element 2. | `{ "isAbove": true/false }` |
+| `isbelow` | Whether element 1 is below element 2. | `{ "isBelow": true/false }` |
+| `getposition` | Return both rectangles and all relative position checks. | `{ "element1": {...}, "element2": {...}, "isRightOf": ..., ... }` |
+
+#### Element actions
+
+| Operation | Required fields | Description | Response `value` |
+|---|---|---|---|
+| `click` | `locator` | Click/invoke an element. | `null` |
+| `doubleclick` | `locator` | Double-click an element. | `null` |
+| `rightclick` | `locator` | Right-click an element. | `null` |
+| `hover` | `locator` | Move mouse over an element. | `null` |
+| `focus` | `locator` | Give keyboard focus to an element. | `null` |
+| `type` | `locator`, `value` | Type text into an element. Date pickers use segmented date typing when applicable. | `null` or typed date metadata |
+| `typedate` | `locator`, `value` | Type a WinForms `SysDateTimePick32` date as MM → DD → YYYY segments. | `{ "typed": true, "strategy": "date-segments", ... }` |
+| `clear` | `locator` | Clear an editable element. | `null` |
+| `sendkeys` | `locator`, `value` | Send text/key tokens to the element. | `null` |
+| `scroll` | `locator` | Scroll element into view. | `null` |
+| `check` | `locator` | Set checkbox/toggle to checked. | `null` |
+| `uncheck` | `locator` | Set checkbox/toggle to unchecked. | `null` |
+| `select` | `locator`, `value` or `index` | Select combo/list item by visible text or zero-based index. | `null` |
+| `selectaid` | `locator`, `value` | Select combo/list item by AutomationId. | `null` |
+| `selectcomboboxitem` | `locator`, `value` | Select a ComboBox item by text using expanded dropdown search. | Selection metadata |
+| `typeandselect` | `locator`, `value` | Type filter text and select the first matching dropdown item. | `null` |
+| `clickgridcell` | `locator`, `index`, `columnIndex` | Click a grid cell by row and column. | `null` |
+| `doubleclickgridcell` | `locator`, `index`, `columnIndex` | Double-click a grid cell by row and column. | `null` |
+| `openheaderdropdown` | `locator`, optional `clickRegion` | Open a grid header dropdown and list popup items. | `{ "opened": true, "listFound": true/false, "items": [...] }` |
+| `selectheaderdropdownitem` | `locator`, `value`, optional `clickRegion`, `itemRegion` | Open a grid header dropdown and select a matching `ListItem`. | `{ "selected": "...", "header": "..." }` |
+| `draganddrop` | `locator`, `locator2` | Drag source element to target element. | `null` |
+
+#### Menu operations
+
+| Operation | Required fields | Description | Response `value` |
+|---|---|---|---|
+| `clickmenu` | `locator`, `value` | Click a visual menu path starting from the located menu/header. | Selection metadata |
+| `clickmenupath` | `locator`, `value` | Click a menu path. Uses logical mode when `locator.mode` is `logical`; otherwise visual traversal. | Selection metadata |
+| `clicklogicalmenupath` | `locator`, `value` | Click a logical UIA menu path. | Selection metadata |
+| `clickmenulogical` | `locator`, `value` | Alias for `clicklogicalmenupath`. | Selection metadata |
+| `menupath` | `locator`, `value` | Alias for `clicklogicalmenupath`. | Selection metadata |
+| `inspectlogicalmenu` | `locator` | Inspect logical menu descendants/candidates for debugging. | Menu debug metadata |
+| `inspectmenupathcandidates` | `value` | Inspect candidate menu parent chains for a path such as `DQA>Level 17`. | Candidate metadata |
+| `dumpmenus`, `dumplogicalmenus` | optional `locator`, `limit` | Dump logical menu items for diagnostics. | Menu dump metadata |
+| `selectdynamicmenuitem` | `locator`, `value` | Compatibility operation for a dynamic submenu item; delegates to dynamic path traversal. | `{ "selected": "...", "parent": "...", "dropdown": "..." }` |
+| `selectdynamicmenupath` | `locator`, `value` | Open a dynamic root `MenuItem` and select child path `Child>Leaf` or full `Root>Child>Leaf`. | `{ "selected": "Child>Leaf", "parent": "...", "dropdown": "..." }` |
+
+Dynamic menu example:
+
+```json
+{
+  "operation": "selectdynamicmenupath",
+  "locator": { "name": "File", "controlType": "MenuItem" },
+  "value": "Recent>Report1"
+}
+```
+
+Logical menu example with duplicate leaf names:
+
+```json
+{
+  "operation": "menupath",
+  "locator": { "name": "DQA", "controlType": "MenuItem", "mode": "logical" },
+  "value": "DQA>Level 17"
+}
+```
+
+When multiple leaves share the same label, include the parent chain in `value`; for example
+`DQA>Level 17` is matched by its full chain and will not select `Tag1>Level 17`.
+
+#### Alert and popup operations
+
+| Operation | Required fields | Description | Response `value` |
+|---|---|---|---|
+| `alertok` | — | Click OK/Yes/Save on the topmost modal dialog. | `{ "success": true }` |
+| `alertcancel` | — | Click Cancel/No on the topmost modal dialog. | `{ "success": true }` |
+| `alertclose` | — | Close the topmost modal dialog via Window pattern. | `{ "success": true }` |
+| `popupok` | optional `locator` | Click OK on a popup/dialog, optionally scoped by locator. | `{ "success": true }` |
+
+#### Request examples
+
+Launch Notepad:
 
 ```json
 { "operation": "launch", "value": "C:\\Windows\\System32\\notepad.exe" }
 ```
 
----
+Type text:
 
-### Element Query
+```json
+{
+  "operation": "type",
+  "locator": { "className": "Edit", "controlType": "Edit" },
+  "value": "Hello from /ui"
+}
+```
 
-| Operation | Required fields | Description | Response `value` |
-|---|---|---|---|
-| `exists` | `locator` | Check if an element exists (no wait) | `{ "exists": true/false }` |
-| `waitfor` | `locator`, `value` (timeout seconds) | Wait up to N seconds for an element to appear | `{ "found": true/false }` |
-| `isenabled` | `locator` | Check whether the element is enabled | `{ "isEnabled": true/false }` |
-| `isvisible` | `locator` | Check whether the element is visible | `{ "isVisible": true/false }` |
-| `isclickable` | `locator` | Check whether the element is enabled and visible | `{ "isClickable": true/false }` |
-| `ischecked` | `locator` | Check the toggle/check state of an element | `{ "isChecked": true/false }` |
-| `getvalue` | `locator` | Get the Value pattern value (e.g. text in an Edit) | `{ "value": "..." }` |
-| `gettext` | `locator` | Get the visible text of an element | `{ "text": "..." }` |
-| `getname` | `locator` | Get the UIA Name property | `{ "name": "..." }` |
-| `getcontroltype` | `locator` | Get the UIA ControlType string | `{ "controlType": "Button" }` |
-| `getselected` | `locator` | Get the currently selected item from a combo or list | `{ "selected": "..." }` |
-| `gettable` / `gettabledata` | `locator` | Read all rows and headers from a grid/table | `{ "headers": [...], "rows": [[...], ...] }` |
-| `gettableheaders` | `locator` | Read only the column headers from a grid/table | `{ "headers": [...] }` |
-
----
-
-### Position Comparison
-
-These operations require **both** `locator` and `locator2`.
-
-| Operation | Description | Response `value` |
-|---|---|---|
-| `isrightof` | Whether element 1 is to the right of element 2 | `{ "isRightOf": true/false }` |
-| `isleftof` | Whether element 1 is to the left of element 2 | `{ "isLeftOf": true/false }` |
-| `isabove` | Whether element 1 is above element 2 | `{ "isAbove": true/false }` |
-| `isbelow` | Whether element 1 is below element 2 | `{ "isBelow": true/false }` |
-| `getposition` | Bounding rectangles + all four relative positions | `{ "element1": {...}, "element2": {...}, "isRightOf": ..., ... }` |
-
----
-
-### Element Actions
-
-| Operation | Required fields | Description | Response `value` |
-|---|---|---|---|
-| `click` | `locator` | Click the element (Invoke pattern or mouse click) | `null` |
-| `doubleclick` | `locator` | Double-click the element | `null` |
-| `rightclick` | `locator` | Right-click the element | `null` |
-| `hover` | `locator` | Move the mouse pointer over the element | `null` |
-| `focus` | `locator` | Give keyboard focus to the element | `null` |
-| `type` | `locator`, `value` | Type text into the element; SysDateTimePick32 date pickers use segmented date typing | `null` or typed date metadata |
-| `typedate` | `locator`, `value` | Type a date into a WinForms SysDateTimePick32 date picker as MM → DD → YYYY segments | `{ "typed": true, "strategy": "date-segments", ... }` |
-| `clear` | `locator` | Clear the text content of an Edit element | `null` |
-| `sendkeys` | `locator`, `value` | Send key sequences, e.g. `{ENTER}`, `{TAB}`, `{F5}` | `null` |
-| `scroll` | `locator` | Scroll the element into view | `null` |
-| `check` | `locator` | Set a toggle/checkbox element to the checked state | `null` |
-| `uncheck` | `locator` | Set a toggle/checkbox element to the unchecked state | `null` |
-| `select` | `locator`, `value` or `index` | Select a ComboBox item by name or zero-based index | `null` |
-| `selectaid` | `locator`, `value` (AutomationId) | Select a ComboBox item by AutomationId | `null` |
-| `typeandselect` | `locator`, `value` | Type a filter string and select the first matching dropdown item | `null` |
-| `clickgridcell` | `locator`, `index` (row), `columnIndex` (col) | Click a grid cell at the given row/column | `null` |
-| `doubleclickgridcell` | `locator`, `index` (row), `columnIndex` (col) | Double-click a grid cell at the given row/column | `null` |
-| `openheaderdropdown` | `locator` | Click the right edge of a grid header and list popup dropdown items | `{ "opened": true, "listFound": true/false, "items": [...] }` |
-| `selectheaderdropdownitem` | `locator`, `value` | Open a grid header dropdown and select a matching ListItem | `{ "selected": "...", "header": "..." }` |
-| `draganddrop` | `locator` (source), `locator2` (target) | Drag the source element and drop it onto the target element | `null` |
-
-#### draganddrop — request example
+Drag and drop:
 
 ```json
 {
   "operation": "draganddrop",
-  "locator":  { "automationId": "sourceId",  "controlType": "ListItem" },
-  "locator2": { "automationId": "targetId",  "controlType": "List" }
+  "locator":  { "automationId": "sourceId", "controlType": "ListItem" },
+  "locator2": { "automationId": "targetId", "controlType": "List" }
 }
 ```
 
-#### sendkeys — supported key tokens
+#### `sendkeys` tokens
 
 Key tokens are wrapped in braces inside the `value` string, e.g. `"Hello{ENTER}"`.
 
@@ -328,48 +449,281 @@ Key tokens are wrapped in braces inside the `value` string, e.g. `"Hello{ENTER}"
 
 ---
 
-### Alert / Dialog Handling
+## Recording API
 
-| Operation | Required fields | Description | Response `value` |
-|---|---|---|---|
-| `alertok` | — | Click the OK / Yes / Save button of the topmost modal dialog | `{ "success": true }` |
-| `alertcancel` | — | Click the Cancel / No button of the topmost modal dialog | `{ "success": true }` |
-| `alertclose` | — | Close the topmost modal dialog via the Window pattern | `{ "success": true }` |
+Recording endpoints open an always-on-top overlay and export captured actions to JSON.
+All recording endpoints require the Bearer token.
 
----
+### POST /record/start
 
-### Locator reference
+Starts a recording session. If a `/ui` session is already active, recording is scoped to
+that application's process/window. If `exePath` is supplied, the driver launches that
+application first and records it as the target.
 
-All `locator` and `locator2` objects support the following properties (combined with AND logic):
+Request body fields are optional:
 
-| Property | Description |
+```json
+{
+  "exePath": "C:\\Windows\\System32\\notepad.exe",
+  "outputPath": "C:\\Temp\\recordings",
+  "waitSeconds": 60
+}
+```
+
+| Field | Description |
 |---|---|
-| `automationId` | UIA AutomationId property |
-| `name` | UIA Name property (exact match) |
-| `className` | UIA ClassName property |
-| `controlType` | UIA control type string, e.g. `Button`, `Edit`, `ComboBox` |
-| `xpath` | XPath-style expression (overrides all other properties when set) |
+| `exePath` | Full path to an executable to launch before recording. Omit to record the current/active target. |
+| `outputPath` | Directory or full JSON file path for the export. Defaults to `%TEMP%\\DesktopAutomationHelper\\Recordings\\`. |
+| `waitSeconds` | Optional auto-stop timeout. Omit to stop manually with Ctrl+S or `POST /record/stop`. |
 
-**XPath syntax examples:**
+Success response:
 
+```json
+{
+  "success": true,
+  "message": "Recording started.",
+  "launch": {
+    "success": true,
+    "processId": 1234,
+    "windowTitle": "Untitled - Notepad",
+    "window": {
+      "title": "Untitled - Notepad",
+      "x": 100,
+      "y": 100,
+      "width": 1200,
+      "height": 800,
+      "windowState": "Normal",
+      "isMaximized": false,
+      "isMinimized": false,
+      "isFullScreen": false
+    }
+  },
+  "outputPath": "C:\\Temp\\recordings"
+}
 ```
-//Button[@Name='OK']
-//*[@AutomationId='myId']
-//ComboBox[@Name='Status']/ListItem[@Name='Active']
-//Edit[@AutomationId='search' and @Name='Search']
-//ListItem[@Name='Item'][2]
+
+If another recording is already active, the endpoint returns `409` with a WebDriver error
+envelope.
+
+### Recording modes
+
+After `POST /record/start`, use the overlay hotkeys to select the mode:
+
+| Hotkey | Mode | Details |
+|---|---|---|
+| `Ctrl+P` | Passive | Automatically captures mouse clicks and keyboard actions with the element under the cursor. Use this for quick observation-style recordings. |
+| `Ctrl+A` | Assistive | Right-click an element to open an action menu, then choose what to record/perform. Use this when you need deterministic locators, assertions, menu actions, grid/header dropdown actions, or dynamic menu paths. |
+| `Ctrl+S` | Stop | Stops recording and writes the JSON export. Equivalent to `POST /record/stop`. |
+
+Assistive mode records richer action metadata, including the selected action type,
+resolved element locator, optional target element, menu path details, pointer diagnostics,
+and operation-specific metadata. `/playback` replays Assistive actions only; Passive
+actions are exported for inspection but skipped during playback.
+
+Assistive dynamic menu example: selecting `File > Recent > Report1` is exported as a
+path-oriented action such as:
+
+```json
+{
+  "actionType": "click",
+  "mode": "assistive",
+  "operation": "selectdynamicmenupath",
+  "value": "File>Recent>Report1",
+  "description": "Select dynamic menu path File>Recent>Report1"
+}
 ```
+
+### GET /record/status
+
+Returns the active state, current mode, start time, and captured action count.
+
+```json
+{
+  "sessionId": null,
+  "status": 0,
+  "value": {
+    "isActive": true,
+    "mode": "Assistive",
+    "startedAt": "2026-05-10T08:25:31.095+00:00",
+    "actionsCount": 3
+  }
+}
+```
+
+### GET /record/actions
+
+Returns the current recording export, including actions captured so far and the exported
+file path if the recording has already stopped.
+
+### POST /record/stop
+
+Stops the active recording session, writes the JSON export, and returns the same export
+format as `/record/actions`. Calling it after the overlay was stopped with `Ctrl+S` is safe.
+
+### Recording export format
+
+```json
+{
+  "sessionId": null,
+  "status": 0,
+  "value": {
+    "startedAt": "2026-05-10T08:25:31.095+00:00",
+    "stoppedAt": "2026-05-10T08:26:10.000+00:00",
+    "mode": "Assistive",
+    "screen": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
+    "launch": { "exePath": "...", "processId": 1234, "success": true },
+    "exportedFilePath": "C:\\Temp\\recordings\\recording-20260510.json",
+    "actions": [
+      {
+        "actionType": "Click",
+        "timestamp": "2026-05-10T08:25:45.000+00:00",
+        "mode": "Assistive",
+        "element": { "name": "OK", "controlType": "Button" },
+        "description": "Click on OK Button",
+        "value": null,
+        "operation": "click",
+        "menuPath": null,
+        "targetElement": null,
+        "pointerContext": { },
+        "metadata": { }
+      }
+    ]
+  }
+}
+```
+
+Recorded action types include `Click`, `MenuPathClick`, `DoubleClick`, `RightClick`,
+`Hover`, `Select`, `Type`, `TypeAndSelect`, `IsVisible`, `IsClickable`, `IsEnabled`,
+`IsDisabled`, `IsEditable`, `GetTableHeaders`, `GetTableData`, `Assert`, `IsChecked`,
+`SelectCheckBox`, `ClearText`, `GetValue`, `Expand`, `Collapse`, `Maximize`, `Minimize`,
+`CloseWindow`, `SwitchWindow`, `SetValue`, `Scroll`, and `DragAndDrop`.
 
 ---
 
-## Recording Metadata
+## POST /playback
 
-When `POST /record/start` launches an application, the response now includes the captured
-screen resolution plus the launched window's initial `x`, `y`, `width`, `height`,
-`windowState`, and `isFullScreen` details. The exported recording JSON also includes the
-same `screen` / `launch` metadata and a per-action `pointerContext` block for assistive
-and right-click-driven actions so hook coordinates, live cursor coordinates, and the
-resolved fallback point can be inspected later.
+Replays Assistive recording JSON by converting recorded actions to `/ui` operations and
+executing them sequentially. Passive actions are skipped because they do not always contain
+enough deterministic action metadata.
+
+```http
+POST http://127.0.0.1:{user-port}/playback
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Accepted request formats:
+
+1. Raw recording export object returned by `/record/actions` or `/record/stop`:
+
+```json
+{
+  "startedAt": "2026-05-10T08:25:31.095+00:00",
+  "mode": "Assistive",
+  "actions": [ ... ]
+}
+```
+
+2. A bare actions array:
+
+```json
+[
+  { "actionType": "Click", "mode": "Assistive", "element": { "name": "OK", "controlType": "Button" } }
+]
+```
+
+3. A wrapper with options:
+
+```json
+{
+  "recording": {
+    "mode": "Assistive",
+    "actions": [ ... ]
+  },
+  "continueOnError": true,
+  "delayMs": 250
+}
+```
+
+4. A WebDriver-style value wrapper containing a recording export:
+
+```json
+{
+  "value": {
+    "mode": "Assistive",
+    "actions": [ ... ]
+  }
+}
+```
+
+Playback options:
+
+| Field | Description |
+|---|---|
+| `continueOnError` | Defaults to false. When true, playback continues after failed actions and reports each failure. |
+| `delayMs` | Optional delay between successfully executed actions. Defaults to 0. |
+
+Response:
+
+```json
+{
+  "sessionId": null,
+  "status": 0,
+  "value": {
+    "totalActions": 3,
+    "executedActions": 2,
+    "skippedActions": 1,
+    "failedActions": 0,
+    "completed": true,
+    "actions": [
+      {
+        "index": 0,
+        "success": true,
+        "skipped": false,
+        "skipReason": null,
+        "operation": "click",
+        "actionType": "Click",
+        "description": "Click on OK Button",
+        "error": null,
+        "result": null
+      }
+    ]
+  }
+}
+```
+
+Playback action mapping:
+
+| Recorded action | `/ui` operation |
+|---|---|
+| `Click` | `click`, `sendkeys`, `alertok`, or `alertcancel` depending on recorded value/description |
+| `MenuPathClick` | `clicklogicalmenupath` |
+| `DoubleClick` | `doubleclick` |
+| `RightClick` | `rightclick` |
+| `Hover` | `hover` |
+| `Select` | `select` |
+| `Type` | `type` or `sendkeys` |
+| `TypeAndSelect` | `typeandselect` |
+| `IsVisible` | `isvisible` |
+| `IsClickable` | `isclickable` |
+| `IsEnabled` | `isenabled` |
+| `IsEditable` | `iseditable` |
+| `GetTableHeaders` | `gettableheaders` |
+| `GetTableData` | `gettabledata` |
+| `IsChecked` | `ischecked` |
+| `SelectCheckBox` | `check` or `uncheck` |
+| `ClearText` | `clear` |
+| `GetValue` | `getvalue` |
+| `Expand`, `Collapse` | `click` |
+| `Maximize` | `maximize` |
+| `Minimize` | `minimize` |
+| `CloseWindow` | `closewindow` |
+| `SwitchWindow` | `switchwindow` |
+| `SetValue` | `type` |
+| `Scroll` | `scroll` |
+
+If a recorded action has an explicit `operation`, playback uses it directly. Unsupported
+or non-deterministic actions are marked as skipped with a `skipReason`.
 
 ---
 
