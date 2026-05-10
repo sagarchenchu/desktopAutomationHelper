@@ -67,7 +67,7 @@ public sealed class PlaybackService : IPlaybackService
                 if (options.DelayMs > 0 && i < actions.Count - 1)
                 {
                     // Playback is intentionally sequential; the next UI operation must wait until
-                    // the requested inter-action delay has elapsed.
+                    // the requested delay between actions has elapsed.
                     Thread.Sleep(options.DelayMs);
                 }
             }

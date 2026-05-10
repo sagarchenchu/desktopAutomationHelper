@@ -5416,7 +5416,7 @@ public sealed class RecordingOverlayWindow : Form
             {
                 // Skip unnamed entries instead of showing a placeholder because nested playback
                 // needs a stable name or AutomationId to re-locate the menu item later.
-                _logger.LogDebug(
+                _logger.LogInformation(
                     "Skipping unnamed dynamic menu item while building Assistive menu. parent={Parent}, path={Path}",
                     parentName,
                     string.Join(">", pathToCurrentMenu));
