@@ -284,7 +284,7 @@ XPath examples:
 | `maximize` | — | Maximize the active session window. | `null` |
 | `minimize` | — | Minimize the active session window. | `null` |
 | `switchwindow` | `value` | Focus/attach to a window whose title contains `value`. | Window/session metadata. |
-| `switchwinodw`, `switch_window`, `switchto` | `value` | Aliases for `switchwindow`. | Window/session metadata. |
+| `switchwinodw` (legacy misspelled alias), `switch_window`, `switchto` | `value` | Aliases for `switchwindow`. | Window/session metadata. |
 | `refresh` | — | Re-attach to the active application's main window. | Session/window metadata. |
 | `screenshot` | optional `value` | Take a screenshot. If `value` is a file path, save it there; otherwise return Base64 PNG. | `{ "screenshot": "<base64>" }` or file metadata |
 | `listelements` | optional `locator`, `limit` | List matching elements and properties. | `{ "elements": [ ... ] }` |
