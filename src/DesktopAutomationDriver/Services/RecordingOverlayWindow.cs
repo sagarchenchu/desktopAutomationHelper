@@ -5404,6 +5404,7 @@ public sealed class RecordingOverlayWindow : Form
         menu.Items.Add(new ToolStripSeparator());
 
         var displayItems = items.Take(MaxAssistiveDropdownItemsToDisplay).ToList();
+        var skippedUnnamedItems = 0;
 
         foreach (var item in displayItems)
         {
@@ -5420,6 +5421,7 @@ public sealed class RecordingOverlayWindow : Form
                     "Skipping unnamed dynamic menu item while building Assistive menu. parent={Parent}, path={Path}",
                     parentName,
                     string.Join(">", pathToCurrentMenu));
+                skippedUnnamedItems++;
                 continue;
             }
 
@@ -5460,6 +5462,15 @@ public sealed class RecordingOverlayWindow : Form
             itemMenu.DropDownItems.Add(selectLeaf);
             itemMenu.DropDownItems.Add(openSubmenu);
             menu.Items.Add(itemMenu);
+        }
+
+        if (skippedUnnamedItems > 0)
+        {
+            menu.Items.Add(new ToolStripMenuItem(
+                $"Skipped {skippedUnnamedItems} unnamed item(s) without stable playback identifiers")
+            {
+                Enabled = false
+            });
         }
 
         if (items.Count > MaxAssistiveDropdownItemsToDisplay)
@@ -5773,7 +5784,7 @@ public sealed class RecordingOverlayWindow : Form
 
                 try
                 {
-                    if (IsDynamicDropdownContainerType(element.ControlType))
+                    if (DynamicMenuHelpers.IsDropdownContainerType(element.ControlType))
                         results.Add(element);
 
                     if (depth >= MaxDynamicPopupSearchDepth)
@@ -5799,13 +5810,6 @@ public sealed class RecordingOverlayWindow : Form
 
         return results;
     }
-
-    private static bool IsDynamicDropdownContainerType(ControlType controlType) =>
-        controlType == ControlType.Menu ||
-        controlType == ControlType.ToolBar ||
-        controlType == ControlType.Pane ||
-        controlType == ControlType.Custom ||
-        controlType == ControlType.Window;
 
     private void OpenDynamicSubmenuAndShowItems(
         AutomationElement rootParentMenuItem,

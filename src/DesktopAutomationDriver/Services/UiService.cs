@@ -2967,7 +2967,7 @@ public class UiService : IUiService
 
             if (isLast)
             {
-                if (!ActivateDynamicLeafMenuItem(item, part))
+                if (!ActivateDynamicMenuItem(item, part))
                     throw new InvalidOperationException($"Failed to activate dynamic menu item '{part}'.");
 
                 return new
@@ -5208,7 +5208,7 @@ public class UiService : IUiService
 
     private bool ActivateDynamicMenuItem(AutomationElement item, string itemName)
     {
-        if (TryInstantPhysicalClick(item, $"SelectDynamicMenuItem {itemName}"))
+        if (TryInstantPhysicalClick(item, $"ActivateDynamicMenuItem {itemName}"))
             return true;
 
         try
@@ -5392,7 +5392,7 @@ public class UiService : IUiService
 
                 try
                 {
-                    if (IsDynamicDropdownContainerType(element.ControlType))
+                    if (DynamicMenuHelpers.IsDropdownContainerType(element.ControlType))
                         results.Add(element);
 
                     if (depth >= MaxDynamicPopupSearchDepth)
@@ -5417,18 +5417,6 @@ public class UiService : IUiService
         }
 
         return results;
-    }
-
-    private static bool IsDynamicDropdownContainerType(ControlType controlType) =>
-        controlType == ControlType.Menu ||
-        controlType == ControlType.ToolBar ||
-        controlType == ControlType.Pane ||
-        controlType == ControlType.Custom ||
-        controlType == ControlType.Window;
-
-    private bool ActivateDynamicLeafMenuItem(AutomationElement item, string itemName)
-    {
-        return ActivateDynamicMenuItem(item, itemName);
     }
 
     private AutomationElement? OpenHeaderDropdownAndFindList(
