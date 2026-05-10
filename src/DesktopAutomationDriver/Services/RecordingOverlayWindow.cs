@@ -157,6 +157,7 @@ public sealed class RecordingOverlayWindow : Form
     private const int MenuFocusDelayMs = 75;
     private const double SubmenuArrowMinOffsetPx = 8.0;
     private const double SubmenuArrowMaxOffsetPx = 20.0;
+    private const double SubmenuArrowWidthDivisor = 8.0;
     private const int SubmenuHorizontalProximityPx = 20;
     private const int SubmenuVerticalProximityPx = 40;
     private const int DropdownItemPhysicalClickSettleMs = 250;
@@ -5408,7 +5409,13 @@ public sealed class RecordingOverlayWindow : Form
                 itemName = SafeElementAutomationId(item);
 
             if (string.IsNullOrWhiteSpace(itemName))
+            {
+                _logger.LogDebug(
+                    "Skipping unnamed dynamic menu item while building Assistive menu. parent={Parent}, path={Path}",
+                    parentName,
+                    string.Join(">", pathToCurrentMenu));
                 continue;
+            }
 
             var capturedName = itemName;
             var capturedPath = pathToCurrentMenu.Concat(new[] { capturedName }).ToArray();
@@ -5628,7 +5635,7 @@ public sealed class RecordingOverlayWindow : Form
     {
         return Math.Max(
             SubmenuArrowMinOffsetPx,
-            Math.Min(SubmenuArrowMaxOffsetPx, rectWidth / 8.0));
+            Math.Min(SubmenuArrowMaxOffsetPx, rectWidth / SubmenuArrowWidthDivisor));
     }
 
     private AutomationElement? FindDynamicMenuItemByName(
