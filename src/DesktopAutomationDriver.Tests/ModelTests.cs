@@ -1,5 +1,6 @@
 using DesktopAutomationDriver.Models.Request;
 using DesktopAutomationDriver.Models.Response;
+using DesktopAutomationDriver.Services;
 
 namespace DesktopAutomationDriver.Tests;
 
@@ -118,5 +119,18 @@ public class ModelTests
     {
         var locator = new UiLocator { XPath = "//Button[@Name='Save']" };
         Assert.Equal("//Button[@Name='Save']", locator.XPath);
+    }
+
+    [Fact]
+    public void MenuParentChainMatching_DuplicateLeafRequiresFullChain()
+    {
+        var requestedPath = new[] { "DQA", "Level 17" };
+
+        Assert.True(UiService.DoesMenuParentChainEndWithPath(
+            new[] { "DQA", "Level 17" },
+            requestedPath));
+        Assert.False(UiService.DoesMenuParentChainEndWithPath(
+            new[] { "Tag1", "Level 17" },
+            requestedPath));
     }
 }
