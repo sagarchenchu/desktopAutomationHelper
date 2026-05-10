@@ -5624,6 +5624,13 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
+    private static double CalculateSubmenuArrowOffset(double rectWidth)
+    {
+        return Math.Max(
+            SubmenuArrowMinOffsetPx,
+            Math.Min(SubmenuArrowMaxOffsetPx, rectWidth / 8.0));
+    }
+
     private AutomationElement? FindDynamicMenuItemByName(
         AutomationElement dropdown,
         string itemName)
@@ -5655,8 +5662,9 @@ public sealed class RecordingOverlayWindow : Form
                 Mouse.MoveTo(center);
                 Thread.Sleep(MenuNavigationDelayMs);
 
+                var arrowOffset = CalculateSubmenuArrowOffset((double)rect.Width);
                 var right = new System.Drawing.Point(
-                    (int)Math.Round((double)rect.Right - Math.Max(SubmenuArrowMinOffsetPx, Math.Min(SubmenuArrowMaxOffsetPx, (double)rect.Width / 8.0))),
+                    (int)Math.Round((double)rect.Right - arrowOffset),
                     (int)Math.Round(rect.Top + rect.Height / 2.0));
 
                 if (TryPhysicalClickPoint(right, $"Open submenu {SafeElementName(item)}"))
