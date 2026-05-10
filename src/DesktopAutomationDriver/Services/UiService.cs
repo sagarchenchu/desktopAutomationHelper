@@ -1197,7 +1197,8 @@ public class UiService : IUiService
         AutomationSession session,
         AutomationElement menuItem)
     {
-        var dropdown = FindDynamicMenuDropdown(session, menuItem);
+        var dropdown = FindDynamicMenuDropdown(session, menuItem)
+            ?? FindDynamicSubMenuDropdown(session, menuItem);
 
         if (dropdown == null)
         {
