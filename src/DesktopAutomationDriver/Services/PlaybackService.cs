@@ -217,7 +217,7 @@ public sealed class PlaybackService : IPlaybackService
 
         return action.ActionType switch
         {
-            ActionType.Click => "click",
+            ActionType.Click => ResolveClickOperation(action),
             ActionType.MenuPathClick => "clicklogicalmenupath",
             ActionType.DoubleClick => "doubleclick",
             ActionType.RightClick => "rightclick",
@@ -248,6 +248,20 @@ public sealed class PlaybackService : IPlaybackService
         };
     }
 
+    private static string ResolveClickOperation(RecordedAction action)
+    {
+        if (string.Equals(action.Value, "{ESC}", StringComparison.OrdinalIgnoreCase) ||
+            action.Description?.Contains("Cancel", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            return "alertcancel";
+        }
+
+        if (action.Description?.Contains("Click OK", StringComparison.OrdinalIgnoreCase) == true)
+            return "alertok";
+
+        return IsSendKeysValue(action.Value) ? "sendkeys" : "click";
+    }
+
     private static string? ResolveCheckOperation(RecordedAction action)
     {
         if (action.Description?.Contains("Uncheck", StringComparison.OrdinalIgnoreCase) == true)
@@ -263,6 +277,9 @@ public sealed class PlaybackService : IPlaybackService
         {
             return string.Join(">", action.MenuPath.Select(ElementInfo.GetLabel));
         }
+
+        if (string.Equals(operation, "closewindow", StringComparison.OrdinalIgnoreCase))
+            return action.Value ?? action.Element?.Name;
 
         return action.Value;
     }
@@ -281,7 +298,10 @@ public sealed class PlaybackService : IPlaybackService
 
         if (string.Equals(operation, "switchwindow", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(operation, "maximize", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(operation, "minimize", StringComparison.OrdinalIgnoreCase))
+            string.Equals(operation, "minimize", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(operation, "closewindow", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(operation, "alertok", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(operation, "alertcancel", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
@@ -319,6 +339,11 @@ public sealed class PlaybackService : IPlaybackService
         return !string.Equals(operation, "switchwindow", StringComparison.OrdinalIgnoreCase) &&
                !string.Equals(operation, "maximize", StringComparison.OrdinalIgnoreCase) &&
                !string.Equals(operation, "minimize", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(operation, "closewindow", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(operation, "alertok", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(operation, "alertcancel", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(operation, "alertclose", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(operation, "popupok", StringComparison.OrdinalIgnoreCase) &&
                !string.Equals(operation, "clicklogicalmenupath", StringComparison.OrdinalIgnoreCase);
     }
 
