@@ -67,11 +67,23 @@ public sealed class PlaybackService : IPlaybackService
                 if (options.DelayMs > 0 && i < actions.Count - 1)
                     Thread.Sleep(options.DelayMs);
             }
-            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+            catch (ArgumentException ex)
             {
                 actionResult.Error = ex.Message;
                 result.FailedActions++;
-                _logger.LogWarning(ex, "Playback action {Index} failed. operation={Operation}", i, uiRequest.Operation);
+                _logger.LogWarning(ex, "Playback action {Index} had invalid arguments. operation={Operation}", i, uiRequest.Operation);
+
+                if (!options.ContinueOnError)
+                {
+                    result.Completed = false;
+                    return result;
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                actionResult.Error = ex.Message;
+                result.FailedActions++;
+                _logger.LogWarning(ex, "Playback action {Index} could not be completed. operation={Operation}", i, uiRequest.Operation);
 
                 if (!options.ContinueOnError)
                 {

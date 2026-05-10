@@ -39,9 +39,12 @@ public class UiService : IUiService
     private const int MenuExpandDelayMs = 250;
     private const int MenuActionDelayMs = 150;
     private const int MenuFocusDelayMs = 75;
+    // Limit parent-chain traversal to avoid walking unexpectedly deep or unstable UIA trees.
+    // If exceeded, strict full-path matching simply fails instead of selecting a wrong duplicate leaf.
     private const int MaxMenuParentChainDepth = 20;
     private const double SubmenuArrowMinOffsetPx = 8.0;
     private const double SubmenuArrowMaxOffsetPx = 20.0;
+    private const double SubmenuArrowWidthDivisor = 8.0;
     private const int SubmenuHorizontalProximityPx = 20;
     private const int SubmenuVerticalProximityPx = 40;
     private const int DropdownItemPhysicalClickSettleMs = 250;
@@ -5340,7 +5343,7 @@ public class UiService : IUiService
     {
         return Math.Max(
             SubmenuArrowMinOffsetPx,
-            Math.Min(SubmenuArrowMaxOffsetPx, rectWidth / 8.0));
+            Math.Min(SubmenuArrowMaxOffsetPx, rectWidth / SubmenuArrowWidthDivisor));
     }
 
     private AutomationElement? FindDynamicMenuItemByName(
