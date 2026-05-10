@@ -571,7 +571,7 @@ format as `/record/actions`. Calling it after the overlay was stopped with `Ctrl
     "stoppedAt": "2026-05-10T08:26:10.000+00:00",
     "mode": "Assistive",
     "screen": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
-    "launch": { "exePath": "...", "processId": 1234, "success": true },
+    "launch": { "success": true, "processId": 1234, "windowTitle": "Untitled - Notepad" },
     "exportedFilePath": "C:\\Temp\\recordings\\recording-20260510.json",
     "actions": [
       {
