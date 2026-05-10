@@ -6784,7 +6784,7 @@ public sealed class RecordingOverlayWindow : Form
         AutomationElement list,
         AutomationElement headerElement,
         ElementInfo? headerInfo,
-        HeaderDropdownRegion region)
+        HeaderDropdownRegion headerRegion)
     {
         var menu = new NoActivateContextMenuStrip { ShowImageMargin = false };
         menu.Font = new Font("Segoe UI", 10f);
@@ -6799,67 +6799,60 @@ public sealed class RecordingOverlayWindow : Form
         menu.Items.Add(new ToolStripSeparator());
 
         var items = GetListItems(list);
-        if (items.Count == 0)
-        {
-            menu.Items.Add(new ToolStripMenuItem("(no dropdown items detected)") { Enabled = false });
-        }
 
-        var displayItems = items.Take(MaxAssistiveDropdownItemsToDisplay).ToList();
-
-        foreach (var listItem in displayItems)
+        foreach (var listItem in items)
         {
             var itemName = SafeElementName(listItem);
+
             if (string.IsNullOrWhiteSpace(itemName))
                 itemName = SafeElementAutomationId(listItem);
+
             if (string.IsNullOrWhiteSpace(itemName))
                 itemName = "(unnamed item)";
 
             var capturedName = itemName;
-            var valueMenu = new ToolStripMenuItem(capturedName);
 
-            AddDropdownItemRegionAction(
-                valueMenu,
-                "Select Left / Checkbox Area",
-                DropdownItemClickRegion.LeftCenter,
-                headerElement,
-                headerInfo,
-                region,
-                capturedName);
+            var menuItem = new ToolStripMenuItem(capturedName);
 
-            AddDropdownItemRegionAction(
-                valueMenu,
-                "Select Center",
-                DropdownItemClickRegion.Center,
-                headerElement,
-                headerInfo,
-                region,
-                capturedName);
+            menuItem.Click += (_, _) =>
+            {
+                RunAssistiveActionAfterMenuClose(
+                    $"Select header dropdown item {capturedName}",
+                    () =>
+                    {
+                        var success = SelectHeaderDropdownItemAssistive(
+                            headerElement,
+                            headerInfo,
+                            headerRegion,
+                            capturedName,
+                            DropdownItemClickRegion.LeftCenter);
 
-            AddDropdownItemRegionAction(
-                valueMenu,
-                "Select Right",
-                DropdownItemClickRegion.RightCenter,
-                headerElement,
-                headerInfo,
-                region,
-                capturedName);
+                        if (!success)
+                        {
+                            success = SelectHeaderDropdownItemAssistive(
+                                headerElement,
+                                headerInfo,
+                                headerRegion,
+                                capturedName,
+                                DropdownItemClickRegion.ProbeAll);
+                        }
 
-            AddDropdownItemRegionAction(
-                valueMenu,
-                "Probe All",
-                DropdownItemClickRegion.ProbeAll,
-                headerElement,
-                headerInfo,
-                region,
-                capturedName);
+                        if (!success)
+                        {
+                            throw new InvalidOperationException(
+                                $"Failed to select header dropdown item '{capturedName}'.");
+                        }
 
-            menu.Items.Add(valueMenu);
+                        ClearHeaderDropdownContext();
+                    });
+            };
+
+            menu.Items.Add(menuItem);
         }
 
-        if (items.Count > MaxAssistiveDropdownItemsToDisplay)
+        if (items.Count == 0)
         {
-            menu.Items.Add(new ToolStripMenuItem(
-                $"Showing first {MaxAssistiveDropdownItemsToDisplay}. Use Select by Text...")
+            menu.Items.Add(new ToolStripMenuItem("(No ListItems found)")
             {
                 Enabled = false
             });
@@ -6868,39 +6861,6 @@ public sealed class RecordingOverlayWindow : Form
         AddCloseItem(menu);
         EnsureOverlayVisible();
         menu.Show(pt);
-    }
-
-    private void AddDropdownItemRegionAction(
-        ToolStripMenuItem parent,
-        string label,
-        DropdownItemClickRegion itemRegion,
-        AutomationElement headerElement,
-        ElementInfo? headerInfo,
-        HeaderDropdownRegion headerRegion,
-        string itemName)
-    {
-        var mi = new ToolStripMenuItem(label);
-
-        mi.Click += (_, _) =>
-        {
-            RunAssistiveActionAfterMenuClose($"Select dropdown item {itemName} / {label}", () =>
-            {
-                var success = SelectHeaderDropdownItemAssistive(
-                    headerElement,
-                    headerInfo,
-                    headerRegion,
-                    itemName,
-                    itemRegion);
-
-                if (!success)
-                {
-                    throw new InvalidOperationException(
-                        $"Failed to select header dropdown item '{itemName}' with region {itemRegion}.");
-                }
-            });
-        };
-
-        parent.DropDownItems.Add(mi);
     }
 
     private void AddActionItem(
