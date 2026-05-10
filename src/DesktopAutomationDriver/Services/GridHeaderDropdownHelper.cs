@@ -34,17 +34,38 @@ internal static class GridHeaderDropdownHelper
     {
         try
         {
-            if (element.ControlType == ControlType.Header ||
-                element.ControlType == ControlType.HeaderItem)
-            {
+            var ct = element.ControlType;
+
+            // Real UIA header controls.
+            if (ct == ControlType.Header || ct == ControlType.HeaderItem)
                 return true;
+
+            // Never treat popup/dropdown items as headers.
+            if (ct == ControlType.ListItem ||
+                ct == ControlType.MenuItem ||
+                ct == ControlType.ComboBox ||
+                ct == ControlType.Button ||
+                ct == ControlType.Edit ||
+                ct == ControlType.Text ||
+                ct == ControlType.List)
+            {
+                return false;
             }
 
+            // Legacy fallback only for custom owner-drawn header cells.
             var name = SafeElementName(element);
             var className = SafeElementClassName(element);
 
-            return name.Contains("Header", StringComparison.OrdinalIgnoreCase) ||
-                   className.Contains("Header", StringComparison.OrdinalIgnoreCase);
+            var looksLikeHeader =
+                name.Contains("Header", StringComparison.OrdinalIgnoreCase) ||
+                className.Contains("Header", StringComparison.OrdinalIgnoreCase);
+
+            var couldBeCustomHeader =
+                ct == ControlType.Custom ||
+                ct == ControlType.DataItem ||
+                ct == ControlType.Pane;
+
+            return couldBeCustomHeader && looksLikeHeader;
         }
         catch
         {
