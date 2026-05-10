@@ -214,6 +214,11 @@ public class UiService : IUiService
             "typedate"         => TypeDate(request),
             "clear"            => Clear(request),
             "sendkeys"         => SendKeys(request),
+            "expandtreeitem"   => ExpandTreeItem(request),
+            "collapsetreeitem" => CollapseTreeItem(request),
+            "selecttreeitem"   => SelectTreeItem(request),
+            "expandtreepath"   => ExpandTreePath(request),
+            "selecttreepath"   => SelectTreePath(request),
             "scroll"           => Scroll(request),
             "check"            => Check(request),
             "uncheck"          => Uncheck(request),
@@ -1578,6 +1583,363 @@ public class UiService : IUiService
         element.Focus();
         SendKeysString(req.Value);
         return null;
+    }
+
+    private object? ExpandTreeItem(UiRequest req)
+    {
+        var item = FindWithRetry(req);
+
+        if (item.ControlType != ControlType.TreeItem)
+        {
+            _logger.LogWarning(
+                "expandtreeitem called on non-TreeItem. name={Name}, controlType={ControlType}",
+                SafeElementName(item),
+                item.ControlType);
+        }
+
+        if (!ExpandTreeItemElement(item))
+            throw new InvalidOperationException($"Failed to expand TreeItem '{SafeElementName(item)}'.");
+
+        return new
+        {
+            expanded = true,
+            name = SafeElementName(item)
+        };
+    }
+
+    private object? CollapseTreeItem(UiRequest req)
+    {
+        var item = FindWithRetry(req);
+
+        if (item.ControlType != ControlType.TreeItem)
+        {
+            _logger.LogWarning(
+                "collapsetreeitem called on non-TreeItem. name={Name}, controlType={ControlType}",
+                SafeElementName(item),
+                item.ControlType);
+        }
+
+        if (!CollapseTreeItemElement(item))
+            throw new InvalidOperationException($"Failed to collapse TreeItem '{SafeElementName(item)}'.");
+
+        return new
+        {
+            collapsed = true,
+            name = SafeElementName(item)
+        };
+    }
+
+    private object? SelectTreeItem(UiRequest req)
+    {
+        var item = FindWithRetry(req);
+
+        if (item.ControlType != ControlType.TreeItem)
+        {
+            _logger.LogWarning(
+                "selecttreeitem called on non-TreeItem. name={Name}, controlType={ControlType}",
+                SafeElementName(item),
+                item.ControlType);
+        }
+
+        if (!SelectTreeItemElement(item))
+            throw new InvalidOperationException($"Failed to select TreeItem '{SafeElementName(item)}'.");
+
+        return new
+        {
+            selected = true,
+            name = SafeElementName(item)
+        };
+    }
+
+    private object? SelectTreePath(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("value is required for selecttreepath.");
+
+        var root = FindWithRetry(req);
+
+        var parts = req.Value
+            .Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        var current = root;
+
+        foreach (var part in parts)
+        {
+            if (!ExpandTreeItemElement(current))
+                throw new InvalidOperationException($"Failed to expand TreeItem '{SafeElementName(current)}'.");
+
+            Thread.Sleep(MenuExpandDelayMs);
+
+            var child = FindChildTreeItemByName(current, part);
+
+            if (child == null)
+            {
+                var available = GetChildTreeItems(current, 25)
+                    .Select(SafeElementName)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToList();
+
+                throw new InvalidOperationException(
+                    $"Tree path part '{part}' not found under '{SafeElementName(current)}'. Available first 25: {string.Join(", ", available)}");
+            }
+
+            current = child;
+        }
+
+        if (!SelectTreeItemElement(current))
+            throw new InvalidOperationException($"Failed to select TreeItem '{SafeElementName(current)}'.");
+
+        return new
+        {
+            selected = true,
+            path = req.Value,
+            final = SafeElementName(current)
+        };
+    }
+
+    private object? ExpandTreePath(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("value is required for expandtreepath.");
+
+        var root = FindWithRetry(req);
+
+        var parts = req.Value
+            .Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        var current = root;
+
+        foreach (var part in parts)
+        {
+            if (!ExpandTreeItemElement(current))
+                throw new InvalidOperationException($"Failed to expand TreeItem '{SafeElementName(current)}'.");
+
+            Thread.Sleep(MenuExpandDelayMs);
+
+            var child = FindChildTreeItemByName(current, part);
+
+            if (child == null)
+            {
+                var available = GetChildTreeItems(current, 25)
+                    .Select(SafeElementName)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToList();
+
+                throw new InvalidOperationException(
+                    $"Tree path part '{part}' not found under '{SafeElementName(current)}'. Available first 25: {string.Join(", ", available)}");
+            }
+
+            current = child;
+        }
+
+        if (!ExpandTreeItemElement(current))
+            throw new InvalidOperationException($"Failed to expand final TreeItem '{SafeElementName(current)}'.");
+
+        return new
+        {
+            expanded = true,
+            path = req.Value,
+            final = SafeElementName(current)
+        };
+    }
+
+    private bool ExpandTreeItemElement(AutomationElement treeItem)
+    {
+        try
+        {
+            if (treeItem.Patterns.ExpandCollapse.IsSupported)
+            {
+                var pattern = treeItem.Patterns.ExpandCollapse.Pattern;
+
+                if (pattern.ExpandCollapseState != ExpandCollapseState.Expanded)
+                {
+                    pattern.Expand();
+                    Thread.Sleep(MenuExpandDelayMs);
+                }
+
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ExpandCollapsePattern.Expand failed for TreeItem {Name}", SafeElementName(treeItem));
+        }
+
+        try
+        {
+            treeItem.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RIGHT);
+            Thread.Sleep(MenuExpandDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Keyboard RIGHT expand failed for TreeItem {Name}", SafeElementName(treeItem));
+        }
+
+        try
+        {
+            var rect = treeItem.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round(rect.Left + Math.Max(6, Math.Min(18, rect.Width / 10))),
+                    (int)Math.Round(rect.Top + rect.Height / 2));
+
+                if (SendInstantLeftClick(point, $"Expand TreeItem {SafeElementName(treeItem)}"))
+                {
+                    Thread.Sleep(MenuExpandDelayMs);
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Physical expander click failed for TreeItem {Name}", SafeElementName(treeItem));
+        }
+
+        return false;
+    }
+
+    private bool CollapseTreeItemElement(AutomationElement treeItem)
+    {
+        try
+        {
+            if (treeItem.Patterns.ExpandCollapse.IsSupported)
+            {
+                var pattern = treeItem.Patterns.ExpandCollapse.Pattern;
+
+                if (pattern.ExpandCollapseState != ExpandCollapseState.Collapsed)
+                {
+                    pattern.Collapse();
+                    Thread.Sleep(MenuExpandDelayMs);
+                }
+
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ExpandCollapsePattern.Collapse failed for TreeItem {Name}", SafeElementName(treeItem));
+        }
+
+        try
+        {
+            treeItem.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.LEFT);
+            Thread.Sleep(MenuExpandDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Keyboard LEFT collapse failed for TreeItem {Name}", SafeElementName(treeItem));
+        }
+
+        return false;
+    }
+
+    private bool SelectTreeItemElement(AutomationElement treeItem)
+    {
+        try
+        {
+            if (treeItem.Patterns.SelectionItem.IsSupported)
+            {
+                treeItem.Patterns.SelectionItem.Pattern.Select();
+                Thread.Sleep(MenuActionDelayMs);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SelectionItem.Select failed for TreeItem {Name}", SafeElementName(treeItem));
+        }
+
+        try
+        {
+            var rect = treeItem.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round(rect.Left + rect.Width / 2),
+                    (int)Math.Round(rect.Top + rect.Height / 2));
+
+                if (SendInstantLeftClick(point, $"Select TreeItem {SafeElementName(treeItem)}"))
+                {
+                    Thread.Sleep(MenuActionDelayMs);
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Physical select failed for TreeItem {Name}", SafeElementName(treeItem));
+        }
+
+        try
+        {
+            treeItem.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(MenuActionDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Focus+Enter select failed for TreeItem {Name}", SafeElementName(treeItem));
+        }
+
+        return false;
+    }
+
+    private List<AutomationElement> GetChildTreeItems(
+        AutomationElement parentTreeItem,
+        int maxItems = 200)
+    {
+        var results = new List<AutomationElement>();
+
+        try
+        {
+            var session = RequireSession();
+            var cf = session.Automation.ConditionFactory;
+
+            foreach (var child in parentTreeItem.FindAllChildren(cf.ByControlType(ControlType.TreeItem)))
+            {
+                results.Add(child);
+
+                if (results.Count >= maxItems)
+                    return results;
+            }
+
+            return results;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "GetChildTreeItems failed for {Name}", SafeElementName(parentTreeItem));
+            return results;
+        }
+    }
+
+    private AutomationElement? FindChildTreeItemByName(
+        AutomationElement parentTreeItem,
+        string childName)
+    {
+        var children = GetChildTreeItems(parentTreeItem, maxItems: 200);
+
+        return children.FirstOrDefault(x =>
+            string.Equals(
+                NormalizeMenuText(SafeElementName(x)),
+                NormalizeMenuText(childName),
+                StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(
+                NormalizeMenuText(SafeElementAutomationId(x)),
+                NormalizeMenuText(childName),
+                StringComparison.OrdinalIgnoreCase));
     }
 
     private object? Scroll(UiRequest req)
