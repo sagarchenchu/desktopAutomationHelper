@@ -1678,13 +1678,8 @@ public class UiService : IUiService
 
             if (child == null)
             {
-                var available = GetChildTreeItems(current, 25)
-                    .Select(SafeElementName)
-                    .Where(x => !string.IsNullOrWhiteSpace(x))
-                    .ToList();
-
                 throw new InvalidOperationException(
-                    $"Tree path part '{part}' not found under '{SafeElementName(current)}'. Available first 25: {string.Join(", ", available)}");
+                    $"Tree path part '{part}' not found under '{SafeElementName(current)}'. Available (up to 25): {GetAvailableChildTreeItemNames(current)}");
             }
 
             current = child;
@@ -1725,13 +1720,8 @@ public class UiService : IUiService
 
             if (child == null)
             {
-                var available = GetChildTreeItems(current, 25)
-                    .Select(SafeElementName)
-                    .Where(x => !string.IsNullOrWhiteSpace(x))
-                    .ToList();
-
                 throw new InvalidOperationException(
-                    $"Tree path part '{part}' not found under '{SafeElementName(current)}'. Available first 25: {string.Join(", ", available)}");
+                    $"Tree path part '{part}' not found under '{SafeElementName(current)}'. Available (up to 25): {GetAvailableChildTreeItemNames(current)}");
             }
 
             current = child;
@@ -1945,6 +1935,16 @@ public class UiService : IUiService
                 NormalizeMenuText(SafeElementAutomationId(x)),
                 NormalizeMenuText(childName),
                 StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string GetAvailableChildTreeItemNames(AutomationElement parentTreeItem, int maxItems = 25)
+    {
+        var available = GetChildTreeItems(parentTreeItem, maxItems)
+            .Select(SafeElementName)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToList();
+
+        return string.Join(", ", available);
     }
 
     private object? Scroll(UiRequest req)
