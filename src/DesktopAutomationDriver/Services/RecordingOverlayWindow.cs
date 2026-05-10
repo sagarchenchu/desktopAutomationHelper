@@ -155,6 +155,10 @@ public sealed class RecordingOverlayWindow : Form
     /// Delay in milliseconds between focusing a logical menu item and sending Enter.
     /// </summary>
     private const int MenuFocusDelayMs = 75;
+    private const double SubmenuArrowMinOffsetPx = 8.0;
+    private const double SubmenuArrowMaxOffsetPx = 20.0;
+    private const int SubmenuHorizontalProximityPx = 20;
+    private const int SubmenuVerticalProximityPx = 40;
     private const int DropdownItemPhysicalClickSettleMs = 250;
     private const int DropdownItemFallbackDelayMs = 150;
     private const int DropdownItemMinPadX = 6;
@@ -5652,7 +5656,7 @@ public sealed class RecordingOverlayWindow : Form
                 Thread.Sleep(MenuNavigationDelayMs);
 
                 var right = new System.Drawing.Point(
-                    (int)Math.Round((double)rect.Right - Math.Max(8.0, Math.Min(20.0, (double)rect.Width / 8.0))),
+                    (int)Math.Round((double)rect.Right - Math.Max(SubmenuArrowMinOffsetPx, Math.Min(SubmenuArrowMaxOffsetPx, (double)rect.Width / 8.0))),
                     (int)Math.Round(rect.Top + rect.Height / 2.0));
 
                 if (TryPhysicalClickPoint(right, $"Open submenu {SafeElementName(item)}"))
@@ -5714,9 +5718,9 @@ public sealed class RecordingOverlayWindow : Form
                             continue;
 
                         var nearSubmenu =
-                            rect.Left >= itemRect.Right - 20 &&
-                            rect.Top <= itemRect.Bottom + 40 &&
-                            rect.Bottom >= itemRect.Top - 40;
+                            rect.Left >= itemRect.Right - SubmenuHorizontalProximityPx &&
+                            rect.Top <= itemRect.Bottom + SubmenuVerticalProximityPx &&
+                            rect.Bottom >= itemRect.Top - SubmenuVerticalProximityPx;
 
                         if (!nearSubmenu)
                             continue;
