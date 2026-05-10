@@ -155,6 +155,13 @@ public sealed class RecordingOverlayWindow : Form
     /// Delay in milliseconds between focusing a logical menu item and sending Enter.
     /// </summary>
     private const int MenuFocusDelayMs = 75;
+    // Keep these submenu geometry values in sync with UiService; Assistive recording and
+    // /ui playback both need the same native-menu arrow and popup proximity behavior.
+    private const double SubmenuArrowMinOffsetPx = 8.0;
+    private const double SubmenuArrowMaxOffsetPx = 20.0;
+    private const double SubmenuArrowWidthDivisor = 8.0;
+    private const int SubmenuHorizontalProximityPx = 20;
+    private const int SubmenuVerticalProximityPx = 40;
     private const int DropdownItemPhysicalClickSettleMs = 250;
     private const int DropdownItemFallbackDelayMs = 150;
     private const int DropdownItemMinPadX = 6;
@@ -171,6 +178,8 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxLeftEdgeOffsetDivisor = 10;
     private const int ComboBoxDropdownVerticalTolerancePx = 30;
     private const int MaxComboBoxDropdownListCandidates = 100;
+    private const int MaxDynamicDropdownCandidates = 80;
+    private const int MaxDynamicPopupSearchDepth = 4;
     private const int MaxComboBoxItemsForTextSelection = 500;
     private const int ComboBoxKeyboardTypeaheadInitialDelayMs = 150;
     private const int ComboBoxKeyboardTypeaheadSettleDelayMs = 250;
@@ -5363,12 +5372,30 @@ public sealed class RecordingOverlayWindow : Form
         ElementInfo? parentInfo,
         List<AutomationElement> items)
     {
+        ShowDynamicDropdownItemsMenuForPath(
+            pt,
+            parentMenuItem,
+            parentInfo,
+            Array.Empty<string>(),
+            items);
+    }
+
+    private void ShowDynamicDropdownItemsMenuForPath(
+        System.Drawing.Point pt,
+        AutomationElement parentMenuItem,
+        ElementInfo? parentInfo,
+        IReadOnlyList<string> pathToCurrentMenu,
+        List<AutomationElement> items)
+    {
         var menu = new NoActivateContextMenuStrip { ShowImageMargin = false };
         menu.Font = new Font("Segoe UI", 10f);
 
         var parentName = SafeElementName(parentMenuItem);
+        var currentPath = pathToCurrentMenu.Count == 0
+            ? parentName
+            : $"{parentName}>{string.Join(">", pathToCurrentMenu)}";
 
-        menu.Items.Add(new ToolStripMenuItem($"Dynamic Menu: {parentName}")
+        menu.Items.Add(new ToolStripMenuItem($"Dynamic Menu: {currentPath}")
         {
             Enabled = false,
             ForeColor = Color.DarkSlateGray
@@ -5377,6 +5404,7 @@ public sealed class RecordingOverlayWindow : Form
         menu.Items.Add(new ToolStripSeparator());
 
         var displayItems = items.Take(MaxAssistiveDropdownItemsToDisplay).ToList();
+        var skippedUnnamedItems = 0;
 
         foreach (var item in displayItems)
         {
@@ -5386,29 +5414,63 @@ public sealed class RecordingOverlayWindow : Form
                 itemName = SafeElementAutomationId(item);
 
             if (string.IsNullOrWhiteSpace(itemName))
-                itemName = "(unnamed item)";
+            {
+                // Skip unnamed entries instead of showing a placeholder because nested playback
+                // needs a stable name or AutomationId to re-locate the menu item later.
+                _logger.LogInformation(
+                    "Skipping unnamed dynamic menu item while building Assistive menu. parent={Parent}, path={Path}",
+                    parentName,
+                    string.Join(">", pathToCurrentMenu));
+                skippedUnnamedItems++;
+                continue;
+            }
 
             var capturedName = itemName;
-            var menuItem = new ToolStripMenuItem(capturedName);
+            var capturedPath = pathToCurrentMenu.Concat(new[] { capturedName }).ToArray();
+            var itemMenu = new ToolStripMenuItem(capturedName);
 
-            menuItem.Click += (_, _) =>
+            var selectLeaf = new ToolStripMenuItem("Select This Item");
+            selectLeaf.Click += (_, _) =>
             {
-                RunAssistiveActionAfterMenuClose($"Select dynamic menu item {parentName}>{capturedName}", () =>
+                RunAssistiveActionAfterMenuClose($"Select dynamic menu item {parentName}>{string.Join(">", capturedPath)}", () =>
                 {
-                    var success = SelectDynamicMenuItemAssistive(
+                    var success = SelectDynamicMenuPathAssistive(
                         parentMenuItem,
                         parentInfo,
-                        capturedName);
+                        capturedPath);
 
                     if (!success)
                     {
                         throw new InvalidOperationException(
-                            $"Failed to select dynamic menu item '{parentName}>{capturedName}'.");
+                            $"Failed to select dynamic menu item {parentName}>{string.Join(">", capturedPath)}");
                     }
                 });
             };
 
-            menu.Items.Add(menuItem);
+            var openSubmenu = new ToolStripMenuItem("Open Submenu...");
+            openSubmenu.Click += (_, _) =>
+            {
+                RunAssistiveActionAfterMenuClose($"Open dynamic submenu {parentName}>{string.Join(">", capturedPath)}", () =>
+                {
+                    OpenDynamicSubmenuAndShowItems(
+                        parentMenuItem,
+                        parentInfo,
+                        capturedPath);
+                });
+            };
+
+            itemMenu.DropDownItems.Add(selectLeaf);
+            itemMenu.DropDownItems.Add(openSubmenu);
+            menu.Items.Add(itemMenu);
+        }
+
+        if (skippedUnnamedItems > 0)
+        {
+            menu.Items.Add(new ToolStripMenuItem(
+                $"Skipped {skippedUnnamedItems} unnamed item(s) without stable playback identifiers")
+            {
+                Enabled = false
+            });
         }
 
         if (items.Count > MaxAssistiveDropdownItemsToDisplay)
@@ -5490,6 +5552,305 @@ public sealed class RecordingOverlayWindow : Form
             _statusLabel.Text = "Dynamic menu select failed: " + ex.Message;
             return false;
         }
+    }
+
+    private bool SelectDynamicMenuPathAssistive(
+        AutomationElement rootParentMenuItem,
+        ElementInfo? rootParentInfo,
+        IReadOnlyList<string> pathParts)
+    {
+        try
+        {
+            if (pathParts.Count == 0)
+                return false;
+
+            BringElementWindowToForeground(rootParentMenuItem);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!OpenMenuParentForDynamicSelection(rootParentMenuItem))
+                return false;
+
+            Thread.Sleep(MenuNavigationDelayMs);
+
+            var currentDropdown = FindDynamicMenuDropdown(rootParentMenuItem);
+            if (currentDropdown == null)
+                return false;
+
+            AutomationElement? currentItem = null;
+
+            for (var i = 0; i < pathParts.Count; i++)
+            {
+                var part = pathParts[i];
+                var isLast = i == pathParts.Count - 1;
+
+                currentItem = FindDynamicMenuItemByName(currentDropdown, part);
+
+                if (currentItem == null)
+                {
+                    _logger.LogWarning(
+                        "Dynamic menu path item not found. root={Root}, part={Part}, path={Path}",
+                        SafeElementName(rootParentMenuItem),
+                        part,
+                        string.Join(">", pathParts));
+
+                    return false;
+                }
+
+                if (isLast)
+                {
+                    if (!ActivateDynamicLeafMenuItem(currentItem, part))
+                        return false;
+
+                    var fullPath = $"{SafeElementName(rootParentMenuItem)}>{string.Join(">", pathParts)}";
+
+                    _service.AddAction(new RecordedAction
+                    {
+                        ActionType = ActionType.Click,
+                        Mode = RecordingMode.Assistive,
+                        Element = BuildElementInfo(currentItem),
+                        TargetElement = rootParentInfo ?? BuildElementInfo(rootParentMenuItem),
+                        Operation = "selectdynamicmenupath",
+                        Value = fullPath,
+                        Description = $"Select dynamic menu path {fullPath}",
+                        PointerContext = ClonePointerContext(_currentAssistivePointerContext),
+                        Metadata = new Dictionary<string, string>
+                        {
+                            ["rootMenuItem"] = SafeElementName(rootParentMenuItem) ?? string.Empty,
+                            ["path"] = string.Join(">", pathParts),
+                            ["fullPath"] = fullPath,
+                            ["leafName"] = part
+                        }
+                    });
+
+                    UpdateStatusAfterAction($"Selected menu path {fullPath}");
+
+                    return true;
+                }
+
+                if (!OpenDynamicSubMenuItem(currentItem))
+                    return false;
+
+                Thread.Sleep(MenuNavigationDelayMs);
+
+                currentDropdown = FindDynamicSubMenuDropdown(currentItem);
+
+                if (currentDropdown == null)
+                {
+                    _logger.LogWarning(
+                        "Dynamic submenu dropdown not found. item={Item}, path={Path}",
+                        SafeElementName(currentItem),
+                        string.Join(">", pathParts));
+
+                    return false;
+                }
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SelectDynamicMenuPathAssistive failed");
+            _statusLabel.Text = "Dynamic menu path select failed: " + ex.Message;
+            return false;
+        }
+    }
+
+    private static double CalculateSubmenuArrowOffset(double rectWidth)
+    {
+        return Math.Max(
+            SubmenuArrowMinOffsetPx,
+            Math.Min(SubmenuArrowMaxOffsetPx, rectWidth / SubmenuArrowWidthDivisor));
+    }
+
+    private AutomationElement? FindDynamicMenuItemByName(
+        AutomationElement dropdown,
+        string itemName)
+    {
+        return GetDynamicDropdownMenuItems(dropdown, MaxAssistiveDropdownItemsToDisplay * 4)
+            .FirstOrDefault(x =>
+                string.Equals(
+                    NormalizeMenuText(SafeElementName(x)),
+                    NormalizeMenuText(itemName),
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(
+                    NormalizeMenuText(SafeElementAutomationId(x)),
+                    NormalizeMenuText(itemName),
+                    StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool OpenDynamicSubMenuItem(AutomationElement item)
+    {
+        try
+        {
+            var rect = item.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var center = new System.Drawing.Point(
+                    (int)Math.Round(rect.Left + rect.Width / 2.0),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                Mouse.MoveTo(center);
+                Thread.Sleep(MenuNavigationDelayMs);
+
+                var arrowOffset = CalculateSubmenuArrowOffset((double)rect.Width);
+                var right = new System.Drawing.Point(
+                    (int)Math.Round((double)rect.Right - arrowOffset),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                if (TryPhysicalClickPoint(right, $"Open submenu {SafeElementName(item)}"))
+                {
+                    Thread.Sleep(MenuNavigationDelayMs);
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "OpenDynamicSubMenuItem physical failed");
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RIGHT);
+            Thread.Sleep(MenuNavigationDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "OpenDynamicSubMenuItem RIGHT failed");
+        }
+
+        return false;
+    }
+
+    private AutomationElement? FindDynamicSubMenuDropdown(AutomationElement submenuItem)
+    {
+        try
+        {
+            if (_automation == null)
+                return null;
+
+            var itemRect = submenuItem.BoundingRectangle;
+            var root = GetSearchRootForDynamicPopup(submenuItem) ?? _automation.GetDesktop();
+            foreach (var c in FindDynamicSubMenuDropdownCandidates(root))
+            {
+                try
+                {
+                    var rect = c.BoundingRectangle;
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        continue;
+
+                    var nearSubmenu =
+                        rect.Left >= itemRect.Right - SubmenuHorizontalProximityPx &&
+                        rect.Top <= itemRect.Bottom + SubmenuVerticalProximityPx &&
+                        rect.Bottom >= itemRect.Top - SubmenuVerticalProximityPx;
+
+                    if (!nearSubmenu)
+                        continue;
+
+                    if (GetDynamicDropdownMenuItems(c, maxItems: 1).Count > 0)
+                        return c;
+                }
+                catch
+                {
+                    // ignore unstable candidate
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindDynamicSubMenuDropdown failed");
+        }
+
+        return null;
+    }
+
+    private List<AutomationElement> FindDynamicSubMenuDropdownCandidates(AutomationElement root)
+    {
+        var results = new List<AutomationElement>();
+        var queue = new Queue<(AutomationElement Element, int Depth)>();
+
+        try
+        {
+            foreach (var child in root.FindAllChildren())
+                queue.Enqueue((child, 1));
+
+            while (queue.Count > 0 && results.Count < MaxDynamicDropdownCandidates)
+            {
+                var (element, depth) = queue.Dequeue();
+
+                try
+                {
+                    if (DynamicMenuHelpers.IsDropdownContainerType(element.ControlType))
+                        results.Add(element);
+
+                    if (depth >= MaxDynamicPopupSearchDepth)
+                        continue;
+
+                    foreach (var child in element.FindAllChildren())
+                    {
+                        queue.Enqueue((child, depth + 1));
+                        if (queue.Count + results.Count >= MaxDynamicDropdownCandidates)
+                            break;
+                    }
+                }
+                catch
+                {
+                    // ignore unstable UIA candidate
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindDynamicSubMenuDropdownCandidates failed");
+        }
+
+        return results;
+    }
+
+    private void OpenDynamicSubmenuAndShowItems(
+        AutomationElement rootParentMenuItem,
+        ElementInfo? rootParentInfo,
+        IReadOnlyList<string> pathToSubmenu)
+    {
+        BringElementWindowToForeground(rootParentMenuItem);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        if (!OpenMenuParentForDynamicSelection(rootParentMenuItem))
+            throw new InvalidOperationException("Failed to open root menu.");
+
+        Thread.Sleep(MenuNavigationDelayMs);
+
+        var dropdown = FindDynamicMenuDropdown(rootParentMenuItem)
+            ?? throw new InvalidOperationException("Root dropdown not found.");
+
+        AutomationElement? submenuItem = null;
+
+        foreach (var part in pathToSubmenu)
+        {
+            submenuItem = FindDynamicMenuItemByName(dropdown, part)
+                ?? throw new InvalidOperationException($"Submenu path part not found: {part}");
+
+            if (!OpenDynamicSubMenuItem(submenuItem))
+                throw new InvalidOperationException($"Failed to open submenu: {part}");
+
+            Thread.Sleep(MenuNavigationDelayMs);
+
+            dropdown = FindDynamicSubMenuDropdown(submenuItem)
+                ?? throw new InvalidOperationException($"Submenu dropdown not found: {part}");
+        }
+
+        var items = GetDynamicDropdownMenuItems(dropdown, MaxAssistiveDropdownItemsToDisplay);
+
+        ShowDynamicDropdownItemsMenuForPath(
+            Cursor.Position,
+            rootParentMenuItem,
+            rootParentInfo,
+            pathToSubmenu,
+            items);
     }
 
     private bool ActivateDynamicLeafMenuItem(AutomationElement item, string itemName)
