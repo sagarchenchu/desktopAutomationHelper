@@ -212,6 +212,7 @@ public class UiService : IUiService
             "openheaderdropdown" => OpenHeaderDropdown(request),
             "selectheaderdropdownitem" => SelectHeaderDropdownItem(request),
             "selectdynamicmenuitem" => SelectDynamicMenuItem(request),
+            "selectdynamicmenupath" => SelectDynamicMenuPath(request),
             "selectcomboboxitem" => SelectComboBoxItem(request),
             "draganddrop"     => DragAndDrop(request),
 
@@ -1166,14 +1167,8 @@ public class UiService : IUiService
             var item = FindMenuItemByName(searchRoot, cf, name);
             if (item == null)
             {
-                var desktop = session.Automation.GetDesktop();
-                item = FindMenuItemByName(desktop, cf, name);
-            }
-
-            if (item == null)
-            {
                 throw new InvalidOperationException(
-                    $"Menu path failed. Menu item '{name}' was not found. Path='{SanitizeValue(normalizedValue)}'");
+                    $"Menu path failed. Menu item '{name}' was not found in the current menu scope. Path='{SanitizeValue(normalizedValue)}'");
             }
 
             _logger.LogInformation(
@@ -1186,7 +1181,7 @@ public class UiService : IUiService
             {
                 OpenMenuItem(item);
                 Thread.Sleep(MenuExpandDelayMs);
-                searchRoot = session.Automation.GetDesktop();
+                searchRoot = FindDropdownForMenuItemOrThrow(session, item);
             }
             else
             {
@@ -1196,6 +1191,21 @@ public class UiService : IUiService
         }
 
         return null;
+    }
+
+    private AutomationElement FindDropdownForMenuItemOrThrow(
+        AutomationSession session,
+        AutomationElement menuItem)
+    {
+        var dropdown = FindDynamicMenuDropdown(session, menuItem);
+
+        if (dropdown == null)
+        {
+            throw new InvalidOperationException(
+                $"Dropdown was not found after opening menu item '{SafeElementName(menuItem)}'.");
+        }
+
+        return dropdown;
     }
 
     private object? ClickLogicalMenuPath(UiRequest req)
@@ -1937,48 +1947,13 @@ public class UiService : IUiService
                 }
             }
 
-            if (parts.Count >= 2)
-            {
-                var leaf = FindMenuItemByLeafAndAncestor(root, cf, parts[^1], parts[^2]);
+            var chainMatch = FindMenuItemByFullPathChain(root, cf, parts);
+            if (chainMatch != null)
+                return chainMatch;
 
-                if (leaf != null)
-                    return leaf;
-
-                var leafName = parts[^1];
-                var leafMatches = allMenuItems
-                    .Where(e => MenuTextMatches(e, leafName))
-                    .ToList();
-
-                _logger.LogWarning(
-                    "FindLogicalMenuPath direct path failed. Leaf match count for '{Leaf}' = {MatchCount}",
-                    leafName,
-                    leafMatches.Count);
-
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(
-                        "FindLogicalMenuPath leaf match details for '{Leaf}' = {Matches}",
-                        leafName,
-                        leafMatches.Select(x => new
-                        {
-                            name = SafeElementName(x),
-                            automationId = SafeElementAutomationId(x),
-                            nameNorm = NormalizeMenuText(SafeElementName(x)),
-                            expectedNorm = NormalizeMenuText(leafName),
-                            isMatch = MenuTextMatches(x, leafName),
-                            parentChain = BuildParentChain(x)
-                        }).ToList());
-                }
-
-                if (leafMatches.Count == 1)
-                {
-                    _logger.LogInformation(
-                        "FindLogicalMenuPath: using unique leaf fallback for '{Leaf}'",
-                        leafName);
-
-                    return leafMatches[0];
-                }
-            }
+            _logger.LogWarning(
+                "FindLogicalMenuPath strict resolution failed. No fallback leaf selection will be used because duplicate leaf names can select wrong menu. path={Path}",
+                string.Join(" > ", parts));
 
             return null;
         }
@@ -1991,6 +1966,92 @@ public class UiService : IUiService
 
             return null;
         }
+    }
+
+    private AutomationElement? FindMenuItemByFullPathChain(
+        AutomationElement root,
+        ConditionFactory cf,
+        IReadOnlyList<string> parts)
+    {
+        var leafName = parts[^1];
+
+        var leafCandidates = root
+            .FindAllDescendants(cf.ByControlType(ControlType.MenuItem))
+            .Where(e => MenuTextMatches(e, leafName))
+            .ToList();
+
+        foreach (var leaf in leafCandidates)
+        {
+            var chain = BuildParentChainNames(leaf);
+
+            if (DoesChainEndWithPath(chain, parts))
+            {
+                _logger.LogInformation(
+                    "Resolved menu path by full parent chain. path={Path}, chain={Chain}",
+                    string.Join(">", parts),
+                    string.Join(">", chain));
+
+                return leaf;
+            }
+        }
+
+        _logger.LogWarning(
+            "No leaf matched full parent chain. path={Path}, leafCandidateCount={Count}",
+            string.Join(">", parts),
+            leafCandidates.Count);
+
+        return null;
+    }
+
+    private List<string> BuildParentChainNames(AutomationElement element)
+    {
+        var result = new List<string>();
+
+        try
+        {
+            var current = element;
+
+            while (current != null && result.Count < 20)
+            {
+                var name = SafeElementName(current);
+                var ct = current.ControlType;
+
+                if (ct == ControlType.MenuItem && !string.IsNullOrWhiteSpace(name))
+                    result.Add(NormalizeMenuText(name));
+
+                current = current.Parent;
+            }
+        }
+        catch
+        {
+            // ignore unstable UIA parent chains
+        }
+
+        result.Reverse();
+        return result;
+    }
+
+    private static bool DoesChainEndWithPath(
+        IReadOnlyList<string> chain,
+        IReadOnlyList<string> pathParts)
+    {
+        var path = pathParts
+            .Select(NormalizeMenuText)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToList();
+
+        if (chain.Count < path.Count)
+            return false;
+
+        var offset = chain.Count - path.Count;
+
+        for (var i = 0; i < path.Count; i++)
+        {
+            if (!string.Equals(chain[offset + i], path[i], StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        return true;
     }
 
     private AutomationElement? TryResolveMenuPathFromParent(
@@ -2908,6 +2969,97 @@ public class UiService : IUiService
             parent = SafeElementName(parentMenuItem),
             dropdown = SafeElementName(dropdown)
         };
+    }
+
+    private object? SelectDynamicMenuPath(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("value is required for selectdynamicmenupath.");
+
+        var parentMenuItem = FindWithRetry(req);
+        if (parentMenuItem.ControlType != ControlType.MenuItem)
+        {
+            _logger.LogWarning(
+                "selectdynamicmenupath called on non-MenuItem. name={Name}, controlType={ControlType}, className={ClassName}",
+                SafeElementName(parentMenuItem),
+                parentMenuItem.ControlType,
+                SafeElementClassName(parentMenuItem));
+        }
+
+        var rawValue = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
+        var pathParts = rawValue
+            .Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        if (pathParts.Count == 0)
+            throw new ArgumentException("selectdynamicmenupath requires at least one child menu item in value.");
+
+        if (pathParts.Count > 1 &&
+            (string.Equals(NormalizeMenuText(pathParts[0]), NormalizeMenuText(SafeElementName(parentMenuItem)), StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(NormalizeMenuText(pathParts[0]), NormalizeMenuText(SafeElementAutomationId(parentMenuItem)), StringComparison.OrdinalIgnoreCase)))
+        {
+            pathParts.RemoveAt(0);
+        }
+
+        var session = RequireSession();
+
+        BringElementWindowToForeground(parentMenuItem);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        if (!OpenDynamicMenuParent(parentMenuItem))
+            throw new InvalidOperationException($"Failed to open dynamic menu '{SafeElementName(parentMenuItem)}'.");
+
+        Thread.Sleep(MenuExpandDelayMs);
+
+        var dropdown = FindDynamicMenuDropdown(session, parentMenuItem);
+        if (dropdown == null)
+        {
+            throw new InvalidOperationException(
+                $"Dynamic menu dropdown was not found after opening '{SafeElementName(parentMenuItem)}'.");
+        }
+
+        AutomationElement? item = null;
+
+        for (var i = 0; i < pathParts.Count; i++)
+        {
+            var part = pathParts[i];
+            var isLast = i == pathParts.Count - 1;
+
+            item = FindDynamicMenuItemByName(session, dropdown, part);
+            if (item == null)
+            {
+                var available = GetDynamicDropdownMenuItems(session, dropdown, MaxAssistiveDropdownItemsToDisplay)
+                    .Select(SafeElementName)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToList();
+
+                throw new InvalidOperationException(
+                    $"Dynamic menu path item '{part}' was not found. Available: {string.Join(", ", available)}");
+            }
+
+            if (isLast)
+            {
+                if (!ActivateDynamicLeafMenuItem(item, part))
+                    throw new InvalidOperationException($"Failed to activate dynamic menu item '{part}'.");
+
+                return new
+                {
+                    selected = string.Join(">", pathParts),
+                    parent = SafeElementName(parentMenuItem),
+                    dropdown = SafeElementName(dropdown)
+                };
+            }
+
+            if (!OpenDynamicSubMenuItem(item))
+                throw new InvalidOperationException($"Failed to open dynamic submenu '{part}'.");
+
+            Thread.Sleep(MenuExpandDelayMs);
+
+            dropdown = FindDynamicSubMenuDropdown(session, item)
+                ?? throw new InvalidOperationException($"Dynamic submenu dropdown was not found after opening '{part}'.");
+        }
+
+        return null;
     }
 
     private object? SelectComboBoxItem(UiRequest req)
@@ -5167,6 +5319,150 @@ public class UiService : IUiService
         }
 
         return TryInstantPhysicalClick(item, $"SelectDynamicMenuItem {itemName}");
+    }
+
+    private AutomationElement? FindDynamicMenuItemByName(
+        AutomationSession session,
+        AutomationElement dropdown,
+        string itemName)
+    {
+        return GetDynamicDropdownMenuItems(session, dropdown, MaxAssistiveDropdownItemsToDisplay * 4)
+            .FirstOrDefault(x =>
+                string.Equals(
+                    NormalizeMenuText(SafeElementName(x)),
+                    NormalizeMenuText(itemName),
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(
+                    NormalizeMenuText(SafeElementAutomationId(x)),
+                    NormalizeMenuText(itemName),
+                    StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool OpenDynamicSubMenuItem(AutomationElement item)
+    {
+        try
+        {
+            var rect = item.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var center = new Point(
+                    (int)Math.Round(rect.Left + rect.Width / 2.0),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                Mouse.MoveTo(center);
+                Thread.Sleep(MenuExpandDelayMs);
+
+                var right = new Point(
+                    (int)Math.Round(rect.Right - Math.Max(8, Math.Min(20, rect.Width / 8))),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                if (SendInstantLeftClick(right, $"Open submenu {SafeElementName(item)}"))
+                {
+                    Thread.Sleep(MenuExpandDelayMs);
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "OpenDynamicSubMenuItem physical failed");
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RIGHT);
+            Thread.Sleep(MenuExpandDelayMs);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "OpenDynamicSubMenuItem RIGHT failed");
+        }
+
+        return false;
+    }
+
+    private AutomationElement? FindDynamicSubMenuDropdown(AutomationSession session, AutomationElement submenuItem)
+    {
+        try
+        {
+            var itemRect = submenuItem.BoundingRectangle;
+            var root = GetSearchRootForDynamicPopup(session, submenuItem) ?? session.Automation.GetDesktop();
+            var cf = session.Automation.ConditionFactory;
+
+            var candidateTypes = new[]
+            {
+                ControlType.Menu,
+                ControlType.ToolBar,
+                ControlType.Pane,
+                ControlType.Custom,
+                ControlType.Window
+            };
+
+            foreach (var ct in candidateTypes)
+            {
+                foreach (var c in root.FindAllDescendants(cf.ByControlType(ct)))
+                {
+                    try
+                    {
+                        var rect = c.BoundingRectangle;
+                        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                            continue;
+
+                        var nearSubmenu =
+                            rect.Left >= itemRect.Right - 20 &&
+                            rect.Top <= itemRect.Bottom + 40 &&
+                            rect.Bottom >= itemRect.Top - 40;
+
+                        if (!nearSubmenu)
+                            continue;
+
+                        if (GetDynamicDropdownMenuItems(session, c, maxItems: 1).Count > 0)
+                            return c;
+                    }
+                    catch
+                    {
+                        // ignore unstable candidate
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindDynamicSubMenuDropdown failed");
+        }
+
+        return null;
+    }
+
+    private bool ActivateDynamicLeafMenuItem(AutomationElement item, string itemName)
+    {
+        try
+        {
+            var rect = item.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round(rect.Left + rect.Width / 2.0),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                if (SendInstantLeftClick(point, $"Click dynamic menu item {itemName}"))
+                {
+                    Thread.Sleep(MenuExpandDelayMs);
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Physical click failed for dynamic menu item {Item}", itemName);
+        }
+
+        return ActivateDynamicMenuItem(item, itemName);
     }
 
     private AutomationElement? OpenHeaderDropdownAndFindList(
