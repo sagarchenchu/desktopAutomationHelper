@@ -42,6 +42,7 @@ builder.Services.AddSingleton<IDriverContext>(driverContext);
 builder.Services.AddSingleton<ISessionManager, SessionManager>();
 builder.Services.AddSingleton<IAutomationService, AutomationService>();
 builder.Services.AddSingleton<IRecordingService, RecordingService>();
+builder.Services.AddSingleton<IPlaybackService, PlaybackService>();
 builder.Services.AddSingleton<IUiSessionContext, UiSessionContext>();
 builder.Services.AddSingleton<IUiService, UiService>();
 
@@ -208,6 +209,7 @@ static void LogStartupBanner(IDriverContext ctx, ILogger logger)
     sb.AppendLine($"║  DEL  http://127.0.0.1:{p}/session/{{id}}");
     sb.AppendLine($"║  POST http://127.0.0.1:{p}/session/{{id}}/element");
     sb.AppendLine($"║  POST http://127.0.0.1:{p}/record/start");
+    sb.AppendLine($"║  POST http://127.0.0.1:{p}/playback");
     sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
     sb.AppendLine("║  SIMPLE ENDPOINTS (require: Authorization: Bearer <token>)   ║");
     sb.AppendLine("║                                                              ║");
