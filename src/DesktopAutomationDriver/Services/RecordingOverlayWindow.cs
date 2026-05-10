@@ -185,6 +185,9 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxKeyboardTypeaheadSettleDelayMs = 250;
     private const int TextPromptDialogWidth = 380;
     private const int TextPromptDialogHeight = 145;
+    private const int HeaderDropdownContextTimeoutSeconds = 20;
+    private const int HeaderDropdownListItemHorizontalTolerancePx = 250;
+    private const int HeaderDropdownListItemVerticalTolerancePx = 30;
 
     /// <summary>
     /// Delay in milliseconds between selecting a context menu action and executing
@@ -6072,7 +6075,8 @@ public sealed class RecordingOverlayWindow : Form
                 return false;
 
             // Avoid stale context.
-            if (DateTime.UtcNow - _activeHeaderDropdownContext.OpenedAtUtc > TimeSpan.FromSeconds(20))
+            if (DateTime.UtcNow - _activeHeaderDropdownContext.OpenedAtUtc >
+                TimeSpan.FromSeconds(HeaderDropdownContextTimeoutSeconds))
                 return false;
 
             var itemRect = element.BoundingRectangle;
@@ -6082,11 +6086,11 @@ public sealed class RecordingOverlayWindow : Form
                 return false;
 
             var horizontallyNearHeader =
-                itemRect.Left <= headerRect.Right + 250 &&
-                itemRect.Right >= headerRect.Left - 250;
+                itemRect.Left <= headerRect.Right + HeaderDropdownListItemHorizontalTolerancePx &&
+                itemRect.Right >= headerRect.Left - HeaderDropdownListItemHorizontalTolerancePx;
 
             var belowHeader =
-                itemRect.Top >= headerRect.Bottom - 30;
+                itemRect.Top >= headerRect.Bottom - HeaderDropdownListItemVerticalTolerancePx;
 
             return horizontallyNearHeader && belowHeader;
         }
