@@ -185,6 +185,7 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxKeyboardTypeaheadSettleDelayMs = 250;
     private const int TextPromptDialogWidth = 380;
     private const int TextPromptDialogHeight = 145;
+    // Header dropdown popups are transient; keep the context only long enough for the user's next right-click.
     private const int HeaderDropdownContextTimeoutSeconds = 20;
     private const int HeaderDropdownListItemHorizontalTolerancePx = 250;
     private const int HeaderDropdownListItemVerticalTolerancePx = 30;
