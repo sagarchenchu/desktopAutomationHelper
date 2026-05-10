@@ -178,6 +178,8 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxLeftEdgeOffsetDivisor = 10;
     private const int ComboBoxDropdownVerticalTolerancePx = 30;
     private const int MaxComboBoxDropdownListCandidates = 100;
+    private const int MaxDynamicDropdownCandidates = 80;
+    private const int MaxDynamicPopupSearchDepth = 4;
     private const int MaxComboBoxItemsForTextSelection = 500;
     private const int ComboBoxKeyboardTypeaheadInitialDelayMs = 150;
     private const int ComboBoxKeyboardTypeaheadSettleDelayMs = 250;
@@ -5599,7 +5601,14 @@ public sealed class RecordingOverlayWindow : Form
                         Operation = "selectdynamicmenupath",
                         Value = fullPath,
                         Description = $"Select dynamic menu path {fullPath}",
-                        PointerContext = ClonePointerContext(_currentAssistivePointerContext)
+                        PointerContext = ClonePointerContext(_currentAssistivePointerContext),
+                        Metadata = new Dictionary<string, string>
+                        {
+                            ["rootMenuItem"] = SafeElementName(rootParentMenuItem) ?? string.Empty,
+                            ["path"] = string.Join(">", pathParts),
+                            ["fullPath"] = fullPath,
+                            ["leafName"] = part
+                        }
                     });
 
                     UpdateStatusAfterAction($"Selected menu path {fullPath}");
@@ -5715,42 +5724,28 @@ public sealed class RecordingOverlayWindow : Form
 
             var itemRect = submenuItem.BoundingRectangle;
             var root = GetSearchRootForDynamicPopup(submenuItem) ?? _automation.GetDesktop();
-            var cf = _automation.ConditionFactory;
-
-            var candidateTypes = new[]
+            foreach (var c in FindDynamicSubMenuDropdownCandidates(root))
             {
-                ControlType.Menu,
-                ControlType.ToolBar,
-                ControlType.Pane,
-                ControlType.Custom,
-                ControlType.Window
-            };
-
-            foreach (var ct in candidateTypes)
-            {
-                foreach (var c in root.FindAllDescendants(cf.ByControlType(ct)))
+                try
                 {
-                    try
-                    {
-                        var rect = c.BoundingRectangle;
-                        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
-                            continue;
+                    var rect = c.BoundingRectangle;
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        continue;
 
-                        var nearSubmenu =
-                            rect.Left >= itemRect.Right - SubmenuHorizontalProximityPx &&
-                            rect.Top <= itemRect.Bottom + SubmenuVerticalProximityPx &&
-                            rect.Bottom >= itemRect.Top - SubmenuVerticalProximityPx;
+                    var nearSubmenu =
+                        rect.Left >= itemRect.Right - SubmenuHorizontalProximityPx &&
+                        rect.Top <= itemRect.Bottom + SubmenuVerticalProximityPx &&
+                        rect.Bottom >= itemRect.Top - SubmenuVerticalProximityPx;
 
-                        if (!nearSubmenu)
-                            continue;
+                    if (!nearSubmenu)
+                        continue;
 
-                        if (GetDynamicDropdownMenuItems(c, maxItems: 1).Count > 0)
-                            return c;
-                    }
-                    catch
-                    {
-                        // ignore unstable candidate
-                    }
+                    if (GetDynamicDropdownMenuItems(c, maxItems: 1).Count > 0)
+                        return c;
+                }
+                catch
+                {
+                    // ignore unstable candidate
                 }
             }
         }
@@ -5761,6 +5756,56 @@ public sealed class RecordingOverlayWindow : Form
 
         return null;
     }
+
+    private List<AutomationElement> FindDynamicSubMenuDropdownCandidates(AutomationElement root)
+    {
+        var results = new List<AutomationElement>();
+        var queue = new Queue<(AutomationElement Element, int Depth)>();
+
+        try
+        {
+            foreach (var child in root.FindAllChildren())
+                queue.Enqueue((child, 1));
+
+            while (queue.Count > 0 && results.Count < MaxDynamicDropdownCandidates)
+            {
+                var (element, depth) = queue.Dequeue();
+
+                try
+                {
+                    if (IsDynamicDropdownContainerType(element.ControlType))
+                        results.Add(element);
+
+                    if (depth >= MaxDynamicPopupSearchDepth)
+                        continue;
+
+                    foreach (var child in element.FindAllChildren())
+                    {
+                        queue.Enqueue((child, depth + 1));
+                        if (queue.Count + results.Count >= MaxDynamicDropdownCandidates)
+                            break;
+                    }
+                }
+                catch
+                {
+                    // ignore unstable UIA candidate
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FindDynamicSubMenuDropdownCandidates failed");
+        }
+
+        return results;
+    }
+
+    private static bool IsDynamicDropdownContainerType(ControlType controlType) =>
+        controlType == ControlType.Menu ||
+        controlType == ControlType.ToolBar ||
+        controlType == ControlType.Pane ||
+        controlType == ControlType.Custom ||
+        controlType == ControlType.Window;
 
     private void OpenDynamicSubmenuAndShowItems(
         AutomationElement rootParentMenuItem,
