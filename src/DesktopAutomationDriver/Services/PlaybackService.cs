@@ -65,7 +65,11 @@ public sealed class PlaybackService : IPlaybackService
                 result.ExecutedActions++;
 
                 if (options.DelayMs > 0 && i < actions.Count - 1)
+                {
+                    // Playback is intentionally sequential; the next UI operation must wait until
+                    // the requested inter-action delay has elapsed.
                     Thread.Sleep(options.DelayMs);
+                }
             }
             catch (ArgumentException ex)
             {
@@ -240,7 +244,7 @@ public sealed class PlaybackService : IPlaybackService
             ActionType.IsVisible => "isvisible",
             ActionType.IsClickable => "isclickable",
             ActionType.IsEnabled => "isenabled",
-            ActionType.IsDisabled => "isenabled",
+            ActionType.IsDisabled => null,
             ActionType.IsEditable => "iseditable",
             ActionType.GetTableHeaders => "gettableheaders",
             ActionType.GetTableData => "gettabledata",
