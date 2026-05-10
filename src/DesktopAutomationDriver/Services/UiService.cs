@@ -3000,12 +3000,8 @@ public class UiService : IUiService
         if (pathParts.Count == 0)
             throw new ArgumentException("selectdynamicmenupath requires at least one child menu item in value.");
 
-        if (pathParts.Count > 1 &&
-            (string.Equals(NormalizeMenuText(pathParts[0]), NormalizeMenuText(SafeElementName(parentMenuItem)), StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(NormalizeMenuText(pathParts[0]), NormalizeMenuText(SafeElementAutomationId(parentMenuItem)), StringComparison.OrdinalIgnoreCase)))
-        {
+        if (DynamicPathStartsWithParent(pathParts, parentMenuItem))
             pathParts.RemoveAt(0);
-        }
 
         var session = RequireSession();
 
@@ -5327,6 +5323,26 @@ public class UiService : IUiService
         return TryInstantPhysicalClick(item, $"SelectDynamicMenuItem {itemName}");
     }
 
+    private static bool DynamicPathStartsWithParent(
+        IReadOnlyList<string> pathParts,
+        AutomationElement parentMenuItem)
+    {
+        if (pathParts.Count <= 1)
+            return false;
+
+        var firstPart = NormalizeMenuText(pathParts[0]);
+
+        return string.Equals(firstPart, NormalizeMenuText(SafeElementName(parentMenuItem)), StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(firstPart, NormalizeMenuText(SafeElementAutomationId(parentMenuItem)), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static double CalculateSubmenuArrowOffset(double rectWidth)
+    {
+        return Math.Max(
+            SubmenuArrowMinOffsetPx,
+            Math.Min(SubmenuArrowMaxOffsetPx, rectWidth / 8.0));
+    }
+
     private AutomationElement? FindDynamicMenuItemByName(
         AutomationSession session,
         AutomationElement dropdown,
@@ -5359,8 +5375,9 @@ public class UiService : IUiService
                 Mouse.MoveTo(center);
                 Thread.Sleep(MenuExpandDelayMs);
 
+                var arrowOffset = CalculateSubmenuArrowOffset((double)rect.Width);
                 var right = new Point(
-                    (int)Math.Round((double)rect.Right - Math.Max(SubmenuArrowMinOffsetPx, Math.Min(SubmenuArrowMaxOffsetPx, (double)rect.Width / 8.0))),
+                    (int)Math.Round((double)rect.Right - arrowOffset),
                     (int)Math.Round(rect.Top + rect.Height / 2.0));
 
                 if (SendInstantLeftClick(right, $"Open submenu {SafeElementName(item)}"))
