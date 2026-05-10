@@ -1787,8 +1787,8 @@ public class UiService : IUiService
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
                 var point = new Point(
-                    (int)Math.Round(rect.Left + Math.Max(6, Math.Min(18, rect.Width / 10))),
-                    (int)Math.Round(rect.Top + rect.Height / 2));
+                    (int)Math.Round((double)(rect.Left + Math.Max(6, Math.Min(18, rect.Width / 10)))),
+                    (int)Math.Round((double)(rect.Top + rect.Height / 2)));
 
                 if (SendInstantLeftClick(point, $"Expand TreeItem {SafeElementName(treeItem)}"))
                 {
@@ -1866,8 +1866,8 @@ public class UiService : IUiService
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
                 var point = new Point(
-                    (int)Math.Round(rect.Left + rect.Width / 2),
-                    (int)Math.Round(rect.Top + rect.Height / 2));
+                    (int)Math.Round((double)(rect.Left + rect.Width / 2)),
+                    (int)Math.Round((double)(rect.Top + rect.Height / 2)));
 
                 if (SendInstantLeftClick(point, $"Select TreeItem {SafeElementName(treeItem)}"))
                 {
