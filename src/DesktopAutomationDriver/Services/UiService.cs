@@ -39,9 +39,12 @@ public class UiService : IUiService
     private const int MenuExpandDelayMs = 250;
     private const int MenuActionDelayMs = 150;
     private const int MenuFocusDelayMs = 75;
-    // Limit parent-chain traversal to avoid walking unexpectedly deep or unstable UIA trees.
-    // If exceeded, strict full-path matching simply fails instead of selecting a wrong duplicate leaf.
+    // Menu parent chains in supported desktop apps are shallow; 20 gives ample room for deeply
+    // nested menus while preventing unbounded traversal of unstable UIA ancestors. If exceeded,
+    // strict full-path matching fails safely instead of selecting a wrong duplicate leaf.
     private const int MaxMenuParentChainDepth = 20;
+    // Submenu popups generally appear near the parent item's right edge; these offsets click the
+    // arrow area without hugging the border and allow small overlap/jitter in native menu popups.
     private const double SubmenuArrowMinOffsetPx = 8.0;
     private const double SubmenuArrowMaxOffsetPx = 20.0;
     private const double SubmenuArrowWidthDivisor = 8.0;
@@ -1189,7 +1192,7 @@ public class UiService : IUiService
             {
                 OpenMenuItem(item);
                 Thread.Sleep(MenuExpandDelayMs);
-                searchRoot = FindDropdownForMenuItemOrThrow(session, item);
+                searchRoot = GetDropdownForMenuItem(session, item);
             }
             else
             {
@@ -1201,7 +1204,7 @@ public class UiService : IUiService
         return null;
     }
 
-    private AutomationElement FindDropdownForMenuItemOrThrow(
+    private AutomationElement GetDropdownForMenuItem(
         AutomationSession session,
         AutomationElement menuItem)
     {

@@ -155,6 +155,8 @@ public sealed class RecordingOverlayWindow : Form
     /// Delay in milliseconds between focusing a logical menu item and sending Enter.
     /// </summary>
     private const int MenuFocusDelayMs = 75;
+    // Keep these submenu geometry values in sync with UiService; Assistive recording and
+    // /ui playback both need the same native-menu arrow and popup proximity behavior.
     private const double SubmenuArrowMinOffsetPx = 8.0;
     private const double SubmenuArrowMaxOffsetPx = 20.0;
     private const double SubmenuArrowWidthDivisor = 8.0;
@@ -5410,6 +5412,8 @@ public sealed class RecordingOverlayWindow : Form
 
             if (string.IsNullOrWhiteSpace(itemName))
             {
+                // Skip unnamed entries instead of showing a placeholder because nested playback
+                // needs a stable name or AutomationId to re-locate the menu item later.
                 _logger.LogDebug(
                     "Skipping unnamed dynamic menu item while building Assistive menu. parent={Parent}, path={Path}",
                     parentName,
