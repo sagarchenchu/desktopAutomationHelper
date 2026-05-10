@@ -371,6 +371,15 @@ public sealed class RecordingOverlayWindow : Form
     private DateTime _lastBoundsFallbackCacheUtc = DateTime.MinValue;
     private List<AutomationElement> _boundsFallbackCache = [];
     private IntPtr _boundsFallbackCacheHwnd = IntPtr.Zero;
+    private HeaderDropdownContext? _activeHeaderDropdownContext;
+
+    private sealed class HeaderDropdownContext
+    {
+        public required AutomationElement HeaderElement { get; init; }
+        public ElementInfo? HeaderInfo { get; init; }
+        public HeaderDropdownRegion HeaderRegion { get; init; }
+        public DateTime OpenedAtUtc { get; init; }
+    }
 
     /// <summary>
     /// Holds the hook point, live cursor point, and chosen target point for an
@@ -1561,7 +1570,17 @@ public sealed class RecordingOverlayWindow : Form
                     capturedClickPoint);
             });
 
-        if (element != null && GridHeaderDropdownHelper.IsGridHeaderElement(element))
+        if (element != null &&
+            element.ControlType == ControlType.ListItem &&
+            IsHeaderDropdownListItem(element))
+        {
+            AddHeaderDropdownListItemActions(menu, element, elementInfo);
+            menu.Items.Add(new ToolStripSeparator());
+        }
+
+        if (element != null &&
+            element.ControlType != ControlType.ListItem &&
+            GridHeaderDropdownHelper.IsGridHeaderElement(element))
         {
             AddActionItem(menu, "Click Header / Sort", element, elementInfo, ActionType.Click,
                 () =>
@@ -6042,6 +6061,120 @@ public sealed class RecordingOverlayWindow : Form
         menu.Items.Add(dropdownMenu);
     }
 
+    private bool IsHeaderDropdownListItem(AutomationElement element)
+    {
+        try
+        {
+            if (element.ControlType != ControlType.ListItem)
+                return false;
+
+            if (_activeHeaderDropdownContext == null)
+                return false;
+
+            // Avoid stale context.
+            if (DateTime.UtcNow - _activeHeaderDropdownContext.OpenedAtUtc > TimeSpan.FromSeconds(20))
+                return false;
+
+            var itemRect = element.BoundingRectangle;
+            var headerRect = _activeHeaderDropdownContext.HeaderElement.BoundingRectangle;
+
+            if (itemRect.IsEmpty || headerRect.IsEmpty)
+                return false;
+
+            var horizontallyNearHeader =
+                itemRect.Left <= headerRect.Right + 250 &&
+                itemRect.Right >= headerRect.Left - 250;
+
+            var belowHeader =
+                itemRect.Top >= headerRect.Bottom - 30;
+
+            return horizontallyNearHeader && belowHeader;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void AddHeaderDropdownListItemActions(
+        ContextMenuStrip menu,
+        AutomationElement listItem,
+        ElementInfo? listItemInfo)
+    {
+        var itemName = SafeElementName(listItem);
+
+        if (string.IsNullOrWhiteSpace(itemName))
+            itemName = SafeElementAutomationId(listItem);
+
+        if (string.IsNullOrWhiteSpace(itemName))
+            itemName = "(unnamed item)";
+
+        var selectMenu = new ToolStripMenuItem($"Select Filter Item: {itemName}");
+
+        AddHeaderDropdownItemRegionAction(
+            selectMenu,
+            "Select Left / Checkbox Area",
+            DropdownItemClickRegion.LeftCenter,
+            itemName);
+
+        AddHeaderDropdownItemRegionAction(
+            selectMenu,
+            "Select Center",
+            DropdownItemClickRegion.Center,
+            itemName);
+
+        AddHeaderDropdownItemRegionAction(
+            selectMenu,
+            "Select Right",
+            DropdownItemClickRegion.RightCenter,
+            itemName);
+
+        AddHeaderDropdownItemRegionAction(
+            selectMenu,
+            "Probe Item Regions",
+            DropdownItemClickRegion.ProbeAll,
+            itemName);
+
+        menu.Items.Add(selectMenu);
+    }
+
+    private void AddHeaderDropdownItemRegionAction(
+        ToolStripMenuItem parent,
+        string label,
+        DropdownItemClickRegion itemRegion,
+        string itemName)
+    {
+        var mi = new ToolStripMenuItem(label);
+
+        mi.Click += (_, _) =>
+        {
+            RunAssistiveActionAfterMenuClose($"Select header dropdown item {itemName}", () =>
+            {
+                if (_activeHeaderDropdownContext == null)
+                    throw new InvalidOperationException("No active header dropdown context found.");
+
+                var ctx = _activeHeaderDropdownContext;
+
+                var success = SelectHeaderDropdownItemAssistive(
+                    ctx.HeaderElement,
+                    ctx.HeaderInfo,
+                    ctx.HeaderRegion,
+                    itemName,
+                    itemRegion);
+
+                if (!success)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to select header dropdown item '{itemName}' using item region {itemRegion}.");
+                }
+
+                ClearHeaderDropdownContext();
+            });
+        };
+
+        parent.DropDownItems.Add(mi);
+    }
+
     private void AddHeaderDropdownRegionItem(
         ToolStripMenuItem parentMenu,
         string label,
@@ -6083,6 +6216,14 @@ public sealed class RecordingOverlayWindow : Form
 
             if (popupList != null)
             {
+                _activeHeaderDropdownContext = new HeaderDropdownContext
+                {
+                    HeaderElement = headerElement,
+                    HeaderInfo = headerInfo,
+                    HeaderRegion = region,
+                    OpenedAtUtc = DateTime.UtcNow
+                };
+
                 _service.AddAction(new RecordedAction
                 {
                     ActionType = ActionType.Click,
@@ -6113,6 +6254,11 @@ public sealed class RecordingOverlayWindow : Form
             _statusLabel.Text = "Header dropdown failed: " + ex.Message;
             return false;
         }
+    }
+
+    private void ClearHeaderDropdownContext()
+    {
+        _activeHeaderDropdownContext = null;
     }
 
     private AutomationElement? TryOpenHeaderDropdown(
