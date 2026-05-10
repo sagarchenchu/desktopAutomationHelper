@@ -58,6 +58,9 @@ public class UiService : IUiService
     private const int DropdownItemMinPadY = 3;
     private const int DropdownItemMaxPadY = 8;
     private const int DropdownItemPadYDivisor = 4;
+    private const int TreeItemExpanderMinOffsetPx = 6;
+    private const int TreeItemExpanderMaxOffsetPx = 18;
+    private const int TreeItemExpanderWidthDivisor = 10;
     private const int ComboBoxRightEdgeMinOffsetPx = 8;
     private const int ComboBoxRightEdgeMaxOffsetPx = 20;
     private const int ComboBoxRightEdgeOffsetDivisor = 8;
@@ -1787,7 +1790,9 @@ public class UiService : IUiService
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
                 var point = new Point(
-                    (int)Math.Round((double)(rect.Left + Math.Max(6, Math.Min(18, rect.Width / 10)))),
+                    (int)Math.Round((double)(rect.Left + Math.Max(
+                        TreeItemExpanderMinOffsetPx,
+                        Math.Min(TreeItemExpanderMaxOffsetPx, rect.Width / TreeItemExpanderWidthDivisor)))),
                     (int)Math.Round((double)(rect.Top + rect.Height / 2)));
 
                 if (SendInstantLeftClick(point, $"Expand TreeItem {SafeElementName(treeItem)}"))
@@ -1929,7 +1934,7 @@ public class UiService : IUiService
         AutomationElement parentTreeItem,
         string childName)
     {
-        var children = GetChildTreeItems(parentTreeItem, maxItems: 200);
+        var children = GetChildTreeItems(parentTreeItem);
 
         return children.FirstOrDefault(x =>
             string.Equals(
