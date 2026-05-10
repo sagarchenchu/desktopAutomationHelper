@@ -5354,7 +5354,7 @@ public class UiService : IUiService
                 Thread.Sleep(MenuExpandDelayMs);
 
                 var right = new Point(
-                    (int)Math.Round(rect.Right - Math.Max(8, Math.Min(20, rect.Width / 8))),
+                    (int)Math.Round((double)rect.Right - Math.Max(8.0, Math.Min(20.0, (double)rect.Width / 8.0))),
                     (int)Math.Round(rect.Top + rect.Height / 2.0));
 
                 if (SendInstantLeftClick(right, $"Open submenu {SafeElementName(item)}"))
