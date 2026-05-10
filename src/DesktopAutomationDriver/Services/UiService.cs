@@ -224,6 +224,9 @@ public class UiService : IUiService
             "doubleclickgridcell" => DoubleClickGridCell(request),
             "openheaderdropdown" => OpenHeaderDropdown(request),
             "selectheaderdropdownitem" => SelectHeaderDropdownItem(request),
+            // Dynamic menu playback operations use a root MenuItem locator.
+            // selectdynamicmenuitem is kept for one-level compatibility and delegates
+            // to path traversal; selectdynamicmenupath accepts Root>Child>Leaf or Child>Leaf.
             "selectdynamicmenuitem" => SelectDynamicMenuItem(request),
             "selectdynamicmenupath" => SelectDynamicMenuPath(request),
             "selectcomboboxitem" => SelectComboBoxItem(request),
@@ -5425,28 +5428,6 @@ public class UiService : IUiService
 
     private bool ActivateDynamicLeafMenuItem(AutomationElement item, string itemName)
     {
-        try
-        {
-            var rect = item.BoundingRectangle;
-
-            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
-            {
-                var point = new Point(
-                    (int)Math.Round(rect.Left + rect.Width / 2.0),
-                    (int)Math.Round(rect.Top + rect.Height / 2.0));
-
-                if (SendInstantLeftClick(point, $"Click dynamic menu item {itemName}"))
-                {
-                    Thread.Sleep(MenuExpandDelayMs);
-                    return true;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Physical click failed for dynamic menu item {Item}", itemName);
-        }
-
         return ActivateDynamicMenuItem(item, itemName);
     }
 
