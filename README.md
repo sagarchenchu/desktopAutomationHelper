@@ -430,9 +430,9 @@ Drag and drop:
 Key tokens are wrapped in braces inside the `value` string, e.g. `"Hello{ENTER}"`.
 
 Modifier prefixes (AutoIt style):
-- `^x` — Ctrl + key, e.g. `^a` = Ctrl+A, `^c` = Ctrl+C, `^v` = Ctrl+V, `^z` = Ctrl+Z
-- `+x` — Shift + key, e.g. `+{TAB}` is not supported this way; use `+t` for Shift+T
-- `%x` — Alt + key, e.g. `%{F4}` is not supported this way; use `%f` for Alt+F
+- `^x` or `^{KEYNAME}` — Ctrl + key, e.g. `^a` = Ctrl+A, `^{DELETE}` = Ctrl+Delete
+- `+x` or `+{KEYNAME}` — Shift + key, e.g. `+a` = Shift+A, `+{TAB}` = Shift+Tab
+- `%x` or `%{KEYNAME}` — Alt + key, e.g. `%f` = Alt+F, `%{F4}` = Alt+F4
 
 | Token | Key |
 |---|---|

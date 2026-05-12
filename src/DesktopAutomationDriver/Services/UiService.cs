@@ -4713,9 +4713,14 @@ public class UiService : IUiService
 
     /// <summary>
     /// Sends a key sequence string using AutoIt/keyboard-shorthand notation:
-    /// {ENTER}, {TAB}, {F5}, etc. for named keys;
-    /// ^x for Ctrl+X, +x for Shift+X, %x for Alt+X;
-    /// any other character is typed literally.
+    /// <list type="bullet">
+    ///   <item><c>{KEYNAME}</c> — named key (see <see cref="NamedKeys"/>)</item>
+    ///   <item><c>^x</c> or <c>^{KEYNAME}</c> — Ctrl + key</item>
+    ///   <item><c>+x</c> or <c>+{KEYNAME}</c> — Shift + key</item>
+    ///   <item><c>%x</c> or <c>%{KEYNAME}</c> — Alt + key</item>
+    ///   <item>any other character — typed literally</item>
+    /// </list>
+    /// Examples: <c>"^a"</c> = Ctrl+A, <c>"+{TAB}"</c> = Shift+Tab, <c>"%{F4}"</c> = Alt+F4.
     /// </summary>
     private static void SendKeysString(string keys)
     {
@@ -4741,47 +4746,44 @@ public class UiService : IUiService
                 }
             }
 
-            // ^x — Ctrl+char
+            // ^x or ^{KEYNAME} — Ctrl+key
             if (c == '^' && i + 1 < keys.Length)
             {
-                var vk = CharToVirtualKey(keys[i + 1]);
-                if (vk.HasValue)
+                if (TryParseModifiedKey(keys, i + 1, out var vk, out int consumed))
                 {
                     Keyboard.Press(VirtualKeyShort.LCONTROL);
-                    Keyboard.Press(vk.Value);
-                    Keyboard.Release(vk.Value);
+                    Keyboard.Press(vk);
+                    Keyboard.Release(vk);
                     Keyboard.Release(VirtualKeyShort.LCONTROL);
-                    i += 2;
+                    i += 1 + consumed;
                     continue;
                 }
             }
 
-            // +x — Shift+char
+            // +x or +{KEYNAME} — Shift+key
             if (c == '+' && i + 1 < keys.Length)
             {
-                var vk = CharToVirtualKey(keys[i + 1]);
-                if (vk.HasValue)
+                if (TryParseModifiedKey(keys, i + 1, out var vk, out int consumed))
                 {
                     Keyboard.Press(VirtualKeyShort.LSHIFT);
-                    Keyboard.Press(vk.Value);
-                    Keyboard.Release(vk.Value);
+                    Keyboard.Press(vk);
+                    Keyboard.Release(vk);
                     Keyboard.Release(VirtualKeyShort.LSHIFT);
-                    i += 2;
+                    i += 1 + consumed;
                     continue;
                 }
             }
 
-            // %x — Alt+char
+            // %x or %{KEYNAME} — Alt+key
             if (c == '%' && i + 1 < keys.Length)
             {
-                var vk = CharToVirtualKey(keys[i + 1]);
-                if (vk.HasValue)
+                if (TryParseModifiedKey(keys, i + 1, out var vk, out int consumed))
                 {
                     Keyboard.Press(VirtualKeyShort.ALT);
-                    Keyboard.Press(vk.Value);
-                    Keyboard.Release(vk.Value);
+                    Keyboard.Press(vk);
+                    Keyboard.Release(vk);
                     Keyboard.Release(VirtualKeyShort.ALT);
-                    i += 2;
+                    i += 1 + consumed;
                     continue;
                 }
             }
@@ -4790,6 +4792,48 @@ public class UiService : IUiService
             Keyboard.Type(c.ToString());
             i++;
         }
+    }
+
+    /// <summary>
+    /// Attempts to parse a key at position <paramref name="pos"/> in <paramref name="keys"/>.
+    /// Handles both a single alphanumeric character (<c>a</c>–<c>z</c>, <c>0</c>–<c>9</c>)
+    /// and a named-key token (<c>{KEYNAME}</c>).
+    /// </summary>
+    /// <param name="keys">The full key sequence string.</param>
+    /// <param name="pos">Starting position to parse from.</param>
+    /// <param name="vk">The resolved virtual key, if successful.</param>
+    /// <param name="consumed">Number of characters consumed (not including the modifier prefix).</param>
+    /// <returns><c>true</c> when a key was successfully resolved.</returns>
+    private static bool TryParseModifiedKey(
+        string keys, int pos, out VirtualKeyShort vk, out int consumed)
+    {
+        if (pos < keys.Length && keys[pos] == '{')
+        {
+            int end = keys.IndexOf('}', pos + 1);
+            if (end > pos)
+            {
+                var keyName = keys[(pos + 1)..end];
+                if (NamedKeys.TryGetValue(keyName, out vk))
+                {
+                    consumed = end - pos + 1; // length of "{KEYNAME}"
+                    return true;
+                }
+            }
+        }
+        else if (pos < keys.Length)
+        {
+            var charVk = CharToVirtualKey(keys[pos]);
+            if (charVk.HasValue)
+            {
+                vk = charVk.Value;
+                consumed = 1;
+                return true;
+            }
+        }
+
+        vk = default;
+        consumed = 0;
+        return false;
     }
 
     private static VirtualKeyShort? CharToVirtualKey(char c)
