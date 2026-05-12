@@ -1,6 +1,5 @@
 using System.Drawing;
 using System.Drawing.Imaging;
-using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using DesktopAutomationDriver.Models.Request;
@@ -1476,8 +1475,41 @@ public class UiService : IUiService
 
     private object? RightClick(UiRequest req)
     {
-        FindWithRetry(req).RightClick();
-        return null;
+        var element = FindWithRetry(req);
+
+        BringElementWindowToForeground(element);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        try
+        {
+            element.RightClick();
+
+            return new
+            {
+                rightClicked = true,
+                strategy = "FlaUI.RightClick",
+                element = CreateElementSnapshot(element)
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "FlaUI RightClick failed for {Name}; falling back to physical right click",
+                SafeElementName(element));
+        }
+
+        if (TryInstantPhysicalRightClick(element, "RightClick"))
+        {
+            return new
+            {
+                rightClicked = true,
+                strategy = "physical-right-click",
+                element = CreateElementSnapshot(element)
+            };
+        }
+
+        throw new InvalidOperationException($"Failed to right-click element '{SafeElementName(element)}'.");
     }
 
     private object? Hover(UiRequest req)
@@ -1586,33 +1618,123 @@ public class UiService : IUiService
     private object? Clear(UiRequest req)
     {
         var element = FindWithRetry(req);
-        element.AsTextBox().Text = string.Empty;
-        return null;
+
+        BringElementWindowToForeground(element);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        try
+        {
+            if (element.Patterns.Value.IsSupported)
+            {
+                var pattern = element.Patterns.Value.Pattern;
+                if (!pattern.IsReadOnly)
+                {
+                    pattern.SetValue(string.Empty);
+                    return new
+                    {
+                        cleared = true,
+                        strategy = "ValuePattern.SetValue",
+                        element = CreateElementSnapshot(element)
+                    };
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Clear via ValuePattern failed for {Name}", SafeElementName(element));
+        }
+
+        try
+        {
+            element.AsTextBox().Text = string.Empty;
+            return new
+            {
+                cleared = true,
+                strategy = "TextBox.Text",
+                element = CreateElementSnapshot(element)
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Clear via AsTextBox failed for {Name}", SafeElementName(element));
+        }
+
+        try
+        {
+            element.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            SendKeysString("^a{BACKSPACE}");
+            return new
+            {
+                cleared = true,
+                strategy = "CtrlA_Backspace",
+                element = CreateElementSnapshot(element)
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Clear via Ctrl+A Backspace failed for {Name}", SafeElementName(element));
+        }
+
+        try
+        {
+            element.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            SendKeysString("^a{DELETE}");
+            return new
+            {
+                cleared = true,
+                strategy = "CtrlA_Delete",
+                element = CreateElementSnapshot(element)
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Clear via Ctrl+A Delete failed for {Name}", SafeElementName(element));
+        }
+
+        throw new InvalidOperationException($"Failed to clear element '{SafeElementName(element)}'.");
     }
 
     private object? SendKeys(UiRequest req)
     {
-        if (req.Value == null)
+        if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("'value' is required for 'sendkeys'.");
 
-        if (req.Locator != null)
+        AutomationElement? element = null;
+
+        if (req.Locator != null && !IsEmptyLocator(req.Locator))
         {
-            // Locator provided: focus the element before sending keys.
-            var element = FindWithRetry(req);
+            element = FindWithRetry(req);
             BringElementWindowToForeground(element);
-            element.Focus();
+            Thread.Sleep(WindowActivationDelayMs);
+
+            try
+            {
+                element.Focus();
+                Thread.Sleep(MenuFocusDelayMs);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Focus failed before sendkeys for {Name}", SafeElementName(element));
+            }
         }
         else
         {
-            // No locator: bring the active session window to the foreground and
-            // send keys to whatever element currently has keyboard focus.
-            var session = RequireSession();
-            var window = GetWindowRoot(session);
-            BringElementWindowToForeground(window);
+            BringActiveWindowToForeground();
+            Thread.Sleep(WindowActivationDelayMs);
         }
 
-        SendKeysString(req.Value);
-        return null;
+        var normalizedKeys = NormalizeSendKeysValue(req.Value);
+        SendKeysString(normalizedKeys);
+
+        return new
+        {
+            sent = true,
+            original = req.Value,
+            normalized = normalizedKeys,
+            target = element == null ? null : CreateElementSnapshot(element)
+        };
     }
 
     private object? ExpandTreeItem(UiRequest req)
@@ -1991,41 +2113,42 @@ public class UiService : IUiService
     ///   <item><b>value</b> – (optional) Scroll amount as a number of wheel clicks.
     ///     Positive values scroll <em>up</em>; negative values scroll <em>down</em>.
     ///     The strings <c>"up"</c> and <c>"down"</c> also work and map to ±3 clicks.
-    ///     Omitting <c>value</c> defaults to 3 clicks up.</item>
+    ///     Omitting <c>value</c> defaults to 3 clicks down.</item>
     /// </list>
     /// </summary>
     private object? MouseScroll(UiRequest req)
     {
-        // Parse scroll amount from value.
-        double scrollAmount = 3; // default: 3 clicks up
-        if (!string.IsNullOrWhiteSpace(req.Value))
-        {
-            var v = req.Value.Trim();
-            if (v.Equals("up", StringComparison.OrdinalIgnoreCase))
-                scrollAmount = 3;
-            else if (v.Equals("down", StringComparison.OrdinalIgnoreCase))
-                scrollAmount = -3;
-            else if (double.TryParse(v, NumberStyles.Float,
-                                     CultureInfo.InvariantCulture,
-                                     out var parsed))
-                scrollAmount = parsed;
-            else
-                throw new ArgumentException(
-                    "'value' for 'mousescroll' must be a number, 'up', or 'down'.");
-        }
+        AutomationElement? element = null;
 
-        if (req.Locator != null)
+        if (req.Locator != null && !IsEmptyLocator(req.Locator))
         {
-            // Move the cursor to the element's centre so the wheel event lands on it.
-            var element = FindWithRetry(req);
+            element = FindWithRetry(req);
             BringElementWindowToForeground(element);
-            var pt = element.GetClickablePoint();
-            Mouse.MoveTo(pt);
-            Thread.Sleep(CursorPositionStabilityDelayMs);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            var rect = element.BoundingRectangle;
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round(rect.Left + rect.Width / 2.0),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                SetCursorPos(point.X, point.Y);
+                Thread.Sleep(CursorPositionStabilityDelayMs);
+            }
         }
 
-        Mouse.Scroll(scrollAmount);
-        return null;
+        var wheelClicks = ParseWheelClicks(req.Value);
+        if (!SendMouseWheel(wheelClicks))
+            throw new InvalidOperationException($"Mouse wheel scroll failed. wheelClicks={wheelClicks}");
+
+        return new
+        {
+            scrolled = true,
+            wheelClicks,
+            direction = wheelClicks >= 0 ? "up" : "down",
+            target = element == null ? null : CreateElementSnapshot(element)
+        };
     }
 
     private object? Check(UiRequest req)
@@ -4712,6 +4835,68 @@ public class UiService : IUiService
         }
     }
 
+    private static string NormalizeSendKeysValue(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return value;
+
+        var v = value.Trim();
+        var upper = v.ToUpperInvariant();
+
+        return upper switch
+        {
+            "CTRL+A" or "CONTROL+A" => "^a",
+            "CTRL+C" or "CONTROL+C" => "^c",
+            "CTRL+V" or "CONTROL+V" => "^v",
+            "CTRL+X" or "CONTROL+X" => "^x",
+            "CTRL+S" or "CONTROL+S" => "^s",
+            "CTRL+Z" or "CONTROL+Z" => "^z",
+            "CTRL+Y" or "CONTROL+Y" => "^y",
+
+            "ALT+F4" => "%{F4}",
+            "ALT+TAB" => "%{TAB}",
+
+            "SHIFT+TAB" => "+{TAB}",
+
+            "ENTER" or "RETURN" => "{ENTER}",
+            "BACKSPACE" or "BS" => "{BACKSPACE}",
+            "DELETE" or "DEL" => "{DELETE}",
+            "TAB" => "{TAB}",
+            "ESC" or "ESCAPE" => "{ESC}",
+            "SPACE" => "{SPACE}",
+            "HOME" => "{HOME}",
+            "END" => "{END}",
+            "UP" or "ARROWUP" => "{UP}",
+            "DOWN" or "ARROWDOWN" => "{DOWN}",
+            "LEFT" or "ARROWLEFT" => "{LEFT}",
+            "RIGHT" or "ARROWRIGHT" => "{RIGHT}",
+            "PAGEUP" or "PGUP" => "{PAGEUP}",
+            "PAGEDOWN" or "PGDN" => "{PAGEDOWN}",
+
+            _ => value
+        };
+    }
+
+    private static int ParseWheelClicks(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return -3;
+
+        var v = value.Trim();
+
+        if (string.Equals(v, "down", StringComparison.OrdinalIgnoreCase))
+            return -3;
+
+        if (string.Equals(v, "up", StringComparison.OrdinalIgnoreCase))
+            return 3;
+
+        if (int.TryParse(v, out var clicks))
+            return clicks;
+
+        throw new ArgumentException(
+            "Scroll value must be 'up', 'down', or an integer. Positive = up, negative = down.");
+    }
+
     /// <summary>
     /// Sends a key sequence string using AutoIt/keyboard-shorthand notation:
     /// <list type="bullet">
@@ -6313,6 +6498,123 @@ public class UiService : IUiService
         }
     }
 
+    private bool TryInstantPhysicalRightClick(AutomationElement element, string actionName)
+    {
+        try
+        {
+            BringElementWindowToForeground(element);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            var rect = element.BoundingRectangle;
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                return false;
+
+            var point = new Point(
+                (int)Math.Round(rect.Left + rect.Width / 2.0),
+                (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+            if (!SetCursorPos(point.X, point.Y))
+                return false;
+
+            Thread.Sleep(CursorPositionStabilityDelayMs);
+
+            var inputs = new[]
+            {
+                new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    U = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx = 0,
+                            dy = 0,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_RIGHTDOWN,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                },
+                new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    U = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx = 0,
+                            dy = 0,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_RIGHTUP,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                }
+            };
+
+            var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+
+            _logger.LogInformation(
+                "{ActionName}: Physical right-click sent={Sent}, point={Point}, element={Element}",
+                actionName,
+                sent,
+                point,
+                SafeElementName(element));
+
+            return sent == inputs.Length;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ActionName}: physical right-click failed", actionName);
+            return false;
+        }
+    }
+
+    private bool SendMouseWheel(int wheelClicks)
+    {
+        try
+        {
+            if (wheelClicks == 0)
+                return true;
+
+            var wheelDelta = wheelClicks * 120;
+
+            var input = new INPUT
+            {
+                type = INPUT_MOUSE,
+                U = new InputUnion
+                {
+                    mi = new MOUSEINPUT
+                    {
+                        dx = 0,
+                        dy = 0,
+                        mouseData = unchecked((uint)wheelDelta),
+                        dwFlags = MOUSEEVENTF_WHEEL,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
+
+            var sent = SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
+            return sent == 1;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SendMouseWheel failed for wheelClicks={WheelClicks}", wheelClicks);
+            return false;
+        }
+    }
+
+    private void BringActiveWindowToForeground()
+    {
+        var session = RequireSession();
+        var root = GetWindowRoot(session);
+        BringElementWindowToForeground(root);
+    }
+
     private void BringElementWindowToForeground(AutomationElement? element)
     {
         if (element == null)
@@ -6537,6 +6839,9 @@ public class UiService : IUiService
     private const uint INPUT_MOUSE = 0;
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    private const uint MOUSEEVENTF_WHEEL = 0x0800;
     private const uint GA_ROOT = 2;
 
     [DllImport("user32.dll", SetLastError = true)]
