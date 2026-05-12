@@ -36,6 +36,8 @@ public class UiService : IUiService
     /// the left-button input events are sent.
     /// </summary>
     private const int CursorPositionStabilityDelayMs = 30;
+    private const string ClearSelectAllBackspaceKeys = "^a{BACKSPACE}";
+    private const string ClearSelectAllDeleteKeys = "^a{DELETE}";
     private const int MenuExpandDelayMs = 250;
     private const int MenuActionDelayMs = 150;
     private const int MenuFocusDelayMs = 75;
@@ -134,6 +136,16 @@ public class UiService : IUiService
             ["F10"] = VirtualKeyShort.F10,
             ["F11"] = VirtualKeyShort.F11,
             ["F12"] = VirtualKeyShort.F12,
+            ["WIN"] = VirtualKeyShort.LWIN,
+            ["LWIN"] = VirtualKeyShort.LWIN,
+            ["RWIN"] = VirtualKeyShort.RWIN,
+            ["PRINTSCREEN"] = VirtualKeyShort.SNAPSHOT,
+            ["PRTSC"] = VirtualKeyShort.SNAPSHOT,
+            ["CAPSLOCK"] = VirtualKeyShort.CAPITAL,
+            ["NUMLOCK"] = VirtualKeyShort.NUMLOCK,
+            ["SCROLLLOCK"] = VirtualKeyShort.SCROLL,
+            ["PAUSE"] = VirtualKeyShort.PAUSE,
+            ["APPS"] = VirtualKeyShort.APPS,
         };
 
     public UiService(IUiSessionContext ctx, ILogger<UiService> logger)
@@ -223,6 +235,8 @@ public class UiService : IUiService
             "expandtreepath"   => ExpandTreePath(request),
             "selecttreepath"   => SelectTreePath(request),
             "scroll"           => Scroll(request),
+            "mousescroll"      => MouseScroll(request),
+            "wheelscroll"      => MouseScroll(request),
             "check"            => Check(request),
             "uncheck"          => Uncheck(request),
             "select"           => Select(request),
@@ -1463,8 +1477,41 @@ public class UiService : IUiService
 
     private object? RightClick(UiRequest req)
     {
-        FindWithRetry(req).RightClick();
-        return null;
+        var element = FindWithRetry(req);
+
+        BringElementWindowToForeground(element);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        try
+        {
+            element.RightClick();
+
+            return new
+            {
+                rightClicked = true,
+                strategy = "FlaUI.RightClick",
+                element = CreateElementSnapshot(element)
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "FlaUI RightClick failed for {Name}; falling back to physical right click",
+                SafeElementName(element));
+        }
+
+        if (TryInstantPhysicalRightClick(element, "RightClick"))
+        {
+            return new
+            {
+                rightClicked = true,
+                strategy = "physical-right-click",
+                element = CreateElementSnapshot(element)
+            };
+        }
+
+        throw new InvalidOperationException($"Failed to right-click element '{SafeElementName(element)}'.");
     }
 
     private object? Hover(UiRequest req)
@@ -1573,19 +1620,123 @@ public class UiService : IUiService
     private object? Clear(UiRequest req)
     {
         var element = FindWithRetry(req);
-        element.AsTextBox().Text = string.Empty;
-        return null;
+
+        BringElementWindowToForeground(element);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        try
+        {
+            if (element.Patterns.Value.IsSupported)
+            {
+                var pattern = element.Patterns.Value.Pattern;
+                if (!pattern.IsReadOnly)
+                {
+                    pattern.SetValue(string.Empty);
+                    return new
+                    {
+                        cleared = true,
+                        strategy = "ValuePattern.SetValue",
+                        element = CreateElementSnapshot(element)
+                    };
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Clear via ValuePattern failed for {Name}", SafeElementName(element));
+        }
+
+        try
+        {
+            element.AsTextBox().Text = string.Empty;
+            return new
+            {
+                cleared = true,
+                strategy = "TextBox.Text",
+                element = CreateElementSnapshot(element)
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Clear via AsTextBox failed for {Name}", SafeElementName(element));
+        }
+
+        try
+        {
+            element.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            SendKeysString(ClearSelectAllBackspaceKeys);
+            return new
+            {
+                cleared = true,
+                strategy = "CtrlA_Backspace",
+                element = CreateElementSnapshot(element)
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Clear via Ctrl+A Backspace failed for {Name}", SafeElementName(element));
+        }
+
+        try
+        {
+            element.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            SendKeysString(ClearSelectAllDeleteKeys);
+            return new
+            {
+                cleared = true,
+                strategy = "CtrlA_Delete",
+                element = CreateElementSnapshot(element)
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Clear via Ctrl+A Delete failed for {Name}", SafeElementName(element));
+        }
+
+        throw new InvalidOperationException($"Failed to clear element '{SafeElementName(element)}'.");
     }
 
     private object? SendKeys(UiRequest req)
     {
-        if (req.Value == null)
-            throw new ArgumentException("'value' is required for 'sendkeys'.");
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("Parameter 'value' is required for 'sendkeys' operation.");
 
-        var element = FindWithRetry(req);
-        element.Focus();
-        SendKeysString(req.Value);
-        return null;
+        AutomationElement? element = null;
+
+        if (req.Locator != null && !IsEmptyLocator(req.Locator))
+        {
+            element = FindWithRetry(req);
+            BringElementWindowToForeground(element);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            try
+            {
+                element.Focus();
+                Thread.Sleep(MenuFocusDelayMs);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Focus failed before sendkeys for {Name}", SafeElementName(element));
+            }
+        }
+        else
+        {
+            BringActiveWindowToForeground();
+            Thread.Sleep(WindowActivationDelayMs);
+        }
+
+        var normalizedKeys = NormalizeSendKeysValue(req.Value);
+        SendKeysString(normalizedKeys);
+
+        return new
+        {
+            sent = true,
+            original = req.Value,
+            normalized = normalizedKeys,
+            target = element == null ? null : CreateElementSnapshot(element)
+        };
     }
 
     private object? ExpandTreeItem(UiRequest req)
@@ -1952,6 +2103,54 @@ public class UiService : IUiService
         var element = FindWithRetry(req);
         element.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
         return null;
+    }
+
+    /// <summary>
+    /// Scrolls the mouse wheel over an element (or over the current cursor position when
+    /// no locator is provided).
+    ///
+    /// <list type="bullet">
+    ///   <item><b>locator</b> – (optional) The element to scroll over.  When provided the
+    ///     cursor is moved to the element's centre before scrolling.</item>
+    ///   <item><b>value</b> – (optional) Scroll amount as a number of wheel clicks.
+    ///     Positive values scroll up; negative values scroll down.
+    ///     The strings <c>"up"</c> and <c>"down"</c> also work and map to ±3 clicks.
+    ///     Omitting <c>value</c> defaults to 3 clicks down.</item>
+    /// </list>
+    /// </summary>
+    private object? MouseScroll(UiRequest req)
+    {
+        AutomationElement? element = null;
+
+        if (req.Locator != null && !IsEmptyLocator(req.Locator))
+        {
+            element = FindWithRetry(req);
+            BringElementWindowToForeground(element);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            var rect = element.BoundingRectangle;
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round(rect.Left + rect.Width / 2.0),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                SetCursorPos(point.X, point.Y);
+                Thread.Sleep(CursorPositionStabilityDelayMs);
+            }
+        }
+
+        var wheelClicks = ParseWheelClicks(req.Value);
+        if (!SendMouseWheel(wheelClicks))
+            throw new InvalidOperationException($"Mouse wheel scroll failed. wheelClicks={wheelClicks}");
+
+        return new
+        {
+            scrolled = true,
+            wheelClicks,
+            direction = wheelClicks >= 0 ? "up" : "down",
+            target = element == null ? null : CreateElementSnapshot(element)
+        };
     }
 
     private object? Check(UiRequest req)
@@ -4638,11 +4837,84 @@ public class UiService : IUiService
         }
     }
 
+    private static string NormalizeSendKeysValue(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return value;
+
+        var v = value.Trim();
+        var upper = v.ToUpperInvariant();
+
+        // Canonical modifier+character outputs intentionally use lowercase letters
+        // (for example "^a") because SendKeysString treats characters case-insensitively.
+        return upper switch
+        {
+            "CTRL+A" or "CONTROL+A" => "^a",
+            "CTRL+C" or "CONTROL+C" => "^c",
+            "CTRL+V" or "CONTROL+V" => "^v",
+            "CTRL+X" or "CONTROL+X" => "^x",
+            "CTRL+S" or "CONTROL+S" => "^s",
+            "CTRL+Z" or "CONTROL+Z" => "^z",
+            "CTRL+Y" or "CONTROL+Y" => "^y",
+
+            "ALT+F4" => "%{F4}",
+            "ALT+TAB" => "%{TAB}",
+
+            "SHIFT+TAB" => "+{TAB}",
+
+            "ENTER" or "RETURN" => "{ENTER}",
+            "BACKSPACE" or "BS" => "{BACKSPACE}",
+            "DELETE" or "DEL" => "{DELETE}",
+            "TAB" => "{TAB}",
+            "ESC" or "ESCAPE" => "{ESC}",
+            "SPACE" => "{SPACE}",
+            "HOME" => "{HOME}",
+            "END" => "{END}",
+            "UP" or "ARROWUP" => "{UP}",
+            "DOWN" or "ARROWDOWN" => "{DOWN}",
+            "LEFT" or "ARROWLEFT" => "{LEFT}",
+            "RIGHT" or "ARROWRIGHT" => "{RIGHT}",
+            "PAGEUP" or "PGUP" => "{PAGEUP}",
+            "PAGEDOWN" or "PGDN" => "{PAGEDOWN}",
+
+            _ => value
+        };
+    }
+
+    /// <summary>
+    /// Parses wheel-click input.
+    /// Defaults to -3 (scroll down three clicks) when value is omitted.
+    /// </summary>
+    private static int ParseWheelClicks(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return -3;
+
+        var v = value.Trim();
+
+        if (string.Equals(v, "down", StringComparison.OrdinalIgnoreCase))
+            return -3;
+
+        if (string.Equals(v, "up", StringComparison.OrdinalIgnoreCase))
+            return 3;
+
+        if (int.TryParse(v, out var clicks))
+            return clicks;
+
+        throw new ArgumentException(
+            "Parameter 'value' must be 'up', 'down', or an integer. Positive values scroll up; negative values scroll down.");
+    }
+
     /// <summary>
     /// Sends a key sequence string using AutoIt/keyboard-shorthand notation:
-    /// {ENTER}, {TAB}, {F5}, etc. for named keys;
-    /// ^x for Ctrl+X, +x for Shift+X, %x for Alt+X;
-    /// any other character is typed literally.
+    /// <list type="bullet">
+    ///   <item><c>{KEYNAME}</c> — named key (see <see cref="NamedKeys"/>)</item>
+    ///   <item><c>^x</c> or <c>^{KEYNAME}</c> — Ctrl + key</item>
+    ///   <item><c>+x</c> or <c>+{KEYNAME}</c> — Shift + key</item>
+    ///   <item><c>%x</c> or <c>%{KEYNAME}</c> — Alt + key</item>
+    ///   <item>any other character — typed literally</item>
+    /// </list>
+    /// Examples: <c>"^a"</c> = Ctrl+A, <c>"+{TAB}"</c> = Shift+Tab, <c>"%{F4}"</c> = Alt+F4.
     /// </summary>
     private static void SendKeysString(string keys)
     {
@@ -4668,47 +4940,44 @@ public class UiService : IUiService
                 }
             }
 
-            // ^x — Ctrl+char
+            // ^x or ^{KEYNAME} — Ctrl+key
             if (c == '^' && i + 1 < keys.Length)
             {
-                var vk = CharToVirtualKey(keys[i + 1]);
-                if (vk.HasValue)
+                if (TryParseModifiedKey(keys, i + 1, out var vk, out int consumed))
                 {
                     Keyboard.Press(VirtualKeyShort.LCONTROL);
-                    Keyboard.Press(vk.Value);
-                    Keyboard.Release(vk.Value);
+                    Keyboard.Press(vk);
+                    Keyboard.Release(vk);
                     Keyboard.Release(VirtualKeyShort.LCONTROL);
-                    i += 2;
+                    i += 1 + consumed;
                     continue;
                 }
             }
 
-            // +x — Shift+char
+            // +x or +{KEYNAME} — Shift+key
             if (c == '+' && i + 1 < keys.Length)
             {
-                var vk = CharToVirtualKey(keys[i + 1]);
-                if (vk.HasValue)
+                if (TryParseModifiedKey(keys, i + 1, out var vk, out int consumed))
                 {
                     Keyboard.Press(VirtualKeyShort.LSHIFT);
-                    Keyboard.Press(vk.Value);
-                    Keyboard.Release(vk.Value);
+                    Keyboard.Press(vk);
+                    Keyboard.Release(vk);
                     Keyboard.Release(VirtualKeyShort.LSHIFT);
-                    i += 2;
+                    i += 1 + consumed;
                     continue;
                 }
             }
 
-            // %x — Alt+char
+            // %x or %{KEYNAME} — Alt+key
             if (c == '%' && i + 1 < keys.Length)
             {
-                var vk = CharToVirtualKey(keys[i + 1]);
-                if (vk.HasValue)
+                if (TryParseModifiedKey(keys, i + 1, out var vk, out int consumed))
                 {
                     Keyboard.Press(VirtualKeyShort.ALT);
-                    Keyboard.Press(vk.Value);
-                    Keyboard.Release(vk.Value);
+                    Keyboard.Press(vk);
+                    Keyboard.Release(vk);
                     Keyboard.Release(VirtualKeyShort.ALT);
-                    i += 2;
+                    i += 1 + consumed;
                     continue;
                 }
             }
@@ -4717,6 +4986,48 @@ public class UiService : IUiService
             Keyboard.Type(c.ToString());
             i++;
         }
+    }
+
+    /// <summary>
+    /// Attempts to parse a key at position <paramref name="pos"/> in <paramref name="keys"/>.
+    /// Handles both a single alphanumeric character (<c>a</c>–<c>z</c>, <c>0</c>–<c>9</c>)
+    /// and a named-key token (<c>{KEYNAME}</c>).
+    /// </summary>
+    /// <param name="keys">The full key sequence string.</param>
+    /// <param name="pos">Starting position to parse from.</param>
+    /// <param name="vk">The resolved virtual key, if successful.</param>
+    /// <param name="consumed">Number of characters consumed (not including the modifier prefix).</param>
+    /// <returns><c>true</c> when a key was successfully resolved.</returns>
+    private static bool TryParseModifiedKey(
+        string keys, int pos, out VirtualKeyShort vk, out int consumed)
+    {
+        if (pos < keys.Length && keys[pos] == '{')
+        {
+            int end = keys.IndexOf('}', pos + 1);
+            if (end > pos)
+            {
+                var keyName = keys[(pos + 1)..end];
+                if (NamedKeys.TryGetValue(keyName, out vk))
+                {
+                    consumed = end - pos + 1; // length of "{KEYNAME}"
+                    return true;
+                }
+            }
+        }
+        else if (pos < keys.Length)
+        {
+            var charVk = CharToVirtualKey(keys[pos]);
+            if (charVk.HasValue)
+            {
+                vk = charVk.Value;
+                consumed = 1;
+                return true;
+            }
+        }
+
+        vk = default;
+        consumed = 0;
+        return false;
     }
 
     private static VirtualKeyShort? CharToVirtualKey(char c)
@@ -6195,6 +6506,125 @@ public class UiService : IUiService
         }
     }
 
+    private bool TryInstantPhysicalRightClick(AutomationElement element, string actionName)
+    {
+        try
+        {
+            BringElementWindowToForeground(element);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            var rect = element.BoundingRectangle;
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                return false;
+
+            var point = new Point(
+                (int)Math.Round(rect.Left + rect.Width / 2.0),
+                (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+            if (!SetCursorPos(point.X, point.Y))
+                return false;
+
+            Thread.Sleep(CursorPositionStabilityDelayMs);
+
+            var inputs = new[]
+            {
+                new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    U = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx = 0,
+                            dy = 0,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_RIGHTDOWN,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                },
+                new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    U = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx = 0,
+                            dy = 0,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_RIGHTUP,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                }
+            };
+
+            var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+
+            _logger.LogInformation(
+                "{ActionName}: Physical right-click sent={Sent}, point={Point}, element={Element}",
+                actionName,
+                sent,
+                point,
+                SafeElementName(element));
+
+            return sent == inputs.Length;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ActionName}: physical right-click failed", actionName);
+            return false;
+        }
+    }
+
+    private bool SendMouseWheel(int wheelClicks)
+    {
+        try
+        {
+            if (wheelClicks == 0)
+                return true;
+
+            var wheelDelta = wheelClicks * 120;
+
+            var input = new INPUT
+            {
+                type = INPUT_MOUSE,
+                U = new InputUnion
+                {
+                    mi = new MOUSEINPUT
+                    {
+                        dx = 0,
+                        dy = 0,
+                        // INPUT.MOUSEINPUT.mouseData is uint; negative wheel deltas are
+                        // represented as two's complement unsigned values.
+                        mouseData = unchecked((uint)wheelDelta),
+                        dwFlags = MOUSEEVENTF_WHEEL,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
+
+            var sent = SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
+            return sent == 1;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SendMouseWheel failed for wheelClicks={WheelClicks}", wheelClicks);
+            return false;
+        }
+    }
+
+    private void BringActiveWindowToForeground()
+    {
+        var session = RequireSession();
+        var root = GetWindowRoot(session);
+        BringElementWindowToForeground(root);
+    }
+
     private void BringElementWindowToForeground(AutomationElement? element)
     {
         if (element == null)
@@ -6419,6 +6849,9 @@ public class UiService : IUiService
     private const uint INPUT_MOUSE = 0;
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    private const uint MOUSEEVENTF_WHEEL = 0x0800;
     private const uint GA_ROOT = 2;
 
     [DllImport("user32.dll", SetLastError = true)]
