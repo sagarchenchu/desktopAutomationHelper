@@ -1701,7 +1701,7 @@ public class UiService : IUiService
     private object? SendKeys(UiRequest req)
     {
         if (string.IsNullOrWhiteSpace(req.Value))
-            throw new ArgumentException("'value' is required for 'sendkeys'.");
+            throw new ArgumentException("Parameter 'value' is required for 'sendkeys' operation.");
 
         AutomationElement? element = null;
 
@@ -2113,7 +2113,7 @@ public class UiService : IUiService
     ///   <item><b>locator</b> – (optional) The element to scroll over.  When provided the
     ///     cursor is moved to the element's centre before scrolling.</item>
     ///   <item><b>value</b> – (optional) Scroll amount as a number of wheel clicks.
-    ///     Positive values scroll <em>up</em>; negative values scroll <em>down</em>.
+    ///     Positive values scroll up; negative values scroll down.
     ///     The strings <c>"up"</c> and <c>"down"</c> also work and map to ±3 clicks.
     ///     Omitting <c>value</c> defaults to 3 clicks down.</item>
     /// </list>
@@ -4902,7 +4902,7 @@ public class UiService : IUiService
             return clicks;
 
         throw new ArgumentException(
-            "Scroll value must be 'up', 'down', or an integer. Positive = up, negative = down.");
+            "Parameter 'value' must be 'up', 'down', or an integer. Positive values scroll up; negative values scroll down.");
     }
 
     /// <summary>
@@ -6599,7 +6599,7 @@ public class UiService : IUiService
                         dx = 0,
                         dy = 0,
                         // INPUT.MOUSEINPUT.mouseData is uint; negative wheel deltas are
-                        // represented as two's-complement unsigned values.
+                        // represented as two's complement unsigned values.
                         mouseData = unchecked((uint)wheelDelta),
                         dwFlags = MOUSEEVENTF_WHEEL,
                         time = 0,
