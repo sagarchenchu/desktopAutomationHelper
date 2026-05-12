@@ -134,6 +134,16 @@ public class UiService : IUiService
             ["F10"] = VirtualKeyShort.F10,
             ["F11"] = VirtualKeyShort.F11,
             ["F12"] = VirtualKeyShort.F12,
+            ["WIN"] = VirtualKeyShort.LWIN,
+            ["LWIN"] = VirtualKeyShort.LWIN,
+            ["RWIN"] = VirtualKeyShort.RWIN,
+            ["PRINTSCREEN"] = VirtualKeyShort.SNAPSHOT,
+            ["PRTSC"] = VirtualKeyShort.SNAPSHOT,
+            ["CAPSLOCK"] = VirtualKeyShort.CAPITAL,
+            ["NUMLOCK"] = VirtualKeyShort.NUMLOCK,
+            ["SCROLLLOCK"] = VirtualKeyShort.SCROLL,
+            ["PAUSE"] = VirtualKeyShort.PAUSE,
+            ["APPS"] = VirtualKeyShort.APPS,
         };
 
     public UiService(IUiSessionContext ctx, ILogger<UiService> logger)
@@ -223,6 +233,8 @@ public class UiService : IUiService
             "expandtreepath"   => ExpandTreePath(request),
             "selecttreepath"   => SelectTreePath(request),
             "scroll"           => Scroll(request),
+            "mousescroll"      => MouseScroll(request),
+            "wheelscroll"      => MouseScroll(request),
             "check"            => Check(request),
             "uncheck"          => Uncheck(request),
             "select"           => Select(request),
@@ -1582,8 +1594,22 @@ public class UiService : IUiService
         if (req.Value == null)
             throw new ArgumentException("'value' is required for 'sendkeys'.");
 
-        var element = FindWithRetry(req);
-        element.Focus();
+        if (req.Locator != null)
+        {
+            // Locator provided: focus the element before sending keys.
+            var element = FindWithRetry(req);
+            BringElementWindowToForeground(element);
+            element.Focus();
+        }
+        else
+        {
+            // No locator: bring the active session window to the foreground and
+            // send keys to whatever element currently has keyboard focus.
+            var session = RequireSession();
+            var window = GetWindowRoot(session);
+            BringElementWindowToForeground(window);
+        }
+
         SendKeysString(req.Value);
         return null;
     }
@@ -1951,6 +1977,53 @@ public class UiService : IUiService
     {
         var element = FindWithRetry(req);
         element.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
+        return null;
+    }
+
+    /// <summary>
+    /// Scrolls the mouse wheel over an element (or over the current cursor position when
+    /// no locator is provided).
+    ///
+    /// <list type="bullet">
+    ///   <item><b>locator</b> – (optional) The element to scroll over.  When provided the
+    ///     cursor is moved to the element's centre before scrolling.</item>
+    ///   <item><b>value</b> – (optional) Scroll amount as a number of wheel clicks.
+    ///     Positive values scroll <em>up</em>; negative values scroll <em>down</em>.
+    ///     The strings <c>"up"</c> and <c>"down"</c> also work and map to ±3 clicks.
+    ///     Omitting <c>value</c> defaults to 3 clicks up.</item>
+    /// </list>
+    /// </summary>
+    private object? MouseScroll(UiRequest req)
+    {
+        // Parse scroll amount from value.
+        double scrollAmount = 3; // default: 3 clicks up
+        if (!string.IsNullOrWhiteSpace(req.Value))
+        {
+            var v = req.Value.Trim();
+            if (v.Equals("up", StringComparison.OrdinalIgnoreCase))
+                scrollAmount = 3;
+            else if (v.Equals("down", StringComparison.OrdinalIgnoreCase))
+                scrollAmount = -3;
+            else if (double.TryParse(v, System.Globalization.NumberStyles.Float,
+                                     System.Globalization.CultureInfo.InvariantCulture,
+                                     out var parsed))
+                scrollAmount = parsed;
+            else
+                throw new ArgumentException(
+                    "'value' for 'mousescroll' must be a number, 'up', or 'down'.");
+        }
+
+        if (req.Locator != null)
+        {
+            // Move the cursor to the element's centre so the wheel event lands on it.
+            var element = FindWithRetry(req);
+            BringElementWindowToForeground(element);
+            var pt = element.GetClickablePoint();
+            Mouse.MoveTo(pt);
+            Thread.Sleep(CursorPositionStabilityDelayMs);
+        }
+
+        Mouse.Scroll(scrollAmount);
         return null;
     }
 

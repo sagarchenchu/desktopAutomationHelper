@@ -335,8 +335,9 @@ These operations require both `locator` and `locator2`.
 | `type` | `locator`, `value` | Type text into an element. Date pickers use segmented date typing when applicable. | `null` or typed date metadata |
 | `typedate` | `locator`, `value` | Type a WinForms `SysDateTimePick32` date as MM → DD → YYYY segments. | `{ "typed": true, "strategy": "date-segments", ... }` |
 | `clear` | `locator` | Clear an editable element. | `null` |
-| `sendkeys` | `locator`, `value` | Send text/key tokens to the element. | `null` |
-| `scroll` | `locator` | Scroll element into view. | `null` |
+| `sendkeys` | `value`; optional `locator` | Send text/key tokens. When `locator` is provided the element is focused first; when omitted, keys are sent to the currently focused element in the active window. | `null` |
+| `scroll` | `locator` | Scroll element into view (UIA ScrollItem pattern). | `null` |
+| `mousescroll` / `wheelscroll` | optional `locator`, optional `value` | Scroll the mouse wheel. `value` is the number of wheel clicks (positive = up, negative = down) or `"up"` / `"down"` (±3 clicks). Defaults to 3 clicks up. When `locator` is provided the cursor moves to the element first. | `null` |
 | `check` | `locator` | Set checkbox/toggle to checked. | `null` |
 | `uncheck` | `locator` | Set checkbox/toggle to unchecked. | `null` |
 | `select` | `locator`, `value` or `index` | Select combo/list item by visible text or zero-based index. | `null` |
@@ -428,6 +429,11 @@ Drag and drop:
 
 Key tokens are wrapped in braces inside the `value` string, e.g. `"Hello{ENTER}"`.
 
+Modifier prefixes (AutoIt style):
+- `^x` — Ctrl + key, e.g. `^a` = Ctrl+A, `^c` = Ctrl+C, `^v` = Ctrl+V, `^z` = Ctrl+Z
+- `+x` — Shift + key, e.g. `+{TAB}` is not supported this way; use `+t` for Shift+T
+- `%x` — Alt + key, e.g. `%{F4}` is not supported this way; use `%f` for Alt+F
+
 | Token | Key |
 |---|---|
 | `{ENTER}` / `{RETURN}` | Enter / Return |
@@ -446,6 +452,63 @@ Key tokens are wrapped in braces inside the `value` string, e.g. `"Hello{ENTER}"
 | `{PGDN}` / `{PAGEDOWN}` | Page Down |
 | `{SPACE}` | Space |
 | `{F1}`–`{F12}` | Function keys |
+| `{WIN}` / `{LWIN}` / `{RWIN}` | Windows key |
+| `{PRINTSCREEN}` / `{PRTSC}` | Print Screen |
+| `{CAPSLOCK}` | Caps Lock |
+| `{NUMLOCK}` | Num Lock |
+| `{SCROLLLOCK}` | Scroll Lock |
+| `{PAUSE}` | Pause / Break |
+| `{APPS}` | Application / Context Menu key |
+
+#### Common `sendkeys` examples
+
+| Goal | `value` |
+|---|---|
+| Select all | `^a` |
+| Copy | `^c` |
+| Cut | `^x` |
+| Paste | `^v` |
+| Undo | `^z` |
+| Redo | `^y` |
+| Save | `^s` |
+| Backspace | `{BACKSPACE}` |
+| Delete | `{DELETE}` |
+| Enter / confirm | `{ENTER}` |
+| Escape / cancel | `{ESC}` |
+
+Select all and delete (clear via keyboard):
+
+```json
+{ "operation": "sendkeys", "value": "^a{DELETE}" }
+```
+
+Send CTRL+A to a specific element:
+
+```json
+{
+  "operation": "sendkeys",
+  "locator": { "automationId": "myTextBox", "controlType": "Edit" },
+  "value": "^a"
+}
+```
+
+#### `mousescroll` examples
+
+Scroll down 5 clicks over a list:
+
+```json
+{
+  "operation": "mousescroll",
+  "locator": { "automationId": "myList", "controlType": "List" },
+  "value": "-5"
+}
+```
+
+Scroll up 3 clicks (default) at the current cursor position:
+
+```json
+{ "operation": "mousescroll", "value": "up" }
+```
 
 ---
 
