@@ -36,6 +36,8 @@ public class UiService : IUiService
     /// the left-button input events are sent.
     /// </summary>
     private const int CursorPositionStabilityDelayMs = 30;
+    private const string ClearSelectAllBackspaceKeys = "^a{BACKSPACE}";
+    private const string ClearSelectAllDeleteKeys = "^a{DELETE}";
     private const int MenuExpandDelayMs = 250;
     private const int MenuActionDelayMs = 150;
     private const int MenuFocusDelayMs = 75;
@@ -1663,7 +1665,7 @@ public class UiService : IUiService
         {
             element.Focus();
             Thread.Sleep(MenuFocusDelayMs);
-            SendKeysString("^a{BACKSPACE}");
+            SendKeysString(ClearSelectAllBackspaceKeys);
             return new
             {
                 cleared = true,
@@ -1680,7 +1682,7 @@ public class UiService : IUiService
         {
             element.Focus();
             Thread.Sleep(MenuFocusDelayMs);
-            SendKeysString("^a{DELETE}");
+            SendKeysString(ClearSelectAllDeleteKeys);
             return new
             {
                 cleared = true,
@@ -4843,6 +4845,8 @@ public class UiService : IUiService
         var v = value.Trim();
         var upper = v.ToUpperInvariant();
 
+        // Canonical modifier+character outputs intentionally use lowercase letters
+        // (for example "^a") because SendKeysString treats characters case-insensitively.
         return upper switch
         {
             "CTRL+A" or "CONTROL+A" => "^a",
@@ -4877,6 +4881,10 @@ public class UiService : IUiService
         };
     }
 
+    /// <summary>
+    /// Parses wheel-click input.
+    /// Defaults to -3 (scroll down three clicks) when value is omitted.
+    /// </summary>
     private static int ParseWheelClicks(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -6590,6 +6598,8 @@ public class UiService : IUiService
                     {
                         dx = 0,
                         dy = 0,
+                        // INPUT.MOUSEINPUT.mouseData is uint; negative wheel deltas are
+                        // represented as two's-complement unsigned values.
                         mouseData = unchecked((uint)wheelDelta),
                         dwFlags = MOUSEEVENTF_WHEEL,
                         time = 0,

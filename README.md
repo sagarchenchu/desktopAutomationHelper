@@ -476,7 +476,7 @@ Modifier prefixes (AutoIt style):
 | Enter / confirm | `{ENTER}` |
 | Escape / cancel | `{ESC}` |
 
-Select all and delete (clear via keyboard):
+Select all and delete (keyboard alternative to `clear`):
 
 ```json
 { "operation": "sendkeys", "value": "^a{DELETE}" }
