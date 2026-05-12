@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using DesktopAutomationDriver.Models.Request;
@@ -2004,8 +2005,8 @@ public class UiService : IUiService
                 scrollAmount = 3;
             else if (v.Equals("down", StringComparison.OrdinalIgnoreCase))
                 scrollAmount = -3;
-            else if (double.TryParse(v, System.Globalization.NumberStyles.Float,
-                                     System.Globalization.CultureInfo.InvariantCulture,
+            else if (double.TryParse(v, NumberStyles.Float,
+                                     CultureInfo.InvariantCulture,
                                      out var parsed))
                 scrollAmount = parsed;
             else
