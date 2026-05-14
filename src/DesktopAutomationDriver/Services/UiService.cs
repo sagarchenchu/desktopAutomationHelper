@@ -41,6 +41,8 @@ public class UiService : IUiService
     private const int MenuExpandDelayMs = 250;
     private const int MenuActionDelayMs = 150;
     private const int MenuFocusDelayMs = 75;
+    private const int KeyboardInputReadyDelayMs = 100;
+    private const int ComboBoxSelectionCommitDelayMs = 150;
     // Menu parent chains in supported desktop apps are shallow; 20 gives ample room for deeply
     // nested menus while preventing unbounded traversal of unstable UIA ancestors. If exceeded,
     // strict full-path matching fails safely instead of selecting a wrong duplicate leaf.
@@ -1543,7 +1545,7 @@ public class UiService : IUiService
                 $"Keyboard focus could not be confirmed on target before typing. target='{SafeElementName(element)}'");
         }
 
-        Thread.Sleep(100);
+        Thread.Sleep(KeyboardInputReadyDelayMs);
 
         Keyboard.Type(req.Value);
         return null;
@@ -1713,7 +1715,7 @@ public class UiService : IUiService
                     $"Keyboard focus could not be confirmed on target before sendkeys. target='{SafeElementName(element)}'");
             }
 
-            Thread.Sleep(100);
+            Thread.Sleep(KeyboardInputReadyDelayMs);
         }
         else
         {
@@ -2247,7 +2249,7 @@ public class UiService : IUiService
             target.Click();
         }
 
-        Thread.Sleep(150);
+        Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
         try
         {
@@ -5225,14 +5227,17 @@ public class UiService : IUiService
 
         try
         {
-            return string.Equals(
-                       SafeElementAutomationId(a),
-                       SafeElementAutomationId(b),
-                       StringComparison.OrdinalIgnoreCase) &&
-                   string.Equals(
-                       SafeElementName(a),
-                       SafeElementName(b),
-                       StringComparison.OrdinalIgnoreCase) &&
+            var aidA = SafeElementAutomationId(a);
+            var aidB = SafeElementAutomationId(b);
+            var nameA = SafeElementName(a);
+            var nameB = SafeElementName(b);
+
+            if ((string.IsNullOrWhiteSpace(aidA) || string.IsNullOrWhiteSpace(aidB)) &&
+                (string.IsNullOrWhiteSpace(nameA) || string.IsNullOrWhiteSpace(nameB)))
+                return false;
+
+            return string.Equals(aidA, aidB, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(nameA, nameB, StringComparison.OrdinalIgnoreCase) &&
                    a.ControlType == b.ControlType;
         }
         catch
@@ -5560,6 +5565,9 @@ public class UiService : IUiService
             }
             catch
             {
+                _logger.LogDebug(
+                    "WaitForComboBoxDropdownToClose: treating state read failure as closed. combo={Combo}",
+                    SafeElementName(comboBox));
                 return true;
             }
 
