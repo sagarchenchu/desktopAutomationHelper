@@ -1537,14 +1537,13 @@ public class UiService : IUiService
         if (WinFormsDateTimePickerHelper.IsDateTimePicker(element))
             return TypeDate(element, req.Value);
 
-        BringElementWindowToForeground(element);
-
-        var focused = TypeCapabilityHelper.TryFocusElement(element);
-        if (!focused || TypeCapabilityHelper.ShouldClickBeforeTyping(element))
+        if (!FocusElementForKeyboardInput(element, "TypeText"))
         {
-            TryPhysicalClick(element, "Focus for Type");
-            Thread.Sleep(TypeCapabilityHelper.TypeFocusSettleMs);
+            throw new InvalidOperationException(
+                $"Keyboard focus could not be confirmed on target before typing. target='{SafeElementName(element)}'");
         }
+
+        Thread.Sleep(100);
 
         Keyboard.Type(req.Value);
         return null;
@@ -1708,18 +1707,13 @@ public class UiService : IUiService
         if (req.Locator != null && !IsEmptyLocator(req.Locator))
         {
             element = FindWithRetry(req);
-            BringElementWindowToForeground(element);
-            Thread.Sleep(WindowActivationDelayMs);
+            if (!FocusElementForKeyboardInput(element, "SendKeys"))
+            {
+                throw new InvalidOperationException(
+                    $"Keyboard focus could not be confirmed on target before sendkeys. target='{SafeElementName(element)}'");
+            }
 
-            try
-            {
-                element.Focus();
-                Thread.Sleep(MenuFocusDelayMs);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Focus failed before sendkeys for {Name}", SafeElementName(element));
-            }
+            Thread.Sleep(100);
         }
         else
         {
@@ -2171,6 +2165,18 @@ public class UiService : IUiService
             throw new ArgumentException("Either 'value' (item name) or 'index' is required for 'select'.");
 
         var element = FindWithRetry(req);
+        if (element.ControlType == ControlType.ComboBox && !string.IsNullOrWhiteSpace(req.Value))
+        {
+            var comboRequest = new UiRequest
+            {
+                Operation = "selectcomboboxitem",
+                Locator = req.Locator,
+                Value = req.Value
+            };
+
+            return SelectComboBoxItem(comboRequest);
+        }
+
         var cf = RequireSession().Automation.ConditionFactory;
 
         // Strategy 1: For editable combo boxes the Value pattern lets us set the text
@@ -2241,16 +2247,38 @@ public class UiService : IUiService
             target.Click();
         }
 
-        // Brief pause to allow the application to commit the selection before we
-        // collapse the dropdown; some implementations only persist the selected value
-        // once the list item's handler has run.
-        Thread.Sleep(100);
+        Thread.Sleep(150);
 
-        // Collapse to commit the selection (some native ComboBox implementations only
-        // persist the selected value once the dropdown is dismissed).
-        element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+        try
+        {
+            element.Patterns.ExpandCollapse.PatternOrDefault?.Collapse();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Select: Collapse failed for {Name}", SafeElementName(element));
+        }
 
-        return null;
+        WaitForComboBoxDropdownToClose(element, timeoutMs: 1000);
+
+        // Important: do not leave pending focus on the dropdown list item.
+        // Focus back to the ComboBox itself so the next operation starts from a stable state.
+        try
+        {
+            element.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+        }
+        catch
+        {
+            // best effort
+        }
+
+        return new
+        {
+            selected = req.Value,
+            index = req.Index,
+            comboBox = CreateElementSnapshot(element),
+            focusStabilized = true
+        };
     }
 
     private object? SelectByAid(UiRequest req)
@@ -5058,6 +5086,161 @@ public class UiService : IUiService
     private bool TryPhysicalClick(AutomationElement element, string actionName) =>
         TryInstantPhysicalClick(element, actionName);
 
+    private bool FocusElementForKeyboardInput(
+        AutomationElement element,
+        string actionName,
+        int timeoutMs = 1500)
+    {
+        BringElementWindowToForeground(element);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        try
+        {
+            element.Focus();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "{ActionName}: element.Focus() failed for {Name}",
+                actionName,
+                SafeElementName(element));
+        }
+
+        if (WaitForKeyboardFocusOnElement(element, timeoutMs))
+            return true;
+
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round(rect.Left + rect.Width / 2.0),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                if (SendInstantLeftClick(point, $"{actionName}: focus physical click"))
+                {
+                    Thread.Sleep(MenuFocusDelayMs);
+
+                    if (WaitForKeyboardFocusOnElement(element, timeoutMs))
+                        return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "{ActionName}: physical focus click failed for {Name}",
+                actionName,
+                SafeElementName(element));
+        }
+
+        _logger.LogWarning(
+            "{ActionName}: keyboard focus was not confirmed on target. target={Target}, controlType={ControlType}",
+            actionName,
+            SafeElementName(element),
+            element.ControlType);
+
+        return false;
+    }
+
+    private bool WaitForKeyboardFocusOnElement(
+        AutomationElement target,
+        int timeoutMs)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                var focused = target.Automation.FocusedElement();
+
+                if (focused != null && IsSameOrDescendantOf(focused, target))
+                    return true;
+
+                // Some WinForms/Edit controls expose focus on a child Edit/Text inside the target.
+                if (focused != null && IsSameOrDescendantOf(target, focused))
+                    return true;
+            }
+            catch
+            {
+                // ignore transient focus read failures
+            }
+
+            Thread.Sleep(50);
+        }
+
+        return false;
+    }
+
+    private bool IsSameOrDescendantOf(
+        AutomationElement possibleChild,
+        AutomationElement possibleAncestor)
+    {
+        try
+        {
+            if (AreSameElement(possibleChild, possibleAncestor))
+                return true;
+
+            var current = possibleChild.Parent;
+            var depth = 0;
+
+            while (current != null && depth < 20)
+            {
+                if (AreSameElement(current, possibleAncestor))
+                    return true;
+
+                current = current.Parent;
+                depth++;
+            }
+        }
+        catch
+        {
+            // ignore unstable parent chain
+        }
+
+        return false;
+    }
+
+    private bool AreSameElement(
+        AutomationElement a,
+        AutomationElement b)
+    {
+        try
+        {
+            var ah = SafeWindowHandle(a);
+            var bh = SafeWindowHandle(b);
+
+            if (ah != IntPtr.Zero && bh != IntPtr.Zero && ah == bh)
+                return true;
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            return string.Equals(
+                       SafeElementAutomationId(a),
+                       SafeElementAutomationId(b),
+                       StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(
+                       SafeElementName(a),
+                       SafeElementName(b),
+                       StringComparison.OrdinalIgnoreCase) &&
+                   a.ControlType == b.ControlType;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private bool TryElementClick(AutomationElement element, string actionName)
     {
         try
@@ -5350,6 +5533,42 @@ public class UiService : IUiService
         {
             _logger.LogWarning(ex, "ComboBox Alt+Down open failed for {Combo}", SafeElementName(comboBox));
         }
+
+        return false;
+    }
+
+    private bool WaitForComboBoxDropdownToClose(
+        AutomationElement comboBox,
+        int timeoutMs)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                if (comboBox.Patterns.ExpandCollapse.IsSupported)
+                {
+                    var state = comboBox.Patterns.ExpandCollapse.Pattern.ExpandCollapseState;
+
+                    if (state == ExpandCollapseState.Collapsed ||
+                        state == ExpandCollapseState.LeafNode)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                return true;
+            }
+
+            Thread.Sleep(50);
+        }
+
+        _logger.LogWarning(
+            "ComboBox dropdown did not report Collapsed within timeout. combo={Combo}",
+            SafeElementName(comboBox));
 
         return false;
     }
