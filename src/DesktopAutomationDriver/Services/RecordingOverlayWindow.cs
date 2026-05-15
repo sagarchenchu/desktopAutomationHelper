@@ -462,6 +462,12 @@ public sealed class RecordingOverlayWindow : Form
         _maxDragDistanceSq = 0;
     }
 
+    private void ClearPassThroughRightClickFlags()
+    {
+        _passThroughNextRButtonDown = false;
+        _passThroughNextRButtonUp = false;
+    }
+
     // ── constructor ─────────────────────────────────────────────────────────
     public RecordingOverlayWindow(IRecordingService service, ILogger logger)
     {
@@ -3751,9 +3757,6 @@ public sealed class RecordingOverlayWindow : Form
 
                 Thread.Sleep(MouseClickSettleMs);
 
-                _passThroughNextRButtonDown = true;
-                _passThroughNextRButtonUp = true;
-
                 var inputs = new[]
                 {
                     new INPUT
@@ -3774,12 +3777,13 @@ public sealed class RecordingOverlayWindow : Form
                     }
                 };
 
+                _passThroughNextRButtonDown = true;
+                _passThroughNextRButtonUp = true;
                 var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
 
                 if (sent != (uint)inputs.Length)
                 {
-                    _passThroughNextRButtonDown = false;
-                    _passThroughNextRButtonUp = false;
+                    ClearPassThroughRightClickFlags();
 
                     _logger.LogWarning(
                         "{ActionName}: right-click SendInput sent {Sent}/{Expected}. LastError={Error}",
@@ -3814,8 +3818,7 @@ public sealed class RecordingOverlayWindow : Form
         }
         catch (Exception ex)
         {
-            _passThroughNextRButtonDown = false;
-            _passThroughNextRButtonUp = false;
+            ClearPassThroughRightClickFlags();
             _statusLabel.Text = $"{actionName} failed: {ex.Message}";
             _logger.LogError(ex, "{ActionName}: physical right-click failed at {Point}", actionName, point);
             return false;
