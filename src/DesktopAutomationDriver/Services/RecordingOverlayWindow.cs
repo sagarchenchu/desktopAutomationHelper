@@ -307,6 +307,8 @@ public sealed class RecordingOverlayWindow : Form
     private const uint INPUT_MOUSE = 0;
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
     private const uint BM_CLICK = 0x00F5;
 
     // ── fields ──────────────────────────────────────────────────────────────
@@ -339,15 +341,15 @@ public sealed class RecordingOverlayWindow : Form
     // so it does not outlive the menu it guards.
     private System.Windows.Forms.Timer? _menuSafetyTimer;
 
-    // Set to true after we suppress WM_RBUTTONDOWN so we can also suppress the
-    // matching WM_RBUTTONUP (preventing the target app from receiving WM_CONTEXTMENU
-    // which would open the app's own context menu and immediately close ours).
-    private bool _suppressNextRButtonUp;
+    // One-shot pass-through flags for simulated right-clicks fired by Assistive actions.
+    // These allow the next injected right-button down/up to reach the target window
+    // without reopening the assistive menu.
+    private bool _passThroughNextRButtonDown;
+    private bool _passThroughNextRButtonUp;
 
-    // Set to true by the Assistive-mode "Right Click" action item just before it calls
-    // Mouse.RightClick().  The next WM_RBUTTONDOWN from the hook is then passed through
-    // rather than intercepted so that the simulated click reaches the target window.
-    private bool _suppressNextRButtonDown;
+    // One-shot suppression flag for the user's original right-button-up after the
+    // assistive menu has already intercepted the matching right-button-down.
+    private bool _suppressNextUserRButtonUp;
 
     // ── Passive mode drag detection state ────────────────────────────────────
     // Set on WM_LBUTTONDOWN; cleared on WM_LBUTTONUP or WM_LBUTTONDBLCLK.
@@ -791,11 +793,9 @@ public sealed class RecordingOverlayWindow : Form
         {
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
-                // A simulated right-click fired by the "Right Click" action item sets
-                // _suppressNextRButtonDown so the hook does not intercept it.
-                if (_suppressNextRButtonDown)
+                if (_passThroughNextRButtonDown)
                 {
-                    _suppressNextRButtonDown = false;
+                    _passThroughNextRButtonDown = false;
                     return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
                 }
 
@@ -803,13 +803,23 @@ public sealed class RecordingOverlayWindow : Form
                 var ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
                 BeginInvoke(new Action(() => HandleAssistiveRightClick(capturedHookPoint, ctrlHeld)));
 
-                _suppressNextRButtonUp = true;
+                _suppressNextUserRButtonUp = true;
                 return (IntPtr)1; // suppress the native right-click
             }
-            if (wParam == (IntPtr)WM_RBUTTONUP && _suppressNextRButtonUp)
+
+            if (wParam == (IntPtr)WM_RBUTTONUP)
             {
-                _suppressNextRButtonUp = false;
-                return (IntPtr)1; // suppress the matching RBUTTONUP so the target app doesn't open its own context menu
+                if (_passThroughNextRButtonUp)
+                {
+                    _passThroughNextRButtonUp = false;
+                    return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+                }
+
+                if (_suppressNextUserRButtonUp)
+                {
+                    _suppressNextUserRButtonUp = false;
+                    return (IntPtr)1; // suppress the matching RBUTTONUP for the user-triggered assistive menu
+                }
             }
         }
 
@@ -1611,21 +1621,27 @@ public sealed class RecordingOverlayWindow : Form
         AddActionItem(menu, "Right Click", element, elementInfo, ActionType.RightClick,
             () =>
             {
-                // Prefer the HWND captured before the menu appeared so that the correct
-                // window receives focus even when the element becomes stale (e.g. a
-                // modal popup closed on click-based dismissal).  Fall back to the
-                // standard BringElementWindowToForeground when no HWND was captured.
-                if (capturedHwnd != IntPtr.Zero)
-                    SetForegroundWindow(capturedHwnd);
-                else
-                    BringElementWindowToForeground(element);
-                Thread.Sleep(WindowActivationDelayMs);
-                if (ShouldLogVerboseCoordinateDiagnostics())
-                    LogScreenAndWindowDiagnostics(pt, "AssistiveMenuRightClickAction");
-                // Set the flag so the global hook does not intercept this simulated
-                // right-click and show the assistive context menu a second time.
-                _suppressNextRButtonDown = true;
-                Mouse.RightClick(pt);
+                _logger.LogInformation(
+                    "Assistive Right Click requested. name={Name}, automationId={AutomationId}, controlType={ControlType}, point={Point}, hwnd=0x{Hwnd:X}",
+                    elementInfo?.Name,
+                    elementInfo?.AutomationId,
+                    elementInfo?.ControlType,
+                    capturedClickPoint,
+                    capturedClickHwnd.ToInt64());
+
+                var success = TryPhysicalRightClickPoint(
+                    capturedClickPoint,
+                    "Right Click",
+                    capturedClickHwnd);
+
+                if (!success)
+                    throw new InvalidOperationException($"Right Click failed at {capturedClickPoint.X},{capturedClickPoint.Y}");
+
+                _logger.LogInformation(
+                    "Assistive Right Click succeeded. name={Name}, automationId={AutomationId}, point={Point}",
+                    elementInfo?.Name,
+                    elementInfo?.AutomationId,
+                    capturedClickPoint);
             });
         AddActionItem(menu, "Hover", element, elementInfo, ActionType.Hover,
             () => { /* cursor is already there */ });
@@ -3680,6 +3696,128 @@ public sealed class RecordingOverlayWindow : Form
         {
             _statusLabel.Text = $"{actionName} failed: {ex.Message}";
             _logger.LogError(ex, "{ActionName}: physical point click failed at {Point}", actionName, point);
+            return false;
+        }
+    }
+
+    private bool TryPhysicalRightClickPoint(
+        System.Drawing.Point point,
+        string actionName,
+        IntPtr targetHwnd = default)
+    {
+        try
+        {
+            if (ShouldLogVerboseCoordinateDiagnostics())
+                LogScreenAndWindowDiagnostics(point, $"PhysicalRightClick:{actionName}");
+
+            if (targetHwnd != IntPtr.Zero)
+            {
+                SetForegroundWindow(targetHwnd);
+                Thread.Sleep(WindowActivationDelayMs);
+            }
+
+            _logger.LogInformation(
+                "{ActionName}: Win32 right-click requested at {X},{Y}, targetHwnd=0x{Hwnd:X}",
+                actionName,
+                point.X,
+                point.Y,
+                targetHwnd.ToInt64());
+
+            var wasVisible = Visible;
+            var oldTopMost = TopMost;
+
+            try
+            {
+                TopMost = false;
+                Hide();
+                Thread.Sleep(OverlayHideDelayMs);
+
+                var hwndBefore = WindowFromPoint(point);
+
+                _logger.LogInformation(
+                    "{ActionName}: WindowFromPoint before right-click = 0x{Hwnd:X}",
+                    actionName,
+                    hwndBefore.ToInt64());
+
+                if (!SetCursorPos(point.X, point.Y))
+                {
+                    _logger.LogWarning(
+                        "{ActionName}: SetCursorPos failed. LastError={Error}",
+                        actionName,
+                        Marshal.GetLastWin32Error());
+
+                    return false;
+                }
+
+                Thread.Sleep(MouseClickSettleMs);
+
+                _passThroughNextRButtonDown = true;
+                _passThroughNextRButtonUp = true;
+
+                var inputs = new[]
+                {
+                    new INPUT
+                    {
+                        type = INPUT_MOUSE,
+                        mi = new MOUSEINPUT
+                        {
+                            dwFlags = MOUSEEVENTF_RIGHTDOWN
+                        }
+                    },
+                    new INPUT
+                    {
+                        type = INPUT_MOUSE,
+                        mi = new MOUSEINPUT
+                        {
+                            dwFlags = MOUSEEVENTF_RIGHTUP
+                        }
+                    }
+                };
+
+                var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+
+                if (sent != (uint)inputs.Length)
+                {
+                    _passThroughNextRButtonDown = false;
+                    _passThroughNextRButtonUp = false;
+
+                    _logger.LogWarning(
+                        "{ActionName}: right-click SendInput sent {Sent}/{Expected}. LastError={Error}",
+                        actionName,
+                        sent,
+                        inputs.Length,
+                        Marshal.GetLastWin32Error());
+
+                    return false;
+                }
+
+                Thread.Sleep(PostClickSettleMs);
+
+                var hwndAfter = WindowFromPoint(point);
+
+                _logger.LogInformation(
+                    "{ActionName}: Win32 right-click completed. WindowFromPoint after click = 0x{Hwnd:X}",
+                    actionName,
+                    hwndAfter.ToInt64());
+            }
+            finally
+            {
+                if (wasVisible)
+                    Show();
+
+                TopMost = oldTopMost;
+                ReapplyClickThroughStyle();
+            }
+
+            _statusLabel.Text = $"{actionName}: Win32 right-click at {point.X},{point.Y}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _passThroughNextRButtonDown = false;
+            _passThroughNextRButtonUp = false;
+            _statusLabel.Text = $"{actionName} failed: {ex.Message}";
+            _logger.LogError(ex, "{ActionName}: physical right-click failed at {Point}", actionName, point);
             return false;
         }
     }
@@ -6938,9 +7076,9 @@ public sealed class RecordingOverlayWindow : Form
 
                 UpdateStatusAfterAction($"{label} on [{info?.ControlType}] {info?.Name ?? "(element)"}");
 
-                // After a Click action, start a short probe to detect any popup that may
-                // have opened as a result (e.g. clicking the login OK button).
-                if (actionType == ActionType.Click)
+                // After a Click or Right Click action, start a short probe to detect any
+                // popup or context menu that may have opened as a result.
+                if (actionType == ActionType.Click || actionType == ActionType.RightClick)
                     StartPopupProbeAfterAction();
             });
         };
