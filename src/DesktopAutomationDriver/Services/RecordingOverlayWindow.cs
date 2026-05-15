@@ -310,6 +310,7 @@ public sealed class RecordingOverlayWindow : Form
     private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
     private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
     private const uint BM_CLICK = 0x00F5;
+    private static readonly IntPtr AssistiveInjectedRightClickMarker = new(unchecked((int)0x44414852));
 
     // ── fields ──────────────────────────────────────────────────────────────
     private readonly IRecordingService _service;
@@ -340,12 +341,6 @@ public sealed class RecordingOverlayWindow : Form
     // Disposed/stopped in ReapplyClickThroughStyle() (called from every menu.Closed handler)
     // so it does not outlive the menu it guards.
     private System.Windows.Forms.Timer? _menuSafetyTimer;
-
-    // One-shot pass-through flags for simulated right-clicks fired by Assistive actions.
-    // These allow the next injected right-button down/up to reach the target window
-    // without reopening the assistive menu.
-    private bool _passThroughNextRButtonDown;
-    private bool _passThroughNextRButtonUp;
 
     // One-shot suppression flag for the user's original right-button-up after the
     // assistive menu has already intercepted the matching right-button-down.
@@ -460,12 +455,6 @@ public sealed class RecordingOverlayWindow : Form
         _mouseDownEagerInfo = eagerInfo;
         _leftButtonDown = true;
         _maxDragDistanceSq = 0;
-    }
-
-    private void ClearPassThroughRightClickFlags()
-    {
-        _passThroughNextRButtonDown = false;
-        _passThroughNextRButtonUp = false;
     }
 
     // ── constructor ─────────────────────────────────────────────────────────
@@ -799,9 +788,8 @@ public sealed class RecordingOverlayWindow : Form
         {
             if (wParam == (IntPtr)WM_RBUTTONDOWN)
             {
-                if (_passThroughNextRButtonDown)
+                if (ms.dwExtraInfo == AssistiveInjectedRightClickMarker)
                 {
-                    _passThroughNextRButtonDown = false;
                     return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
                 }
 
@@ -815,9 +803,8 @@ public sealed class RecordingOverlayWindow : Form
 
             if (wParam == (IntPtr)WM_RBUTTONUP)
             {
-                if (_passThroughNextRButtonUp)
+                if (ms.dwExtraInfo == AssistiveInjectedRightClickMarker)
                 {
-                    _passThroughNextRButtonUp = false;
                     return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
                 }
 
@@ -3764,7 +3751,8 @@ public sealed class RecordingOverlayWindow : Form
                         type = INPUT_MOUSE,
                         mi = new MOUSEINPUT
                         {
-                            dwFlags = MOUSEEVENTF_RIGHTDOWN
+                            dwFlags = MOUSEEVENTF_RIGHTDOWN,
+                            dwExtraInfo = AssistiveInjectedRightClickMarker
                         }
                     },
                     new INPUT
@@ -3772,19 +3760,16 @@ public sealed class RecordingOverlayWindow : Form
                         type = INPUT_MOUSE,
                         mi = new MOUSEINPUT
                         {
-                            dwFlags = MOUSEEVENTF_RIGHTUP
+                            dwFlags = MOUSEEVENTF_RIGHTUP,
+                            dwExtraInfo = AssistiveInjectedRightClickMarker
                         }
                     }
                 };
 
-                _passThroughNextRButtonDown = true;
-                _passThroughNextRButtonUp = true;
                 var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
 
                 if (sent != (uint)inputs.Length)
                 {
-                    ClearPassThroughRightClickFlags();
-
                     _logger.LogWarning(
                         "{ActionName}: right-click SendInput sent {Sent}/{Expected}. LastError={Error}",
                         actionName,
@@ -3818,7 +3803,6 @@ public sealed class RecordingOverlayWindow : Form
         }
         catch (Exception ex)
         {
-            ClearPassThroughRightClickFlags();
             _statusLabel.Text = $"{actionName} failed: {ex.Message}";
             _logger.LogError(ex, "{ActionName}: physical right-click failed at {Point}", actionName, point);
             return false;
