@@ -4789,7 +4789,7 @@ public sealed class RecordingOverlayWindow : Form
 
             if (OpenComboBoxDropdown(comboBox))
             {
-                Thread.Sleep(MenuExpandDelayMs);
+                Thread.Sleep(MenuNavigationDelayMs);
 
                 var popupMatch = FindExactComboBoxListItemFromPopup(
                     comboBox,
