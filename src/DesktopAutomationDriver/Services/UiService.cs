@@ -3655,7 +3655,7 @@ public class UiService : IUiService
                 $"dropdownListDetected={FindDynamicComboBoxList(session, comboBox) != null}, " +
                 $"expandedState={GetComboBoxExpandState(comboBox)}, " +
                 $"currentValue='{GetComboBoxCurrentValue(session, comboBox)}', " +
-                $"availableFirst{MaxAssistiveDropdownItemsToDisplay}='{string.Join(", ", available)}'");
+                $"available(first {MaxAssistiveDropdownItemsToDisplay})='{string.Join(", ", available)}'");
         }
 
         if (!ActivateComboBoxListItem(item, itemName))
