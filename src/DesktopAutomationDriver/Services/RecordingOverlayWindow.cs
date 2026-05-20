@@ -186,6 +186,8 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxScrollPageWheelClicks = -3;
     private const int ComboBoxScrollSettleDelayMs = 150;
     private const int ComboBoxVisibleItemSearchLimit = 200;
+    // Detection limit and huge-list threshold are separate knobs even though they
+    // currently share the same value: one caps sampling, the other classifies size.
     private const int ComboBoxLargeListDetectionLimit = 100;
     private const int ComboBoxHugeListTypeAheadThreshold = 100;
     private const int ComboBoxKeyboardTypeaheadInitialDelayMs = 150;
@@ -4501,11 +4503,13 @@ public sealed class RecordingOverlayWindow : Form
     {
         if (_stopRequested ||
             results.Count >= maxItems ||
-            visited >= maxVisitedNodes ||
-            depth > maxDepth)
+            visited >= maxVisitedNodes)
         {
             return true;
         }
+
+        if (depth > maxDepth)
+            return false;
 
         AutomationElement? child;
 
