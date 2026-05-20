@@ -6442,17 +6442,12 @@ public class UiService : IUiService
                         page,
                         SafeElementName(item));
 
-                    if (CommitExactVisibleComboBoxItem(
-                            session,
-                            comboBox,
-                            item,
-                            itemName,
-                            "huge-list-visible-search"))
-                    {
-                        return true;
-                    }
-
-                    return false;
+                    return CommitExactVisibleComboBoxItem(
+                        session,
+                        comboBox,
+                        item,
+                        itemName,
+                        "huge-list-visible-search");
                 }
             }
 
@@ -7211,17 +7206,12 @@ public class UiService : IUiService
                         window,
                         SafeElementName(exactItem));
 
-                    if (CommitExactVisibleComboBoxItem(
-                            session,
-                            comboBox,
-                            exactItem,
-                            requestedValue,
-                            "huge-list-visible-search"))
-                    {
-                        return true;
-                    }
-
-                    return false;
+                    return CommitExactVisibleComboBoxItem(
+                        session,
+                        comboBox,
+                        exactItem,
+                        requestedValue,
+                        "huge-list-visible-search");
                 }
 
                 if (visibleItems.Count == 0)

@@ -5738,16 +5738,11 @@ public sealed class RecordingOverlayWindow : Form
                         page,
                         SafeElementName(item));
 
-                    if (CommitExactVisibleComboBoxItem(
-                            comboBox,
-                            item,
-                            itemName,
-                            "assistive-huge-list-visible-search"))
-                    {
-                        return true;
-                    }
-
-                    return false;
+                    return CommitExactVisibleComboBoxItem(
+                        comboBox,
+                        item,
+                        itemName,
+                        "assistive-huge-list-visible-search");
                 }
             }
 
@@ -6653,16 +6648,11 @@ public sealed class RecordingOverlayWindow : Form
                         window,
                         SafeElementName(exactItem));
 
-                    if (CommitExactVisibleComboBoxItem(
-                            comboBox,
-                            exactItem,
-                            requestedValue,
-                            "assistive-huge-list-visible-search"))
-                    {
-                        return true;
-                    }
-
-                    return false;
+                    return CommitExactVisibleComboBoxItem(
+                        comboBox,
+                        exactItem,
+                        requestedValue,
+                        "assistive-huge-list-visible-search");
                 }
 
                 if (visibleItems.Count == 0)
