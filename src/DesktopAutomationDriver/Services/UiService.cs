@@ -3666,6 +3666,18 @@ public class UiService : IUiService
                     strategy = "keyboard-typeahead-huge-list"
                 };
             }
+
+            var visibleBatch = GetCurrentVisibleComboBoxBatch(session, comboBox, ComboBoxPagedSearchBatchSize)
+                .Select(SafeElementName)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToList();
+
+            throw new InvalidOperationException(
+                $"Huge ComboBox item '{itemName}' was not found by paged visible-list search or keyboard type-ahead. " +
+                $"dropdownListDetected={FindDynamicComboBoxList(session, comboBox) != null}, " +
+                $"expandedState={GetComboBoxExpandState(comboBox)}, " +
+                $"currentValue='{GetComboBoxCurrentValue(session, comboBox)}', " +
+                $"visibleBatch='{string.Join(", ", visibleBatch)}'");
         }
 
         var item = FindComboBoxItemByTextWithScroll(
