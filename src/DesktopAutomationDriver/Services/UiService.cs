@@ -72,6 +72,10 @@ public class UiService : IUiService
     private const int ComboBoxLeftEdgeMaxOffsetPx = 20;
     private const int ComboBoxLeftEdgeOffsetDivisor = 10;
     private const int ComboBoxDropdownVerticalTolerancePx = 30;
+    private const int ComboBoxScrollSearchMaxAttempts = 30;
+    private const int ComboBoxScrollPageWheelClicks = -3;
+    private const int ComboBoxScrollSettleDelayMs = 150;
+    private const int ComboBoxVisibleItemSearchLimit = 200;
     private const int MaxComboBoxDropdownListCandidates = 100;
     private const int MaxWindowSearchDepth = 5;
     private const int MaxAssistiveDropdownItemsToDisplay = 25;
@@ -3612,16 +3616,11 @@ public class UiService : IUiService
 
         Thread.Sleep(MenuExpandDelayMs);
 
-        var item = FindDynamicComboBoxItems(session, comboBox)
-            .FirstOrDefault(x =>
-                string.Equals(
-                    NormalizeMenuText(SafeElementName(x)),
-                    NormalizeMenuText(itemName),
-                    StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(
-                    NormalizeMenuText(SafeElementAutomationId(x)),
-                    NormalizeMenuText(itemName),
-                    StringComparison.OrdinalIgnoreCase));
+        var item = FindComboBoxItemByTextWithScroll(
+            session,
+            comboBox,
+            itemName,
+            ComboBoxScrollSearchMaxAttempts);
 
         if (item == null)
         {
@@ -3631,7 +3630,8 @@ public class UiService : IUiService
                 .ToList();
 
             throw new InvalidOperationException(
-                $"ComboBox item '{itemName}' was not found. Available first {MaxAssistiveDropdownItemsToDisplay}: {string.Join(", ", available)}");
+                $"ComboBox item '{itemName}' was not found after scrolling. " +
+                $"Available current items first {MaxAssistiveDropdownItemsToDisplay}: {string.Join(", ", available)}");
         }
 
         if (!ActivateComboBoxListItem(item, itemName))
@@ -5628,6 +5628,128 @@ public class UiService : IUiService
         }
 
         return [];
+    }
+
+    private AutomationElement? FindComboBoxItemByTextWithScroll(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string itemName,
+        int maxScrollAttempts)
+    {
+        var requested = NormalizeMenuText(itemName);
+        var seenSignatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (var attempt = 0; attempt <= maxScrollAttempts; attempt++)
+        {
+            var items = FindDynamicComboBoxItems(
+                session,
+                comboBox,
+                maxItems: ComboBoxVisibleItemSearchLimit);
+
+            foreach (var item in items)
+            {
+                var name = NormalizeMenuText(SafeElementName(item));
+                var aid = NormalizeMenuText(SafeElementAutomationId(item));
+
+                if (string.Equals(name, requested, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(aid, requested, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation(
+                        "ComboBox item found. item={Item}, attempt={Attempt}, name={Name}, automationId={AutomationId}",
+                        itemName,
+                        attempt,
+                        SafeElementName(item),
+                        SafeElementAutomationId(item));
+
+                    return item;
+                }
+            }
+
+            var signature = BuildComboBoxVisibleItemsSignature(items);
+
+            if (!seenSignatures.Add(signature) && attempt > 0)
+            {
+                _logger.LogInformation(
+                    "ComboBox scroll search stopped because visible items did not change. item={Item}, attempt={Attempt}",
+                    itemName,
+                    attempt);
+
+                break;
+            }
+
+            if (attempt == maxScrollAttempts)
+                break;
+
+            if (!ScrollComboBoxDropdown(session, comboBox, ComboBoxScrollPageWheelClicks))
+            {
+                _logger.LogWarning(
+                    "ComboBox scroll failed while searching item={Item}, attempt={Attempt}",
+                    itemName,
+                    attempt);
+
+                break;
+            }
+
+            Thread.Sleep(ComboBoxScrollSettleDelayMs);
+        }
+
+        return null;
+    }
+
+    private static string BuildComboBoxVisibleItemsSignature(
+        IReadOnlyCollection<AutomationElement> items)
+    {
+        if (items.Count == 0)
+            return string.Empty;
+
+        return string.Join(
+            "||",
+            items.Select(item =>
+            {
+                var name = NormalizeMenuText(SafeElementName(item));
+                var aid = NormalizeMenuText(SafeElementAutomationId(item));
+
+                try
+                {
+                    var rect = item.BoundingRectangle;
+                    return $"{name}|{aid}|{rect.Left},{rect.Top},{rect.Width},{rect.Height}";
+                }
+                catch
+                {
+                    return $"{name}|{aid}";
+                }
+            }));
+    }
+
+    private bool ScrollComboBoxDropdown(
+        AutomationSession session,
+        AutomationElement comboBox,
+        int wheelClicks)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            var scrollTarget = FindDynamicComboBoxList(session, comboBox) ?? comboBox;
+            var rect = scrollTarget.BoundingRectangle;
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                return false;
+
+            var point = new Point(
+                (int)Math.Round(rect.Left + rect.Width / 2.0),
+                (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+            SetCursorPos(point.X, point.Y);
+            Thread.Sleep(CursorPositionStabilityDelayMs);
+
+            return SendMouseWheel(wheelClicks);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ScrollComboBoxDropdown failed for {Combo}", SafeElementName(comboBox));
+            return false;
+        }
     }
 
     private AutomationElement? FindDynamicComboBoxList(AutomationSession session, AutomationElement comboBox)
