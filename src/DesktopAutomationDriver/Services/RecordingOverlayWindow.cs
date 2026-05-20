@@ -186,6 +186,10 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxScrollPageWheelClicks = -3;
     private const int ComboBoxScrollSettleDelayMs = 150;
     private const int ComboBoxVisibleItemSearchLimit = 200;
+    private const int ComboBoxPagedSearchBatchSize = 5;
+    private const int ComboBoxPagedSearchMaxPages = 200;
+    private const int ComboBoxPagedSearchSettleDelayMs = 150;
+    private const int ComboBoxPagedSearchPageDownCount = 1;
     // Detection limit and huge-list threshold are separate knobs even though they
     // currently share the same value: one caps sampling, the other classifies size.
     private const int ComboBoxLargeListDetectionLimit = 100;
@@ -4596,6 +4600,226 @@ public sealed class RecordingOverlayWindow : Form
         return _stopRequested || results.Count >= maxItems || visited >= maxVisitedNodes;
     }
 
+    private bool TrySelectComboBoxByPagedVisibleSearch(
+        AutomationElement comboBox,
+        string itemName)
+    {
+        var requested = NormalizeMenuText(itemName);
+        var seenSignatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? previousSignature = null;
+
+        if (!ResetComboBoxDropdownToTop(comboBox))
+            return false;
+
+        for (var page = 0; page <= ComboBoxPagedSearchMaxPages; page++)
+        {
+            var items = GetCurrentVisibleComboBoxBatch(comboBox, ComboBoxPagedSearchBatchSize);
+            var signature = BuildComboBoxVisibleBatchSignature(items);
+
+            if (page > 0 &&
+                (string.Equals(signature, previousSignature, StringComparison.OrdinalIgnoreCase) ||
+                 !seenSignatures.Add(signature)))
+            {
+                _logger.LogInformation(
+                    "Assistive ComboBox paged visible-list search stopped because visible batch signature stopped changing. combo={Combo}, item={Item}, page={Page}, signature={Signature}",
+                    SafeElementName(comboBox),
+                    itemName,
+                    page,
+                    signature);
+
+                break;
+            }
+
+            if (page == 0)
+                seenSignatures.Add(signature);
+
+            foreach (var item in items)
+            {
+                var name = NormalizeMenuText(SafeElementName(item));
+
+                if (!string.Equals(name, requested, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                _logger.LogInformation(
+                    "Assistive ComboBox paged visible-list search found current visible item. combo={Combo}, item={Item}, page={Page}, name={Name}",
+                    SafeElementName(comboBox),
+                    itemName,
+                    page,
+                    SafeElementName(item));
+
+                if (!ActivateComboBoxListItem(item, itemName))
+                    return false;
+
+                Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
+                return VerifyComboBoxSelectedValue(comboBox, itemName);
+            }
+
+            if (page == ComboBoxPagedSearchMaxPages)
+                break;
+
+            previousSignature = signature;
+
+            if (!PageDownComboBoxDropdown(comboBox))
+                return false;
+        }
+
+        return false;
+    }
+
+    private bool ResetComboBoxDropdownToTop(AutomationElement comboBox)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!OpenComboBoxDropdown(comboBox))
+            {
+                _logger.LogWarning(
+                    "ComboBox paged search could not open dropdown for reset. combo={Combo}",
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            Thread.Sleep(MenuNavigationDelayMs);
+
+            if (!TryFocusOrClickComboBox(comboBox))
+                return false;
+
+            Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
+
+            Keyboard.Press(VirtualKeyShort.HOME);
+            Keyboard.Release(VirtualKeyShort.HOME);
+
+            Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
+
+            _logger.LogInformation(
+                "ComboBox dropdown reset to top for paged search. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox dropdown reset to top failed. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
+    private List<AutomationElement> GetCurrentVisibleComboBoxBatch(
+        AutomationElement comboBox,
+        int batchSize)
+    {
+        try
+        {
+            var list = FindDynamicComboBoxList(comboBox);
+
+            if (list != null)
+            {
+                return GetListItemsBounded(list, batchSize)
+                    .Where(IsElementVisibleAndClickableEnough)
+                    .Take(batchSize)
+                    .ToList();
+            }
+
+            return GetLogicalComboBoxItems(comboBox, batchSize)
+                .Where(IsElementVisibleAndClickableEnough)
+                .Take(batchSize)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox visible batch read failed. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return [];
+        }
+    }
+
+    private static bool IsElementVisibleAndClickableEnough(AutomationElement element)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            return !rect.IsEmpty &&
+                   rect.Width > 0 &&
+                   rect.Height > 0 &&
+                   !element.IsOffscreen;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool PageDownComboBoxDropdown(AutomationElement comboBox)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!TryFocusOrClickComboBox(comboBox))
+                return false;
+
+            Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
+
+            if (!OpenComboBoxDropdown(comboBox))
+            {
+                _logger.LogWarning(
+                    "ComboBox paged search could not reopen dropdown before PageDown. combo={Combo}",
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            Thread.Sleep(MenuNavigationDelayMs);
+
+            for (var i = 0; i < ComboBoxPagedSearchPageDownCount; i++)
+            {
+                Keyboard.Press(VirtualKeyShort.NEXT);
+                Keyboard.Release(VirtualKeyShort.NEXT);
+                Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox paged search PageDown failed. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
+    private static string BuildComboBoxVisibleBatchSignature(
+        IReadOnlyCollection<AutomationElement> items)
+    {
+        if (items.Count == 0)
+            return string.Empty;
+
+        return string.Join(
+            "||",
+            items.Select(item =>
+            {
+                var name = NormalizeMenuText(SafeElementName(item));
+                var aid = NormalizeMenuText(SafeElementAutomationId(item));
+                var rect = SafeBoundingRectangle(item);
+                return $"{name}|{aid}|{rect}";
+            }));
+    }
+
     private AutomationElement? FindComboBoxItemByTextWithScroll(
         AutomationElement comboBox,
         string itemName,
@@ -4996,7 +5220,18 @@ public sealed class RecordingOverlayWindow : Form
                 if (IsHugeComboBoxDropdown(comboBox))
                 {
                     _logger.LogInformation(
-                        "Assistive ComboBox detected as huge list. Using keyboard type-ahead first. combo={Combo}, value={Value}",
+                        "Assistive ComboBox detected as huge list. Using deterministic paged visible-list search first. combo={Combo}, value={Value}",
+                        SafeElementName(comboBox),
+                        itemName);
+
+                    if (TrySelectComboBoxByPagedVisibleSearch(comboBox, itemName))
+                    {
+                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "paged-visible-list-huge-list");
+                        return true;
+                    }
+
+                    _logger.LogWarning(
+                        "Assistive huge ComboBox paged visible-list search failed. Trying keyboard type-ahead fallback. combo={Combo}, value={Value}",
                         SafeElementName(comboBox),
                         itemName);
 
@@ -5005,11 +5240,6 @@ public sealed class RecordingOverlayWindow : Form
                         RecordComboBoxSelection(comboBox, comboInfo, itemName, "keyboard-typeahead-huge-list");
                         return true;
                     }
-
-                    _logger.LogWarning(
-                        "Assistive huge ComboBox keyboard type-ahead failed. Falling back to bounded visible-item search. combo={Combo}, value={Value}",
-                        SafeElementName(comboBox),
-                        itemName);
                 }
 
                 var item = FindComboBoxItemByTextWithScroll(
