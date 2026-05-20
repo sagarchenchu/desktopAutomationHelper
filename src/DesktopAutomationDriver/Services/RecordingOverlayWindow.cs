@@ -4432,21 +4432,46 @@ public sealed class RecordingOverlayWindow : Form
             if (_automation == null)
                 return [];
 
+            // Important:
+            // After a ComboBox is opened, prefer the actual popup/dropdown list first.
+            // Logical ComboBox children may be stale, virtualized, incomplete, or not
+            // aligned with the visible dropdown rows.
+            var list = FindDynamicComboBoxList(comboBox);
+            if (list != null)
+            {
+                var popupItems = GetListItemsBounded(list, maxItems);
+
+                if (popupItems.Count > 0)
+                {
+                    _logger.LogInformation(
+                        "Assistive ComboBox items resolved from popup list. combo={Combo}, count={Count}",
+                        SafeElementName(comboBox),
+                        popupItems.Count);
+
+                    return popupItems;
+                }
+            }
+
             var logicalItems = GetLogicalComboBoxItems(comboBox, maxItems);
             if (logicalItems.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Assistive ComboBox items resolved from logical children. combo={Combo}, count={Count}",
+                    SafeElementName(comboBox),
+                    logicalItems.Count);
+
                 return logicalItems;
-
-            var list = FindDynamicComboBoxList(comboBox);
-            if (list == null)
-                return [];
-
-            return GetListItemsBounded(list, maxItems);
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "FindDynamicComboBoxItems failed for {Combo}", SafeElementName(comboBox));
-            return [];
+            _logger.LogWarning(
+                ex,
+                "Assistive FindDynamicComboBoxItems failed for combo={Combo}",
+                SafeElementName(comboBox));
         }
+
+        return [];
     }
 
     private List<AutomationElement> GetListItemsBounded(AutomationElement list, int maxItems)
