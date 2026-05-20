@@ -76,6 +76,10 @@ public class UiService : IUiService
     private const int ComboBoxScrollPageWheelClicks = -3;
     private const int ComboBoxScrollSettleDelayMs = 150;
     private const int ComboBoxVisibleItemSearchLimit = 200;
+    private const int ComboBoxPagedSearchBatchSize = 5;
+    private const int ComboBoxPagedSearchMaxPages = 200;
+    private const int ComboBoxPagedSearchSettleDelayMs = 150;
+    private const int ComboBoxPagedSearchPageDownCount = 1;
     // Detection limit and huge-list threshold are separate knobs even though they
     // currently share the same value: one caps sampling, the other classifies size.
     private const int ComboBoxLargeListDetectionLimit = 100;
@@ -88,6 +92,9 @@ public class UiService : IUiService
     private const int MaxAssistiveDropdownItemsToDisplay = 25;
     private const int MaxDynamicDropdownCandidates = 80;
     private const int MaxDynamicPopupSearchDepth = 4;
+    private const int MaxApplicationContextMenuCandidates = 80;
+    private const int MaxApplicationContextMenuSearchDepth = 4;
+    private const int MaxApplicationContextMenuPlaybackItems = 100;
     private const int DefaultListResponseLimit = 500;
     private const int MaxListResponseLimit = 5000;
     private const string DesktopRootName = "Desktop";
@@ -230,6 +237,7 @@ public class UiService : IUiService
             "clicklogicalmenupath" => ClickLogicalMenuPath(request),
             "clickmenulogical" => ClickLogicalMenuPath(request),
             "menupath"         => ClickLogicalMenuPath(request),
+            "contextmenupath"  => ContextMenuPath(request),
             "inspectlogicalmenu" => InspectLogicalMenu(request),
             "inspectmenupathcandidates" => InspectMenuPathCandidates(request),
             "dumpmenus"        => DumpLogicalMenus(request),
@@ -1525,6 +1533,77 @@ public class UiService : IUiService
         }
 
         throw new InvalidOperationException($"Failed to right-click element '{SafeElementName(element)}'.");
+    }
+
+    private object? ContextMenuPath(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("value is required for contextmenupath.");
+
+        var element = FindWithRetry(req);
+        var rawValue = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
+        var pathParts = rawValue
+            .Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        if (pathParts.Count == 0)
+            throw new ArgumentException("contextmenupath requires at least one menu item in value.");
+
+        BringElementWindowToForeground(element);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        if (!TryInstantPhysicalRightClick(element, "ContextMenuPath RightClick"))
+            throw new InvalidOperationException($"Failed to right-click element '{SafeElementName(element)}'.");
+
+        Thread.Sleep(MenuExpandDelayMs);
+
+        var session = RequireSession();
+        var currentRoot = FindActiveContextMenuPopup(session)
+            ?? throw new InvalidOperationException("No application context menu was detected after right-click.");
+
+        for (var i = 0; i < pathParts.Count; i++)
+        {
+            var part = pathParts[i];
+            var item = FindContextMenuItemByText(session, currentRoot, part);
+
+            if (item == null)
+            {
+                var available = GetContextMenuItems(session, currentRoot, MaxAssistiveDropdownItemsToDisplay)
+                    .Select(SafeElementName)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToList();
+
+                throw new InvalidOperationException(
+                    $"Context menu item '{part}' was not found for path '{rawValue}'. Available: {string.Join(", ", available)}");
+            }
+
+            var isLast = i == pathParts.Count - 1;
+
+            if (isLast)
+            {
+                if (!ActivateContextMenuItem(item, part))
+                    throw new InvalidOperationException($"Failed to activate context menu item '{part}'.");
+
+                return new
+                {
+                    selected = rawValue,
+                    strategy = "context-menu-path",
+                    element = CreateElementSnapshot(element)
+                };
+            }
+
+            if (!OpenContextSubMenu(item, part))
+                throw new InvalidOperationException($"Failed to open context submenu '{part}' for path '{rawValue}'.");
+
+            Thread.Sleep(MenuExpandDelayMs);
+
+            currentRoot = FindContextSubMenuPopup(session, item) ?? FindActiveContextMenuPopup(session);
+
+            if (currentRoot == null)
+                throw new InvalidOperationException($"Context submenu popup was not found after opening '{part}'.");
+        }
+
+        throw new InvalidOperationException($"Context menu path '{rawValue}' was not completed.");
     }
 
     private object? Hover(UiRequest req)
@@ -3625,8 +3704,45 @@ public class UiService : IUiService
 
         if (IsHugeComboBoxDropdown(session, comboBox))
         {
+            var allowKeyboardFallback = req.AllowKeyboardFallback ?? false;
+
             _logger.LogInformation(
-                "ComboBox detected as huge list. Using keyboard type-ahead first. combo={Combo}, value={Value}",
+                "ComboBox detected as huge list. Using paged visible-list search first. combo={Combo}, value={Value}",
+                SafeElementName(comboBox),
+                itemName);
+
+            if (TrySelectComboBoxByPagedVisibleSearch(session, comboBox, itemName))
+            {
+                var actual = GetComboBoxCurrentValue(session, comboBox);
+
+                return new
+                {
+                    selected = itemName,
+                    actual,
+                    comboBox = SafeElementName(comboBox),
+                    verified = true,
+                    strategy = "paged-visible-list-huge-list"
+                };
+            }
+
+            if (!allowKeyboardFallback)
+            {
+                var dropdownList = FindDynamicComboBoxList(session, comboBox);
+                var visibleBatchForError = (dropdownList != null
+                        ? GetListItemsBounded(session, dropdownList, ComboBoxPagedSearchBatchSize)
+                        : GetLogicalComboBoxItems(session, comboBox, ComboBoxPagedSearchBatchSize))
+                    .Where(IsElementVisibleAndClickableEnough)
+                    .Take(ComboBoxPagedSearchBatchSize)
+                    .Select(SafeElementName)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToList();
+
+                throw new InvalidOperationException(
+                    $"Huge ComboBox item '{itemName}' was not selected by paged visible-list search. Keyboard type-ahead fallback is disabled by default for huge ComboBoxes; set allowKeyboardFallback=true to enable it. dropdownListDetected={dropdownList != null}, expandedState={GetComboBoxExpandState(comboBox)}, currentValue='{GetComboBoxCurrentValue(session, comboBox)}', visibleBatch='{string.Join(", ", visibleBatchForError)}'");
+            }
+
+            _logger.LogWarning(
+                "Huge ComboBox paged visible-list search failed. Trying keyboard type-ahead fallback because allowKeyboardFallback=true. combo={Combo}, value={Value}",
                 SafeElementName(comboBox),
                 itemName);
 
@@ -3644,10 +3760,22 @@ public class UiService : IUiService
                 };
             }
 
-            _logger.LogWarning(
-                "Huge ComboBox keyboard type-ahead failed. Falling back to bounded visible-item search. combo={Combo}, value={Value}",
-                SafeElementName(comboBox),
-                itemName);
+            var dropdownListAfterKeyboardFallback = FindDynamicComboBoxList(session, comboBox);
+            var visibleBatch = (dropdownListAfterKeyboardFallback != null
+                    ? GetListItemsBounded(session, dropdownListAfterKeyboardFallback, ComboBoxPagedSearchBatchSize)
+                    : GetLogicalComboBoxItems(session, comboBox, ComboBoxPagedSearchBatchSize))
+                .Where(IsElementVisibleAndClickableEnough)
+                .Take(ComboBoxPagedSearchBatchSize)
+                .Select(SafeElementName)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToList();
+
+            throw new InvalidOperationException(
+                $"Huge ComboBox item '{itemName}' was not found by paged visible-list search or keyboard type-ahead. " +
+                $"dropdownListDetected={dropdownListAfterKeyboardFallback != null}, " +
+                $"expandedState={GetComboBoxExpandState(comboBox)}, " +
+                $"currentValue='{GetComboBoxCurrentValue(session, comboBox)}', " +
+                $"visibleBatch='{string.Join(", ", visibleBatch)}'");
         }
 
         var item = FindComboBoxItemByTextWithScroll(
@@ -5713,6 +5841,224 @@ public class UiService : IUiService
         return [];
     }
 
+    private bool TrySelectComboBoxByPagedVisibleSearch(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string itemName)
+    {
+        var requested = NormalizeMenuText(itemName);
+        string? previousSignature = null;
+
+        if (!ResetComboBoxDropdownToTop(session, comboBox))
+            return false;
+
+        for (var page = 0; page < ComboBoxPagedSearchMaxPages; page++)
+        {
+            var items = GetCurrentVisibleComboBoxBatch(session, comboBox, ComboBoxPagedSearchBatchSize);
+            var signature = BuildComboBoxVisibleBatchSignature(items);
+
+            if (page > 0 &&
+                string.Equals(signature, previousSignature, StringComparison.Ordinal))
+            {
+                _logger.LogInformation(
+                    "ComboBox paged visible-list search stopped because visible batch signature stopped changing. combo={Combo}, item={Item}, page={Page}, signature={Signature}",
+                    SafeElementName(comboBox),
+                    itemName,
+                    page,
+                    signature);
+
+                break;
+            }
+
+            foreach (var item in items)
+            {
+                var name = NormalizeMenuText(SafeElementName(item));
+
+                if (string.Equals(name, requested, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation(
+                        "ComboBox paged visible-list search found current visible item. combo={Combo}, item={Item}, page={Page}, name={Name}",
+                        SafeElementName(comboBox),
+                        itemName,
+                        page,
+                        SafeElementName(item));
+
+                    if (!ActivateComboBoxListItem(item, itemName))
+                        return false;
+
+                    Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
+                    return VerifyComboBoxSelectedValue(session, comboBox, itemName);
+                }
+            }
+
+            previousSignature = signature;
+
+            if (!PageDownComboBoxDropdown(session, comboBox))
+                return false;
+        }
+
+        return false;
+    }
+
+    private bool ResetComboBoxDropdownToTop(
+        AutomationSession session,
+        AutomationElement comboBox)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!OpenComboBoxDropdown(session, comboBox))
+            {
+                _logger.LogWarning(
+                    "ComboBox paged search could not open dropdown for reset. combo={Combo}",
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            Thread.Sleep(MenuExpandDelayMs);
+
+            if (!FocusElementForKeyboardInput(comboBox, "ComboBoxPagedSearchResetTop"))
+                return false;
+
+            Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
+
+            Keyboard.Press(VirtualKeyShort.HOME);
+            Keyboard.Release(VirtualKeyShort.HOME);
+
+            Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
+
+            _logger.LogInformation(
+                "ComboBox dropdown reset to top for paged search. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox dropdown reset to top failed. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
+    private List<AutomationElement> GetCurrentVisibleComboBoxBatch(
+        AutomationSession session,
+        AutomationElement comboBox,
+        int batchSize)
+    {
+        try
+        {
+            var list = FindDynamicComboBoxList(session, comboBox);
+
+            if (list != null)
+            {
+                return GetListItemsBounded(session, list, batchSize)
+                    .Where(IsElementVisibleAndClickableEnough)
+                    .Take(batchSize)
+                    .ToList();
+            }
+
+            return GetLogicalComboBoxItems(session, comboBox, batchSize)
+                .Where(IsElementVisibleAndClickableEnough)
+                .Take(batchSize)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox visible batch read failed. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return [];
+        }
+    }
+
+    private static bool IsElementVisibleAndClickableEnough(AutomationElement element)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            return !rect.IsEmpty &&
+                   rect.Width > 0 &&
+                   rect.Height > 0 &&
+                   !element.IsOffscreen;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool PageDownComboBoxDropdown(
+        AutomationSession session,
+        AutomationElement comboBox)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!FocusElementForKeyboardInput(comboBox, "ComboBoxPagedSearchPageDown"))
+                return false;
+
+            Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
+
+            if (!OpenComboBoxDropdown(session, comboBox))
+            {
+                _logger.LogWarning(
+                    "ComboBox paged search could not reopen dropdown before PageDown. combo={Combo}",
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            Thread.Sleep(MenuExpandDelayMs);
+
+            for (var i = 0; i < ComboBoxPagedSearchPageDownCount; i++)
+            {
+                Keyboard.Press(VirtualKeyShort.NEXT);
+                Keyboard.Release(VirtualKeyShort.NEXT);
+                Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox paged search PageDown failed. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
+    private static string BuildComboBoxVisibleBatchSignature(
+        IReadOnlyCollection<AutomationElement> items)
+    {
+        if (items.Count == 0)
+            return string.Empty;
+
+        return string.Join(
+            "||",
+            items.Select(item =>
+            {
+                var name = NormalizeMenuText(SafeElementName(item));
+                var aid = NormalizeMenuText(SafeElementAutomationId(item));
+                var rect = SafeBoundingRectangle(item);
+                return $"{name}|{aid}|{rect}";
+            }));
+    }
+
     private AutomationElement? FindComboBoxItemByTextWithScroll(
         AutomationSession session,
         AutomationElement comboBox,
@@ -6574,6 +6920,282 @@ public class UiService : IUiService
             _logger.LogWarning(ex, "ActivateMenuItem failed for dynamic menu parent {Menu}", SafeElementName(menuItem));
             return false;
         }
+    }
+
+    private AutomationElement? FindActiveContextMenuPopup(AutomationSession session)
+    {
+        try
+        {
+            foreach (var candidate in GetContextMenuPopupCandidates(session))
+            {
+                var items = GetContextMenuItems(session, candidate, maxItems: 1);
+                if (items.Count > 0)
+                    return candidate;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to detect active context menu popup.");
+        }
+
+        return null;
+    }
+
+    private AutomationElement? FindContextSubMenuPopup(
+        AutomationSession session,
+        AutomationElement submenuItem)
+    {
+        try
+        {
+            var itemRect = submenuItem.BoundingRectangle;
+
+            foreach (var candidate in GetContextMenuPopupCandidates(session))
+            {
+                var rect = candidate.BoundingRectangle;
+
+                if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                    continue;
+
+                var nearSubmenu =
+                    rect.Left >= itemRect.Right - SubmenuHorizontalProximityPx &&
+                    rect.Top <= itemRect.Bottom + SubmenuVerticalProximityPx &&
+                    rect.Bottom >= itemRect.Top - SubmenuVerticalProximityPx;
+
+                if (nearSubmenu && GetContextMenuItems(session, candidate, maxItems: 1).Count > 0)
+                    return candidate;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to detect context submenu popup.");
+        }
+
+        return null;
+    }
+
+    private List<AutomationElement> GetContextMenuPopupCandidates(AutomationSession session)
+    {
+        var results = new List<AutomationElement>();
+
+        try
+        {
+            var desktop = session.Automation.GetDesktop();
+            var queue = new Queue<(AutomationElement Element, int Depth)>();
+
+            foreach (var child in desktop.FindAllChildren())
+                queue.Enqueue((child, 1));
+
+            while (queue.Count > 0 && results.Count < MaxApplicationContextMenuCandidates)
+            {
+                var (element, depth) = queue.Dequeue();
+
+                try
+                {
+                    var ct = element.ControlType;
+                    var rect = element.BoundingRectangle;
+
+                    if (IsContextMenuContainerType(ct) &&
+                        !rect.IsEmpty &&
+                        rect.Width > 0 &&
+                        rect.Height > 0)
+                    {
+                        results.Add(element);
+                    }
+
+                    if (depth >= MaxApplicationContextMenuSearchDepth)
+                        continue;
+
+                    foreach (var child in element.FindAllChildren())
+                    {
+                        queue.Enqueue((child, depth + 1));
+                        if (queue.Count + results.Count >= MaxApplicationContextMenuCandidates)
+                            break;
+                    }
+                }
+                catch
+                {
+                    // ignore stale candidate
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed collecting context menu popup candidates.");
+        }
+
+        return results;
+    }
+
+    private List<AutomationElement> GetContextMenuItems(
+        AutomationSession session,
+        AutomationElement menuRoot,
+        int maxItems = MaxApplicationContextMenuPlaybackItems)
+    {
+        var results = new List<AutomationElement>();
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        try
+        {
+            var queue = new Queue<AutomationElement>();
+            queue.Enqueue(menuRoot);
+
+            while (queue.Count > 0 && results.Count < maxItems)
+            {
+                var current = queue.Dequeue();
+                IReadOnlyList<AutomationElement> children;
+
+                try
+                {
+                    children = current.FindAllChildren();
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (var child in children)
+                {
+                    if (results.Count >= maxItems)
+                        break;
+
+                    try
+                    {
+                        var ct = child.ControlType;
+                        var name = SafeElementName(child);
+
+                        if (IsContextMenuItemType(ct) && !string.IsNullOrWhiteSpace(name))
+                        {
+                            var key = GetElementDedupeKey(child);
+                            if (key == null || seenKeys.Add(key))
+                                results.Add(child);
+                        }
+
+                        if (IsContextMenuContainerType(ct))
+                            queue.Enqueue(child);
+                    }
+                    catch
+                    {
+                        // ignore stale child
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed reading context menu items.");
+        }
+
+        return results;
+    }
+
+    private AutomationElement? FindContextMenuItemByText(
+        AutomationSession session,
+        AutomationElement menuRoot,
+        string itemText)
+    {
+        var requested = NormalizeMenuText(itemText);
+
+        foreach (var item in GetContextMenuItems(session, menuRoot, MaxApplicationContextMenuPlaybackItems))
+        {
+            var name = NormalizeMenuText(SafeElementName(item));
+
+            if (string.Equals(name, requested, StringComparison.OrdinalIgnoreCase))
+                return item;
+        }
+
+        return null;
+    }
+
+    private bool ActivateContextMenuItem(
+        AutomationElement item,
+        string itemName)
+    {
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                Thread.Sleep(MenuActionDelayMs);
+                return true;
+            }
+
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                item.Patterns.SelectionItem.Pattern.Select();
+                Thread.Sleep(MenuActionDelayMs);
+                return true;
+            }
+
+            var rect = item.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round(rect.Left + rect.Width / 2.0),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                return SendInstantLeftClick(point, $"Context Menu Item: {itemName}");
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed activating context menu item {Item}", itemName);
+            return false;
+        }
+    }
+
+    private bool OpenContextSubMenu(
+        AutomationElement item,
+        string itemName)
+    {
+        try
+        {
+            if (item.Patterns.ExpandCollapse.IsSupported)
+            {
+                item.Patterns.ExpandCollapse.Pattern.Expand();
+                Thread.Sleep(MenuExpandDelayMs);
+                return true;
+            }
+
+            var rect = item.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round(rect.Right - CalculateSubmenuArrowOffset((double)rect.Width)),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                SendInstantLeftClick(point, $"Open Context Submenu: {itemName}");
+                Thread.Sleep(MenuExpandDelayMs);
+                return true;
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed opening context submenu {Item}", itemName);
+            return false;
+        }
+    }
+
+    private static bool IsContextMenuContainerType(ControlType controlType)
+    {
+        return controlType == ControlType.Menu ||
+               controlType == ControlType.Window ||
+               controlType == ControlType.Pane ||
+               controlType == ControlType.ToolBar ||
+               controlType == ControlType.Custom;
+    }
+
+    private static bool IsContextMenuItemType(ControlType controlType)
+    {
+        return controlType == ControlType.MenuItem ||
+               controlType == ControlType.ListItem ||
+               controlType == ControlType.Button ||
+               controlType == ControlType.Text;
     }
 
     private AutomationElement? FindDynamicMenuDropdown(AutomationSession session, AutomationElement parentMenuItem)
