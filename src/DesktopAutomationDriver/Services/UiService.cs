@@ -3712,7 +3712,9 @@ public class UiService : IUiService
             SafeElementName(comboBox),
             itemName);
 
-        if (TrySelectComboBoxByDirectUia(session, comboBox, itemName, out var directStrategy))
+        var probedCapabilities = ProbeComboBoxDropdownItemCapabilities(session, comboBox);
+        if (probedCapabilities.HasAnyUsefulPattern &&
+            TrySelectComboBoxByDirectUia(session, comboBox, itemName, out var directStrategy))
         {
             return new
             {
@@ -3722,6 +3724,15 @@ public class UiService : IUiService
                 verified = true,
                 strategy = directStrategy
             };
+        }
+
+        if (!probedCapabilities.HasAnyUsefulPattern)
+        {
+            _logger.LogInformation(
+                "ComboBox pattern capability decision. combo={Combo}, capabilities={Capabilities}, decision={Decision}",
+                SafeElementName(comboBox),
+                probedCapabilities.ToString(),
+                "Fallback to visual search because no useful ListItem patterns were detected");
         }
 
         if (!OpenComboBoxDropdown(session, comboBox))
@@ -5681,22 +5692,27 @@ public class UiService : IUiService
 
             if (logicalMatch != null)
             {
-                if (TryActivateComboBoxItemByUiaPattern(logicalMatch, requestedValue, "logical-listitem"))
-                {
-                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+                var capabilities = DetectComboBoxItemPatternCapabilities(logicalMatch);
 
-                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
-                    {
-                        strategy = "direct-uia-logical-selectionitem";
-                        return true;
-                    }
-
-                    _logger.LogInformation(
-                        "Direct UIA logical ListItem activation did not verify. requested={Requested}, actual={Actual}, combo={Combo}",
+                if (capabilities.HasAnyUsefulPattern &&
+                    TryCommitComboBoxItemUsingAvailablePatterns(
+                        session,
+                        comboBox,
+                        logicalMatch,
                         requestedValue,
-                        GetComboBoxCurrentValue(session, comboBox),
-                        SafeElementName(comboBox));
+                        capabilities,
+                        "direct-uia-logical-or-popup"))
+                {
+                    strategy = "direct-uia-pattern-based";
+                    return true;
                 }
+
+                _logger.LogInformation(
+                    "Direct UIA logical ListItem pattern commit did not verify. requested={Requested}, actual={Actual}, combo={Combo}, capabilities={Capabilities}",
+                    requestedValue,
+                    GetComboBoxCurrentValue(session, comboBox),
+                    SafeElementName(comboBox),
+                    capabilities.ToString());
             }
 
             if (OpenComboBoxDropdown(session, comboBox))
@@ -5711,22 +5727,27 @@ public class UiService : IUiService
 
                 if (popupMatch != null)
                 {
-                    if (TryActivateComboBoxItemByUiaPattern(popupMatch, requestedValue, "popup-listitem"))
-                    {
-                        Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+                    var capabilities = DetectComboBoxItemPatternCapabilities(popupMatch);
 
-                        if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
-                        {
-                            strategy = "direct-uia-popup-selectionitem";
-                            return true;
-                        }
-
-                        _logger.LogInformation(
-                            "Direct UIA popup ListItem activation did not verify. requested={Requested}, actual={Actual}, combo={Combo}",
+                    if (capabilities.HasAnyUsefulPattern &&
+                        TryCommitComboBoxItemUsingAvailablePatterns(
+                            session,
+                            comboBox,
+                            popupMatch,
                             requestedValue,
-                            GetComboBoxCurrentValue(session, comboBox),
-                            SafeElementName(comboBox));
+                            capabilities,
+                            "direct-uia-logical-or-popup"))
+                    {
+                        strategy = "direct-uia-pattern-based";
+                        return true;
                     }
+
+                    _logger.LogInformation(
+                        "Direct UIA popup ListItem pattern commit did not verify. requested={Requested}, actual={Actual}, combo={Combo}, capabilities={Capabilities}",
+                        requestedValue,
+                        GetComboBoxCurrentValue(session, comboBox),
+                        SafeElementName(comboBox),
+                        capabilities.ToString());
                 }
             }
 
@@ -5847,6 +5868,238 @@ public class UiService : IUiService
         }
         catch
         {
+            return false;
+        }
+    }
+
+    private sealed class ComboBoxItemPatternCapabilities
+    {
+        public bool HasScrollItem { get; init; }
+        public bool HasSelectionItem { get; init; }
+        public bool HasInvoke { get; init; }
+
+        public bool HasAnyUsefulPattern =>
+            HasScrollItem || HasSelectionItem || HasInvoke;
+
+        public override string ToString()
+        {
+            return $"ScrollItem={HasScrollItem}, SelectionItem={HasSelectionItem}, Invoke={HasInvoke}";
+        }
+    }
+
+    private ComboBoxItemPatternCapabilities DetectComboBoxItemPatternCapabilities(
+        AutomationElement item)
+    {
+        try
+        {
+            var capabilities = new ComboBoxItemPatternCapabilities
+            {
+                HasScrollItem = item.Patterns.ScrollItem.IsSupported,
+                HasSelectionItem = item.Patterns.SelectionItem.IsSupported,
+                HasInvoke = item.Patterns.Invoke.IsSupported
+            };
+
+            _logger.LogInformation(
+                "ComboBox ListItem pattern capabilities detected. item={Item}, capabilities={Capabilities}",
+                SafeElementName(item),
+                capabilities.ToString());
+
+            return capabilities;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to detect ComboBox ListItem pattern capabilities. item={Item}",
+                SafeElementName(item));
+
+            return new ComboBoxItemPatternCapabilities();
+        }
+    }
+
+    private ComboBoxItemPatternCapabilities ProbeComboBoxDropdownItemCapabilities(
+        AutomationSession session,
+        AutomationElement comboBox)
+    {
+        try
+        {
+            if (!OpenComboBoxDropdown(session, comboBox))
+                return new ComboBoxItemPatternCapabilities();
+
+            Thread.Sleep(MenuExpandDelayMs);
+
+            var list = FindDynamicComboBoxList(session, comboBox);
+            if (list == null)
+                return new ComboBoxItemPatternCapabilities();
+
+            var items = GetListItemsBounded(session, list, maxItems: 5);
+
+            var firstItem = items.FirstOrDefault(x =>
+                !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
+                !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)));
+
+            if (firstItem == null)
+                return new ComboBoxItemPatternCapabilities();
+
+            var capabilities = DetectComboBoxItemPatternCapabilities(firstItem);
+            _logger.LogInformation(
+                "ComboBox pattern capability probe: Combo={Combo}, FirstItem={FirstItem}, ScrollItem={ScrollItem}, SelectionItem={SelectionItem}, Invoke={Invoke}, Decision={Decision}",
+                SafeElementName(comboBox),
+                SafeElementName(firstItem),
+                capabilities.HasScrollItem,
+                capabilities.HasSelectionItem,
+                capabilities.HasInvoke,
+                capabilities.HasAnyUsefulPattern
+                    ? "Use pattern-based selection"
+                    : "Fallback to visual search because no useful ListItem patterns were detected");
+
+            return capabilities;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox dropdown pattern probing failed. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return new ComboBoxItemPatternCapabilities();
+        }
+    }
+
+    private bool TryCommitComboBoxItemUsingAvailablePatterns(
+        AutomationSession session,
+        AutomationElement comboBox,
+        AutomationElement item,
+        string requestedValue,
+        ComboBoxItemPatternCapabilities capabilities,
+        string source)
+    {
+        try
+        {
+            _logger.LogInformation(
+                "Trying ComboBox pattern-based commit. source={Source}, requested={Requested}, item={Item}, capabilities={Capabilities}",
+                source,
+                requestedValue,
+                SafeElementName(item),
+                capabilities.ToString());
+
+            if (capabilities.HasScrollItem && item.Patterns.ScrollItem.IsSupported)
+            {
+                try
+                {
+                    item.Patterns.ScrollItem.Pattern.ScrollIntoView();
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    _logger.LogInformation(
+                        "ComboBox item ScrollIntoView executed. source={Source}, requested={Requested}, item={Item}",
+                        source,
+                        requestedValue,
+                        SafeElementName(item));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "ComboBox ScrollIntoView failed. source={Source}, requested={Requested}, item={Item}",
+                        source,
+                        requestedValue,
+                        SafeElementName(item));
+                }
+            }
+
+            if (capabilities.HasSelectionItem && item.Patterns.SelectionItem.IsSupported)
+            {
+                try
+                {
+                    item.Patterns.SelectionItem.Pattern.Select();
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    {
+                        _logger.LogInformation(
+                            "ComboBox item committed using SelectionItemPattern. source={Source}, requested={Requested}",
+                            source,
+                            requestedValue);
+
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "ComboBox SelectionItemPattern.Select failed. source={Source}, requested={Requested}, item={Item}",
+                        source,
+                        requestedValue,
+                        SafeElementName(item));
+                }
+            }
+
+            if (capabilities.HasInvoke && item.Patterns.Invoke.IsSupported)
+            {
+                try
+                {
+                    item.Patterns.Invoke.Pattern.Invoke();
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    {
+                        _logger.LogInformation(
+                            "ComboBox item committed using InvokePattern. source={Source}, requested={Requested}",
+                            source,
+                            requestedValue);
+
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "ComboBox InvokePattern.Invoke failed. source={Source}, requested={Requested}, item={Item}",
+                        source,
+                        requestedValue,
+                        SafeElementName(item));
+                }
+            }
+
+            if (capabilities.HasScrollItem)
+            {
+                if (TryPhysicalClickComboBoxListItem(item, requestedValue, source))
+                {
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    {
+                        _logger.LogInformation(
+                            "ComboBox item committed using physical click after ScrollIntoView. source={Source}, requested={Requested}",
+                            source,
+                            requestedValue);
+
+                        return true;
+                    }
+                }
+            }
+
+            _logger.LogWarning(
+                "ComboBox pattern-based commit did not verify. source={Source}, requested={Requested}, actual={Actual}, item={Item}, capabilities={Capabilities}",
+                source,
+                requestedValue,
+                GetComboBoxCurrentValue(session, comboBox),
+                SafeElementName(item),
+                capabilities.ToString());
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox pattern-based commit failed. source={Source}, requested={Requested}, item={Item}",
+                source,
+                requestedValue,
+                SafeElementName(item));
+
             return false;
         }
     }
@@ -6441,6 +6694,19 @@ public class UiService : IUiService
                         itemName,
                         page,
                         SafeElementName(item));
+
+                    var matchCapabilities = DetectComboBoxItemPatternCapabilities(item);
+                    if (matchCapabilities.HasAnyUsefulPattern &&
+                        TryCommitComboBoxItemUsingAvailablePatterns(
+                            session,
+                            comboBox,
+                            item,
+                            itemName,
+                            matchCapabilities,
+                            "visible-search-pattern-based"))
+                    {
+                        return true;
+                    }
 
                     return CommitExactVisibleComboBoxItem(
                         session,
@@ -7205,6 +7471,19 @@ public class UiService : IUiService
                         requestedValue,
                         window,
                         SafeElementName(exactItem));
+
+                    var matchCapabilities = DetectComboBoxItemPatternCapabilities(exactItem);
+                    if (matchCapabilities.HasAnyUsefulPattern &&
+                        TryCommitComboBoxItemUsingAvailablePatterns(
+                            session,
+                            comboBox,
+                            exactItem,
+                            requestedValue,
+                            matchCapabilities,
+                            "visible-search-pattern-based"))
+                    {
+                        return true;
+                    }
 
                     return CommitExactVisibleComboBoxItem(
                         session,
