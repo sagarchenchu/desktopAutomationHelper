@@ -4863,6 +4863,8 @@ public sealed class RecordingOverlayWindow : Form
                 type = INPUT_MOUSE,
                 mi = new MOUSEINPUT
                 {
+                    // INPUT.MOUSEINPUT.mouseData is uint; negative wheel deltas are
+                    // represented as two's complement unsigned values.
                     mouseData = unchecked((uint)wheelDelta),
                     dwFlags = MOUSEEVENTF_WHEEL
                 }

@@ -3727,7 +3727,7 @@ public class UiService : IUiService
                 actualAfterActivation);
 
             throw new InvalidOperationException(
-                $"ComboBox selected value did not match requested item after list item activation; keyboard type-ahead fallback was attempted but did not verify. Requested='{itemName}', Actual='{actualAfterFallback}'");
+                $"ComboBox selection failed to verify after list item activation and keyboard type-ahead fallback. Requested='{itemName}', Actual='{actualAfterFallback}'");
         }
 
         try { comboBox.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
