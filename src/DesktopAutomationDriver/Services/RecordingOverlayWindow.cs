@@ -5240,6 +5240,16 @@ public sealed class RecordingOverlayWindow : Form
                         RecordComboBoxSelection(comboBox, comboInfo, itemName, "keyboard-typeahead-huge-list");
                         return true;
                     }
+
+                    _logger.LogWarning(
+                        "Assistive huge ComboBox selection failed after paged visible-list search and keyboard type-ahead. requested={Requested}, actual={Actual}",
+                        itemName,
+                        GetComboBoxCurrentValue(comboBox));
+
+                    _statusLabel.Text =
+                        $"ComboBox selection failed. Expected '{itemName}', actual '{GetComboBoxCurrentValue(comboBox)}'.";
+
+                    return false;
                 }
 
                 var item = FindComboBoxItemByTextWithScroll(
