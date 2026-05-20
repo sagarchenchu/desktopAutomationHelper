@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using DesktopAutomationDriver.Models.Recording;
+using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
 using FlaUI.Core.Input;
@@ -181,6 +182,14 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxDynamicDropdownCandidates = 80;
     private const int MaxDynamicPopupSearchDepth = 4;
     private const int MaxComboBoxItemsForTextSelection = 500;
+    private const int ComboBoxScrollSearchMaxAttempts = 30;
+    private const int ComboBoxScrollPageWheelClicks = -3;
+    private const int ComboBoxScrollSettleDelayMs = 150;
+    private const int ComboBoxVisibleItemSearchLimit = 200;
+    // Detection limit and huge-list threshold are separate knobs even though they
+    // currently share the same value: one caps sampling, the other classifies size.
+    private const int ComboBoxLargeListDetectionLimit = 100;
+    private const int ComboBoxHugeListTypeAheadThreshold = 100;
     private const int ComboBoxKeyboardTypeaheadInitialDelayMs = 150;
     private const int ComboBoxKeyboardTypeaheadSettleDelayMs = 250;
     private const int TextPromptDialogWidth = 380;
@@ -309,6 +318,7 @@ public sealed class RecordingOverlayWindow : Form
     private const uint MOUSEEVENTF_LEFTUP = 0x0004;
     private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
     private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    private const uint MOUSEEVENTF_WHEEL = 0x0800;
     private const uint BM_CLICK = 0x00F5;
     private static readonly IntPtr AssistiveInjectedRightClickMarker = new(unchecked((int)0x44414852));
 
@@ -4090,48 +4100,18 @@ public sealed class RecordingOverlayWindow : Form
 
     private List<AutomationElement> GetLogicalComboBoxItems(AutomationElement comboBox, int maxItems)
     {
-        var results = new List<AutomationElement>();
-
         try
         {
             if (_automation == null)
-                return results;
+                return [];
 
-            var cf = _automation.ConditionFactory;
-
-            foreach (var child in comboBox.FindAllChildren(cf.ByControlType(ControlType.ListItem)))
-            {
-                if (_stopRequested)
-                    return results;
-
-                if (IsNamedListItem(child))
-                    results.Add(child);
-
-                if (results.Count >= maxItems)
-                    return results;
-            }
-
-            if (results.Count == 0)
-            {
-                foreach (var item in comboBox.FindAllDescendants(cf.ByControlType(ControlType.ListItem)))
-                {
-                    if (_stopRequested)
-                        return results;
-
-                    if (IsNamedListItem(item))
-                        results.Add(item);
-
-                    if (results.Count >= maxItems)
-                        return results;
-                }
-            }
+            return GetListItemsBounded(comboBox, maxItems);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "GetLogicalComboBoxItems failed for {Combo}", SafeElementName(comboBox));
+            return [];
         }
-
-        return results;
     }
 
     private void AddLogicalComboBoxItemsSubmenu(
@@ -4452,21 +4432,46 @@ public sealed class RecordingOverlayWindow : Form
             if (_automation == null)
                 return [];
 
+            // Important:
+            // After a ComboBox is opened, prefer the actual popup/dropdown list first.
+            // Logical ComboBox children may be stale, virtualized, incomplete, or not
+            // aligned with the visible dropdown rows.
+            var list = FindDynamicComboBoxList(comboBox);
+            if (list != null)
+            {
+                var popupItems = GetListItemsBounded(list, maxItems);
+
+                if (popupItems.Count > 0)
+                {
+                    _logger.LogInformation(
+                        "Assistive ComboBox items resolved from popup list. combo={Combo}, count={Count}",
+                        SafeElementName(comboBox),
+                        popupItems.Count);
+
+                    return popupItems;
+                }
+            }
+
             var logicalItems = GetLogicalComboBoxItems(comboBox, maxItems);
             if (logicalItems.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Assistive ComboBox items resolved from logical children. combo={Combo}, count={Count}",
+                    SafeElementName(comboBox),
+                    logicalItems.Count);
+
                 return logicalItems;
-
-            var list = FindDynamicComboBoxList(comboBox);
-            if (list == null)
-                return [];
-
-            return GetListItemsBounded(list, maxItems);
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "FindDynamicComboBoxItems failed for {Combo}", SafeElementName(comboBox));
-            return [];
+            _logger.LogWarning(
+                ex,
+                "Assistive FindDynamicComboBoxItems failed for combo={Combo}",
+                SafeElementName(comboBox));
         }
+
+        return [];
     }
 
     private List<AutomationElement> GetListItemsBounded(AutomationElement list, int maxItems)
@@ -4478,34 +4483,22 @@ public sealed class RecordingOverlayWindow : Form
             if (_automation == null)
                 return results;
 
-            var cf = _automation.ConditionFactory;
+            if (maxItems <= 0)
+                return results;
 
-            foreach (var child in list.FindAllChildren(cf.ByControlType(ControlType.ListItem)))
-            {
-                if (_stopRequested)
-                    return results;
+            var walker = _automation.TreeWalkerFactory.GetControlViewWalker();
+            var visited = 0;
+            var maxVisitedNodes = GetComboBoxTraversalNodeLimit(maxItems);
 
-                if (IsNamedListItem(child))
-                    results.Add(child);
-
-                if (results.Count >= maxItems)
-                    return results;
-            }
-
-            if (results.Count == 0)
-            {
-                foreach (var item in list.FindAllDescendants(cf.ByControlType(ControlType.ListItem)))
-                {
-                    if (_stopRequested)
-                        return results;
-
-                    if (IsNamedListItem(item))
-                        results.Add(item);
-
-                    if (results.Count >= maxItems)
-                        return results;
-                }
-            }
+            CollectListItemsBounded(
+                walker,
+                list,
+                results,
+                maxItems,
+                ref visited,
+                maxVisitedNodes,
+                depth: 0,
+                maxDepth: 8);
         }
         catch (Exception ex)
         {
@@ -4513,6 +4506,403 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         return results;
+    }
+
+    private static int GetComboBoxTraversalNodeLimit(int maxItems)
+    {
+        if (maxItems >= 1000)
+            return maxItems;
+
+        return Math.Max(maxItems * 20, 200);
+    }
+
+    private bool CollectListItemsBounded(
+        ITreeWalker walker,
+        AutomationElement parent,
+        List<AutomationElement> results,
+        int maxItems,
+        ref int visited,
+        int maxVisitedNodes,
+        int depth,
+        int maxDepth)
+    {
+        if (_stopRequested ||
+            results.Count >= maxItems ||
+            visited >= maxVisitedNodes)
+        {
+            return true;
+        }
+
+        if (depth > maxDepth)
+            return false;
+
+        AutomationElement? child;
+
+        try
+        {
+            child = walker.GetFirstChild(parent);
+        }
+        catch
+        {
+            return false;
+        }
+
+        while (child != null &&
+               !_stopRequested &&
+               results.Count < maxItems &&
+               visited < maxVisitedNodes)
+        {
+            visited++;
+
+            var isListItem = false;
+
+            try
+            {
+                isListItem = child.ControlType == ControlType.ListItem;
+            }
+            catch
+            {
+                // ignore
+            }
+
+            if (isListItem)
+            {
+                if (IsNamedListItem(child))
+                    results.Add(child);
+            }
+            else if (CollectListItemsBounded(
+                         walker,
+                         child,
+                         results,
+                         maxItems,
+                         ref visited,
+                         maxVisitedNodes,
+                         depth + 1,
+                         maxDepth))
+            {
+                return true;
+            }
+
+            try
+            {
+                child = walker.GetNextSibling(child);
+            }
+            catch
+            {
+                break;
+            }
+        }
+
+        return _stopRequested || results.Count >= maxItems || visited >= maxVisitedNodes;
+    }
+
+    private AutomationElement? FindComboBoxItemByTextWithScroll(
+        AutomationElement comboBox,
+        string itemName,
+        int maxScrollAttempts)
+    {
+        var requested = NormalizeMenuText(itemName);
+        var seenSignatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (var attempt = 0; attempt <= maxScrollAttempts; attempt++)
+        {
+            var items = FindDynamicComboBoxItems(comboBox, maxItems: ComboBoxVisibleItemSearchLimit);
+
+            foreach (var item in items)
+            {
+                var name = NormalizeMenuText(SafeElementName(item));
+                var automationId = NormalizeMenuText(SafeElementAutomationId(item));
+
+                if (string.Equals(name, requested, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(automationId, requested, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation(
+                        "ComboBox item found. item={Item}, attempt={Attempt}, name={Name}, automationId={AutomationId}",
+                        itemName,
+                        attempt,
+                        SafeElementName(item),
+                        SafeElementAutomationId(item));
+
+                    return item;
+                }
+            }
+
+            var signatureBeforeScroll = BuildComboBoxVisibleItemsSignature(items);
+
+            if (!seenSignatures.Add(signatureBeforeScroll) && attempt > 0)
+            {
+                _logger.LogInformation(
+                    "ComboBox visible item signature repeated before scrolling. Will try fallback scrolling before stopping. item={Item}, attempt={Attempt}, signature={Signature}",
+                    itemName,
+                    attempt,
+                    signatureBeforeScroll);
+            }
+
+            if (attempt == maxScrollAttempts)
+            {
+                _logger.LogInformation(
+                    "ComboBox scroll search reached max attempts. item={Item}, attempts={Attempts}",
+                    itemName,
+                    maxScrollAttempts);
+
+                break;
+            }
+
+            var wheelChangedVisibleItems = TryScrollComboBoxAndDetectChange(
+                comboBox,
+                signatureBeforeScroll,
+                useKeyboardPageDown: false,
+                itemName,
+                attempt);
+
+            if (wheelChangedVisibleItems)
+                continue;
+
+            _logger.LogInformation(
+                "ComboBox mouse-wheel scroll did not change visible items. Trying PageDown fallback. item={Item}, attempt={Attempt}",
+                itemName,
+                attempt);
+
+            var pageDownChangedVisibleItems = TryScrollComboBoxAndDetectChange(
+                comboBox,
+                signatureBeforeScroll,
+                useKeyboardPageDown: true,
+                itemName,
+                attempt);
+
+            if (pageDownChangedVisibleItems)
+                continue;
+
+            _logger.LogInformation(
+                "ComboBox scroll search stopped because neither mouse wheel nor PageDown changed visible items. item={Item}, attempt={Attempt}",
+                itemName,
+                attempt);
+
+            break;
+        }
+
+        return null;
+    }
+
+    private bool IsHugeComboBoxDropdown(AutomationElement comboBox)
+    {
+        try
+        {
+            if (!OpenComboBoxDropdown(comboBox))
+                return false;
+
+            Thread.Sleep(MenuNavigationDelayMs);
+
+            var list = FindDynamicComboBoxList(comboBox);
+
+            if (list == null)
+                return false;
+
+            var items = GetListItemsBounded(list, ComboBoxLargeListDetectionLimit);
+
+            return items.Count >= ComboBoxHugeListTypeAheadThreshold;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to detect huge ComboBox dropdown. combo={Combo}", SafeElementName(comboBox));
+            return false;
+        }
+    }
+
+    private bool TryScrollComboBoxAndDetectChange(
+        AutomationElement comboBox,
+        string signatureBeforeScroll,
+        bool useKeyboardPageDown,
+        string itemName,
+        int attempt)
+    {
+        try
+        {
+            var strategy = useKeyboardPageDown ? "PageDown" : "MouseWheel";
+
+            var scrolled = useKeyboardPageDown
+                ? ScrollComboBoxDropdownByKeyboard(comboBox)
+                : ScrollComboBoxDropdown(comboBox, ComboBoxScrollPageWheelClicks);
+
+            Thread.Sleep(ComboBoxScrollSettleDelayMs);
+
+            if (!scrolled)
+            {
+                _logger.LogInformation(
+                    "ComboBox scroll attempt returned false. strategy={Strategy}, item={Item}, attempt={Attempt}",
+                    strategy,
+                    itemName,
+                    attempt);
+
+                return false;
+            }
+
+            var itemsAfterScroll = FindDynamicComboBoxItems(comboBox, maxItems: ComboBoxVisibleItemSearchLimit);
+            var signatureAfterScroll = BuildComboBoxVisibleItemsSignature(itemsAfterScroll);
+
+            var changed = !string.Equals(
+                signatureBeforeScroll,
+                signatureAfterScroll,
+                StringComparison.OrdinalIgnoreCase);
+
+            _logger.LogInformation(
+                "ComboBox scroll detect change. strategy={Strategy}, item={Item}, attempt={Attempt}, changed={Changed}, before={Before}, after={After}",
+                strategy,
+                itemName,
+                attempt,
+                changed,
+                signatureBeforeScroll,
+                signatureAfterScroll);
+
+            return changed;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox scroll detect change failed. strategy={Strategy}, item={Item}, attempt={Attempt}, combo={Combo}",
+                useKeyboardPageDown ? "PageDown" : "MouseWheel",
+                itemName,
+                attempt,
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
+    private static string BuildComboBoxVisibleItemsSignature(
+        IReadOnlyCollection<AutomationElement> items)
+    {
+        if (items.Count == 0)
+            return string.Empty;
+
+        return string.Join(
+            "||",
+            items.Select(item =>
+            {
+                var name = NormalizeMenuText(SafeElementName(item));
+                var aid = NormalizeMenuText(SafeElementAutomationId(item));
+                var rect = SafeBoundingRectangle(item);
+                return $"{name}|{aid}|{rect}";
+            }));
+    }
+
+    private bool ScrollComboBoxDropdown(
+        AutomationElement comboBox,
+        int wheelClicks)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            var scrollTarget = FindDynamicComboBoxList(comboBox) ?? comboBox;
+            var rect = scrollTarget.BoundingRectangle;
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                return false;
+
+            var point = new System.Drawing.Point(
+                (int)Math.Round(rect.Left + rect.Width / 2.0),
+                (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+            if (!SetCursorPos(point.X, point.Y))
+            {
+                _logger.LogWarning(
+                    "ComboBox scroll SetCursorPos failed. LastError={Error}, combo={Combo}",
+                    Marshal.GetLastWin32Error(),
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            Thread.Sleep(MouseClickSettleMs);
+
+            return SendMouseWheel(wheelClicks);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ScrollComboBoxDropdown failed for {Combo}", SafeElementName(comboBox));
+            return false;
+        }
+    }
+
+    private bool ScrollComboBoxDropdownByKeyboard(AutomationElement comboBox)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!TryFocusOrClickComboBox(comboBox))
+            {
+                _logger.LogWarning(
+                    "ComboBox PageDown scroll skipped because focus could not be requested. combo={Combo}",
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            if (!OpenComboBoxDropdown(comboBox))
+            {
+                _logger.LogWarning(
+                    "ComboBox PageDown scroll skipped because dropdown could not be opened. combo={Combo}",
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            Thread.Sleep(MenuNavigationDelayMs);
+
+            Keyboard.Press(VirtualKeyShort.NEXT);
+            Keyboard.Release(VirtualKeyShort.NEXT);
+
+            Thread.Sleep(ComboBoxScrollSettleDelayMs);
+
+            _logger.LogInformation(
+                "ComboBox dropdown PageDown scroll executed. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox PageDown scroll fallback failed for combo={Combo}",
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
+    private bool SendMouseWheel(int wheelClicks)
+    {
+        try
+        {
+            if (wheelClicks == 0)
+                return true;
+
+            var wheelDelta = wheelClicks * 120;
+            var input = new INPUT
+            {
+                type = INPUT_MOUSE,
+                mi = new MOUSEINPUT
+                {
+                    // INPUT.MOUSEINPUT.mouseData is uint; negative wheel deltas are
+                    // represented as two's complement unsigned values.
+                    mouseData = unchecked((uint)wheelDelta),
+                    dwFlags = MOUSEEVENTF_WHEEL
+                }
+            };
+
+            var sent = SendInput(1, [input], Marshal.SizeOf<INPUT>());
+            return sent == 1;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SendMouseWheel failed for wheelClicks={WheelClicks}", wheelClicks);
+            return false;
+        }
     }
 
     private bool IsNamedListItem(AutomationElement item)
@@ -4603,16 +4993,29 @@ public sealed class RecordingOverlayWindow : Form
             {
                 Thread.Sleep(MenuNavigationDelayMs);
 
-                var item = FindDynamicComboBoxItems(comboBox, maxItems: MaxComboBoxItemsForTextSelection)
-                    .FirstOrDefault(x =>
-                        string.Equals(
-                            NormalizeMenuText(SafeElementName(x)),
-                            NormalizeMenuText(itemName),
-                            StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(
-                            NormalizeMenuText(SafeElementAutomationId(x)),
-                            NormalizeMenuText(itemName),
-                            StringComparison.OrdinalIgnoreCase));
+                if (IsHugeComboBoxDropdown(comboBox))
+                {
+                    _logger.LogInformation(
+                        "Assistive ComboBox detected as huge list. Using keyboard type-ahead first. combo={Combo}, value={Value}",
+                        SafeElementName(comboBox),
+                        itemName);
+
+                    if (TrySelectComboBoxByKeyboard(comboBox, itemName))
+                    {
+                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "keyboard-typeahead-huge-list");
+                        return true;
+                    }
+
+                    _logger.LogWarning(
+                        "Assistive huge ComboBox keyboard type-ahead failed. Falling back to bounded visible-item search. combo={Combo}, value={Value}",
+                        SafeElementName(comboBox),
+                        itemName);
+                }
+
+                var item = FindComboBoxItemByTextWithScroll(
+                    comboBox,
+                    itemName,
+                    ComboBoxScrollSearchMaxAttempts);
 
                 if (item != null && ActivateComboBoxListItem(item, itemName))
                 {
@@ -4624,10 +5027,12 @@ public sealed class RecordingOverlayWindow : Form
                         return true;
                     }
 
+                    var actualAfterActivation = GetComboBoxCurrentValue(comboBox);
+
                     _logger.LogWarning(
-                        "ComboBox ListItem click did not select expected value. requested={Requested}, actual={Actual}",
+                        "ComboBox ListItem click did not select expected value. requested={Requested}, actual={Actual}. Trying keyboard type-ahead fallback.",
                         itemName,
-                        GetComboBoxCurrentValue(comboBox));
+                        actualAfterActivation);
                 }
             }
 
@@ -4636,6 +5041,11 @@ public sealed class RecordingOverlayWindow : Form
                 RecordComboBoxSelection(comboBox, comboInfo, itemName, "keyboard-typeahead");
                 return true;
             }
+
+            _logger.LogWarning(
+                "ComboBox keyboard type-ahead fallback did not verify. requested={Requested}, actual={Actual}",
+                itemName,
+                GetComboBoxCurrentValue(comboBox));
 
             _statusLabel.Text =
                 $"ComboBox selection failed. Expected '{itemName}', actual '{GetComboBoxCurrentValue(comboBox)}'.";
@@ -4670,18 +5080,29 @@ public sealed class RecordingOverlayWindow : Form
             var list = FindDynamicComboBoxList(comboBox);
             if (list == null)
             {
-                _logger.LogWarning(
-                    "ComboBox typeahead skipped because dropdown list was not detected. combo={Combo}, item={Item}",
-                    SafeElementName(comboBox),
-                    itemName);
+                if (IsComboBoxExpanded(comboBox))
+                {
+                    _logger.LogInformation(
+                        "ComboBox typeahead continuing without UIA List because ComboBox reports Expanded. combo={Combo}, item={Item}",
+                        SafeElementName(comboBox),
+                        itemName);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "ComboBox typeahead skipped because dropdown list was not detected. combo={Combo}, item={Item}",
+                        SafeElementName(comboBox),
+                        itemName);
 
-                return false;
+                    return false;
+                }
             }
 
             Keyboard.Type(itemName);
             Thread.Sleep(ComboBoxKeyboardTypeaheadSettleDelayMs);
 
             Keyboard.Press(VirtualKeyShort.RETURN);
+            Keyboard.Release(VirtualKeyShort.RETURN);
             Thread.Sleep(ComboBoxKeyboardTypeaheadSettleDelayMs);
 
             return VerifyComboBoxSelectedValue(comboBox, itemName);
@@ -4703,17 +5124,6 @@ public sealed class RecordingOverlayWindow : Form
                 if (!string.IsNullOrWhiteSpace(value))
                     return value.Trim();
             }
-        }
-        catch
-        {
-            // ignore
-        }
-
-        try
-        {
-            var name = SafeElementName(comboBox);
-            if (!string.IsNullOrWhiteSpace(name))
-                return name.Trim();
         }
         catch
         {
@@ -4755,6 +5165,15 @@ public sealed class RecordingOverlayWindow : Form
                     if (!string.IsNullOrWhiteSpace(text))
                         return text.Trim();
                 }
+
+                var selectedItem = FindSelectedListItemBounded(comboBox);
+
+                if (selectedItem != null)
+                {
+                    var selectedName = SafeElementName(selectedItem);
+                    if (!string.IsNullOrWhiteSpace(selectedName))
+                        return selectedName.Trim();
+                }
             }
         }
         catch
@@ -4762,7 +5181,98 @@ public sealed class RecordingOverlayWindow : Form
             // ignore
         }
 
+        try
+        {
+            var name = SafeElementName(comboBox);
+            if (!string.IsNullOrWhiteSpace(name))
+                return name.Trim();
+        }
+        catch
+        {
+            // ignore
+        }
+
         return string.Empty;
+    }
+
+    private AutomationElement? FindSelectedListItemBounded(AutomationElement comboBox)
+    {
+        try
+        {
+            var candidates = GetListItemsBounded(comboBox, ComboBoxVisibleItemSearchLimit);
+
+            foreach (var item in candidates)
+            {
+                try
+                {
+                    if (item.Patterns.SelectionItem.IsSupported &&
+                        item.Patterns.SelectionItem.PatternOrDefault?.IsSelected == true)
+                    {
+                        return item;
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+
+            var list = FindDynamicComboBoxList(comboBox);
+            if (list == null)
+                return null;
+
+            candidates = GetListItemsBounded(list, ComboBoxVisibleItemSearchLimit);
+
+            foreach (var item in candidates)
+            {
+                try
+                {
+                    if (item.Patterns.SelectionItem.IsSupported &&
+                        item.Patterns.SelectionItem.PatternOrDefault?.IsSelected == true)
+                    {
+                        return item;
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return null;
+    }
+
+    private static bool IsComboBoxExpanded(AutomationElement comboBox)
+    {
+        try
+        {
+            if (!comboBox.Patterns.ExpandCollapse.IsSupported)
+                return false;
+
+            return comboBox.Patterns.ExpandCollapse.Pattern.ExpandCollapseState
+                == ExpandCollapseState.Expanded;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string SafeBoundingRectangle(AutomationElement element)
+    {
+        try
+        {
+            return element.BoundingRectangle.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     private bool VerifyComboBoxSelectedValue(
