@@ -6155,7 +6155,7 @@ public class UiService : IUiService
         if (!string.IsNullOrWhiteSpace(name))
             return name;
 
-        return SafeElementAutomationId(item);
+        return SafeElementAutomationId(item) ?? string.Empty;
     }
 
     private AutomationElement? FindComboBoxItemByTextWithScroll(
