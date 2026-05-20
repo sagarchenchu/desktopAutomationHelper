@@ -3652,7 +3652,10 @@ public class UiService : IUiService
 
             throw new InvalidOperationException(
                 $"ComboBox item '{itemName}' was not found after scrolling or keyboard type-ahead. " +
-                $"First {MaxAssistiveDropdownItemsToDisplay} available items: {string.Join(", ", available)}");
+                $"dropdownListDetected={FindDynamicComboBoxList(session, comboBox) != null}, " +
+                $"expandedState={GetComboBoxExpandState(comboBox)}, " +
+                $"currentValue='{GetComboBoxCurrentValue(session, comboBox)}', " +
+                $"availableFirst{MaxAssistiveDropdownItemsToDisplay}='{string.Join(", ", available)}'");
         }
 
         if (!ActivateComboBoxListItem(item, itemName))
@@ -5633,19 +5636,41 @@ public class UiService : IUiService
     {
         try
         {
-            var logicalItems = GetLogicalComboBoxItems(session, comboBox, maxItems);
-            if (logicalItems.Count > 0)
-                return logicalItems;
-
             var list = FindDynamicComboBoxList(session, comboBox);
-            if (list == null)
-                return [];
 
-            return GetListItemsBounded(session, list, maxItems);
+            if (list != null)
+            {
+                var popupItems = GetListItemsBounded(session, list, maxItems);
+
+                if (popupItems.Count > 0)
+                {
+                    _logger.LogInformation(
+                        "ComboBox dynamic items resolved from popup list. combo={Combo}, count={Count}",
+                        SafeElementName(comboBox),
+                        popupItems.Count);
+
+                    return popupItems;
+                }
+            }
+
+            var logicalItems = GetLogicalComboBoxItems(session, comboBox, maxItems);
+
+            if (logicalItems.Count > 0)
+            {
+                _logger.LogInformation(
+                    "ComboBox dynamic items resolved from logical children. combo={Combo}, count={Count}",
+                    SafeElementName(comboBox),
+                    logicalItems.Count);
+
+                return logicalItems;
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "FindDynamicComboBoxItems failed for {Combo}", SafeElementName(comboBox));
+            _logger.LogWarning(
+                ex,
+                "FindDynamicComboBoxItems failed for combo={Combo}",
+                SafeElementName(comboBox));
         }
 
         return [];
@@ -5658,7 +5683,7 @@ public class UiService : IUiService
         int maxScrollAttempts)
     {
         var requested = NormalizeMenuText(itemName);
-        var seenSignatures = new HashSet<string>(StringComparer.Ordinal);
+        var seenSignatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         for (var attempt = 0; attempt <= maxScrollAttempts; attempt++)
         {
@@ -5670,10 +5695,10 @@ public class UiService : IUiService
             foreach (var item in items)
             {
                 var name = NormalizeMenuText(SafeElementName(item));
-                var aid = NormalizeMenuText(SafeElementAutomationId(item));
+                var automationId = NormalizeMenuText(SafeElementAutomationId(item));
 
                 if (string.Equals(name, requested, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(aid, requested, StringComparison.OrdinalIgnoreCase))
+                    string.Equals(automationId, requested, StringComparison.OrdinalIgnoreCase))
                 {
                     _logger.LogInformation(
                         "ComboBox item found. item={Item}, attempt={Attempt}, name={Name}, automationId={AutomationId}",
@@ -5686,35 +5711,133 @@ public class UiService : IUiService
                 }
             }
 
-            var signature = BuildComboBoxVisibleItemsSignature(items);
+            var signatureBeforeScroll = BuildComboBoxVisibleItemsSignature(items);
 
-            if (!seenSignatures.Add(signature))
+            if (!seenSignatures.Add(signatureBeforeScroll) && attempt > 0)
             {
                 _logger.LogInformation(
-                    "ComboBox scroll search stopped because visible items did not change. item={Item}, attempt={Attempt}",
+                    "ComboBox visible item signature repeated before scrolling. Will try fallback scrolling before stopping. item={Item}, attempt={Attempt}, signature={Signature}",
                     itemName,
-                    attempt);
-
-                break;
+                    attempt,
+                    signatureBeforeScroll);
             }
 
             if (attempt == maxScrollAttempts)
-                break;
-
-            if (!ScrollComboBoxDropdown(session, comboBox, ComboBoxScrollPageWheelClicks))
             {
-                _logger.LogWarning(
-                    "ComboBox scroll failed while searching item={Item}, attempt={Attempt}",
+                _logger.LogInformation(
+                    "ComboBox scroll search reached max attempts. item={Item}, attempts={Attempts}",
                     itemName,
-                    attempt);
+                    maxScrollAttempts);
 
                 break;
             }
 
-            Thread.Sleep(ComboBoxScrollSettleDelayMs);
+            var wheelChangedVisibleItems = TryScrollComboBoxAndDetectChange(
+                session,
+                comboBox,
+                signatureBeforeScroll,
+                useKeyboardPageDown: false,
+                itemName,
+                attempt);
+
+            if (wheelChangedVisibleItems)
+            {
+                continue;
+            }
+
+            _logger.LogInformation(
+                "ComboBox mouse-wheel scroll did not change visible items. Trying PageDown fallback. item={Item}, attempt={Attempt}",
+                itemName,
+                attempt);
+
+            var pageDownChangedVisibleItems = TryScrollComboBoxAndDetectChange(
+                session,
+                comboBox,
+                signatureBeforeScroll,
+                useKeyboardPageDown: true,
+                itemName,
+                attempt);
+
+            if (pageDownChangedVisibleItems)
+            {
+                continue;
+            }
+
+            _logger.LogInformation(
+                "ComboBox scroll search stopped because neither mouse wheel nor PageDown changed visible items. item={Item}, attempt={Attempt}",
+                itemName,
+                attempt);
+
+            break;
         }
 
         return null;
+    }
+
+    private bool TryScrollComboBoxAndDetectChange(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string signatureBeforeScroll,
+        bool useKeyboardPageDown,
+        string itemName,
+        int attempt)
+    {
+        try
+        {
+            var strategy = useKeyboardPageDown ? "PageDown" : "MouseWheel";
+
+            var scrolled = useKeyboardPageDown
+                ? ScrollComboBoxDropdownByKeyboard(session, comboBox)
+                : ScrollComboBoxDropdown(session, comboBox, ComboBoxScrollPageWheelClicks);
+
+            Thread.Sleep(ComboBoxScrollSettleDelayMs);
+
+            if (!scrolled)
+            {
+                _logger.LogInformation(
+                    "ComboBox scroll attempt returned false. strategy={Strategy}, item={Item}, attempt={Attempt}",
+                    strategy,
+                    itemName,
+                    attempt);
+
+                return false;
+            }
+
+            var itemsAfterScroll = FindDynamicComboBoxItems(
+                session,
+                comboBox,
+                maxItems: ComboBoxVisibleItemSearchLimit);
+
+            var signatureAfterScroll = BuildComboBoxVisibleItemsSignature(itemsAfterScroll);
+
+            var changed = !string.Equals(
+                signatureBeforeScroll,
+                signatureAfterScroll,
+                StringComparison.OrdinalIgnoreCase);
+
+            _logger.LogInformation(
+                "ComboBox scroll detect change. strategy={Strategy}, item={Item}, attempt={Attempt}, changed={Changed}, before={Before}, after={After}",
+                strategy,
+                itemName,
+                attempt,
+                changed,
+                signatureBeforeScroll,
+                signatureAfterScroll);
+
+            return changed;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox scroll detect change failed. strategy={Strategy}, item={Item}, attempt={Attempt}, combo={Combo}",
+                useKeyboardPageDown ? "PageDown" : "MouseWheel",
+                itemName,
+                attempt,
+                SafeElementName(comboBox));
+
+            return false;
+        }
     }
 
     private static string BuildComboBoxVisibleItemsSignature(
@@ -5765,6 +5888,57 @@ public class UiService : IUiService
         }
     }
 
+    private bool ScrollComboBoxDropdownByKeyboard(
+        AutomationSession session,
+        AutomationElement comboBox)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!FocusElementForKeyboardInput(comboBox, "ComboBoxKeyboardScroll"))
+            {
+                _logger.LogWarning(
+                    "ComboBox PageDown scroll skipped because focus could not be confirmed. combo={Combo}",
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            if (!OpenComboBoxDropdown(session, comboBox))
+            {
+                _logger.LogWarning(
+                    "ComboBox PageDown scroll skipped because dropdown could not be opened. combo={Combo}",
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            Thread.Sleep(MenuExpandDelayMs);
+
+            Keyboard.Press(VirtualKeyShort.NEXT);
+            Keyboard.Release(VirtualKeyShort.NEXT);
+
+            Thread.Sleep(ComboBoxScrollSettleDelayMs);
+
+            _logger.LogInformation(
+                "ComboBox dropdown PageDown scroll executed. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox PageDown scroll fallback failed for combo={Combo}",
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
     private bool TrySelectComboBoxByKeyboardSafe(
         AutomationSession session,
         AutomationElement comboBox,
@@ -5806,27 +5980,28 @@ public class UiService : IUiService
 
             if (list == null)
             {
-                _logger.LogWarning(
-                    "ComboBox keyboard type-ahead skipped because dropdown list was not detected. combo={Combo}, item={Item}",
+                var expanded = IsComboBoxExpanded(comboBox);
+
+                if (!expanded)
+                {
+                    _logger.LogWarning(
+                        "ComboBox keyboard type-ahead skipped because dropdown list was not detected and ComboBox is not expanded. combo={Combo}, item={Item}",
+                        SafeElementName(comboBox),
+                        itemName);
+
+                    return false;
+                }
+
+                _logger.LogInformation(
+                    "ComboBox keyboard type-ahead continuing without UIA List because ComboBox reports Expanded. combo={Combo}, item={Item}",
                     SafeElementName(comboBox),
                     itemName);
-
-                return false;
             }
 
             _logger.LogInformation(
                 "ComboBox keyboard type-ahead fallback started. combo={Combo}, item={Item}",
                 SafeElementName(comboBox),
                 itemName);
-
-            // Ctrl+A selects all existing text in editable ComboBoxes so the typed value
-            // replaces it completely. Non-editable ComboBoxes ignore Ctrl+A safely.
-            Keyboard.Press(VirtualKeyShort.LCONTROL);
-            Keyboard.Press(VirtualKeyShort.KEY_A);
-            Keyboard.Release(VirtualKeyShort.KEY_A);
-            Keyboard.Release(VirtualKeyShort.LCONTROL);
-
-            Thread.Sleep(ComboBoxTypeAheadDelayMs);
 
             // Use Keyboard.Type for literal character-by-character input so that special
             // characters in item names (e.g. "+", "^", "%") are never misinterpreted as
@@ -5870,6 +6045,39 @@ public class UiService : IUiService
 
             return false;
         }
+    }
+
+    private static bool IsComboBoxExpanded(AutomationElement comboBox)
+    {
+        try
+        {
+            if (comboBox.Patterns.ExpandCollapse.IsSupported)
+            {
+                return comboBox.Patterns.ExpandCollapse.Pattern.ExpandCollapseState
+                    == ExpandCollapseState.Expanded;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static string GetComboBoxExpandState(AutomationElement comboBox)
+    {
+        try
+        {
+            if (comboBox.Patterns.ExpandCollapse.IsSupported)
+                return comboBox.Patterns.ExpandCollapse.Pattern.ExpandCollapseState.ToString();
+        }
+        catch
+        {
+            return "Unknown";
+        }
+
+        return "NotSupported";
     }
 
     private AutomationElement? FindDynamicComboBoxList(AutomationSession session, AutomationElement comboBox)
