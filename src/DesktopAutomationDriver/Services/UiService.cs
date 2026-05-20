@@ -3008,7 +3008,8 @@ public class UiService : IUiService
         {
             if (item.Patterns.SelectionItem.IsSupported)
             {
-                item.Patterns.SelectionItem.Pattern.Select();
+                var selectionItemPattern = item.Patterns.SelectionItem.Pattern;
+                selectionItemPattern.Select();
 
                 _logger.LogInformation(
                     "{ActionName}: SelectionItem.Select succeeded for logical menu item {Name}",
@@ -3106,7 +3107,8 @@ public class UiService : IUiService
         {
             if (item.Patterns.Invoke.IsSupported)
             {
-                item.Patterns.Invoke.Pattern.Invoke();
+                var invokePattern = item.Patterns.Invoke.Pattern;
+                invokePattern.Invoke();
                 return;
             }
         }
