@@ -63,4 +63,10 @@ public class UiRequest
     /// When true, listwindows also scans desktop descendants. Defaults to false.
     /// </summary>
     public bool? IncludeDesktopDescendants { get; set; }
+
+    /// <summary>
+    /// When true, ComboBox selection may use keyboard type-ahead fallback after
+    /// bounded visible-list search fails. Defaults to false for huge ComboBoxes.
+    /// </summary>
+    public bool? AllowKeyboardFallback { get; set; }
 }
