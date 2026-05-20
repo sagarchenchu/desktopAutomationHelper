@@ -46,6 +46,7 @@ public class UiService : IUiService
     private const int ComboBoxPostCommitCollapseTimeoutMs = 2500;
     private const int ComboBoxPostCommitPollDelayMs = 100;
     private const int ComboBoxPostCommitStableDelayMs = 500;
+    private const int ComboBoxRefetchRectangleTolerancePx = 3;
     // Menu parent chains in supported desktop apps are shallow; 20 gives ample room for deeply
     // nested menus while preventing unbounded traversal of unstable UIA ancestors. If exceeded,
     // strict full-path matching fails safely instead of selecting a wrong duplicate leaf.
@@ -8414,10 +8415,10 @@ public class UiService : IUiService
             var rect = element.BoundingRectangle;
 
             return !rect.IsEmpty &&
-                   Math.Abs(rect.Left - originalRect.Left) <= 3 &&
-                   Math.Abs(rect.Top - originalRect.Top) <= 3 &&
-                   Math.Abs(rect.Width - originalRect.Width) <= 3 &&
-                   Math.Abs(rect.Height - originalRect.Height) <= 3;
+                   Math.Abs(rect.Left - originalRect.Left) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Top - originalRect.Top) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Width - originalRect.Width) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Height - originalRect.Height) <= ComboBoxRefetchRectangleTolerancePx;
         }
         catch
         {
