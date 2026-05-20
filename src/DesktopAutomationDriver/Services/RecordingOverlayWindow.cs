@@ -5121,6 +5121,7 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     private bool TryActivateComboBoxItemByUiaPattern(
+        AutomationElement comboBox,
         AutomationElement item,
         string requestedValue,
         string source)
@@ -5137,7 +5138,9 @@ public sealed class RecordingOverlayWindow : Form
                     requestedValue,
                     SafeElementName(item));
 
-                return true;
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                return VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source);
             }
 
             if (item.Patterns.Invoke.IsSupported)
@@ -5151,7 +5154,9 @@ public sealed class RecordingOverlayWindow : Form
                     requestedValue,
                     SafeElementName(item));
 
-                return true;
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                return VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source);
             }
 
             return false;

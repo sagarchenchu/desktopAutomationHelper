@@ -6108,6 +6108,8 @@ public class UiService : IUiService
     }
 
     private bool TryActivateComboBoxItemByUiaPattern(
+        AutomationSession session,
+        AutomationElement comboBox,
         AutomationElement item,
         string requestedValue,
         string source)
@@ -6124,7 +6126,9 @@ public class UiService : IUiService
                     requestedValue,
                     SafeElementName(item));
 
-                return true;
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                return VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source);
             }
 
             if (item.Patterns.Invoke.IsSupported)
@@ -6137,7 +6141,9 @@ public class UiService : IUiService
                     requestedValue,
                     SafeElementName(item));
 
-                return true;
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                return VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source);
             }
 
             _logger.LogInformation(
