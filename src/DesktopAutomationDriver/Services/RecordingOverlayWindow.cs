@@ -195,6 +195,9 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxPagedSearchMaxPages = 300;
     private const int ComboBoxPagedSearchSettleDelayMs = 150;
     private const int ComboBoxPagedSearchWheelClicks = -5;
+    private const int ComboBoxAnchorWindowSearchMaxWindows = 300;
+    private const int ComboBoxAnchorMoveDelayMs = 40;
+    private const int ComboBoxAnchorReadDelayMs = 120;
     private const int ComboBoxKeyboardStepSearchMaxSteps = 2000;
     private const int ComboBoxKeyboardStepDelayMs = 40;
     private const int ComboBoxKeyboardStepReadDelayMs = 80;
@@ -5990,18 +5993,18 @@ public sealed class RecordingOverlayWindow : Form
                     }
 
                     _logger.LogInformation(
-                        "Assistive huge ComboBox paged visible-list search failed. Trying keyboard step search. combo={Combo}, value={Value}",
+                        "Assistive huge ComboBox paged visible-list search failed. Trying visible anchor-window search. combo={Combo}, value={Value}",
                         SafeElementName(comboBox),
                         itemName);
 
-                    if (TrySelectComboBoxByKeyboardStepSearch(comboBox, itemName))
+                    if (TrySelectComboBoxByVisibleAnchorWindowSearch(comboBox, itemName))
                     {
-                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "huge-list-keyboard-step-search");
+                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "huge-list-visible-anchor-window-search");
                         return true;
                     }
 
                     _logger.LogWarning(
-                        "Assistive huge ComboBox item '{Item}' was not found/verified by paged visible search or keyboard step search. actual={Actual}, combo={Combo}",
+                        "Assistive huge ComboBox item '{Item}' was not found/verified by paged visible search or visible anchor-window search. actual={Actual}, combo={Combo}",
                         itemName,
                         GetComboBoxCurrentValue(comboBox),
                         SafeElementName(comboBox));
@@ -6112,6 +6115,251 @@ public sealed class RecordingOverlayWindow : Form
             _logger.LogWarning(ex, "TrySelectComboBoxByKeyboard failed for {Item}", itemName);
             return false;
         }
+    }
+
+    private bool TrySelectComboBoxByVisibleAnchorWindowSearch(
+        AutomationElement comboBox,
+        string requestedValue)
+    {
+        try
+        {
+            if (!ResetComboBoxDropdownToTop(comboBox))
+                return false;
+
+            string? previousSignature = null;
+
+            for (var window = 0; window < ComboBoxAnchorWindowSearchMaxWindows; window++)
+            {
+                if (!OpenComboBoxDropdown(comboBox))
+                    return false;
+
+                Thread.Sleep(ComboBoxAnchorReadDelayMs);
+
+                var visibleItems = GetCurrentVisibleComboBoxItems(comboBox);
+                var signature = BuildVisibleComboBoxItemsSignature(visibleItems);
+
+                _logger.LogInformation(
+                    "Assistive ComboBox visible anchor-window search. combo={Combo}, requested={Requested}, window={Window}, visibleCount={Count}, signature={Signature}",
+                    SafeElementName(comboBox),
+                    requestedValue,
+                    window,
+                    visibleItems.Count,
+                    signature);
+
+                var exactItem = FindExactVisibleComboBoxItem(visibleItems, requestedValue);
+                if (exactItem != null)
+                {
+                    _logger.LogInformation(
+                        "Assistive ComboBox visible anchor-window search found exact visible item. combo={Combo}, requested={Requested}, window={Window}, item={Item}",
+                        SafeElementName(comboBox),
+                        requestedValue,
+                        window,
+                        SafeElementName(exactItem));
+
+                    if (!ActivateComboBoxListItem(exactItem, requestedValue))
+                        return false;
+
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+                    return VerifyComboBoxSelectedValue(comboBox, requestedValue);
+                }
+
+                if (visibleItems.Count == 0)
+                {
+                    _logger.LogInformation(
+                        "Assistive ComboBox visible anchor-window search stopped because no visible items were read. combo={Combo}, requested={Requested}, window={Window}",
+                        SafeElementName(comboBox),
+                        requestedValue,
+                        window);
+
+                    break;
+                }
+
+                if (window > 0 &&
+                    string.Equals(previousSignature, signature, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation(
+                        "Assistive ComboBox visible anchor-window search stopped because visible window did not change. combo={Combo}, requested={Requested}, signature={Signature}",
+                        SafeElementName(comboBox),
+                        requestedValue,
+                        signature);
+
+                    break;
+                }
+
+                previousSignature = signature;
+
+                var anchorItem = visibleItems[^1];
+                var downCount = visibleItems.Count;
+
+                if (!ClickComboBoxAnchorItem(anchorItem, requestedValue))
+                    return false;
+
+                Thread.Sleep(ComboBoxAnchorMoveDelayMs);
+
+                if (!OpenComboBoxDropdown(comboBox))
+                    return false;
+
+                Thread.Sleep(ComboBoxAnchorMoveDelayMs);
+
+                if (!PressComboBoxDownKeys(comboBox, downCount, requestedValue))
+                    return false;
+            }
+
+            _logger.LogWarning(
+                "Assistive ComboBox visible anchor-window search did not find requested value. combo={Combo}, requested={Requested}, maxWindows={MaxWindows}, actual={Actual}",
+                SafeElementName(comboBox),
+                requestedValue,
+                ComboBoxAnchorWindowSearchMaxWindows,
+                GetComboBoxCurrentValue(comboBox));
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Assistive ComboBox visible anchor-window search failed. combo={Combo}, requested={Requested}",
+                SafeElementName(comboBox),
+                requestedValue);
+
+            return false;
+        }
+    }
+
+    private List<AutomationElement> GetCurrentVisibleComboBoxItems(
+        AutomationElement comboBox)
+    {
+        return FindDynamicComboBoxItems(
+                comboBox,
+                maxItems: ComboBoxPagedSearchMaxVisibleItems)
+            .Where(x =>
+                !string.IsNullOrWhiteSpace(SafeElementName(x)) ||
+                !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
+            .Take(ComboBoxPagedSearchMaxVisibleItems)
+            .ToList();
+    }
+
+    private AutomationElement? FindExactVisibleComboBoxItem(
+        IReadOnlyList<AutomationElement> visibleItems,
+        string requestedValue)
+    {
+        foreach (var item in visibleItems)
+        {
+            var name = SafeElementName(item);
+            var automationId = SafeElementAutomationId(item);
+
+            if (string.Equals(
+                    NormalizeMenuText(name),
+                    NormalizeMenuText(requestedValue),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return item;
+            }
+
+            if (string.Equals(
+                    NormalizeMenuText(automationId),
+                    NormalizeMenuText(requestedValue),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return item;
+            }
+        }
+
+        return null;
+    }
+
+    private bool ClickComboBoxAnchorItem(
+        AutomationElement anchorItem,
+        string requestedValue)
+    {
+        try
+        {
+            var rect = anchorItem.BoundingRectangle;
+
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                return false;
+
+            var point = new System.Drawing.Point(
+                (int)Math.Round(rect.Left + rect.Width / 2.0),
+                (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+            _logger.LogInformation(
+                "ComboBox anchor click. requested={Requested}, anchor={Anchor}, point={Point}",
+                requestedValue,
+                SafeElementName(anchorItem),
+                point);
+
+            return TryPhysicalClickPoint(point, "ComboBox Anchor Click");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox anchor click failed. requested={Requested}, anchor={Anchor}",
+                requestedValue,
+                SafeElementName(anchorItem));
+
+            return false;
+        }
+    }
+
+    private bool PressComboBoxDownKeys(
+        AutomationElement comboBox,
+        int count,
+        string requestedValue)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!TryFocusOrClickComboBox(comboBox))
+                return false;
+
+            Thread.Sleep(ComboBoxAnchorMoveDelayMs);
+
+            for (var i = 0; i < count; i++)
+            {
+                Keyboard.Press(VirtualKeyShort.DOWN);
+                Keyboard.Release(VirtualKeyShort.DOWN);
+                Thread.Sleep(ComboBoxAnchorMoveDelayMs);
+            }
+
+            Thread.Sleep(ComboBoxAnchorReadDelayMs);
+
+            _logger.LogInformation(
+                "ComboBox anchor movement completed. requested={Requested}, downCount={Count}",
+                requestedValue,
+                count);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox anchor DOWN movement failed. requested={Requested}, count={Count}",
+                requestedValue,
+                count);
+
+            return false;
+        }
+    }
+
+    private string BuildVisibleComboBoxItemsSignature(
+        IReadOnlyCollection<AutomationElement> items)
+    {
+        if (items.Count == 0)
+            return string.Empty;
+
+        return string.Join(
+            "||",
+            items.Select(item =>
+            {
+                var name = NormalizeMenuText(SafeElementName(item));
+                var aid = NormalizeMenuText(SafeElementAutomationId(item));
+                return $"{name}|{aid}";
+            }));
     }
 
     private bool TrySelectComboBoxByKeyboardStepSearch(
