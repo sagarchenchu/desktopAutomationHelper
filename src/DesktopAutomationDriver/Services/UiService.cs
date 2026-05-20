@@ -3704,6 +3704,8 @@ public class UiService : IUiService
 
         if (IsHugeComboBoxDropdown(session, comboBox))
         {
+            var allowKeyboardFallback = req.AllowKeyboardFallback == true;
+
             _logger.LogInformation(
                 "ComboBox detected as huge list. Using paged visible-list search first. combo={Combo}, value={Value}",
                 SafeElementName(comboBox),
@@ -3723,8 +3725,24 @@ public class UiService : IUiService
                 };
             }
 
+            if (!allowKeyboardFallback)
+            {
+                var disabledFallbackVisibleBatch = GetCurrentVisibleComboBoxBatch(session, comboBox, ComboBoxPagedSearchBatchSize)
+                    .Select(SafeElementName)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToList();
+
+                throw new InvalidOperationException(
+                    $"Huge ComboBox item '{itemName}' was not selected by paged visible-list search. " +
+                    "Keyboard type-ahead fallback is disabled by default for huge ComboBoxes; set allowKeyboardFallback=true to enable it. " +
+                    $"dropdownListDetected={FindDynamicComboBoxList(session, comboBox) != null}, " +
+                    $"expandedState={GetComboBoxExpandState(comboBox)}, " +
+                    $"currentValue='{GetComboBoxCurrentValue(session, comboBox)}', " +
+                    $"visibleBatch='{string.Join(", ", disabledFallbackVisibleBatch)}'");
+            }
+
             _logger.LogWarning(
-                "Huge ComboBox paged visible-list search failed. Trying keyboard type-ahead fallback. combo={Combo}, value={Value}",
+                "Huge ComboBox paged visible-list search failed. Trying keyboard type-ahead fallback because allowKeyboardFallback=true. combo={Combo}, value={Value}",
                 SafeElementName(comboBox),
                 itemName);
 
