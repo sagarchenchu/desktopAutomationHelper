@@ -5905,6 +5905,209 @@ public class UiService : IUiService
         }
     }
 
+    private bool CommitExactVisibleComboBoxItem(
+        AutomationSession session,
+        AutomationElement comboBox,
+        AutomationElement item,
+        string requestedValue,
+        string source)
+    {
+        try
+        {
+            _logger.LogInformation(
+                "Committing exact ComboBox item. source={Source}, combo={Combo}, requested={Requested}, item={Item}",
+                source,
+                SafeElementName(comboBox),
+                requestedValue,
+                SafeElementName(item));
+
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                try
+                {
+                    item.Patterns.SelectionItem.Pattern.Select();
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    {
+                        _logger.LogInformation(
+                            "ComboBox item committed by SelectionItemPattern. source={Source}, requested={Requested}",
+                            source,
+                            requestedValue);
+
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "SelectionItemPattern commit failed. source={Source}, requested={Requested}",
+                        source,
+                        requestedValue);
+                }
+            }
+
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                try
+                {
+                    item.Patterns.Invoke.Pattern.Invoke();
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    {
+                        _logger.LogInformation(
+                            "ComboBox item committed by InvokePattern. source={Source}, requested={Requested}",
+                            source,
+                            requestedValue);
+
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "InvokePattern commit failed. source={Source}, requested={Requested}",
+                        source,
+                        requestedValue);
+                }
+            }
+
+            if (TryPhysicalClickComboBoxListItem(item, requestedValue, source))
+            {
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                {
+                    _logger.LogInformation(
+                        "ComboBox item committed by physical click. source={Source}, requested={Requested}",
+                        source,
+                        requestedValue);
+
+                    return true;
+                }
+            }
+
+            if (TryFocusComboBoxListItem(item, requestedValue, source))
+            {
+                Thread.Sleep(ComboBoxAnchorMoveDelayMs);
+
+                Keyboard.Press(VirtualKeyShort.RETURN);
+                Keyboard.Release(VirtualKeyShort.RETURN);
+
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                {
+                    _logger.LogInformation(
+                        "ComboBox item committed by ENTER. source={Source}, requested={Requested}",
+                        source,
+                        requestedValue);
+
+                    return true;
+                }
+            }
+
+            _logger.LogWarning(
+                "ComboBox exact item was visible but commit did not verify. source={Source}, requested={Requested}, actual={Actual}, item={Item}",
+                source,
+                requestedValue,
+                GetComboBoxCurrentValue(session, comboBox),
+                SafeElementName(item));
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Commit exact ComboBox item failed. source={Source}, requested={Requested}, item={Item}",
+                source,
+                requestedValue,
+                SafeElementName(item));
+
+            return false;
+        }
+    }
+
+    private bool TryPhysicalClickComboBoxListItem(
+        AutomationElement item,
+        string requestedValue,
+        string source)
+    {
+        try
+        {
+            var rect = item.BoundingRectangle;
+
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+            {
+                _logger.LogInformation(
+                    "ComboBox item physical click skipped because item rectangle is invalid. source={Source}, requested={Requested}, item={Item}",
+                    source,
+                    requestedValue,
+                    SafeElementName(item));
+
+                return false;
+            }
+
+            var point = new Point(
+                (int)Math.Round(rect.Left + rect.Width / 2.0),
+                (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+            _logger.LogInformation(
+                "Physical clicking exact ComboBox ListItem. source={Source}, requested={Requested}, item={Item}, point={Point}",
+                source,
+                requestedValue,
+                SafeElementName(item),
+                point);
+
+            return TryPhysicalClickPoint(point, $"ComboBox Commit {source}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Physical click exact ComboBox ListItem failed. source={Source}, requested={Requested}, item={Item}",
+                source,
+                requestedValue,
+                SafeElementName(item));
+
+            return false;
+        }
+    }
+
+    private bool TryFocusComboBoxListItem(
+        AutomationElement item,
+        string requestedValue,
+        string source)
+    {
+        try
+        {
+            item.Focus();
+
+            _logger.LogInformation(
+                "Focused exact ComboBox ListItem before ENTER commit. source={Source}, requested={Requested}, item={Item}",
+                source,
+                requestedValue,
+                SafeElementName(item));
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(
+                ex,
+                "Focus exact ComboBox ListItem failed. source={Source}, requested={Requested}, item={Item}",
+                source,
+                requestedValue,
+                SafeElementName(item));
+
+            return false;
+        }
+    }
+
     private bool TrySetComboBoxValueByValuePattern(
         AutomationSession session,
         AutomationElement comboBox,
@@ -6239,11 +6442,17 @@ public class UiService : IUiService
                         page,
                         SafeElementName(item));
 
-                    if (!ActivateComboBoxListItem(item, itemName))
-                        return false;
+                    if (CommitExactVisibleComboBoxItem(
+                            session,
+                            comboBox,
+                            item,
+                            itemName,
+                            "huge-list-visible-search"))
+                    {
+                        return true;
+                    }
 
-                    Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
-                    return VerifyComboBoxSelectedValue(session, comboBox, itemName);
+                    return false;
                 }
             }
 
@@ -7002,11 +7211,17 @@ public class UiService : IUiService
                         window,
                         SafeElementName(exactItem));
 
-                    if (!ActivateComboBoxListItem(exactItem, requestedValue))
-                        return false;
+                    if (CommitExactVisibleComboBoxItem(
+                            session,
+                            comboBox,
+                            exactItem,
+                            requestedValue,
+                            "huge-list-visible-search"))
+                    {
+                        return true;
+                    }
 
-                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
-                    return VerifyComboBoxSelectedValue(session, comboBox, requestedValue);
+                    return false;
                 }
 
                 if (visibleItems.Count == 0)
@@ -8906,6 +9121,11 @@ public class UiService : IUiService
             _logger.LogWarning(ex, "{ActionName}: SendInstantLeftClick failed", actionName);
             return false;
         }
+    }
+
+    private bool TryPhysicalClickPoint(Point point, string actionName)
+    {
+        return SendInstantLeftClick(point, actionName);
     }
 
     private bool TryInstantPhysicalRightClick(AutomationElement element, string actionName)
