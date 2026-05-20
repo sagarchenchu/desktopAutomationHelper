@@ -4330,7 +4330,6 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         return false;
-
     }
 
     private AutomationElement? FindComboBoxOpenButton(AutomationElement comboBox)
@@ -4810,18 +4809,16 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
-            if (comboBox.Patterns.ExpandCollapse.IsSupported)
-            {
-                return comboBox.Patterns.ExpandCollapse.Pattern.ExpandCollapseState
-                    == ExpandCollapseState.Expanded;
-            }
+            if (!comboBox.Patterns.ExpandCollapse.IsSupported)
+                return false;
+
+            return comboBox.Patterns.ExpandCollapse.Pattern.ExpandCollapseState
+                == ExpandCollapseState.Expanded;
         }
         catch
         {
             return false;
         }
-
-        return false;
     }
 
     private bool VerifyComboBoxSelectedValue(
