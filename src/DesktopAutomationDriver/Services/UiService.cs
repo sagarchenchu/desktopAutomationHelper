@@ -92,6 +92,9 @@ public class UiService : IUiService
     private const int MaxAssistiveDropdownItemsToDisplay = 25;
     private const int MaxDynamicDropdownCandidates = 80;
     private const int MaxDynamicPopupSearchDepth = 4;
+    private const int MaxApplicationContextMenuCandidates = 80;
+    private const int MaxApplicationContextMenuSearchDepth = 4;
+    private const int MaxApplicationContextMenuItems = 100;
     private const int DefaultListResponseLimit = 500;
     private const int MaxListResponseLimit = 5000;
     private const string DesktopRootName = "Desktop";
@@ -234,6 +237,7 @@ public class UiService : IUiService
             "clicklogicalmenupath" => ClickLogicalMenuPath(request),
             "clickmenulogical" => ClickLogicalMenuPath(request),
             "menupath"         => ClickLogicalMenuPath(request),
+            "contextmenupath"  => ContextMenuPath(request),
             "inspectlogicalmenu" => InspectLogicalMenu(request),
             "inspectmenupathcandidates" => InspectMenuPathCandidates(request),
             "dumpmenus"        => DumpLogicalMenus(request),
@@ -1529,6 +1533,77 @@ public class UiService : IUiService
         }
 
         throw new InvalidOperationException($"Failed to right-click element '{SafeElementName(element)}'.");
+    }
+
+    private object? ContextMenuPath(UiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new ArgumentException("value is required for contextmenupath.");
+
+        var element = FindWithRetry(req);
+        var rawValue = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
+        var pathParts = rawValue
+            .Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        if (pathParts.Count == 0)
+            throw new ArgumentException("contextmenupath requires at least one menu item in value.");
+
+        BringElementWindowToForeground(element);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        if (!TryInstantPhysicalRightClick(element, "ContextMenuPath RightClick"))
+            throw new InvalidOperationException($"Failed to right-click element '{SafeElementName(element)}'.");
+
+        Thread.Sleep(MenuExpandDelayMs);
+
+        var session = RequireSession();
+        var currentRoot = FindActiveContextMenuPopup(session)
+            ?? throw new InvalidOperationException("No application context menu was detected after right-click.");
+
+        for (var i = 0; i < pathParts.Count; i++)
+        {
+            var part = pathParts[i];
+            var item = FindContextMenuItemByText(session, currentRoot, part);
+
+            if (item == null)
+            {
+                var available = GetContextMenuItems(session, currentRoot, MaxAssistiveDropdownItemsToDisplay)
+                    .Select(SafeElementName)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToList();
+
+                throw new InvalidOperationException(
+                    $"Context menu item '{part}' was not found for path '{rawValue}'. Available: {string.Join(", ", available)}");
+            }
+
+            var isLast = i == pathParts.Count - 1;
+
+            if (isLast)
+            {
+                if (!ActivateContextMenuItem(item, part))
+                    throw new InvalidOperationException($"Failed to activate context menu item '{part}'.");
+
+                return new
+                {
+                    selected = rawValue,
+                    strategy = "context-menu-path",
+                    element = CreateElementSnapshot(element)
+                };
+            }
+
+            if (!OpenContextSubMenu(item, part))
+                throw new InvalidOperationException($"Failed to open context submenu '{part}' for path '{rawValue}'.");
+
+            Thread.Sleep(MenuExpandDelayMs);
+
+            currentRoot = FindContextSubMenuPopup(session, item) ?? FindActiveContextMenuPopup(session);
+
+            if (currentRoot == null)
+                throw new InvalidOperationException($"Context submenu popup was not found after opening '{part}'.");
+        }
+
+        return null;
     }
 
     private object? Hover(UiRequest req)
@@ -6822,6 +6897,282 @@ public class UiService : IUiService
             _logger.LogWarning(ex, "ActivateMenuItem failed for dynamic menu parent {Menu}", SafeElementName(menuItem));
             return false;
         }
+    }
+
+    private AutomationElement? FindActiveContextMenuPopup(AutomationSession session)
+    {
+        try
+        {
+            foreach (var candidate in GetContextMenuPopupCandidates(session))
+            {
+                var items = GetContextMenuItems(session, candidate, maxItems: 1);
+                if (items.Count > 0)
+                    return candidate;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to detect active context menu popup.");
+        }
+
+        return null;
+    }
+
+    private AutomationElement? FindContextSubMenuPopup(
+        AutomationSession session,
+        AutomationElement submenuItem)
+    {
+        try
+        {
+            var itemRect = submenuItem.BoundingRectangle;
+
+            foreach (var candidate in GetContextMenuPopupCandidates(session))
+            {
+                var rect = candidate.BoundingRectangle;
+
+                if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                    continue;
+
+                var nearSubmenu =
+                    rect.Left >= itemRect.Right - SubmenuHorizontalProximityPx &&
+                    rect.Top <= itemRect.Bottom + SubmenuVerticalProximityPx &&
+                    rect.Bottom >= itemRect.Top - SubmenuVerticalProximityPx;
+
+                if (nearSubmenu && GetContextMenuItems(session, candidate, maxItems: 1).Count > 0)
+                    return candidate;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to detect context submenu popup.");
+        }
+
+        return null;
+    }
+
+    private List<AutomationElement> GetContextMenuPopupCandidates(AutomationSession session)
+    {
+        var results = new List<AutomationElement>();
+
+        try
+        {
+            var desktop = session.Automation.GetDesktop();
+            var queue = new Queue<(AutomationElement Element, int Depth)>();
+
+            foreach (var child in desktop.FindAllChildren())
+                queue.Enqueue((child, 1));
+
+            while (queue.Count > 0 && results.Count < MaxApplicationContextMenuCandidates)
+            {
+                var (element, depth) = queue.Dequeue();
+
+                try
+                {
+                    var ct = element.ControlType;
+                    var rect = element.BoundingRectangle;
+
+                    if (IsContextMenuContainerType(ct) &&
+                        !rect.IsEmpty &&
+                        rect.Width > 0 &&
+                        rect.Height > 0)
+                    {
+                        results.Add(element);
+                    }
+
+                    if (depth >= MaxApplicationContextMenuSearchDepth)
+                        continue;
+
+                    foreach (var child in element.FindAllChildren())
+                    {
+                        queue.Enqueue((child, depth + 1));
+                        if (queue.Count + results.Count >= MaxApplicationContextMenuCandidates)
+                            break;
+                    }
+                }
+                catch
+                {
+                    // ignore stale candidate
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed collecting context menu popup candidates.");
+        }
+
+        return results;
+    }
+
+    private List<AutomationElement> GetContextMenuItems(
+        AutomationSession session,
+        AutomationElement menuRoot,
+        int maxItems = MaxApplicationContextMenuItems)
+    {
+        var results = new List<AutomationElement>();
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        try
+        {
+            var queue = new Queue<AutomationElement>();
+            queue.Enqueue(menuRoot);
+
+            while (queue.Count > 0 && results.Count < maxItems)
+            {
+                var current = queue.Dequeue();
+                IReadOnlyList<AutomationElement> children;
+
+                try
+                {
+                    children = current.FindAllChildren();
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (var child in children)
+                {
+                    if (results.Count >= maxItems)
+                        break;
+
+                    try
+                    {
+                        var ct = child.ControlType;
+                        var name = SafeElementName(child);
+
+                        if (IsContextMenuItemType(ct) && !string.IsNullOrWhiteSpace(name))
+                        {
+                            var key = GetElementDedupeKey(child);
+                            if (key == null || seenKeys.Add(key))
+                                results.Add(child);
+                        }
+
+                        if (IsContextMenuContainerType(ct))
+                            queue.Enqueue(child);
+                    }
+                    catch
+                    {
+                        // ignore stale child
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed reading context menu items.");
+        }
+
+        return results;
+    }
+
+    private AutomationElement? FindContextMenuItemByText(
+        AutomationSession session,
+        AutomationElement menuRoot,
+        string itemText)
+    {
+        var requested = NormalizeMenuText(itemText);
+
+        foreach (var item in GetContextMenuItems(session, menuRoot, MaxApplicationContextMenuItems))
+        {
+            var name = NormalizeMenuText(SafeElementName(item));
+
+            if (string.Equals(name, requested, StringComparison.OrdinalIgnoreCase))
+                return item;
+        }
+
+        return null;
+    }
+
+    private bool ActivateContextMenuItem(
+        AutomationElement item,
+        string itemName)
+    {
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                Thread.Sleep(MenuActionDelayMs);
+                return true;
+            }
+
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                item.Patterns.SelectionItem.Pattern.Select();
+                Thread.Sleep(MenuActionDelayMs);
+                return true;
+            }
+
+            var rect = item.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round(rect.Left + rect.Width / 2.0),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                return SendInstantLeftClick(point, $"Context Menu Item: {itemName}");
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed activating context menu item {Item}", itemName);
+            return false;
+        }
+    }
+
+    private bool OpenContextSubMenu(
+        AutomationElement item,
+        string itemName)
+    {
+        try
+        {
+            if (item.Patterns.ExpandCollapse.IsSupported)
+            {
+                item.Patterns.ExpandCollapse.Pattern.Expand();
+                Thread.Sleep(MenuExpandDelayMs);
+                return true;
+            }
+
+            var rect = item.BoundingRectangle;
+
+            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+            {
+                var point = new Point(
+                    (int)Math.Round(rect.Right - CalculateSubmenuArrowOffset((double)rect.Width)),
+                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                SendInstantLeftClick(point, $"Open Context Submenu: {itemName}");
+                Thread.Sleep(MenuExpandDelayMs);
+                return true;
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed opening context submenu {Item}", itemName);
+            return false;
+        }
+    }
+
+    private static bool IsContextMenuContainerType(ControlType controlType)
+    {
+        return controlType == ControlType.Menu ||
+               controlType == ControlType.Window ||
+               controlType == ControlType.Pane ||
+               controlType == ControlType.ToolBar ||
+               controlType == ControlType.Custom;
+    }
+
+    private static bool IsContextMenuItemType(ControlType controlType)
+    {
+        return controlType == ControlType.MenuItem ||
+               controlType == ControlType.ListItem ||
+               controlType == ControlType.Button ||
+               controlType == ControlType.Text;
     }
 
     private AutomationElement? FindDynamicMenuDropdown(AutomationSession session, AutomationElement parentMenuItem)
