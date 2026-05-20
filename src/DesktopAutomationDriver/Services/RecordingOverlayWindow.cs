@@ -5199,6 +5199,13 @@ public sealed class RecordingOverlayWindow : Form
 
                     if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                         return true;
+
+                    Keyboard.Press(VirtualKeyShort.RETURN);
+                    Keyboard.Release(VirtualKeyShort.RETURN);
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source + "-selectionitem-enter"))
+                        return true;
                 }
                 catch (Exception ex)
                 {
@@ -5214,6 +5221,13 @@ public sealed class RecordingOverlayWindow : Form
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
                     if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
+                        return true;
+
+                    Keyboard.Press(VirtualKeyShort.TAB);
+                    Keyboard.Release(VirtualKeyShort.TAB);
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source + "-invoke-tab"))
                         return true;
                 }
                 catch (Exception ex)
@@ -6741,22 +6755,31 @@ public sealed class RecordingOverlayWindow : Form
                     itemName,
                     ComboBoxScrollSearchMaxAttempts);
 
-                if (item != null && ActivateComboBoxListItem(item, itemName))
+                if (item != null)
                 {
-                    Thread.Sleep(300);
-
-                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, itemName, "assistive-listitem-click"))
+                    if (CommitExactVisibleComboBoxItem(
+                            comboBox,
+                            item,
+                            itemName,
+                            "assistive-small-combobox-exact-visible-commit"))
                     {
-                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "listitem-click");
+                        RecordComboBoxSelection(
+                            comboBox,
+                            comboInfo,
+                            itemName,
+                            "small-combobox-exact-visible-commit");
+
                         return true;
                     }
 
-                    var actualAfterActivation = GetComboBoxCurrentValue(comboBox);
+                    var actualAfterCommit = GetComboBoxCurrentValue(comboBox);
 
                     _logger.LogWarning(
-                        "ComboBox ListItem click did not select expected value. requested={Requested}, actual={Actual}. Trying keyboard type-ahead fallback.",
+                        "Assistive small ComboBox exact item was found but final commit did not verify. requested={Requested}, actual={Actual}, combo={Combo}, item={Item}",
                         itemName,
-                        actualAfterActivation);
+                        actualAfterCommit,
+                        SafeElementName(comboBox),
+                        SafeElementName(item));
                 }
             }
 
@@ -7515,7 +7538,16 @@ public sealed class RecordingOverlayWindow : Form
                 firstMatched);
 
             if (!firstMatched)
+            {
+                _logger.LogWarning(
+                    "Assistive ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
+                    source,
+                    requestedValue,
+                    GetComboBoxCurrentValue(comboBox),
+                    SafeElementName(comboBox));
+
                 return false;
+            }
 
             Thread.Sleep(ComboBoxPostCommitStableDelayMs);
 
@@ -7533,10 +7565,11 @@ public sealed class RecordingOverlayWindow : Form
             if (!secondMatched)
             {
                 _logger.LogWarning(
-                    "Assistive ComboBox post-collapse stable verification failed; rollback detected. source={Source}, requested={Requested}, actual={Actual}",
+                    "Assistive ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
                     source,
                     requestedValue,
-                    secondActual);
+                    GetComboBoxCurrentValue(comboBox),
+                    SafeElementName(comboBox));
             }
 
             return secondMatched;

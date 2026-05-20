@@ -3863,56 +3863,35 @@ public class UiService : IUiService
                 $"availableFirst{MaxAssistiveDropdownItemsToDisplay}='{string.Join(", ", available)}'");
         }
 
-        if (!ActivateComboBoxListItem(item, itemName))
-            throw new InvalidOperationException($"Failed to activate ComboBox item '{itemName}'.");
-
-        Thread.Sleep(300);
-
-        if (!VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, itemName, "listitem-click"))
+        if (!CommitExactVisibleComboBoxItem(
+                session,
+                comboBox,
+                item,
+                itemName,
+                "small-combobox-exact-visible-commit"))
         {
-            var actualAfterActivation = GetComboBoxCurrentValue(session, comboBox);
+            var actualAfterCommit = GetComboBoxCurrentValue(session, comboBox);
 
             _logger.LogWarning(
-                "ComboBox ListItem activation did not select expected value. requested={Requested}, actual={Actual}. Trying keyboard type-ahead fallback.",
+                "Small ComboBox exact item was found but final commit did not verify. requested={Requested}, actual={Actual}, combo={Combo}, item={Item}",
                 itemName,
-                actualAfterActivation);
-
-            if (TrySelectComboBoxByKeyboardSafe(session, comboBox, itemName))
-            {
-                var actual = GetComboBoxCurrentValue(session, comboBox);
-
-                return new
-                {
-                    selected = itemName,
-                    actual,
-                    comboBox = SafeElementName(comboBox),
-                    verified = true,
-                    strategy = "listitem-click-keyboard-typeahead-fallback",
-                    previousActual = actualAfterActivation
-                };
-            }
-
-            var actualAfterFallback = GetComboBoxCurrentValue(session, comboBox);
-
-            _logger.LogWarning(
-                "ComboBox keyboard type-ahead fallback after ListItem activation did not verify. requested={Requested}, actual={Actual}, previousActual={PreviousActual}",
-                itemName,
-                actualAfterFallback,
-                actualAfterActivation);
+                actualAfterCommit,
+                SafeElementName(comboBox),
+                SafeElementName(item));
 
             throw new InvalidOperationException(
-                $"ComboBox selection failed to verify after list item activation and keyboard type-ahead fallback. Requested='{itemName}', Actual='{actualAfterFallback}'");
+                $"ComboBox item '{itemName}' was visible/found but did not commit. Actual='{actualAfterCommit}'.");
         }
 
-        try { comboBox.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
-        catch { /* best effort */ }
+        var actual = GetComboBoxCurrentValue(session, comboBox);
 
         return new
         {
             selected = itemName,
-            actual = GetComboBoxCurrentValue(session, comboBox),
+            actual,
             comboBox = SafeElementName(comboBox),
-            verified = true
+            verified = true,
+            strategy = "small-combobox-exact-visible-commit"
         };
     }
 
@@ -6200,6 +6179,20 @@ public class UiService : IUiService
 
                         return true;
                     }
+
+                    Keyboard.Press(VirtualKeyShort.RETURN);
+                    Keyboard.Release(VirtualKeyShort.RETURN);
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source + "-selectionitem-enter"))
+                    {
+                        _logger.LogInformation(
+                            "ComboBox item committed by SelectionItemPattern plus ENTER. source={Source}, requested={Requested}",
+                            source,
+                            requestedValue);
+
+                        return true;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -6222,6 +6215,20 @@ public class UiService : IUiService
                     {
                         _logger.LogInformation(
                             "ComboBox item committed by InvokePattern. source={Source}, requested={Requested}",
+                            source,
+                            requestedValue);
+
+                        return true;
+                    }
+
+                    Keyboard.Press(VirtualKeyShort.TAB);
+                    Keyboard.Release(VirtualKeyShort.TAB);
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source + "-invoke-tab"))
+                    {
+                        _logger.LogInformation(
+                            "ComboBox item committed by InvokePattern plus TAB. source={Source}, requested={Requested}",
                             source,
                             requestedValue);
 
@@ -8323,7 +8330,16 @@ public class UiService : IUiService
                 firstMatched);
 
             if (!firstMatched)
+            {
+                _logger.LogWarning(
+                    "ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
+                    source,
+                    requestedValue,
+                    GetComboBoxCurrentValue(session, comboBox),
+                    SafeElementName(comboBox));
+
                 return false;
+            }
 
             // Read again after a short delay to catch rollback/default reset.
             Thread.Sleep(ComboBoxPostCommitStableDelayMs);
@@ -8342,10 +8358,11 @@ public class UiService : IUiService
             if (!secondMatched)
             {
                 _logger.LogWarning(
-                    "ComboBox post-collapse stable verification failed; rollback detected. source={Source}, requested={Requested}, actual={Actual}",
+                    "ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
                     source,
                     requestedValue,
-                    secondActual);
+                    GetComboBoxCurrentValue(session, comboBox),
+                    SafeElementName(comboBox));
             }
 
             return secondMatched;
