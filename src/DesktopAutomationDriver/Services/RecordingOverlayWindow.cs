@@ -5847,23 +5847,12 @@ public sealed class RecordingOverlayWindow : Form
                     }
 
                     _logger.LogWarning(
-                        "Assistive huge ComboBox paged visible-list search failed. Trying keyboard type-ahead fallback. combo={Combo}, value={Value}",
-                        SafeElementName(comboBox),
-                        itemName);
-
-                    if (TrySelectComboBoxByKeyboard(comboBox, itemName))
-                    {
-                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "keyboard-typeahead-huge-list");
-                        return true;
-                    }
-
-                    _logger.LogWarning(
-                        "Assistive huge ComboBox selection failed after paged visible-list search and keyboard type-ahead. requested={Requested}, actual={Actual}",
+                        "Assistive huge ComboBox selection failed after paged visible-list search. Keyboard type-ahead fallback is disabled for huge ComboBoxes. requested={Requested}, actual={Actual}",
                         itemName,
                         GetComboBoxCurrentValue(comboBox));
 
                     _statusLabel.Text =
-                        $"ComboBox selection failed. Expected '{itemName}', actual '{GetComboBoxCurrentValue(comboBox)}'.";
+                        $"Huge ComboBox selection failed by visible-list search. Expected '{itemName}', actual '{GetComboBoxCurrentValue(comboBox)}'.";
 
                     return false;
                 }
