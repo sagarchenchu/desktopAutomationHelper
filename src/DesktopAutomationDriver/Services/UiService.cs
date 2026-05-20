@@ -5711,25 +5711,17 @@ public class UiService : IUiService
                 }
             }
 
-            var signature = BuildComboBoxVisibleItemsSignature(items);
-
-            if (!seenSignatures.Add(signature))
-            {
-                _logger.LogInformation(
-                    "ComboBox scroll search stopped because visible items did not change. item={Item}, attempt={Attempt}",
-                    itemName,
-                    attempt);
-
-                break;
-            }
+            var signatureBeforeScroll = BuildComboBoxVisibleItemsSignature(items);
+            seenSignatures.Add(signatureBeforeScroll);
 
             if (attempt == maxScrollAttempts)
                 break;
 
-            var scrolled = ScrollComboBoxDropdown(
+            var scrolledByWheel = ScrollComboBoxDropdown(
                 session,
                 comboBox,
                 ComboBoxScrollPageWheelClicks);
+            var scrolled = scrolledByWheel;
 
             if (!scrolled)
             {
@@ -5752,6 +5744,50 @@ public class UiService : IUiService
             }
 
             Thread.Sleep(ComboBoxScrollSettleDelayMs);
+
+            var afterScrollItems = FindDynamicComboBoxItems(
+                session,
+                comboBox,
+                maxItems: ComboBoxVisibleItemSearchLimit);
+            var signatureAfterScroll = BuildComboBoxVisibleItemsSignature(afterScrollItems);
+
+            if (scrolledByWheel &&
+                string.Equals(signatureBeforeScroll, signatureAfterScroll, StringComparison.Ordinal))
+            {
+                _logger.LogWarning(
+                    "ComboBox mouse-wheel scroll had no visible effect. Trying PageDown fallback. item={Item}, attempt={Attempt}",
+                    itemName,
+                    attempt);
+
+                if (!ScrollComboBoxDropdownByKeyboard(session, comboBox))
+                {
+                    _logger.LogWarning(
+                        "ComboBox PageDown fallback failed after no-effect mouse-wheel scroll. item={Item}, attempt={Attempt}",
+                        itemName,
+                        attempt);
+
+                    break;
+                }
+
+                Thread.Sleep(ComboBoxScrollSettleDelayMs);
+
+                afterScrollItems = FindDynamicComboBoxItems(
+                    session,
+                    comboBox,
+                    maxItems: ComboBoxVisibleItemSearchLimit);
+                signatureAfterScroll = BuildComboBoxVisibleItemsSignature(afterScrollItems);
+            }
+
+            if (string.Equals(signatureBeforeScroll, signatureAfterScroll, StringComparison.Ordinal) ||
+                !seenSignatures.Add(signatureAfterScroll))
+            {
+                _logger.LogInformation(
+                    "ComboBox scroll search stopped because visible items did not change after scroll. item={Item}, attempt={Attempt}",
+                    itemName,
+                    attempt);
+
+                break;
+            }
         }
 
         return null;
