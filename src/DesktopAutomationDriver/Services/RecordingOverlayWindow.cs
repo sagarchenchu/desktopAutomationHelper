@@ -4326,7 +4326,8 @@ public sealed class RecordingOverlayWindow : Form
 
             if (item.Patterns.SelectionItem.IsSupported)
             {
-                item.Patterns.SelectionItem.Pattern.Select();
+                var selectionItemPattern = item.Patterns.SelectionItem.Pattern;
+                selectionItemPattern.Select();
                 Thread.Sleep(PostClickSettleMs);
                 return true;
             }
@@ -4942,7 +4943,8 @@ public sealed class RecordingOverlayWindow : Form
 
             if (item.Patterns.Invoke.IsSupported)
             {
-                item.Patterns.Invoke.Pattern.Invoke();
+                var invokePattern = item.Patterns.Invoke.Pattern;
+                invokePattern.Invoke();
 
                 _logger.LogInformation(
                     "Assistive ComboBox item activated using InvokePattern. source={Source}, requested={Requested}, item={Item}",
