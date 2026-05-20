@@ -5997,7 +5997,7 @@ public class UiService : IUiService
                     item.Patterns.SelectionItem.Pattern.Select();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, "keyboard-step-search"))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
                     {
                         _logger.LogInformation(
                             "ComboBox item committed using SelectionItemPattern. source={Source}, requested={Requested}",

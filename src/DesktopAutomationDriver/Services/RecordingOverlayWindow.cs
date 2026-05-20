@@ -5062,7 +5062,7 @@ public sealed class RecordingOverlayWindow : Form
                     item.Patterns.SelectionItem.Pattern.Select();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, "assistive-keyboard-step-search"))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                         return true;
                 }
                 catch (Exception ex)
