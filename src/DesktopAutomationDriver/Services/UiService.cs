@@ -3652,7 +3652,7 @@ public class UiService : IUiService
 
             throw new InvalidOperationException(
                 $"ComboBox item '{itemName}' was not found after scrolling or keyboard type-ahead. " +
-                $"Available current items first {MaxAssistiveDropdownItemsToDisplay}: {string.Join(", ", available)}");
+                $"First {MaxAssistiveDropdownItemsToDisplay} available items: {string.Join(", ", available)}");
         }
 
         if (!ActivateComboBoxListItem(item, itemName))
@@ -5836,6 +5836,7 @@ public class UiService : IUiService
             Thread.Sleep(ComboBoxTypeAheadCommitDelayMs);
 
             Keyboard.Press(VirtualKeyShort.RETURN);
+            Keyboard.Release(VirtualKeyShort.RETURN);
 
             Thread.Sleep(ComboBoxTypeAheadCommitDelayMs);
 
