@@ -7157,7 +7157,7 @@ public sealed class RecordingOverlayWindow : Form
 
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, "assistive-keyboard-step-search"))
                     {
                         _logger.LogInformation(
                             "Assistive ComboBox keyboard step search selected requested value. combo={Combo}, value={Value}, step={Step}",
