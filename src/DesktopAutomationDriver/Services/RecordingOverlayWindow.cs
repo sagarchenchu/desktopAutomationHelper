@@ -6130,7 +6130,7 @@ public sealed class RecordingOverlayWindow : Form
 
             for (var window = 0; window < ComboBoxAnchorWindowSearchMaxWindows; window++)
             {
-                if (!OpenComboBoxDropdown(comboBox))
+                if (!EnsureComboBoxDropdownOpen(comboBox))
                     return false;
 
                 Thread.Sleep(ComboBoxAnchorReadDelayMs);
@@ -6196,7 +6196,7 @@ public sealed class RecordingOverlayWindow : Form
 
                 Thread.Sleep(ComboBoxAnchorMoveDelayMs);
 
-                if (!OpenComboBoxDropdown(comboBox))
+                if (!EnsureComboBoxDropdownOpen(comboBox))
                     return false;
 
                 Thread.Sleep(ComboBoxAnchorMoveDelayMs);
@@ -6237,6 +6237,21 @@ public sealed class RecordingOverlayWindow : Form
                 !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
             .Take(ComboBoxPagedSearchMaxVisibleItems)
             .ToList();
+    }
+
+    private bool EnsureComboBoxDropdownOpen(AutomationElement comboBox)
+    {
+        try
+        {
+            if (IsComboBoxExpanded(comboBox) || FindDynamicComboBoxList(comboBox) != null)
+                return true;
+        }
+        catch
+        {
+            // Fall through to the normal open path.
+        }
+
+        return OpenComboBoxDropdown(comboBox);
     }
 
     private AutomationElement? FindExactVisibleComboBoxItem(

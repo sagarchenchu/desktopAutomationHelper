@@ -6616,7 +6616,7 @@ public class UiService : IUiService
 
             for (var window = 0; window < ComboBoxAnchorWindowSearchMaxWindows; window++)
             {
-                if (!OpenComboBoxDropdown(session, comboBox))
+                if (!EnsureComboBoxDropdownOpen(session, comboBox))
                     return false;
 
                 Thread.Sleep(ComboBoxAnchorReadDelayMs);
@@ -6682,7 +6682,7 @@ public class UiService : IUiService
 
                 Thread.Sleep(ComboBoxAnchorMoveDelayMs);
 
-                if (!OpenComboBoxDropdown(session, comboBox))
+                if (!EnsureComboBoxDropdownOpen(session, comboBox))
                     return false;
 
                 Thread.Sleep(ComboBoxAnchorMoveDelayMs);
@@ -6725,6 +6725,23 @@ public class UiService : IUiService
                 !string.IsNullOrWhiteSpace(SafeElementAutomationId(x)))
             .Take(ComboBoxPagedSearchMaxVisibleItems)
             .ToList();
+    }
+
+    private bool EnsureComboBoxDropdownOpen(
+        AutomationSession session,
+        AutomationElement comboBox)
+    {
+        try
+        {
+            if (IsComboBoxExpanded(comboBox) || FindDynamicComboBoxList(session, comboBox) != null)
+                return true;
+        }
+        catch
+        {
+            // Fall through to the normal open path.
+        }
+
+        return OpenComboBoxDropdown(session, comboBox);
     }
 
     private AutomationElement? FindExactVisibleComboBoxItem(
