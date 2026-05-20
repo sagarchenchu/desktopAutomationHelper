@@ -43,6 +43,10 @@ public class UiService : IUiService
     private const int MenuFocusDelayMs = 75;
     private const int KeyboardInputReadyDelayMs = 100;
     private const int ComboBoxSelectionCommitDelayMs = 150;
+    private const int ComboBoxPostCommitCollapseTimeoutMs = 2500;
+    private const int ComboBoxPostCommitPollDelayMs = 100;
+    private const int ComboBoxPostCommitStableDelayMs = 500;
+    private const int ComboBoxRefetchRectangleTolerancePx = 3;
     // Menu parent chains in supported desktop apps are shallow; 20 gives ample room for deeply
     // nested menus while preventing unbounded traversal of unstable UIA ancestors. If exceeded,
     // strict full-path matching fails safely instead of selecting a wrong duplicate leaf.
@@ -3864,7 +3868,7 @@ public class UiService : IUiService
 
         Thread.Sleep(300);
 
-        if (!VerifyComboBoxSelectedValue(session, comboBox, itemName))
+        if (!VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, itemName, "listitem-click"))
         {
             var actualAfterActivation = GetComboBoxCurrentValue(session, comboBox);
 
@@ -5751,7 +5755,7 @@ public class UiService : IUiService
                 }
             }
 
-            if (TrySetComboBoxValueByValuePattern(session, comboBox, requestedValue))
+            if (TrySetComboBoxValueByValuePattern(session, comboBox, requestedValue, "direct-uia-valuepattern"))
             {
                 strategy = "direct-uia-valuepattern";
                 return true;
@@ -6014,7 +6018,7 @@ public class UiService : IUiService
                     item.Patterns.SelectionItem.Pattern.Select();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, "keyboard-step-search"))
                     {
                         _logger.LogInformation(
                             "ComboBox item committed using SelectionItemPattern. source={Source}, requested={Requested}",
@@ -6042,7 +6046,7 @@ public class UiService : IUiService
                     item.Patterns.Invoke.Pattern.Invoke();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
                     {
                         _logger.LogInformation(
                             "ComboBox item committed using InvokePattern. source={Source}, requested={Requested}",
@@ -6069,7 +6073,7 @@ public class UiService : IUiService
                 {
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
                     {
                         _logger.LogInformation(
                             "ComboBox item committed using physical click after ScrollIntoView. source={Source}, requested={Requested}",
@@ -6105,6 +6109,8 @@ public class UiService : IUiService
     }
 
     private bool TryActivateComboBoxItemByUiaPattern(
+        AutomationSession session,
+        AutomationElement comboBox,
         AutomationElement item,
         string requestedValue,
         string source)
@@ -6121,7 +6127,9 @@ public class UiService : IUiService
                     requestedValue,
                     SafeElementName(item));
 
-                return true;
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                return VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source);
             }
 
             if (item.Patterns.Invoke.IsSupported)
@@ -6134,7 +6142,9 @@ public class UiService : IUiService
                     requestedValue,
                     SafeElementName(item));
 
-                return true;
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                return VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source);
             }
 
             _logger.LogInformation(
@@ -6181,7 +6191,7 @@ public class UiService : IUiService
                     item.Patterns.SelectionItem.Pattern.Select();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
                     {
                         _logger.LogInformation(
                             "ComboBox item committed by SelectionItemPattern. source={Source}, requested={Requested}",
@@ -6208,7 +6218,7 @@ public class UiService : IUiService
                     item.Patterns.Invoke.Pattern.Invoke();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
                     {
                         _logger.LogInformation(
                             "ComboBox item committed by InvokePattern. source={Source}, requested={Requested}",
@@ -6232,7 +6242,7 @@ public class UiService : IUiService
             {
                 Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
                 {
                     _logger.LogInformation(
                         "ComboBox item committed by physical click. source={Source}, requested={Requested}",
@@ -6252,7 +6262,7 @@ public class UiService : IUiService
 
                 Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
                 {
                     _logger.LogInformation(
                         "ComboBox item committed by ENTER. source={Source}, requested={Requested}",
@@ -6364,7 +6374,8 @@ public class UiService : IUiService
     private bool TrySetComboBoxValueByValuePattern(
         AutomationSession session,
         AutomationElement comboBox,
-        string requestedValue)
+        string requestedValue,
+        string source)
     {
         try
         {
@@ -6379,7 +6390,7 @@ public class UiService : IUiService
 
                 Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
                 {
                     _logger.LogInformation(
                         "ComboBox value selected using ComboBox ValuePattern.SetValue. combo={Combo}, value={Value}",
@@ -6403,7 +6414,7 @@ public class UiService : IUiService
 
                 Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
                 {
                     _logger.LogInformation(
                         "ComboBox value selected using child Edit ValuePattern.SetValue. combo={Combo}, edit={Edit}, value={Value}",
@@ -7400,7 +7411,7 @@ public class UiService : IUiService
 
             Thread.Sleep(ComboBoxTypeAheadCommitDelayMs);
 
-            var verified = VerifyComboBoxSelectedValue(session, comboBox, itemName);
+            var verified = VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, itemName, "keyboard-typeahead");
 
             if (verified)
             {
@@ -7772,7 +7783,7 @@ public class UiService : IUiService
 
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, "keyboard-step-search"))
                     {
                         _logger.LogInformation(
                             "ComboBox keyboard step search selected requested value. combo={Combo}, value={Value}, step={Step}",
@@ -8210,6 +8221,219 @@ public class UiService : IUiService
 
         return matched;
     }
+
+    private bool WaitForComboBoxDropdownCollapsed(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string requestedValue,
+        string source)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(ComboBoxPostCommitCollapseTimeoutMs);
+
+        _logger.LogInformation(
+            "Waiting for ComboBox dropdown collapse. source={Source}, requested={Requested}, combo={Combo}",
+            source,
+            requestedValue,
+            SafeElementName(comboBox));
+
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                var isExpanded = false;
+
+                if (comboBox.Patterns.ExpandCollapse.IsSupported)
+                {
+                    var state = comboBox.Patterns.ExpandCollapse.Pattern.ExpandCollapseState;
+                    isExpanded = state == ExpandCollapseState.Expanded;
+                }
+
+                var popupList = FindDynamicComboBoxList(session, comboBox);
+                var popupStillVisible = popupList != null && IsElementVisibleOnScreen(popupList);
+
+                if (!isExpanded && !popupStillVisible)
+                {
+                    _logger.LogInformation(
+                        "ComboBox dropdown collapsed after commit. source={Source}, requested={Requested}, combo={Combo}",
+                        source,
+                        requestedValue,
+                        SafeElementName(comboBox));
+
+                    return true;
+                }
+            }
+            catch
+            {
+                // Stale popup/combo is okay during collapse. Continue polling.
+            }
+
+            Thread.Sleep(ComboBoxPostCommitPollDelayMs);
+        }
+
+        _logger.LogWarning(
+            "Timed out waiting for ComboBox dropdown to collapse. source={Source}, requested={Requested}, combo={Combo}",
+            source,
+            requestedValue,
+            SafeElementName(comboBox));
+
+        return false;
+    }
+
+    private bool IsElementVisibleOnScreen(AutomationElement element)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            return !rect.IsEmpty &&
+                   rect.Width > 0 &&
+                   rect.Height > 0 &&
+                   rect.Right > 0 &&
+                   rect.Bottom > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool VerifyComboBoxSelectedValueStableAfterCollapse(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string requestedValue,
+        string source)
+    {
+        try
+        {
+            if (!WaitForComboBoxDropdownCollapsed(session, comboBox, requestedValue, source))
+                return false;
+
+            // Important: allow app event handlers to finish after collapse.
+            Thread.Sleep(ComboBoxPostCommitStableDelayMs);
+
+            var freshComboBox = RefreshComboBoxElement(session, comboBox) ?? comboBox;
+            var firstActual = GetComboBoxCurrentValue(session, freshComboBox);
+            var firstMatched = ComboBoxValueMatches(firstActual, requestedValue);
+
+            _logger.LogInformation(
+                "ComboBox post-collapse verify first read. source={Source}, requested={Requested}, actual={Actual}, matched={Matched}",
+                source,
+                requestedValue,
+                firstActual,
+                firstMatched);
+
+            if (!firstMatched)
+                return false;
+
+            // Read again after a short delay to catch rollback/default reset.
+            Thread.Sleep(ComboBoxPostCommitStableDelayMs);
+
+            freshComboBox = RefreshComboBoxElement(session, freshComboBox) ?? freshComboBox;
+            var secondActual = GetComboBoxCurrentValue(session, freshComboBox);
+            var secondMatched = ComboBoxValueMatches(secondActual, requestedValue);
+
+            _logger.LogInformation(
+                "ComboBox post-collapse verify second read. source={Source}, requested={Requested}, actual={Actual}, matched={Matched}",
+                source,
+                requestedValue,
+                secondActual,
+                secondMatched);
+
+            if (!secondMatched)
+            {
+                _logger.LogWarning(
+                    "ComboBox post-collapse stable verification failed; rollback detected. source={Source}, requested={Requested}, actual={Actual}",
+                    source,
+                    requestedValue,
+                    secondActual);
+            }
+
+            return secondMatched;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox stable post-collapse verification failed. source={Source}, requested={Requested}, combo={Combo}",
+                source,
+                requestedValue,
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
+    private AutomationElement? RefreshComboBoxElement(AutomationSession session, AutomationElement comboBox)
+    {
+        try
+        {
+            var originalName = SafeElementName(comboBox);
+            var originalAutomationId = SafeElementAutomationId(comboBox);
+            var originalClassName = SafeElementClassName(comboBox);
+            var originalProcessId = SafeProcessId(comboBox);
+            var originalRect = comboBox.BoundingRectangle;
+            var root = FindWindowAncestorOrSelf(comboBox) ?? session.Automation.GetDesktop();
+            var cf = session.Automation.ConditionFactory;
+
+            foreach (var candidate in root.FindAllDescendants(cf.ByControlType(ControlType.ComboBox)))
+            {
+                if (originalProcessId.HasValue && SafeProcessId(candidate) != originalProcessId)
+                    continue;
+
+                var automationId = SafeElementAutomationId(candidate);
+                var name = SafeElementName(candidate);
+                var className = SafeElementClassName(candidate);
+
+                if (!string.IsNullOrWhiteSpace(originalAutomationId) &&
+                    string.Equals(automationId, originalAutomationId, StringComparison.Ordinal) &&
+                    (string.IsNullOrWhiteSpace(originalClassName) ||
+                     string.Equals(className, originalClassName, StringComparison.Ordinal)))
+                {
+                    return candidate;
+                }
+
+                if (!string.IsNullOrWhiteSpace(originalName) &&
+                    string.Equals(name, originalName, StringComparison.Ordinal) &&
+                    IsSameApproximateRectangle(candidate, originalRect))
+                {
+                    return candidate;
+                }
+            }
+        }
+        catch
+        {
+            // Best effort only; callers can still use the original element.
+        }
+
+        return null;
+    }
+
+    private static bool IsSameApproximateRectangle(AutomationElement element, Rectangle originalRect)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            return !rect.IsEmpty &&
+                   Math.Abs(rect.Left - originalRect.Left) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Top - originalRect.Top) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Width - originalRect.Width) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Height - originalRect.Height) <= ComboBoxRefetchRectangleTolerancePx;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool ComboBoxValueMatches(string? actualValue, string requestedValue)
+    {
+        var actual = NormalizeMenuText(actualValue ?? string.Empty);
+        var expected = NormalizeMenuText(requestedValue ?? string.Empty);
+
+        return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
+    }
+
 
     private bool ActivateComboBoxListItem(AutomationElement item, string itemName)
     {

@@ -166,6 +166,10 @@ public sealed class RecordingOverlayWindow : Form
     private const int DropdownItemPhysicalClickSettleMs = 250;
     private const int DropdownItemFallbackDelayMs = 150;
     private const int ComboBoxSelectionCommitDelayMs = 150;
+    private const int ComboBoxPostCommitCollapseTimeoutMs = 2500;
+    private const int ComboBoxPostCommitPollDelayMs = 100;
+    private const int ComboBoxPostCommitStableDelayMs = 500;
+    private const int ComboBoxRefetchRectangleTolerancePx = 3;
     private const int DropdownItemMinPadX = 6;
     private const int DropdownItemMaxPadX = 18;
     private const int DropdownItemPadXDivisor = 10;
@@ -4826,7 +4830,7 @@ public sealed class RecordingOverlayWindow : Form
                 }
             }
 
-            if (TrySetComboBoxValueByValuePattern(comboBox, requestedValue))
+            if (TrySetComboBoxValueByValuePattern(comboBox, requestedValue, "assistive-direct-uia-valuepattern"))
             {
                 strategy = "direct-uia-valuepattern";
                 return true;
@@ -5058,7 +5062,7 @@ public sealed class RecordingOverlayWindow : Form
                     item.Patterns.SelectionItem.Pattern.Select();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, "assistive-keyboard-step-search"))
                         return true;
                 }
                 catch (Exception ex)
@@ -5074,7 +5078,7 @@ public sealed class RecordingOverlayWindow : Form
                     item.Patterns.Invoke.Pattern.Invoke();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                         return true;
                 }
                 catch (Exception ex)
@@ -5089,7 +5093,7 @@ public sealed class RecordingOverlayWindow : Form
                 {
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                         return true;
                 }
             }
@@ -5118,6 +5122,7 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     private bool TryActivateComboBoxItemByUiaPattern(
+        AutomationElement comboBox,
         AutomationElement item,
         string requestedValue,
         string source)
@@ -5134,7 +5139,9 @@ public sealed class RecordingOverlayWindow : Form
                     requestedValue,
                     SafeElementName(item));
 
-                return true;
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                return VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source);
             }
 
             if (item.Patterns.Invoke.IsSupported)
@@ -5148,7 +5155,9 @@ public sealed class RecordingOverlayWindow : Form
                     requestedValue,
                     SafeElementName(item));
 
-                return true;
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                return VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source);
             }
 
             return false;
@@ -5188,7 +5197,7 @@ public sealed class RecordingOverlayWindow : Form
                     item.Patterns.SelectionItem.Pattern.Select();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                         return true;
                 }
                 catch (Exception ex)
@@ -5204,7 +5213,7 @@ public sealed class RecordingOverlayWindow : Form
                     item.Patterns.Invoke.Pattern.Invoke();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                         return true;
                 }
                 catch (Exception ex)
@@ -5217,7 +5226,7 @@ public sealed class RecordingOverlayWindow : Form
             {
                 Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                if (VerifyComboBoxSelectedValue(comboBox, requestedValue))
+                if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                     return true;
             }
 
@@ -5230,7 +5239,7 @@ public sealed class RecordingOverlayWindow : Form
 
                 Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                if (VerifyComboBoxSelectedValue(comboBox, requestedValue))
+                if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                     return true;
             }
 
@@ -5334,7 +5343,8 @@ public sealed class RecordingOverlayWindow : Form
 
     private bool TrySetComboBoxValueByValuePattern(
         AutomationElement comboBox,
-        string requestedValue)
+        string requestedValue,
+        string source)
     {
         try
         {
@@ -5349,7 +5359,7 @@ public sealed class RecordingOverlayWindow : Form
 
                 Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                if (VerifyComboBoxSelectedValue(comboBox, requestedValue))
+                if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                 {
                     _logger.LogInformation(
                         "Assistive ComboBox value selected using ValuePattern.SetValue. combo={Combo}, value={Value}",
@@ -5373,7 +5383,7 @@ public sealed class RecordingOverlayWindow : Form
 
                 Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                if (VerifyComboBoxSelectedValue(comboBox, requestedValue))
+                if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                 {
                     _logger.LogInformation(
                         "Assistive ComboBox value selected using child Edit ValuePattern.SetValue. combo={Combo}, edit={Edit}, value={Value}",
@@ -6735,7 +6745,7 @@ public sealed class RecordingOverlayWindow : Form
                 {
                     Thread.Sleep(300);
 
-                    if (VerifyComboBoxSelectedValue(comboBox, itemName))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, itemName, "assistive-listitem-click"))
                     {
                         RecordComboBoxSelection(comboBox, comboInfo, itemName, "listitem-click");
                         return true;
@@ -6819,7 +6829,7 @@ public sealed class RecordingOverlayWindow : Form
             Keyboard.Release(VirtualKeyShort.RETURN);
             Thread.Sleep(ComboBoxKeyboardTypeaheadSettleDelayMs);
 
-            return VerifyComboBoxSelectedValue(comboBox, itemName);
+            return VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, itemName, "assistive-keyboard-typeahead");
         }
         catch (Exception ex)
         {
@@ -7153,7 +7163,7 @@ public sealed class RecordingOverlayWindow : Form
 
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValue(comboBox, requestedValue))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, "assistive-keyboard-step-search"))
                     {
                         _logger.LogInformation(
                             "Assistive ComboBox keyboard step search selected requested value. combo={Combo}, value={Value}, step={Step}",
@@ -7406,6 +7416,226 @@ public sealed class RecordingOverlayWindow : Form
 
         return matched;
     }
+
+    private bool WaitForComboBoxDropdownCollapsed(
+        AutomationElement comboBox,
+        string requestedValue,
+        string source)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(ComboBoxPostCommitCollapseTimeoutMs);
+
+        _logger.LogInformation(
+            "Assistive waiting for ComboBox dropdown collapse. source={Source}, requested={Requested}, combo={Combo}",
+            source,
+            requestedValue,
+            SafeElementName(comboBox));
+
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                var isExpanded = false;
+
+                if (comboBox.Patterns.ExpandCollapse.IsSupported)
+                {
+                    var state = comboBox.Patterns.ExpandCollapse.Pattern.ExpandCollapseState;
+                    isExpanded = state == ExpandCollapseState.Expanded;
+                }
+
+                var popupList = FindDynamicComboBoxList(comboBox);
+                var popupStillVisible = popupList != null && IsElementVisibleOnScreen(popupList);
+
+                if (!isExpanded && !popupStillVisible)
+                {
+                    _logger.LogInformation(
+                        "Assistive ComboBox dropdown collapsed after commit. source={Source}, requested={Requested}, combo={Combo}",
+                        source,
+                        requestedValue,
+                        SafeElementName(comboBox));
+
+                    return true;
+                }
+            }
+            catch
+            {
+                // Ignore transient stale element while dropdown collapses.
+            }
+
+            Thread.Sleep(ComboBoxPostCommitPollDelayMs);
+        }
+
+        _logger.LogWarning(
+            "Assistive timed out waiting for ComboBox dropdown to collapse. source={Source}, requested={Requested}, combo={Combo}",
+            source,
+            requestedValue,
+            SafeElementName(comboBox));
+
+        return false;
+    }
+
+    private bool IsElementVisibleOnScreen(AutomationElement element)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            return !rect.IsEmpty &&
+                   rect.Width > 0 &&
+                   rect.Height > 0 &&
+                   rect.Right > 0 &&
+                   rect.Bottom > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool VerifyComboBoxSelectedValueStableAfterCollapse(
+        AutomationElement comboBox,
+        string requestedValue,
+        string source)
+    {
+        try
+        {
+            if (!WaitForComboBoxDropdownCollapsed(comboBox, requestedValue, source))
+                return false;
+
+            Thread.Sleep(ComboBoxPostCommitStableDelayMs);
+
+            var freshComboBox = RefreshComboBoxElement(comboBox) ?? comboBox;
+            var firstActual = GetComboBoxCurrentValue(freshComboBox);
+            var firstMatched = ComboBoxValueMatches(firstActual, requestedValue);
+
+            _logger.LogInformation(
+                "Assistive ComboBox post-collapse verify first read. source={Source}, requested={Requested}, actual={Actual}, matched={Matched}",
+                source,
+                requestedValue,
+                firstActual,
+                firstMatched);
+
+            if (!firstMatched)
+                return false;
+
+            Thread.Sleep(ComboBoxPostCommitStableDelayMs);
+
+            freshComboBox = RefreshComboBoxElement(freshComboBox) ?? freshComboBox;
+            var secondActual = GetComboBoxCurrentValue(freshComboBox);
+            var secondMatched = ComboBoxValueMatches(secondActual, requestedValue);
+
+            _logger.LogInformation(
+                "Assistive ComboBox post-collapse verify second read. source={Source}, requested={Requested}, actual={Actual}, matched={Matched}",
+                source,
+                requestedValue,
+                secondActual,
+                secondMatched);
+
+            if (!secondMatched)
+            {
+                _logger.LogWarning(
+                    "Assistive ComboBox post-collapse stable verification failed; rollback detected. source={Source}, requested={Requested}, actual={Actual}",
+                    source,
+                    requestedValue,
+                    secondActual);
+            }
+
+            return secondMatched;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Assistive ComboBox stable post-collapse verification failed. source={Source}, requested={Requested}, combo={Combo}",
+                source,
+                requestedValue,
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
+    private AutomationElement? RefreshComboBoxElement(AutomationElement comboBox)
+    {
+        try
+        {
+            if (_automation == null)
+                return null;
+
+            var originalName = SafeElementName(comboBox);
+            var originalAutomationId = SafeElementAutomationId(comboBox);
+            var originalProcessId = SafeProcessId(comboBox);
+            var originalRect = comboBox.BoundingRectangle;
+            var root = FindWindowAncestorOrSelf(comboBox) ?? _automation.GetDesktop();
+            var cf = _automation.ConditionFactory;
+
+            foreach (var candidate in root.FindAllDescendants(cf.ByControlType(ControlType.ComboBox)))
+            {
+                if (originalProcessId.HasValue && SafeProcessId(candidate) != originalProcessId)
+                    continue;
+
+                var automationId = SafeElementAutomationId(candidate);
+                var name = SafeElementName(candidate);
+
+                if (!string.IsNullOrWhiteSpace(originalAutomationId) &&
+                    string.Equals(automationId, originalAutomationId, StringComparison.Ordinal))
+                {
+                    return candidate;
+                }
+
+                if (!string.IsNullOrWhiteSpace(originalName) &&
+                    string.Equals(name, originalName, StringComparison.Ordinal) &&
+                    IsSameApproximateRectangle(candidate, originalRect))
+                {
+                    return candidate;
+                }
+            }
+        }
+        catch
+        {
+            // Best effort only; callers can still use the original element.
+        }
+
+        return null;
+    }
+
+    private static bool IsSameApproximateRectangle(AutomationElement element, Rectangle originalRect)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            return !rect.IsEmpty &&
+                   Math.Abs(rect.Left - originalRect.Left) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Top - originalRect.Top) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Width - originalRect.Width) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Height - originalRect.Height) <= ComboBoxRefetchRectangleTolerancePx;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static int? SafeProcessId(AutomationElement element)
+    {
+        try
+        {
+            return element.Properties.ProcessId.ValueOrDefault;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private bool ComboBoxValueMatches(string? actualValue, string requestedValue)
+    {
+        var actual = NormalizeMenuText(actualValue ?? string.Empty);
+        var expected = NormalizeMenuText(requestedValue ?? string.Empty);
+
+        return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
+    }
+
 
     private bool TryFocusOrClickComboBox(AutomationElement comboBox)
     {
