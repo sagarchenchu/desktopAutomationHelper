@@ -169,6 +169,7 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxPostCommitCollapseTimeoutMs = 2500;
     private const int ComboBoxPostCommitPollDelayMs = 100;
     private const int ComboBoxPostCommitStableDelayMs = 500;
+    private const int ComboBoxRefetchRectangleTolerancePx = 3;
     private const int DropdownItemMinPadX = 6;
     private const int DropdownItemMaxPadX = 18;
     private const int DropdownItemPadXDivisor = 10;
@@ -7604,10 +7605,10 @@ public sealed class RecordingOverlayWindow : Form
             var rect = element.BoundingRectangle;
 
             return !rect.IsEmpty &&
-                   Math.Abs(rect.Left - originalRect.Left) <= 3 &&
-                   Math.Abs(rect.Top - originalRect.Top) <= 3 &&
-                   Math.Abs(rect.Width - originalRect.Width) <= 3 &&
-                   Math.Abs(rect.Height - originalRect.Height) <= 3;
+                   Math.Abs(rect.Left - originalRect.Left) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Top - originalRect.Top) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Width - originalRect.Width) <= ComboBoxRefetchRectangleTolerancePx &&
+                   Math.Abs(rect.Height - originalRect.Height) <= ComboBoxRefetchRectangleTolerancePx;
         }
         catch
         {
