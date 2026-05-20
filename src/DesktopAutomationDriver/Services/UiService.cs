@@ -76,6 +76,7 @@ public class UiService : IUiService
     private const int ComboBoxScrollPageWheelClicks = -3;
     private const int ComboBoxScrollSettleDelayMs = 150;
     private const int ComboBoxVisibleItemSearchLimit = 200;
+    private const int ComboBoxDirectUiaSearchLimit = 500;
     private const int ComboBoxPagedSearchMaxVisibleItems = 20;
     private const int ComboBoxPagedSearchMaxPages = 300;
     private const int ComboBoxPagedSearchSettleDelayMs = 150;
@@ -3007,7 +3008,8 @@ public class UiService : IUiService
         {
             if (item.Patterns.SelectionItem.IsSupported)
             {
-                item.Patterns.SelectionItem.Pattern.Select();
+                var selectionItemPattern = item.Patterns.SelectionItem.Pattern;
+                selectionItemPattern.Select();
 
                 _logger.LogInformation(
                     "{ActionName}: SelectionItem.Select succeeded for logical menu item {Name}",
@@ -3105,7 +3107,8 @@ public class UiService : IUiService
         {
             if (item.Patterns.Invoke.IsSupported)
             {
-                item.Patterns.Invoke.Pattern.Invoke();
+                var invokePattern = item.Patterns.Invoke.Pattern;
+                invokePattern.Invoke();
                 return;
             }
         }
@@ -3703,6 +3706,23 @@ public class UiService : IUiService
             throw new ArgumentException("selectcomboboxitem requires a non-empty value.");
 
         var session = RequireSession();
+
+        _logger.LogInformation(
+            "ComboBox selection starting with UIA direct strategy. combo={Combo}, value={Value}",
+            SafeElementName(comboBox),
+            itemName);
+
+        if (TrySelectComboBoxByDirectUia(session, comboBox, itemName, out var directStrategy))
+        {
+            return new
+            {
+                selected = itemName,
+                actual = GetComboBoxCurrentValue(session, comboBox),
+                comboBox = SafeElementName(comboBox),
+                verified = true,
+                strategy = directStrategy
+            };
+        }
 
         if (!OpenComboBoxDropdown(session, comboBox))
             throw new InvalidOperationException($"Failed to open ComboBox '{SafeElementName(comboBox)}'.");
@@ -5638,6 +5658,346 @@ public class UiService : IUiService
             _logger.LogWarning(ex, "GetLogicalComboBoxItems failed for {Combo}", SafeElementName(comboBox));
             return [];
         }
+    }
+
+    private bool TrySelectComboBoxByDirectUia(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string requestedValue,
+        out string strategy)
+    {
+        strategy = "direct-uia-not-used";
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(requestedValue))
+                return false;
+
+            var logicalMatch = FindExactComboBoxListItemLogical(
+                session,
+                comboBox,
+                requestedValue,
+                maxItems: ComboBoxDirectUiaSearchLimit);
+
+            if (logicalMatch != null)
+            {
+                if (TryActivateComboBoxItemByUiaPattern(logicalMatch, requestedValue, "logical-listitem"))
+                {
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                    {
+                        strategy = "direct-uia-logical-selectionitem";
+                        return true;
+                    }
+
+                    _logger.LogInformation(
+                        "Direct UIA logical ListItem activation did not verify. requested={Requested}, actual={Actual}, combo={Combo}",
+                        requestedValue,
+                        GetComboBoxCurrentValue(session, comboBox),
+                        SafeElementName(comboBox));
+                }
+            }
+
+            if (OpenComboBoxDropdown(session, comboBox))
+            {
+                Thread.Sleep(MenuExpandDelayMs);
+
+                var popupMatch = FindExactComboBoxListItemFromPopup(
+                    session,
+                    comboBox,
+                    requestedValue,
+                    maxItems: ComboBoxDirectUiaSearchLimit);
+
+                if (popupMatch != null)
+                {
+                    if (TryActivateComboBoxItemByUiaPattern(popupMatch, requestedValue, "popup-listitem"))
+                    {
+                        Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                        if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                        {
+                            strategy = "direct-uia-popup-selectionitem";
+                            return true;
+                        }
+
+                        _logger.LogInformation(
+                            "Direct UIA popup ListItem activation did not verify. requested={Requested}, actual={Actual}, combo={Combo}",
+                            requestedValue,
+                            GetComboBoxCurrentValue(session, comboBox),
+                            SafeElementName(comboBox));
+                    }
+                }
+            }
+
+            if (TrySetComboBoxValueByValuePattern(session, comboBox, requestedValue))
+            {
+                strategy = "direct-uia-valuepattern";
+                return true;
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Direct UIA ComboBox selection failed. combo={Combo}, value={Value}",
+                SafeElementName(comboBox),
+                requestedValue);
+
+            return false;
+        }
+    }
+
+    private AutomationElement? FindExactComboBoxListItemLogical(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string requestedValue,
+        int maxItems)
+    {
+        try
+        {
+            var items = GetLogicalComboBoxItems(session, comboBox, maxItems);
+
+            foreach (var item in items)
+            {
+                if (ComboBoxItemMatchesExactText(item, requestedValue))
+                {
+                    _logger.LogInformation(
+                        "Direct UIA logical ComboBox item found. combo={Combo}, requested={Requested}, item={Item}",
+                        SafeElementName(comboBox),
+                        requestedValue,
+                        SafeElementName(item));
+
+                    return item;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Direct UIA logical ListItem search failed. combo={Combo}, value={Value}",
+                SafeElementName(comboBox),
+                requestedValue);
+        }
+
+        return null;
+    }
+
+    private AutomationElement? FindExactComboBoxListItemFromPopup(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string requestedValue,
+        int maxItems)
+    {
+        try
+        {
+            var list = FindDynamicComboBoxList(session, comboBox);
+
+            if (list == null)
+                return null;
+
+            var items = GetListItemsBounded(session, list, maxItems);
+
+            foreach (var item in items)
+            {
+                if (ComboBoxItemMatchesExactText(item, requestedValue))
+                {
+                    _logger.LogInformation(
+                        "Direct UIA popup ComboBox item found. combo={Combo}, requested={Requested}, item={Item}",
+                        SafeElementName(comboBox),
+                        requestedValue,
+                        SafeElementName(item));
+
+                    return item;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Direct UIA popup ListItem search failed. combo={Combo}, value={Value}",
+                SafeElementName(comboBox),
+                requestedValue);
+        }
+
+        return null;
+    }
+
+    private bool ComboBoxItemMatchesExactText(
+        AutomationElement item,
+        string requestedValue)
+    {
+        try
+        {
+            var requested = NormalizeMenuText(requestedValue);
+
+            var name = NormalizeMenuText(SafeElementName(item));
+            if (string.Equals(name, requested, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var automationId = NormalizeMenuText(SafeElementAutomationId(item));
+            if (string.Equals(automationId, requested, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool TryActivateComboBoxItemByUiaPattern(
+        AutomationElement item,
+        string requestedValue,
+        string source)
+    {
+        try
+        {
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                item.Patterns.SelectionItem.Pattern.Select();
+
+                _logger.LogInformation(
+                    "ComboBox item activated using SelectionItemPattern. source={Source}, requested={Requested}, item={Item}",
+                    source,
+                    requestedValue,
+                    SafeElementName(item));
+
+                return true;
+            }
+
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+
+                _logger.LogInformation(
+                    "ComboBox item activated using InvokePattern. source={Source}, requested={Requested}, item={Item}",
+                    source,
+                    requestedValue,
+                    SafeElementName(item));
+
+                return true;
+            }
+
+            _logger.LogInformation(
+                "ComboBox item does not support SelectionItemPattern or InvokePattern. source={Source}, requested={Requested}, item={Item}",
+                source,
+                requestedValue,
+                SafeElementName(item));
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Direct UIA ComboBox item activation failed. source={Source}, requested={Requested}, item={Item}",
+                source,
+                requestedValue,
+                SafeElementName(item));
+
+            return false;
+        }
+    }
+
+    private bool TrySetComboBoxValueByValuePattern(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string requestedValue)
+    {
+        try
+        {
+            if (comboBox.Patterns.Value.IsSupported)
+            {
+                comboBox.Patterns.Value.Pattern.SetValue(requestedValue);
+
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                Keyboard.Press(VirtualKeyShort.RETURN);
+                Keyboard.Release(VirtualKeyShort.RETURN);
+
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                {
+                    _logger.LogInformation(
+                        "ComboBox value selected using ComboBox ValuePattern.SetValue. combo={Combo}, value={Value}",
+                        SafeElementName(comboBox),
+                        requestedValue);
+
+                    return true;
+                }
+            }
+
+            var childEdit = FindComboBoxChildEdit(comboBox);
+
+            if (childEdit != null && childEdit.Patterns.Value.IsSupported)
+            {
+                childEdit.Patterns.Value.Pattern.SetValue(requestedValue);
+
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                Keyboard.Press(VirtualKeyShort.RETURN);
+                Keyboard.Release(VirtualKeyShort.RETURN);
+
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                if (VerifyComboBoxSelectedValue(session, comboBox, requestedValue))
+                {
+                    _logger.LogInformation(
+                        "ComboBox value selected using child Edit ValuePattern.SetValue. combo={Combo}, edit={Edit}, value={Value}",
+                        SafeElementName(comboBox),
+                        SafeElementName(childEdit),
+                        requestedValue);
+
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox ValuePattern.SetValue strategy failed. combo={Combo}, value={Value}",
+                SafeElementName(comboBox),
+                requestedValue);
+
+            return false;
+        }
+    }
+
+    private AutomationElement? FindComboBoxChildEdit(AutomationElement comboBox)
+    {
+        try
+        {
+            var children = comboBox.FindAllChildren();
+
+            foreach (var child in children)
+            {
+                try
+                {
+                    if (child.ControlType == ControlType.Edit)
+                        return child;
+                }
+                catch
+                {
+                    // ignore stale child
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return null;
     }
 
     private bool OpenComboBoxDropdown(AutomationSession session, AutomationElement comboBox)
