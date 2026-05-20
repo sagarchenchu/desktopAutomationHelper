@@ -5637,7 +5637,7 @@ public class UiService : IUiService
         int maxScrollAttempts)
     {
         var requested = NormalizeMenuText(itemName);
-        var seenSignatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenSignatures = new HashSet<string>(StringComparer.Ordinal);
 
         for (var attempt = 0; attempt <= maxScrollAttempts; attempt++)
         {
