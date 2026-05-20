@@ -181,6 +181,10 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxDynamicDropdownCandidates = 80;
     private const int MaxDynamicPopupSearchDepth = 4;
     private const int MaxComboBoxItemsForTextSelection = 500;
+    private const int ComboBoxScrollSearchMaxAttempts = 30;
+    private const int ComboBoxScrollPageWheelClicks = -3;
+    private const int ComboBoxScrollSettleDelayMs = 150;
+    private const int ComboBoxVisibleItemSearchLimit = 200;
     private const int ComboBoxKeyboardTypeaheadInitialDelayMs = 150;
     private const int ComboBoxKeyboardTypeaheadSettleDelayMs = 250;
     private const int TextPromptDialogWidth = 380;
@@ -309,6 +313,7 @@ public sealed class RecordingOverlayWindow : Form
     private const uint MOUSEEVENTF_LEFTUP = 0x0004;
     private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
     private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    private const uint MOUSEEVENTF_WHEEL = 0x0800;
     private const uint BM_CLICK = 0x00F5;
     private static readonly IntPtr AssistiveInjectedRightClickMarker = new(unchecked((int)0x44414852));
 
@@ -4515,6 +4520,288 @@ public sealed class RecordingOverlayWindow : Form
         return results;
     }
 
+    private AutomationElement? FindComboBoxItemByTextWithScroll(
+        AutomationElement comboBox,
+        string itemName,
+        int maxScrollAttempts)
+    {
+        var requested = NormalizeMenuText(itemName);
+        var seenSignatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (var attempt = 0; attempt <= maxScrollAttempts; attempt++)
+        {
+            var items = FindDynamicComboBoxItems(comboBox, maxItems: ComboBoxVisibleItemSearchLimit);
+
+            foreach (var item in items)
+            {
+                var name = NormalizeMenuText(SafeElementName(item));
+                var automationId = NormalizeMenuText(SafeElementAutomationId(item));
+
+                if (string.Equals(name, requested, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(automationId, requested, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation(
+                        "ComboBox item found. item={Item}, attempt={Attempt}, name={Name}, automationId={AutomationId}",
+                        itemName,
+                        attempt,
+                        SafeElementName(item),
+                        SafeElementAutomationId(item));
+
+                    return item;
+                }
+            }
+
+            var signatureBeforeScroll = BuildComboBoxVisibleItemsSignature(items);
+
+            if (!seenSignatures.Add(signatureBeforeScroll) && attempt > 0)
+            {
+                _logger.LogInformation(
+                    "ComboBox visible item signature repeated before scrolling. Will try fallback scrolling before stopping. item={Item}, attempt={Attempt}, signature={Signature}",
+                    itemName,
+                    attempt,
+                    signatureBeforeScroll);
+            }
+
+            if (attempt == maxScrollAttempts)
+            {
+                _logger.LogInformation(
+                    "ComboBox scroll search reached max attempts. item={Item}, attempts={Attempts}",
+                    itemName,
+                    maxScrollAttempts);
+
+                break;
+            }
+
+            var wheelChangedVisibleItems = TryScrollComboBoxAndDetectChange(
+                comboBox,
+                signatureBeforeScroll,
+                useKeyboardPageDown: false,
+                itemName,
+                attempt);
+
+            if (wheelChangedVisibleItems)
+                continue;
+
+            _logger.LogInformation(
+                "ComboBox mouse-wheel scroll did not change visible items. Trying PageDown fallback. item={Item}, attempt={Attempt}",
+                itemName,
+                attempt);
+
+            var pageDownChangedVisibleItems = TryScrollComboBoxAndDetectChange(
+                comboBox,
+                signatureBeforeScroll,
+                useKeyboardPageDown: true,
+                itemName,
+                attempt);
+
+            if (pageDownChangedVisibleItems)
+                continue;
+
+            _logger.LogInformation(
+                "ComboBox scroll search stopped because neither mouse wheel nor PageDown changed visible items. item={Item}, attempt={Attempt}",
+                itemName,
+                attempt);
+
+            break;
+        }
+
+        return null;
+    }
+
+    private bool TryScrollComboBoxAndDetectChange(
+        AutomationElement comboBox,
+        string signatureBeforeScroll,
+        bool useKeyboardPageDown,
+        string itemName,
+        int attempt)
+    {
+        try
+        {
+            var strategy = useKeyboardPageDown ? "PageDown" : "MouseWheel";
+
+            var scrolled = useKeyboardPageDown
+                ? ScrollComboBoxDropdownByKeyboard(comboBox)
+                : ScrollComboBoxDropdown(comboBox, ComboBoxScrollPageWheelClicks);
+
+            Thread.Sleep(ComboBoxScrollSettleDelayMs);
+
+            if (!scrolled)
+            {
+                _logger.LogInformation(
+                    "ComboBox scroll attempt returned false. strategy={Strategy}, item={Item}, attempt={Attempt}",
+                    strategy,
+                    itemName,
+                    attempt);
+
+                return false;
+            }
+
+            var itemsAfterScroll = FindDynamicComboBoxItems(comboBox, maxItems: ComboBoxVisibleItemSearchLimit);
+            var signatureAfterScroll = BuildComboBoxVisibleItemsSignature(itemsAfterScroll);
+
+            var changed = !string.Equals(
+                signatureBeforeScroll,
+                signatureAfterScroll,
+                StringComparison.OrdinalIgnoreCase);
+
+            _logger.LogInformation(
+                "ComboBox scroll detect change. strategy={Strategy}, item={Item}, attempt={Attempt}, changed={Changed}, before={Before}, after={After}",
+                strategy,
+                itemName,
+                attempt,
+                changed,
+                signatureBeforeScroll,
+                signatureAfterScroll);
+
+            return changed;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox scroll detect change failed. strategy={Strategy}, item={Item}, attempt={Attempt}, combo={Combo}",
+                useKeyboardPageDown ? "PageDown" : "MouseWheel",
+                itemName,
+                attempt,
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
+    private static string BuildComboBoxVisibleItemsSignature(
+        IReadOnlyCollection<AutomationElement> items)
+    {
+        if (items.Count == 0)
+            return string.Empty;
+
+        return string.Join(
+            "||",
+            items.Select(item =>
+            {
+                var name = NormalizeMenuText(SafeElementName(item));
+                var aid = NormalizeMenuText(SafeElementAutomationId(item));
+                var rect = SafeBoundingRectangle(item);
+                return $"{name}|{aid}|{rect}";
+            }));
+    }
+
+    private bool ScrollComboBoxDropdown(
+        AutomationElement comboBox,
+        int wheelClicks)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            var scrollTarget = FindDynamicComboBoxList(comboBox) ?? comboBox;
+            var rect = scrollTarget.BoundingRectangle;
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                return false;
+
+            var point = new System.Drawing.Point(
+                (int)Math.Round(rect.Left + rect.Width / 2.0),
+                (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+            if (!SetCursorPos(point.X, point.Y))
+            {
+                _logger.LogWarning(
+                    "ComboBox scroll SetCursorPos failed. LastError={Error}, combo={Combo}",
+                    Marshal.GetLastWin32Error(),
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            Thread.Sleep(MouseClickSettleMs);
+
+            return SendMouseWheel(wheelClicks);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ScrollComboBoxDropdown failed for {Combo}", SafeElementName(comboBox));
+            return false;
+        }
+    }
+
+    private bool ScrollComboBoxDropdownByKeyboard(AutomationElement comboBox)
+    {
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!TryFocusOrClickComboBox(comboBox))
+            {
+                _logger.LogWarning(
+                    "ComboBox PageDown scroll skipped because focus could not be requested. combo={Combo}",
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            if (!OpenComboBoxDropdown(comboBox))
+            {
+                _logger.LogWarning(
+                    "ComboBox PageDown scroll skipped because dropdown could not be opened. combo={Combo}",
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            Thread.Sleep(MenuNavigationDelayMs);
+
+            Keyboard.Press(VirtualKeyShort.NEXT);
+            Keyboard.Release(VirtualKeyShort.NEXT);
+
+            Thread.Sleep(ComboBoxScrollSettleDelayMs);
+
+            _logger.LogInformation(
+                "ComboBox dropdown PageDown scroll executed. combo={Combo}",
+                SafeElementName(comboBox));
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox PageDown scroll fallback failed for combo={Combo}",
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
+    private bool SendMouseWheel(int wheelClicks)
+    {
+        try
+        {
+            if (wheelClicks == 0)
+                return true;
+
+            var wheelDelta = wheelClicks * 120;
+            var input = new INPUT
+            {
+                type = INPUT_MOUSE,
+                mi = new MOUSEINPUT
+                {
+                    mouseData = unchecked((uint)wheelDelta),
+                    dwFlags = MOUSEEVENTF_WHEEL
+                }
+            };
+
+            var sent = SendInput(1, [input], Marshal.SizeOf<INPUT>());
+            return sent == 1;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SendMouseWheel failed for wheelClicks={WheelClicks}", wheelClicks);
+            return false;
+        }
+    }
+
     private bool IsNamedListItem(AutomationElement item)
     {
         try
@@ -4603,16 +4890,10 @@ public sealed class RecordingOverlayWindow : Form
             {
                 Thread.Sleep(MenuNavigationDelayMs);
 
-                var item = FindDynamicComboBoxItems(comboBox, maxItems: MaxComboBoxItemsForTextSelection)
-                    .FirstOrDefault(x =>
-                        string.Equals(
-                            NormalizeMenuText(SafeElementName(x)),
-                            NormalizeMenuText(itemName),
-                            StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(
-                            NormalizeMenuText(SafeElementAutomationId(x)),
-                            NormalizeMenuText(itemName),
-                            StringComparison.OrdinalIgnoreCase));
+                var item = FindComboBoxItemByTextWithScroll(
+                    comboBox,
+                    itemName,
+                    ComboBoxScrollSearchMaxAttempts);
 
                 if (item != null && ActivateComboBoxListItem(item, itemName))
                 {
@@ -4818,6 +5099,18 @@ public sealed class RecordingOverlayWindow : Form
         catch
         {
             return false;
+        }
+    }
+
+    private static string SafeBoundingRectangle(AutomationElement element)
+    {
+        try
+        {
+            return element.BoundingRectangle.ToString();
+        }
+        catch
+        {
+            return string.Empty;
         }
     }
 
