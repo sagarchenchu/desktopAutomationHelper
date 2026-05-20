@@ -5683,7 +5683,7 @@ public class UiService : IUiService
         int maxScrollAttempts)
     {
         var requested = NormalizeMenuText(itemName);
-        var seenSignatures = new HashSet<string>(StringComparer.Ordinal);
+        var seenSignatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         for (var attempt = 0; attempt <= maxScrollAttempts; attempt++)
         {
@@ -5712,85 +5712,130 @@ public class UiService : IUiService
             }
 
             var signatureBeforeScroll = BuildComboBoxVisibleItemsSignature(items);
-            seenSignatures.Add(signatureBeforeScroll);
 
-            if (attempt == maxScrollAttempts)
-                break;
-
-            var scrolledByWheel = ScrollComboBoxDropdown(
-                session,
-                comboBox,
-                ComboBoxScrollPageWheelClicks);
-            var scrolled = scrolledByWheel;
-
-            if (!scrolled)
-            {
-                _logger.LogWarning(
-                    "ComboBox mouse-wheel scroll failed. Trying PageDown fallback. item={Item}, attempt={Attempt}",
-                    itemName,
-                    attempt);
-
-                scrolled = ScrollComboBoxDropdownByKeyboard(session, comboBox);
-            }
-
-            if (!scrolled)
-            {
-                _logger.LogWarning(
-                    "ComboBox scroll failed by both mouse-wheel and PageDown. item={Item}, attempt={Attempt}",
-                    itemName,
-                    attempt);
-
-                break;
-            }
-
-            Thread.Sleep(ComboBoxScrollSettleDelayMs);
-
-            var afterScrollItems = FindDynamicComboBoxItems(
-                session,
-                comboBox,
-                maxItems: ComboBoxVisibleItemSearchLimit);
-            var signatureAfterScroll = BuildComboBoxVisibleItemsSignature(afterScrollItems);
-
-            if (scrolledByWheel &&
-                string.Equals(signatureBeforeScroll, signatureAfterScroll, StringComparison.Ordinal))
-            {
-                _logger.LogWarning(
-                    "ComboBox mouse-wheel scroll had no visible effect. Trying PageDown fallback. item={Item}, attempt={Attempt}",
-                    itemName,
-                    attempt);
-
-                if (!ScrollComboBoxDropdownByKeyboard(session, comboBox))
-                {
-                    _logger.LogWarning(
-                        "ComboBox PageDown fallback failed after no-effect mouse-wheel scroll. item={Item}, attempt={Attempt}",
-                        itemName,
-                        attempt);
-
-                    break;
-                }
-
-                Thread.Sleep(ComboBoxScrollSettleDelayMs);
-
-                afterScrollItems = FindDynamicComboBoxItems(
-                    session,
-                    comboBox,
-                    maxItems: ComboBoxVisibleItemSearchLimit);
-                signatureAfterScroll = BuildComboBoxVisibleItemsSignature(afterScrollItems);
-            }
-
-            if (string.Equals(signatureBeforeScroll, signatureAfterScroll, StringComparison.Ordinal) ||
-                !seenSignatures.Add(signatureAfterScroll))
+            if (!seenSignatures.Add(signatureBeforeScroll) && attempt > 0)
             {
                 _logger.LogInformation(
-                    "ComboBox scroll search stopped because visible items did not change after scroll. item={Item}, attempt={Attempt}",
+                    "ComboBox visible item signature repeated before scrolling. Will try fallback scrolling before stopping. item={Item}, attempt={Attempt}, signature={Signature}",
                     itemName,
-                    attempt);
+                    attempt,
+                    signatureBeforeScroll);
+            }
+
+            if (attempt == maxScrollAttempts)
+            {
+                _logger.LogInformation(
+                    "ComboBox scroll search reached max attempts. item={Item}, attempts={Attempts}",
+                    itemName,
+                    maxScrollAttempts);
 
                 break;
             }
+
+            var wheelChangedVisibleItems = TryScrollComboBoxAndDetectChange(
+                session,
+                comboBox,
+                signatureBeforeScroll,
+                useKeyboardPageDown: false,
+                itemName,
+                attempt);
+
+            if (wheelChangedVisibleItems)
+            {
+                continue;
+            }
+
+            _logger.LogInformation(
+                "ComboBox mouse-wheel scroll did not change visible items. Trying PageDown fallback. item={Item}, attempt={Attempt}",
+                itemName,
+                attempt);
+
+            var pageDownChangedVisibleItems = TryScrollComboBoxAndDetectChange(
+                session,
+                comboBox,
+                signatureBeforeScroll,
+                useKeyboardPageDown: true,
+                itemName,
+                attempt);
+
+            if (pageDownChangedVisibleItems)
+            {
+                continue;
+            }
+
+            _logger.LogInformation(
+                "ComboBox scroll search stopped because neither mouse wheel nor PageDown changed visible items. item={Item}, attempt={Attempt}",
+                itemName,
+                attempt);
+
+            break;
         }
 
         return null;
+    }
+
+    private bool TryScrollComboBoxAndDetectChange(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string signatureBeforeScroll,
+        bool useKeyboardPageDown,
+        string itemName,
+        int attempt)
+    {
+        try
+        {
+            var scrolled = useKeyboardPageDown
+                ? ScrollComboBoxDropdownByKeyboard(session, comboBox)
+                : ScrollComboBoxDropdown(session, comboBox, ComboBoxScrollPageWheelClicks);
+
+            Thread.Sleep(ComboBoxScrollSettleDelayMs);
+
+            if (!scrolled)
+            {
+                _logger.LogInformation(
+                    "ComboBox scroll attempt returned false. strategy={Strategy}, item={Item}, attempt={Attempt}",
+                    useKeyboardPageDown ? "PageDown" : "MouseWheel",
+                    itemName,
+                    attempt);
+
+                return false;
+            }
+
+            var itemsAfterScroll = FindDynamicComboBoxItems(
+                session,
+                comboBox,
+                maxItems: ComboBoxVisibleItemSearchLimit);
+
+            var signatureAfterScroll = BuildComboBoxVisibleItemsSignature(itemsAfterScroll);
+
+            var changed = !string.Equals(
+                signatureBeforeScroll,
+                signatureAfterScroll,
+                StringComparison.OrdinalIgnoreCase);
+
+            _logger.LogInformation(
+                "ComboBox scroll detect change. strategy={Strategy}, item={Item}, attempt={Attempt}, changed={Changed}, before={Before}, after={After}",
+                useKeyboardPageDown ? "PageDown" : "MouseWheel",
+                itemName,
+                attempt,
+                changed,
+                signatureBeforeScroll,
+                signatureAfterScroll);
+
+            return changed;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox scroll detect change failed. strategy={Strategy}, item={Item}, attempt={Attempt}, combo={Combo}",
+                useKeyboardPageDown ? "PageDown" : "MouseWheel",
+                itemName,
+                attempt,
+                SafeElementName(comboBox));
+
+            return false;
+        }
     }
 
     private static string BuildComboBoxVisibleItemsSignature(
