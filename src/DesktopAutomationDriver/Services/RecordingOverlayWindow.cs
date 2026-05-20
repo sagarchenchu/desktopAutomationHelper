@@ -183,7 +183,7 @@ public sealed class RecordingOverlayWindow : Form
     private const int MaxDynamicPopupSearchDepth = 4;
     private const int MaxApplicationContextMenuCandidates = 80;
     private const int MaxApplicationContextMenuSearchDepth = 4;
-    private const int MaxApplicationContextMenuItems = 30;
+    private const int MaxApplicationContextMenuDisplayItems = 30;
     private const int MaxApplicationContextMenuPlaybackItems = 100;
     private const int MaxComboBoxItemsForTextSelection = 500;
     private const int ComboBoxScrollSearchMaxAttempts = 30;
@@ -3853,7 +3853,7 @@ public sealed class RecordingOverlayWindow : Form
                 return;
             }
 
-            var items = GetContextMenuItems(contextMenu, MaxApplicationContextMenuItems);
+            var items = GetContextMenuItems(contextMenu, MaxApplicationContextMenuDisplayItems);
 
             if (items.Count == 0)
             {
@@ -3902,7 +3902,7 @@ public sealed class RecordingOverlayWindow : Form
         });
         menu.Items.Add(new ToolStripSeparator());
 
-        foreach (var item in items.Take(MaxApplicationContextMenuItems))
+        foreach (var item in items.Take(MaxApplicationContextMenuDisplayItems))
         {
             var itemName = SafeElementName(item);
 
@@ -3975,7 +3975,7 @@ public sealed class RecordingOverlayWindow : Form
             throw new InvalidOperationException($"Failed to open context submenu '{string.Join(" > ", submenuPath)}'.");
         }
 
-        var items = GetContextMenuItems(submenuRoot, MaxApplicationContextMenuItems);
+        var items = GetContextMenuItems(submenuRoot, MaxApplicationContextMenuDisplayItems);
 
         if (items.Count == 0)
             throw new InvalidOperationException($"Context submenu '{string.Join(" > ", submenuPath)}' has no readable items.");
@@ -4221,7 +4221,7 @@ public sealed class RecordingOverlayWindow : Form
 
     private List<AutomationElement> GetContextMenuItems(
         AutomationElement menuRoot,
-        int maxItems = MaxApplicationContextMenuItems)
+        int maxItems = MaxApplicationContextMenuDisplayItems)
     {
         var results = new List<AutomationElement>();
         var seenKeys = new HashSet<string>(StringComparer.Ordinal);

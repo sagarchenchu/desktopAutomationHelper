@@ -94,7 +94,7 @@ public class UiService : IUiService
     private const int MaxDynamicPopupSearchDepth = 4;
     private const int MaxApplicationContextMenuCandidates = 80;
     private const int MaxApplicationContextMenuSearchDepth = 4;
-    private const int MaxApplicationContextMenuItems = 100;
+    private const int MaxApplicationContextMenuPlaybackItems = 100;
     private const int DefaultListResponseLimit = 500;
     private const int MaxListResponseLimit = 5000;
     private const string DesktopRootName = "Desktop";
@@ -7006,7 +7006,7 @@ public class UiService : IUiService
     private List<AutomationElement> GetContextMenuItems(
         AutomationSession session,
         AutomationElement menuRoot,
-        int maxItems = MaxApplicationContextMenuItems)
+        int maxItems = MaxApplicationContextMenuPlaybackItems)
     {
         var results = new List<AutomationElement>();
         var seenKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -7072,7 +7072,7 @@ public class UiService : IUiService
     {
         var requested = NormalizeMenuText(itemText);
 
-        foreach (var item in GetContextMenuItems(session, menuRoot, MaxApplicationContextMenuItems))
+        foreach (var item in GetContextMenuItems(session, menuRoot, MaxApplicationContextMenuPlaybackItems))
         {
             var name = NormalizeMenuText(SafeElementName(item));
 
