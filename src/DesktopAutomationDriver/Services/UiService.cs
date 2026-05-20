@@ -5749,20 +5749,18 @@ public class UiService : IUiService
         string itemName)
     {
         var requested = NormalizeMenuText(itemName);
-        var seenSignatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string? previousSignature = null;
 
         if (!ResetComboBoxDropdownToTop(session, comboBox))
             return false;
 
-        for (var page = 0; page <= ComboBoxPagedSearchMaxPages; page++)
+        for (var page = 0; page < ComboBoxPagedSearchMaxPages; page++)
         {
             var items = GetCurrentVisibleComboBoxBatch(session, comboBox, ComboBoxPagedSearchBatchSize);
             var signature = BuildComboBoxVisibleBatchSignature(items);
 
             if (page > 0 &&
-                (string.Equals(signature, previousSignature, StringComparison.OrdinalIgnoreCase) ||
-                 !seenSignatures.Add(signature)))
+                string.Equals(signature, previousSignature, StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogInformation(
                     "ComboBox paged visible-list search stopped because visible batch signature stopped changing. combo={Combo}, item={Item}, page={Page}, signature={Signature}",
@@ -5773,9 +5771,6 @@ public class UiService : IUiService
 
                 break;
             }
-
-            if (page == 0)
-                seenSignatures.Add(signature);
 
             foreach (var item in items)
             {
@@ -5797,9 +5792,6 @@ public class UiService : IUiService
                 Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
                 return VerifyComboBoxSelectedValue(session, comboBox, itemName);
             }
-
-            if (page == ComboBoxPagedSearchMaxPages)
-                break;
 
             previousSignature = signature;
 
