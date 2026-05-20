@@ -3655,7 +3655,7 @@ public class UiService : IUiService
                 $"dropdownListDetected={FindDynamicComboBoxList(session, comboBox) != null}, " +
                 $"expandedState={GetComboBoxExpandState(comboBox)}, " +
                 $"currentValue='{GetComboBoxCurrentValue(session, comboBox)}', " +
-                $"available(first {MaxAssistiveDropdownItemsToDisplay})='{string.Join(", ", available)}'");
+                $"availableFirst{MaxAssistiveDropdownItemsToDisplay}='{string.Join(", ", available)}'");
         }
 
         if (!ActivateComboBoxListItem(item, itemName))
@@ -5695,10 +5695,10 @@ public class UiService : IUiService
             foreach (var item in items)
             {
                 var name = NormalizeMenuText(SafeElementName(item));
-                var aid = NormalizeMenuText(SafeElementAutomationId(item));
+                var automationId = NormalizeMenuText(SafeElementAutomationId(item));
 
                 if (string.Equals(name, requested, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(aid, requested, StringComparison.OrdinalIgnoreCase))
+                    string.Equals(automationId, requested, StringComparison.OrdinalIgnoreCase))
                 {
                     _logger.LogInformation(
                         "ComboBox item found. item={Item}, attempt={Attempt}, name={Name}, automationId={AutomationId}",
@@ -5784,6 +5784,8 @@ public class UiService : IUiService
     {
         try
         {
+            var strategy = useKeyboardPageDown ? "PageDown" : "MouseWheel";
+
             var scrolled = useKeyboardPageDown
                 ? ScrollComboBoxDropdownByKeyboard(session, comboBox)
                 : ScrollComboBoxDropdown(session, comboBox, ComboBoxScrollPageWheelClicks);
@@ -5794,7 +5796,7 @@ public class UiService : IUiService
             {
                 _logger.LogInformation(
                     "ComboBox scroll attempt returned false. strategy={Strategy}, item={Item}, attempt={Attempt}",
-                    useKeyboardPageDown ? "PageDown" : "MouseWheel",
+                    strategy,
                     itemName,
                     attempt);
 
@@ -5815,7 +5817,7 @@ public class UiService : IUiService
 
             _logger.LogInformation(
                 "ComboBox scroll detect change. strategy={Strategy}, item={Item}, attempt={Attempt}, changed={Changed}, before={Before}, after={After}",
-                useKeyboardPageDown ? "PageDown" : "MouseWheel",
+                strategy,
                 itemName,
                 attempt,
                 changed,
