@@ -3883,12 +3883,12 @@ public class UiService : IUiService
                 $"ComboBox item '{itemName}' was visible/found but did not commit. Actual='{actualAfterCommit}'.");
         }
 
-        var actual = GetComboBoxCurrentValue(session, comboBox);
+        var actualAfterVerifiedCommit = GetComboBoxCurrentValue(session, comboBox);
 
         return new
         {
             selected = itemName,
-            actual,
+            actual = actualAfterVerifiedCommit,
             comboBox = SafeElementName(comboBox),
             verified = true,
             strategy = "small-combobox-exact-visible-commit"
