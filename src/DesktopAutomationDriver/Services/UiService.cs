@@ -5667,7 +5667,7 @@ public class UiService : IUiService
 
             var signature = BuildComboBoxVisibleItemsSignature(items);
 
-            if (!seenSignatures.Add(signature) && attempt > 0)
+            if (!seenSignatures.Add(signature))
             {
                 _logger.LogInformation(
                     "ComboBox scroll search stopped because visible items did not change. item={Item}, attempt={Attempt}",
@@ -5708,16 +5708,8 @@ public class UiService : IUiService
             {
                 var name = NormalizeMenuText(SafeElementName(item));
                 var aid = NormalizeMenuText(SafeElementAutomationId(item));
-
-                try
-                {
-                    var rect = item.BoundingRectangle;
-                    return $"{name}|{aid}|{rect.Left},{rect.Top},{rect.Width},{rect.Height}";
-                }
-                catch
-                {
-                    return $"{name}|{aid}";
-                }
+                var rect = SafeBoundingRectangle(item);
+                return $"{name}|{aid}|{rect}";
             }));
     }
 
