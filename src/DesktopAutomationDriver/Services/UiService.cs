@@ -76,6 +76,9 @@ public class UiService : IUiService
     private const int ComboBoxScrollPageWheelClicks = -3;
     private const int ComboBoxScrollSettleDelayMs = 150;
     private const int ComboBoxVisibleItemSearchLimit = 200;
+    private const int ComboBoxTypeAheadDelayMs = 150;
+    private const int ComboBoxTypeAheadCommitDelayMs = 250;
+    private const int ComboBoxTypeAheadFocusDelayMs = 150;
     private const int MaxComboBoxDropdownListCandidates = 100;
     private const int MaxWindowSearchDepth = 5;
     private const int MaxAssistiveDropdownItemsToDisplay = 25;
@@ -3624,13 +3627,31 @@ public class UiService : IUiService
 
         if (item == null)
         {
+            _logger.LogInformation(
+                "ComboBox item '{Item}' was not found by visible/scroll search. Trying keyboard type-ahead fallback.",
+                itemName);
+
+            if (TrySelectComboBoxByKeyboardSafe(session, comboBox, itemName))
+            {
+                var actual = GetComboBoxCurrentValue(session, comboBox);
+
+                return new
+                {
+                    selected = itemName,
+                    actual,
+                    comboBox = SafeElementName(comboBox),
+                    verified = true,
+                    strategy = "keyboard-typeahead"
+                };
+            }
+
             var available = FindDynamicComboBoxItems(session, comboBox, maxItems: MaxAssistiveDropdownItemsToDisplay)
                 .Select(SafeElementName)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToList();
 
             throw new InvalidOperationException(
-                $"ComboBox item '{itemName}' was not found after scrolling. " +
+                $"ComboBox item '{itemName}' was not found after scrolling or keyboard type-ahead. " +
                 $"Available current items first {MaxAssistiveDropdownItemsToDisplay}: {string.Join(", ", available)}");
         }
 
@@ -5740,6 +5761,112 @@ public class UiService : IUiService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "ScrollComboBoxDropdown failed for {Combo}", SafeElementName(comboBox));
+            return false;
+        }
+    }
+
+    private bool TrySelectComboBoxByKeyboardSafe(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string itemName)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(itemName))
+                return false;
+
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!FocusElementForKeyboardInput(comboBox, "ComboBoxTypeAhead"))
+            {
+                _logger.LogWarning(
+                    "ComboBox keyboard type-ahead skipped because focus could not be confirmed. combo={Combo}, item={Item}",
+                    SafeElementName(comboBox),
+                    itemName);
+
+                return false;
+            }
+
+            Thread.Sleep(ComboBoxTypeAheadFocusDelayMs);
+
+            if (!OpenComboBoxDropdown(session, comboBox))
+            {
+                _logger.LogWarning(
+                    "ComboBox keyboard type-ahead skipped because dropdown could not be opened. combo={Combo}, item={Item}",
+                    SafeElementName(comboBox),
+                    itemName);
+
+                return false;
+            }
+
+            Thread.Sleep(MenuExpandDelayMs);
+
+            var list = FindDynamicComboBoxList(session, comboBox);
+
+            if (list == null)
+            {
+                _logger.LogWarning(
+                    "ComboBox keyboard type-ahead skipped because dropdown list was not detected. combo={Combo}, item={Item}",
+                    SafeElementName(comboBox),
+                    itemName);
+
+                return false;
+            }
+
+            _logger.LogInformation(
+                "ComboBox keyboard type-ahead fallback started. combo={Combo}, item={Item}",
+                SafeElementName(comboBox),
+                itemName);
+
+            // Ctrl+A selects all existing text in editable ComboBoxes so the typed value
+            // replaces it completely. Non-editable ComboBoxes ignore Ctrl+A safely.
+            Keyboard.Press(VirtualKeyShort.LCONTROL);
+            Keyboard.Press(VirtualKeyShort.KEY_A);
+            Keyboard.Release(VirtualKeyShort.KEY_A);
+            Keyboard.Release(VirtualKeyShort.LCONTROL);
+
+            Thread.Sleep(ComboBoxTypeAheadDelayMs);
+
+            // Use Keyboard.Type for literal character-by-character input so that special
+            // characters in item names (e.g. "+", "^", "%") are never misinterpreted as
+            // modifier keys the way SendKeysString would treat them.
+            Keyboard.Type(itemName);
+
+            Thread.Sleep(ComboBoxTypeAheadCommitDelayMs);
+
+            Keyboard.Press(VirtualKeyShort.RETURN);
+
+            Thread.Sleep(ComboBoxTypeAheadCommitDelayMs);
+
+            var verified = VerifyComboBoxSelectedValue(session, comboBox, itemName);
+
+            if (verified)
+            {
+                _logger.LogInformation(
+                    "ComboBox keyboard type-ahead verified. combo={Combo}, item={Item}",
+                    SafeElementName(comboBox),
+                    itemName);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "ComboBox keyboard type-ahead did not verify. requested={Requested}, actual={Actual}, combo={Combo}",
+                    itemName,
+                    GetComboBoxCurrentValue(session, comboBox),
+                    SafeElementName(comboBox));
+            }
+
+            return verified;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox keyboard type-ahead failed. combo={Combo}, item={Item}",
+                SafeElementName(comboBox),
+                itemName);
+
             return false;
         }
     }
