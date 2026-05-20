@@ -3665,8 +3665,30 @@ public class UiService : IUiService
 
         if (!VerifyComboBoxSelectedValue(session, comboBox, itemName))
         {
+            var actualAfterActivation = GetComboBoxCurrentValue(session, comboBox);
+
+            _logger.LogWarning(
+                "ComboBox ListItem activation did not select expected value. requested={Requested}, actual={Actual}. Trying keyboard type-ahead fallback.",
+                itemName,
+                actualAfterActivation);
+
+            if (TrySelectComboBoxByKeyboardSafe(session, comboBox, itemName))
+            {
+                var actual = GetComboBoxCurrentValue(session, comboBox);
+
+                return new
+                {
+                    selected = itemName,
+                    actual,
+                    comboBox = SafeElementName(comboBox),
+                    verified = true,
+                    strategy = "listitem-click-keyboard-typeahead-fallback",
+                    previousActual = actualAfterActivation
+                };
+            }
+
             throw new InvalidOperationException(
-                $"ComboBox selected value did not match requested item. Requested='{itemName}', Actual='{GetComboBoxCurrentValue(session, comboBox)}'");
+                $"ComboBox selected value did not match requested item after list item activation or keyboard fallback. Requested='{itemName}', Actual='{GetComboBoxCurrentValue(session, comboBox)}'");
         }
 
         try { comboBox.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
@@ -6203,17 +6225,6 @@ public class UiService : IUiService
 
         try
         {
-            var name = SafeElementName(comboBox);
-            if (!string.IsNullOrWhiteSpace(name))
-                return name.Trim();
-        }
-        catch
-        {
-            // ignore
-        }
-
-        try
-        {
             var cf = session.Automation.ConditionFactory;
 
             var editChild = comboBox.FindFirstDescendant(cf.ByControlType(ControlType.Edit));
@@ -6245,6 +6256,39 @@ public class UiService : IUiService
                 if (!string.IsNullOrWhiteSpace(text))
                     return text.Trim();
             }
+
+            var selectedItem = comboBox
+                .FindAllDescendants(cf.ByControlType(ControlType.ListItem))
+                .FirstOrDefault(item =>
+                {
+                    try
+                    {
+                        return item.Patterns.SelectionItem.IsSupported &&
+                               item.Patterns.SelectionItem.PatternOrDefault?.IsSelected == true;
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                });
+
+            if (selectedItem != null)
+            {
+                var selectedName = SafeElementName(selectedItem);
+                if (!string.IsNullOrWhiteSpace(selectedName))
+                    return selectedName.Trim();
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            var name = SafeElementName(comboBox);
+            if (!string.IsNullOrWhiteSpace(name))
+                return name.Trim();
         }
         catch
         {
