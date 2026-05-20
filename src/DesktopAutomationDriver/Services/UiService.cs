@@ -3687,8 +3687,16 @@ public class UiService : IUiService
                 };
             }
 
+            var actualAfterFallback = GetComboBoxCurrentValue(session, comboBox);
+
+            _logger.LogWarning(
+                "ComboBox keyboard type-ahead fallback after ListItem activation did not verify. requested={Requested}, actual={Actual}, previousActual={PreviousActual}",
+                itemName,
+                actualAfterFallback,
+                actualAfterActivation);
+
             throw new InvalidOperationException(
-                $"ComboBox selected value did not match requested item after list item activation or keyboard fallback. Requested='{itemName}', Actual='{GetComboBoxCurrentValue(session, comboBox)}'");
+                $"ComboBox selected value did not match requested item after list item activation; keyboard type-ahead fallback was attempted but did not verify. Requested='{itemName}', Actual='{actualAfterFallback}'");
         }
 
         try { comboBox.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
