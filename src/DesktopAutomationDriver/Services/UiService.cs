@@ -3704,7 +3704,7 @@ public class UiService : IUiService
 
         if (IsHugeComboBoxDropdown(session, comboBox))
         {
-            var allowKeyboardFallback = req.AllowKeyboardFallback == true;
+            var allowKeyboardFallback = req.AllowKeyboardFallback ?? false;
 
             _logger.LogInformation(
                 "ComboBox detected as huge list. Using paged visible-list search first. combo={Combo}, value={Value}",
@@ -3738,12 +3738,7 @@ public class UiService : IUiService
                     .ToList();
 
                 throw new InvalidOperationException(
-                    $"Huge ComboBox item '{itemName}' was not selected by paged visible-list search. " +
-                    "Keyboard type-ahead fallback is disabled by default for huge ComboBoxes; set allowKeyboardFallback=true to enable it. " +
-                    $"dropdownListDetected={dropdownList != null}, " +
-                    $"expandedState={GetComboBoxExpandState(comboBox)}, " +
-                    $"currentValue='{GetComboBoxCurrentValue(session, comboBox)}', " +
-                    $"visibleBatch='{string.Join(", ", visibleBatchForError)}'");
+                    $"Huge ComboBox item '{itemName}' was not selected by paged visible-list search. Keyboard type-ahead fallback is disabled by default for huge ComboBoxes; set allowKeyboardFallback=true to enable it. dropdownListDetected={dropdownList != null}, expandedState={GetComboBoxExpandState(comboBox)}, currentValue='{GetComboBoxCurrentValue(session, comboBox)}', visibleBatch='{string.Join(", ", visibleBatchForError)}'");
             }
 
             _logger.LogWarning(
@@ -3765,14 +3760,19 @@ public class UiService : IUiService
                 };
             }
 
-            var visibleBatch = GetCurrentVisibleComboBoxBatch(session, comboBox, ComboBoxPagedSearchBatchSize)
+            var dropdownListAfterKeyboardFallback = FindDynamicComboBoxList(session, comboBox);
+            var visibleBatch = (dropdownListAfterKeyboardFallback != null
+                    ? GetListItemsBounded(session, dropdownListAfterKeyboardFallback, ComboBoxPagedSearchBatchSize)
+                    : GetLogicalComboBoxItems(session, comboBox, ComboBoxPagedSearchBatchSize))
+                .Where(IsElementVisibleAndClickableEnough)
+                .Take(ComboBoxPagedSearchBatchSize)
                 .Select(SafeElementName)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToList();
 
             throw new InvalidOperationException(
                 $"Huge ComboBox item '{itemName}' was not found by paged visible-list search or keyboard type-ahead. " +
-                $"dropdownListDetected={FindDynamicComboBoxList(session, comboBox) != null}, " +
+                $"dropdownListDetected={dropdownListAfterKeyboardFallback != null}, " +
                 $"expandedState={GetComboBoxExpandState(comboBox)}, " +
                 $"currentValue='{GetComboBoxCurrentValue(session, comboBox)}', " +
                 $"visibleBatch='{string.Join(", ", visibleBatch)}'");

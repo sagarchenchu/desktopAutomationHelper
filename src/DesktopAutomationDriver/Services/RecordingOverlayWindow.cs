@@ -1117,7 +1117,6 @@ public sealed class RecordingOverlayWindow : Form
         {
             _statusLabel.Text = "Assistive menu blocked: automation is null";
             _logger.LogWarning("Assistive menu blocked: automation is null");
-
             return false;
         }
 
@@ -5847,7 +5846,7 @@ public sealed class RecordingOverlayWindow : Form
                     }
 
                     _logger.LogWarning(
-                        "Assistive huge ComboBox selection failed after paged visible-list search. Keyboard type-ahead fallback is disabled for huge ComboBoxes; use /ui allowKeyboardFallback=true if keyboard fallback is required. requested={Requested}, actual={Actual}",
+                        "Assistive huge ComboBox selection failed after paged visible-list search. Keyboard type-ahead fallback is disabled for huge ComboBoxes; use the request parameter AllowKeyboardFallback=true if keyboard fallback is required. requested={Requested}, actual={Actual}",
                         itemName,
                         GetComboBoxCurrentValue(comboBox));
 
