@@ -1116,6 +1116,8 @@ public sealed class RecordingOverlayWindow : Form
         if (_automation == null)
         {
             _statusLabel.Text = "Assistive menu blocked: automation is null";
+            _logger.LogWarning("Assistive menu blocked: automation is null");
+
             return false;
         }
 
@@ -4049,6 +4051,10 @@ public sealed class RecordingOverlayWindow : Form
                     return false;
             }
 
+            _logger.LogWarning(
+                "Context menu path was not completed. path={Path}",
+                menuPath);
+
             return false;
         }
         catch (Exception ex)
@@ -5830,7 +5836,7 @@ public sealed class RecordingOverlayWindow : Form
                 if (IsHugeComboBoxDropdown(comboBox))
                 {
                     _logger.LogInformation(
-                        "Assistive ComboBox detected as huge list. Using deterministic paged visible-list search first. combo={Combo}, value={Value}",
+                        "Assistive ComboBox detected as huge list. Using paged visible-list search first. combo={Combo}, value={Value}",
                         SafeElementName(comboBox),
                         itemName);
 

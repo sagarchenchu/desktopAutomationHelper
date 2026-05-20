@@ -1603,7 +1603,7 @@ public class UiService : IUiService
                 throw new InvalidOperationException($"Context submenu popup was not found after opening '{part}'.");
         }
 
-        return null;
+        throw new InvalidOperationException($"Context menu path '{rawValue}' was not completed.");
     }
 
     private object? Hover(UiRequest req)
@@ -3705,7 +3705,7 @@ public class UiService : IUiService
         if (IsHugeComboBoxDropdown(session, comboBox))
         {
             _logger.LogInformation(
-                "ComboBox detected as huge list. Using deterministic paged visible-list search first. combo={Combo}, value={Value}",
+                "ComboBox detected as huge list. Using paged visible-list search first. combo={Combo}, value={Value}",
                 SafeElementName(comboBox),
                 itemName);
 
