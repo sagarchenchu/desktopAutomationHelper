@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using DesktopAutomationDriver.Models.Recording;
+using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
 using FlaUI.Core.Input;
@@ -185,6 +186,8 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxScrollPageWheelClicks = -3;
     private const int ComboBoxScrollSettleDelayMs = 150;
     private const int ComboBoxVisibleItemSearchLimit = 200;
+    private const int ComboBoxLargeListDetectionLimit = 100;
+    private const int ComboBoxHugeListTypeAheadThreshold = 100;
     private const int ComboBoxKeyboardTypeaheadInitialDelayMs = 150;
     private const int ComboBoxKeyboardTypeaheadSettleDelayMs = 250;
     private const int TextPromptDialogWidth = 380;
@@ -4095,48 +4098,18 @@ public sealed class RecordingOverlayWindow : Form
 
     private List<AutomationElement> GetLogicalComboBoxItems(AutomationElement comboBox, int maxItems)
     {
-        var results = new List<AutomationElement>();
-
         try
         {
             if (_automation == null)
-                return results;
+                return [];
 
-            var cf = _automation.ConditionFactory;
-
-            foreach (var child in comboBox.FindAllChildren(cf.ByControlType(ControlType.ListItem)))
-            {
-                if (_stopRequested)
-                    return results;
-
-                if (IsNamedListItem(child))
-                    results.Add(child);
-
-                if (results.Count >= maxItems)
-                    return results;
-            }
-
-            if (results.Count == 0)
-            {
-                foreach (var item in comboBox.FindAllDescendants(cf.ByControlType(ControlType.ListItem)))
-                {
-                    if (_stopRequested)
-                        return results;
-
-                    if (IsNamedListItem(item))
-                        results.Add(item);
-
-                    if (results.Count >= maxItems)
-                        return results;
-                }
-            }
+            return GetListItemsBounded(comboBox, maxItems);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "GetLogicalComboBoxItems failed for {Combo}", SafeElementName(comboBox));
+            return [];
         }
-
-        return results;
     }
 
     private void AddLogicalComboBoxItemsSubmenu(
@@ -4483,34 +4456,22 @@ public sealed class RecordingOverlayWindow : Form
             if (_automation == null)
                 return results;
 
-            var cf = _automation.ConditionFactory;
+            if (maxItems <= 0)
+                return results;
 
-            foreach (var child in list.FindAllChildren(cf.ByControlType(ControlType.ListItem)))
-            {
-                if (_stopRequested)
-                    return results;
+            var walker = _automation.TreeWalkerFactory.GetControlViewWalker();
+            var visited = 0;
+            var maxVisitedNodes = GetComboBoxTraversalNodeLimit(maxItems);
 
-                if (IsNamedListItem(child))
-                    results.Add(child);
-
-                if (results.Count >= maxItems)
-                    return results;
-            }
-
-            if (results.Count == 0)
-            {
-                foreach (var item in list.FindAllDescendants(cf.ByControlType(ControlType.ListItem)))
-                {
-                    if (_stopRequested)
-                        return results;
-
-                    if (IsNamedListItem(item))
-                        results.Add(item);
-
-                    if (results.Count >= maxItems)
-                        return results;
-                }
-            }
+            CollectListItemsBounded(
+                walker,
+                list,
+                results,
+                maxItems,
+                ref visited,
+                maxVisitedNodes,
+                depth: 0,
+                maxDepth: 8);
         }
         catch (Exception ex)
         {
@@ -4518,6 +4479,92 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         return results;
+    }
+
+    private static int GetComboBoxTraversalNodeLimit(int maxItems)
+    {
+        if (maxItems >= 1000)
+            return maxItems;
+
+        return Math.Max(maxItems * 20, 200);
+    }
+
+    private bool CollectListItemsBounded(
+        ITreeWalker walker,
+        AutomationElement parent,
+        List<AutomationElement> results,
+        int maxItems,
+        ref int visited,
+        int maxVisitedNodes,
+        int depth,
+        int maxDepth)
+    {
+        if (_stopRequested ||
+            results.Count >= maxItems ||
+            visited >= maxVisitedNodes ||
+            depth > maxDepth)
+        {
+            return true;
+        }
+
+        AutomationElement? child;
+
+        try
+        {
+            child = walker.GetFirstChild(parent);
+        }
+        catch
+        {
+            return false;
+        }
+
+        while (child != null &&
+               !_stopRequested &&
+               results.Count < maxItems &&
+               visited < maxVisitedNodes)
+        {
+            visited++;
+
+            var isListItem = false;
+
+            try
+            {
+                isListItem = child.ControlType == ControlType.ListItem;
+            }
+            catch
+            {
+                // ignore
+            }
+
+            if (isListItem)
+            {
+                if (IsNamedListItem(child))
+                    results.Add(child);
+            }
+            else if (CollectListItemsBounded(
+                         walker,
+                         child,
+                         results,
+                         maxItems,
+                         ref visited,
+                         maxVisitedNodes,
+                         depth + 1,
+                         maxDepth))
+            {
+                return true;
+            }
+
+            try
+            {
+                child = walker.GetNextSibling(child);
+            }
+            catch
+            {
+                break;
+            }
+        }
+
+        return _stopRequested || results.Count >= maxItems || visited >= maxVisitedNodes;
     }
 
     private AutomationElement? FindComboBoxItemByTextWithScroll(
@@ -4606,6 +4653,31 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         return null;
+    }
+
+    private bool IsHugeComboBoxDropdown(AutomationElement comboBox)
+    {
+        try
+        {
+            if (!OpenComboBoxDropdown(comboBox))
+                return false;
+
+            Thread.Sleep(MenuNavigationDelayMs);
+
+            var list = FindDynamicComboBoxList(comboBox);
+
+            if (list == null)
+                return false;
+
+            var items = GetListItemsBounded(list, ComboBoxLargeListDetectionLimit);
+
+            return items.Count >= ComboBoxHugeListTypeAheadThreshold;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to detect huge ComboBox dropdown. combo={Combo}", SafeElementName(comboBox));
+            return false;
+        }
     }
 
     private bool TryScrollComboBoxAndDetectChange(
@@ -4890,6 +4962,25 @@ public sealed class RecordingOverlayWindow : Form
             {
                 Thread.Sleep(MenuNavigationDelayMs);
 
+                if (IsHugeComboBoxDropdown(comboBox))
+                {
+                    _logger.LogInformation(
+                        "Assistive ComboBox detected as huge list. Using keyboard type-ahead first. combo={Combo}, value={Value}",
+                        SafeElementName(comboBox),
+                        itemName);
+
+                    if (TrySelectComboBoxByKeyboard(comboBox, itemName))
+                    {
+                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "keyboard-typeahead-huge-list");
+                        return true;
+                    }
+
+                    _logger.LogWarning(
+                        "Assistive huge ComboBox keyboard type-ahead failed. Falling back to bounded visible-item search. combo={Combo}, value={Value}",
+                        SafeElementName(comboBox),
+                        itemName);
+                }
+
                 var item = FindComboBoxItemByTextWithScroll(
                     comboBox,
                     itemName,
@@ -5044,20 +5135,7 @@ public sealed class RecordingOverlayWindow : Form
                         return text.Trim();
                 }
 
-                var selectedItem = comboBox
-                    .FindAllDescendants(cf.ByControlType(ControlType.ListItem))
-                    .FirstOrDefault(item =>
-                    {
-                        try
-                        {
-                            return item.Patterns.SelectionItem.IsSupported &&
-                                   item.Patterns.SelectionItem.PatternOrDefault?.IsSelected == true;
-                        }
-                        catch
-                        {
-                            return false;
-                        }
-                    });
+                var selectedItem = FindSelectedListItemBounded(comboBox);
 
                 if (selectedItem != null)
                 {
@@ -5084,6 +5162,58 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         return string.Empty;
+    }
+
+    private AutomationElement? FindSelectedListItemBounded(AutomationElement comboBox)
+    {
+        try
+        {
+            var candidates = GetListItemsBounded(comboBox, ComboBoxVisibleItemSearchLimit);
+
+            foreach (var item in candidates)
+            {
+                try
+                {
+                    if (item.Patterns.SelectionItem.IsSupported &&
+                        item.Patterns.SelectionItem.PatternOrDefault?.IsSelected == true)
+                    {
+                        return item;
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+
+            var list = FindDynamicComboBoxList(comboBox);
+            if (list == null)
+                return null;
+
+            candidates = GetListItemsBounded(list, ComboBoxVisibleItemSearchLimit);
+
+            foreach (var item in candidates)
+            {
+                try
+                {
+                    if (item.Patterns.SelectionItem.IsSupported &&
+                        item.Patterns.SelectionItem.PatternOrDefault?.IsSelected == true)
+                    {
+                        return item;
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return null;
     }
 
     private static bool IsComboBoxExpanded(AutomationElement comboBox)
