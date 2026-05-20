@@ -6142,38 +6142,36 @@ public class UiService : IUiService
     {
         foreach (var item in items)
         {
-            try
-            {
-                try
-                {
-                    if (item.Properties.HasKeyboardFocus.ValueOrDefault)
-                        return item;
-                }
-                catch
-                {
-                    // ignore unsupported/stale property
-                }
-
-                try
-                {
-                    if (item.Patterns.SelectionItem.IsSupported &&
-                        item.Patterns.SelectionItem.Pattern.IsSelected)
-                    {
-                        return item;
-                    }
-                }
-                catch
-                {
-                    // ignore stale or unsupported item
-                }
-            }
-            catch
-            {
-                // ignore stale item
-            }
+            if (TryHasKeyboardFocus(item) || TryIsSelectionItemSelected(item))
+                return item;
         }
 
         return null;
+    }
+
+    private static bool TryHasKeyboardFocus(AutomationElement item)
+    {
+        try
+        {
+            return item.Properties.HasKeyboardFocus.ValueOrDefault;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryIsSelectionItemSelected(AutomationElement item)
+    {
+        try
+        {
+            return item.Patterns.SelectionItem.IsSupported &&
+                   item.Patterns.SelectionItem.Pattern.IsSelected;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private string GetCurrentHighlightedComboBoxItemText(
