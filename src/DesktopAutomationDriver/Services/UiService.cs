@@ -7776,7 +7776,7 @@ public class UiService : IUiService
 
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
+                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, "keyboard-step-search"))
                     {
                         _logger.LogInformation(
                             "ComboBox keyboard step search selected requested value. combo={Combo}, value={Value}, step={Step}",
