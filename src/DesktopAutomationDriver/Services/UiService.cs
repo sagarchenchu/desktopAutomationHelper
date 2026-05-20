@@ -83,6 +83,7 @@ public class UiService : IUiService
     private const int ComboBoxKeyboardStepSearchMaxSteps = 2000;
     private const int ComboBoxKeyboardStepDelayMs = 40;
     private const int ComboBoxKeyboardStepReadDelayMs = 80;
+    private const int ComboBoxKeyboardStepLogEvery = 25;
     // Detection limit and huge-list threshold are separate knobs even though they
     // currently share the same value: one caps sampling, the other classifies size.
     private const int ComboBoxLargeListDetectionLimit = 100;
@@ -3708,7 +3709,7 @@ public class UiService : IUiService
         if (IsHugeComboBoxDropdown(session, comboBox))
         {
             _logger.LogInformation(
-                "ComboBox detected as huge list. Using paged visible-list search first. combo={Combo}, value={Value}",
+                "ComboBox detected as huge list. Using paged visible-list search. combo={Combo}, value={Value}",
                 SafeElementName(comboBox),
                 itemName);
 
@@ -3722,12 +3723,12 @@ public class UiService : IUiService
                     actual,
                     comboBox = SafeElementName(comboBox),
                     verified = true,
-                    strategy = "paged-visible-list-huge-list"
+                    strategy = "huge-list-paged-visible-search"
                 };
             }
 
             _logger.LogInformation(
-                "Huge ComboBox paged visible search failed. Trying keyboard step search. combo={Combo}, value={Value}",
+                "Huge ComboBox paged visible-list search failed. Trying keyboard step search. combo={Combo}, value={Value}",
                 SafeElementName(comboBox),
                 itemName);
 
@@ -3743,6 +3744,28 @@ public class UiService : IUiService
                     verified = true,
                     strategy = "huge-list-keyboard-step-search"
                 };
+            }
+
+            if (req.AllowKeyboardFallback == true)
+            {
+                _logger.LogInformation(
+                    "Huge ComboBox keyboard step search failed. allowKeyboardFallback=true, trying type-ahead. combo={Combo}, value={Value}",
+                    SafeElementName(comboBox),
+                    itemName);
+
+                if (TrySelectComboBoxByKeyboardSafe(session, comboBox, itemName))
+                {
+                    var actual = GetComboBoxCurrentValue(session, comboBox);
+
+                    return new
+                    {
+                        selected = itemName,
+                        actual,
+                        comboBox = SafeElementName(comboBox),
+                        verified = true,
+                        strategy = "huge-list-explicit-typeahead-fallback"
+                    };
+                }
             }
 
             var dropdownList = FindDynamicComboBoxList(session, comboBox);
@@ -6087,58 +6110,70 @@ public class UiService : IUiService
             if (list != null)
             {
                 var items = GetListItemsBounded(session, list, ComboBoxPagedSearchMaxVisibleItems);
+                var selectedOrFocused = FindSelectedOrFocusedItem(items);
 
-                foreach (var item in items)
-                {
-                    if (IsHighlightedComboBoxItem(item))
-                        return item;
-                }
+                if (selectedOrFocused != null)
+                    return selectedOrFocused;
 
-                return items.FirstOrDefault(IsElementVisibleAndClickableEnough) ?? items.FirstOrDefault();
+                return items.FirstOrDefault();
             }
 
             var logicalItems = GetLogicalComboBoxItems(session, comboBox, ComboBoxPagedSearchMaxVisibleItems);
+            var logicalSelectedOrFocused = FindSelectedOrFocusedItem(logicalItems);
 
-            foreach (var item in logicalItems)
-            {
-                if (IsHighlightedComboBoxItem(item))
-                    return item;
-            }
+            if (logicalSelectedOrFocused != null)
+                return logicalSelectedOrFocused;
 
-            return logicalItems.FirstOrDefault(IsElementVisibleAndClickableEnough) ?? logicalItems.FirstOrDefault();
+            return logicalItems.FirstOrDefault();
         }
         catch (Exception ex)
         {
             _logger.LogWarning(
                 ex,
-                "Failed reading highlighted ComboBox item. combo={Combo}",
+                "ComboBox keyboard step search failed reading highlighted item. combo={Combo}",
                 SafeElementName(comboBox));
 
             return null;
         }
     }
 
-    private static bool IsHighlightedComboBoxItem(AutomationElement item)
+    private static AutomationElement? FindSelectedOrFocusedItem(
+        IReadOnlyCollection<AutomationElement> items)
     {
-        try
+        foreach (var item in items)
         {
-            if (item.Properties.HasKeyboardFocus.ValueOrDefault)
-                return true;
-        }
-        catch
-        {
-            // ignore stale item
+            try
+            {
+                try
+                {
+                    if (item.Properties.HasKeyboardFocus.ValueOrDefault)
+                        return item;
+                }
+                catch
+                {
+                    // ignore unsupported/stale property
+                }
+
+                try
+                {
+                    if (item.Patterns.SelectionItem.IsSupported &&
+                        item.Patterns.SelectionItem.Pattern.IsSelected)
+                    {
+                        return item;
+                    }
+                }
+                catch
+                {
+                    // ignore stale or unsupported item
+                }
+            }
+            catch
+            {
+                // ignore stale item
+            }
         }
 
-        try
-        {
-            return item.Patterns.SelectionItem.IsSupported &&
-                   item.Patterns.SelectionItem.Pattern.IsSelected;
-        }
-        catch
-        {
-            return false;
-        }
+        return null;
     }
 
     private string GetCurrentHighlightedComboBoxItemText(
@@ -6156,6 +6191,16 @@ public class UiService : IUiService
             return name;
 
         return SafeElementAutomationId(item) ?? string.Empty;
+    }
+
+    private static bool ComboBoxTextMatchesExactly(
+        string actual,
+        string expected)
+    {
+        return string.Equals(
+            NormalizeMenuText(actual),
+            NormalizeMenuText(expected),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private AutomationElement? FindComboBoxItemByTextWithScroll(
@@ -6593,21 +6638,24 @@ public class UiService : IUiService
 
             Thread.Sleep(ComboBoxKeyboardStepReadDelayMs);
 
-            var normalizedRequested = NormalizeMenuText(requestedValue);
+            string? previousText = null;
+            var repeatedSameTextCount = 0;
 
             for (var step = 0; step < ComboBoxKeyboardStepSearchMaxSteps; step++)
             {
                 var currentText = GetCurrentHighlightedComboBoxItemText(session, comboBox);
-                var normalizedCurrent = NormalizeMenuText(currentText);
 
-                _logger.LogInformation(
-                    "ComboBox keyboard step search. combo={Combo}, requested={Requested}, step={Step}, current={Current}",
-                    SafeElementName(comboBox),
-                    requestedValue,
-                    step,
-                    currentText);
+                if (step < 10 || step % ComboBoxKeyboardStepLogEvery == 0)
+                {
+                    _logger.LogInformation(
+                        "ComboBox keyboard step search. combo={Combo}, requested={Requested}, step={Step}, current={Current}",
+                        SafeElementName(comboBox),
+                        requestedValue,
+                        step,
+                        currentText);
+                }
 
-                if (string.Equals(normalizedCurrent, normalizedRequested, StringComparison.OrdinalIgnoreCase))
+                if (ComboBoxTextMatchesExactly(currentText, requestedValue))
                 {
                     Keyboard.Press(VirtualKeyShort.RETURN);
                     Keyboard.Release(VirtualKeyShort.RETURN);
@@ -6626,28 +6674,28 @@ public class UiService : IUiService
                     }
 
                     _logger.LogWarning(
-                        "ComboBox keyboard step search pressed Enter but verification failed. requested={Requested}, actual={Actual}",
+                        "ComboBox keyboard step search pressed Enter but verification failed. requested={Requested}, actual={Actual}, step={Step}",
                         requestedValue,
-                        GetComboBoxCurrentValue(session, comboBox));
+                        GetComboBoxCurrentValue(session, comboBox),
+                        step);
 
                     return false;
                 }
 
-                Keyboard.Press(VirtualKeyShort.DOWN);
-                Keyboard.Release(VirtualKeyShort.DOWN);
+                if (!string.IsNullOrWhiteSpace(previousText) &&
+                    ComboBoxTextMatchesExactly(currentText, previousText))
+                {
+                    repeatedSameTextCount++;
+                }
+                else
+                {
+                    repeatedSameTextCount = 0;
+                }
 
-                Thread.Sleep(ComboBoxKeyboardStepDelayMs);
-
-                var nextText = GetCurrentHighlightedComboBoxItemText(session, comboBox);
-
-                if (string.Equals(
-                        NormalizeMenuText(nextText),
-                        normalizedCurrent,
-                        StringComparison.OrdinalIgnoreCase) &&
-                    step > 5)
+                if (repeatedSameTextCount >= 5 && step > 5)
                 {
                     _logger.LogInformation(
-                        "ComboBox keyboard step search stopped because DOWN did not change current item. combo={Combo}, current={Current}, step={Step}",
+                        "ComboBox keyboard step search stopped because DOWN did not change current highlighted item. combo={Combo}, current={Current}, step={Step}",
                         SafeElementName(comboBox),
                         currentText,
                         step);
@@ -6655,14 +6703,21 @@ public class UiService : IUiService
                     break;
                 }
 
+                previousText = currentText;
+
+                Keyboard.Press(VirtualKeyShort.DOWN);
+                Keyboard.Release(VirtualKeyShort.DOWN);
+
+                Thread.Sleep(ComboBoxKeyboardStepDelayMs);
                 Thread.Sleep(ComboBoxKeyboardStepReadDelayMs);
             }
 
-            _logger.LogInformation(
-                "ComboBox keyboard step search did not find requested value. combo={Combo}, value={Value}, maxSteps={MaxSteps}",
+            _logger.LogWarning(
+                "ComboBox keyboard step search did not find requested value. combo={Combo}, requested={Requested}, maxSteps={MaxSteps}, actual={Actual}",
                 SafeElementName(comboBox),
                 requestedValue,
-                ComboBoxKeyboardStepSearchMaxSteps);
+                ComboBoxKeyboardStepSearchMaxSteps,
+                GetComboBoxCurrentValue(session, comboBox));
 
             return false;
         }

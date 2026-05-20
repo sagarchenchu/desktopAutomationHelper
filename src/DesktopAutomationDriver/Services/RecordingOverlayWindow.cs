@@ -198,6 +198,7 @@ public sealed class RecordingOverlayWindow : Form
     private const int ComboBoxKeyboardStepSearchMaxSteps = 2000;
     private const int ComboBoxKeyboardStepDelayMs = 40;
     private const int ComboBoxKeyboardStepReadDelayMs = 80;
+    private const int ComboBoxKeyboardStepLogEvery = 25;
     // Detection limit and huge-list threshold are separate knobs even though they
     // currently share the same value: one caps sampling, the other classifies size.
     private const int ComboBoxLargeListDetectionLimit = 100;
@@ -5489,58 +5490,70 @@ public sealed class RecordingOverlayWindow : Form
             if (list != null)
             {
                 var items = GetListItemsBounded(list, ComboBoxPagedSearchMaxVisibleItems);
+                var selectedOrFocused = FindSelectedOrFocusedItem(items);
 
-                foreach (var item in items)
-                {
-                    if (IsHighlightedComboBoxItem(item))
-                        return item;
-                }
+                if (selectedOrFocused != null)
+                    return selectedOrFocused;
 
-                return items.FirstOrDefault(IsElementVisibleAndClickableEnough) ?? items.FirstOrDefault();
+                return items.FirstOrDefault();
             }
 
             var logicalItems = GetLogicalComboBoxItems(comboBox, ComboBoxPagedSearchMaxVisibleItems);
+            var logicalSelectedOrFocused = FindSelectedOrFocusedItem(logicalItems);
 
-            foreach (var item in logicalItems)
-            {
-                if (IsHighlightedComboBoxItem(item))
-                    return item;
-            }
+            if (logicalSelectedOrFocused != null)
+                return logicalSelectedOrFocused;
 
-            return logicalItems.FirstOrDefault(IsElementVisibleAndClickableEnough) ?? logicalItems.FirstOrDefault();
+            return logicalItems.FirstOrDefault();
         }
         catch (Exception ex)
         {
             _logger.LogWarning(
                 ex,
-                "Failed reading highlighted ComboBox item. combo={Combo}",
+                "Assistive ComboBox keyboard step search failed reading highlighted item. combo={Combo}",
                 SafeElementName(comboBox));
 
             return null;
         }
     }
 
-    private static bool IsHighlightedComboBoxItem(AutomationElement item)
+    private static AutomationElement? FindSelectedOrFocusedItem(
+        IReadOnlyCollection<AutomationElement> items)
     {
-        try
+        foreach (var item in items)
         {
-            if (item.Properties.HasKeyboardFocus.ValueOrDefault)
-                return true;
-        }
-        catch
-        {
-            // ignore stale item
+            try
+            {
+                try
+                {
+                    if (item.Properties.HasKeyboardFocus.ValueOrDefault)
+                        return item;
+                }
+                catch
+                {
+                    // ignore unsupported/stale property
+                }
+
+                try
+                {
+                    if (item.Patterns.SelectionItem.IsSupported &&
+                        item.Patterns.SelectionItem.Pattern.IsSelected)
+                    {
+                        return item;
+                    }
+                }
+                catch
+                {
+                    // ignore stale or unsupported item
+                }
+            }
+            catch
+            {
+                // ignore stale item
+            }
         }
 
-        try
-        {
-            return item.Patterns.SelectionItem.IsSupported &&
-                   item.Patterns.SelectionItem.Pattern.IsSelected;
-        }
-        catch
-        {
-            return false;
-        }
+        return null;
     }
 
     private string GetCurrentHighlightedComboBoxItemText(AutomationElement comboBox)
@@ -5556,6 +5569,16 @@ public sealed class RecordingOverlayWindow : Form
             return name;
 
         return SafeElementAutomationId(item) ?? string.Empty;
+    }
+
+    private static bool ComboBoxTextMatchesExactly(
+        string actual,
+        string expected)
+    {
+        return string.Equals(
+            NormalizeMenuText(actual),
+            NormalizeMenuText(expected),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private AutomationElement? FindComboBoxItemByTextWithScroll(
@@ -5958,18 +5981,18 @@ public sealed class RecordingOverlayWindow : Form
                 if (IsHugeComboBoxDropdown(comboBox))
                 {
                     _logger.LogInformation(
-                        "Assistive ComboBox detected as huge list. Using paged visible-list search first. combo={Combo}, value={Value}",
+                        "Assistive ComboBox detected as huge list. Using paged visible-list search. combo={Combo}, value={Value}",
                         SafeElementName(comboBox),
                         itemName);
 
                     if (TrySelectComboBoxByPagedVisibleSearch(comboBox, itemName))
                     {
-                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "paged-visible-list-huge-list");
+                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "huge-list-paged-visible-search");
                         return true;
                     }
 
                     _logger.LogInformation(
-                        "Assistive huge ComboBox paged visible search failed. Trying keyboard step search. combo={Combo}, value={Value}",
+                        "Assistive huge ComboBox paged visible-list search failed. Trying keyboard step search. combo={Combo}, value={Value}",
                         SafeElementName(comboBox),
                         itemName);
 
@@ -5980,9 +6003,10 @@ public sealed class RecordingOverlayWindow : Form
                     }
 
                     _logger.LogWarning(
-                        "Assistive huge ComboBox selection failed after paged visible-list search and keyboard step search. requested={Requested}, actual={Actual}",
+                        "Assistive huge ComboBox item '{Item}' was not found/verified by paged visible search or keyboard step search. actual={Actual}, combo={Combo}",
                         itemName,
-                        GetComboBoxCurrentValue(comboBox));
+                        GetComboBoxCurrentValue(comboBox),
+                        SafeElementName(comboBox));
 
                     _statusLabel.Text =
                         $"Huge ComboBox selection failed for '{itemName}'.";
@@ -6121,21 +6145,24 @@ public sealed class RecordingOverlayWindow : Form
 
             Thread.Sleep(ComboBoxKeyboardStepReadDelayMs);
 
-            var normalizedRequested = NormalizeMenuText(requestedValue);
+            string? previousText = null;
+            var repeatedSameTextCount = 0;
 
             for (var step = 0; step < ComboBoxKeyboardStepSearchMaxSteps; step++)
             {
                 var currentText = GetCurrentHighlightedComboBoxItemText(comboBox);
-                var normalizedCurrent = NormalizeMenuText(currentText);
 
-                _logger.LogInformation(
-                    "Assistive ComboBox keyboard step search. combo={Combo}, requested={Requested}, step={Step}, current={Current}",
-                    SafeElementName(comboBox),
-                    requestedValue,
-                    step,
-                    currentText);
+                if (step < 10 || step % ComboBoxKeyboardStepLogEvery == 0)
+                {
+                    _logger.LogInformation(
+                        "Assistive ComboBox keyboard step search. combo={Combo}, requested={Requested}, step={Step}, current={Current}",
+                        SafeElementName(comboBox),
+                        requestedValue,
+                        step,
+                        currentText);
+                }
 
-                if (string.Equals(normalizedCurrent, normalizedRequested, StringComparison.OrdinalIgnoreCase))
+                if (ComboBoxTextMatchesExactly(currentText, requestedValue))
                 {
                     Keyboard.Press(VirtualKeyShort.RETURN);
                     Keyboard.Release(VirtualKeyShort.RETURN);
@@ -6154,28 +6181,28 @@ public sealed class RecordingOverlayWindow : Form
                     }
 
                     _logger.LogWarning(
-                        "Assistive ComboBox keyboard step search pressed Enter but verification failed. requested={Requested}, actual={Actual}",
+                        "Assistive ComboBox keyboard step search pressed Enter but verification failed. requested={Requested}, actual={Actual}, step={Step}",
                         requestedValue,
-                        GetComboBoxCurrentValue(comboBox));
+                        GetComboBoxCurrentValue(comboBox),
+                        step);
 
                     return false;
                 }
 
-                Keyboard.Press(VirtualKeyShort.DOWN);
-                Keyboard.Release(VirtualKeyShort.DOWN);
+                if (!string.IsNullOrWhiteSpace(previousText) &&
+                    ComboBoxTextMatchesExactly(currentText, previousText))
+                {
+                    repeatedSameTextCount++;
+                }
+                else
+                {
+                    repeatedSameTextCount = 0;
+                }
 
-                Thread.Sleep(ComboBoxKeyboardStepDelayMs);
-
-                var nextText = GetCurrentHighlightedComboBoxItemText(comboBox);
-
-                if (string.Equals(
-                        NormalizeMenuText(nextText),
-                        normalizedCurrent,
-                        StringComparison.OrdinalIgnoreCase) &&
-                    step > 5)
+                if (repeatedSameTextCount >= 5 && step > 5)
                 {
                     _logger.LogInformation(
-                        "Assistive ComboBox keyboard step search stopped because DOWN did not change current item. combo={Combo}, current={Current}, step={Step}",
+                        "Assistive ComboBox keyboard step search stopped because DOWN did not change current highlighted item. combo={Combo}, current={Current}, step={Step}",
                         SafeElementName(comboBox),
                         currentText,
                         step);
@@ -6183,14 +6210,21 @@ public sealed class RecordingOverlayWindow : Form
                     break;
                 }
 
+                previousText = currentText;
+
+                Keyboard.Press(VirtualKeyShort.DOWN);
+                Keyboard.Release(VirtualKeyShort.DOWN);
+
+                Thread.Sleep(ComboBoxKeyboardStepDelayMs);
                 Thread.Sleep(ComboBoxKeyboardStepReadDelayMs);
             }
 
-            _logger.LogInformation(
-                "Assistive ComboBox keyboard step search did not find requested value. combo={Combo}, value={Value}, maxSteps={MaxSteps}",
+            _logger.LogWarning(
+                "Assistive ComboBox keyboard step search did not find requested value. combo={Combo}, requested={Requested}, maxSteps={MaxSteps}, actual={Actual}",
                 SafeElementName(comboBox),
                 requestedValue,
-                ComboBoxKeyboardStepSearchMaxSteps);
+                ComboBoxKeyboardStepSearchMaxSteps,
+                GetComboBoxCurrentValue(comboBox));
 
             return false;
         }
