@@ -4624,10 +4624,12 @@ public sealed class RecordingOverlayWindow : Form
                         return true;
                     }
 
+                    var actualAfterActivation = GetComboBoxCurrentValue(comboBox);
+
                     _logger.LogWarning(
-                        "ComboBox ListItem click did not select expected value. requested={Requested}, actual={Actual}",
+                        "ComboBox ListItem click did not select expected value. requested={Requested}, actual={Actual}. Trying keyboard type-ahead fallback.",
                         itemName,
-                        GetComboBoxCurrentValue(comboBox));
+                        actualAfterActivation);
                 }
             }
 
@@ -4636,6 +4638,11 @@ public sealed class RecordingOverlayWindow : Form
                 RecordComboBoxSelection(comboBox, comboInfo, itemName, "keyboard-typeahead");
                 return true;
             }
+
+            _logger.LogWarning(
+                "ComboBox keyboard type-ahead fallback did not verify. requested={Requested}, actual={Actual}",
+                itemName,
+                GetComboBoxCurrentValue(comboBox));
 
             _statusLabel.Text =
                 $"ComboBox selection failed. Expected '{itemName}', actual '{GetComboBoxCurrentValue(comboBox)}'.";
@@ -4670,18 +4677,29 @@ public sealed class RecordingOverlayWindow : Form
             var list = FindDynamicComboBoxList(comboBox);
             if (list == null)
             {
-                _logger.LogWarning(
-                    "ComboBox typeahead skipped because dropdown list was not detected. combo={Combo}, item={Item}",
-                    SafeElementName(comboBox),
-                    itemName);
+                if (IsComboBoxExpanded(comboBox))
+                {
+                    _logger.LogInformation(
+                        "ComboBox typeahead continuing without UIA List because ComboBox reports Expanded. combo={Combo}, item={Item}",
+                        SafeElementName(comboBox),
+                        itemName);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "ComboBox typeahead skipped because dropdown list was not detected. combo={Combo}, item={Item}",
+                        SafeElementName(comboBox),
+                        itemName);
 
-                return false;
+                    return false;
+                }
             }
 
             Keyboard.Type(itemName);
             Thread.Sleep(ComboBoxKeyboardTypeaheadSettleDelayMs);
 
             Keyboard.Press(VirtualKeyShort.RETURN);
+            Keyboard.Release(VirtualKeyShort.RETURN);
             Thread.Sleep(ComboBoxKeyboardTypeaheadSettleDelayMs);
 
             return VerifyComboBoxSelectedValue(comboBox, itemName);
@@ -4703,17 +4721,6 @@ public sealed class RecordingOverlayWindow : Form
                 if (!string.IsNullOrWhiteSpace(value))
                     return value.Trim();
             }
-        }
-        catch
-        {
-            // ignore
-        }
-
-        try
-        {
-            var name = SafeElementName(comboBox);
-            if (!string.IsNullOrWhiteSpace(name))
-                return name.Trim();
         }
         catch
         {
@@ -4755,6 +4762,28 @@ public sealed class RecordingOverlayWindow : Form
                     if (!string.IsNullOrWhiteSpace(text))
                         return text.Trim();
                 }
+
+                var selectedItem = comboBox
+                    .FindAllDescendants(cf.ByControlType(ControlType.ListItem))
+                    .FirstOrDefault(item =>
+                    {
+                        try
+                        {
+                            return item.Patterns.SelectionItem.IsSupported &&
+                                   item.Patterns.SelectionItem.PatternOrDefault?.IsSelected == true;
+                        }
+                        catch
+                        {
+                            return false;
+                        }
+                    });
+
+                if (selectedItem != null)
+                {
+                    var selectedName = SafeElementName(selectedItem);
+                    if (!string.IsNullOrWhiteSpace(selectedName))
+                        return selectedName.Trim();
+                }
             }
         }
         catch
@@ -4762,7 +4791,36 @@ public sealed class RecordingOverlayWindow : Form
             // ignore
         }
 
+        try
+        {
+            var name = SafeElementName(comboBox);
+            if (!string.IsNullOrWhiteSpace(name))
+                return name.Trim();
+        }
+        catch
+        {
+            // ignore
+        }
+
         return string.Empty;
+    }
+
+    private static bool IsComboBoxExpanded(AutomationElement comboBox)
+    {
+        try
+        {
+            if (comboBox.Patterns.ExpandCollapse.IsSupported)
+            {
+                return comboBox.Patterns.ExpandCollapse.Pattern.ExpandCollapseState
+                    == ExpandCollapseState.Expanded;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
     }
 
     private bool VerifyComboBoxSelectedValue(
