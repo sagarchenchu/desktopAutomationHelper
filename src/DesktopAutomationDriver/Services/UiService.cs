@@ -5760,7 +5760,7 @@ public class UiService : IUiService
             var signature = BuildComboBoxVisibleBatchSignature(items);
 
             if (page > 0 &&
-                string.Equals(signature, previousSignature, StringComparison.OrdinalIgnoreCase))
+                string.Equals(signature, previousSignature, StringComparison.Ordinal))
             {
                 _logger.LogInformation(
                     "ComboBox paged visible-list search stopped because visible batch signature stopped changing. combo={Combo}, item={Item}, page={Page}, signature={Signature}",
@@ -5776,21 +5776,21 @@ public class UiService : IUiService
             {
                 var name = NormalizeMenuText(SafeElementName(item));
 
-                if (!string.Equals(name, requested, StringComparison.OrdinalIgnoreCase))
-                    continue;
+                if (string.Equals(name, requested, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation(
+                        "ComboBox paged visible-list search found current visible item. combo={Combo}, item={Item}, page={Page}, name={Name}",
+                        SafeElementName(comboBox),
+                        itemName,
+                        page,
+                        SafeElementName(item));
 
-                _logger.LogInformation(
-                    "ComboBox paged visible-list search found current visible item. combo={Combo}, item={Item}, page={Page}, name={Name}",
-                    SafeElementName(comboBox),
-                    itemName,
-                    page,
-                    SafeElementName(item));
+                    if (!ActivateComboBoxListItem(item, itemName))
+                        return false;
 
-                if (!ActivateComboBoxListItem(item, itemName))
-                    return false;
-
-                Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
-                return VerifyComboBoxSelectedValue(session, comboBox, itemName);
+                    Thread.Sleep(ComboBoxPagedSearchSettleDelayMs);
+                    return VerifyComboBoxSelectedValue(session, comboBox, itemName);
+                }
             }
 
             previousSignature = signature;
