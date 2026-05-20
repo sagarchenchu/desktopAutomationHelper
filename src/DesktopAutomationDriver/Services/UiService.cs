@@ -6708,8 +6708,7 @@ public class UiService : IUiService
                 Keyboard.Press(VirtualKeyShort.DOWN);
                 Keyboard.Release(VirtualKeyShort.DOWN);
 
-                Thread.Sleep(ComboBoxKeyboardStepDelayMs);
-                Thread.Sleep(ComboBoxKeyboardStepReadDelayMs);
+                Thread.Sleep(ComboBoxKeyboardStepDelayMs + ComboBoxKeyboardStepReadDelayMs);
             }
 
             _logger.LogWarning(
