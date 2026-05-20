@@ -4330,6 +4330,7 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         return false;
+
     }
 
     private AutomationElement? FindComboBoxOpenButton(AutomationElement comboBox)
