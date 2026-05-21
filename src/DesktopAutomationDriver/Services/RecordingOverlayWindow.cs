@@ -4247,11 +4247,21 @@ public sealed class RecordingOverlayWindow : Form
             if (_automation == null)
                 return results;
 
+            var driverPid = Environment.ProcessId;
             var desktop = _automation.GetDesktop();
             var queue = new Queue<(AutomationElement Element, int Depth)>();
 
             foreach (var child in desktop.FindAllChildren())
+            {
+                try
+                {
+                    if (child.Properties.ProcessId.Value == driverPid)
+                        continue;
+                }
+                catch { /* skip ProcessId failures for protected/inaccessible windows */ }
+
                 queue.Enqueue((child, 1));
+            }
 
             while (queue.Count > 0 && results.Count < MaxApplicationContextMenuCandidates)
             {
