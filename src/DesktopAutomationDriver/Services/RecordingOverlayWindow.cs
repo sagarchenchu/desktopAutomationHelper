@@ -246,6 +246,21 @@ public sealed class RecordingOverlayWindow : Form
     /// </summary>
     private const int PostClickSettleMs = 100;
 
+    /// <summary>
+    /// Number of additional retry attempts when polling for an application context menu
+    /// after a physical right-click.  Each retry is separated by
+    /// <see cref="ContextMenuDetectionRetryDelayMs"/>.  The initial attempt already
+    /// waits <see cref="MenuNavigationDelayMs"/> ms, giving a total maximum wait of
+    /// <c>MenuNavigationDelayMs + ContextMenuDetectionRetries × ContextMenuDetectionRetryDelayMs</c> ms.
+    /// </summary>
+    private const int ContextMenuDetectionRetries = 5;
+
+    /// <summary>
+    /// Delay in milliseconds between successive retries when polling for an application
+    /// context menu popup after a right-click.
+    /// </summary>
+    private const int ContextMenuDetectionRetryDelayMs = 200;
+
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
@@ -543,9 +558,10 @@ public sealed class RecordingOverlayWindow : Form
     {
         base.OnShown(e);
 
-        // Make the status bar click-through so it doesn't block underlying windows
+        // Make the status bar click-through and non-activatable so it never steals
+        // focus from the target application (including while the app's context menu is open).
         var style = GetWindowLong(Handle, GWL_EXSTYLE);
-        SetWindowLong(Handle, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED);
+        SetWindowLong(Handle, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE);
 
         // Create the UIA3 automation backend on this STA thread
         try
@@ -3523,7 +3539,7 @@ public sealed class RecordingOverlayWindow : Form
         try
         {
             var style = GetWindowLong(Handle, GWL_EXSTYLE);
-            SetWindowLong(Handle, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED);
+            SetWindowLong(Handle, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE);
         }
         catch (Exception ex)
         {
@@ -3855,9 +3871,7 @@ public sealed class RecordingOverlayWindow : Form
             if (!success)
                 throw new InvalidOperationException("Could not open application context menu.");
 
-            Thread.Sleep(MenuNavigationDelayMs);
-
-            var contextMenu = FindActiveContextMenuPopup();
+            var contextMenu = FindActiveContextMenuPopupWithRetry();
 
             if (contextMenu == null)
             {
@@ -4030,9 +4044,7 @@ public sealed class RecordingOverlayWindow : Form
                 return false;
             }
 
-            Thread.Sleep(MenuNavigationDelayMs);
-
-            var currentRoot = FindActiveContextMenuPopup();
+            var currentRoot = FindActiveContextMenuPopupWithRetry();
 
             if (currentRoot == null)
                 return false;
@@ -4102,9 +4114,7 @@ public sealed class RecordingOverlayWindow : Form
                 return false;
             }
 
-            Thread.Sleep(MenuNavigationDelayMs);
-
-            var currentRoot = FindActiveContextMenuPopup();
+            var currentRoot = FindActiveContextMenuPopupWithRetry();
 
             if (currentRoot == null)
                 return false;
@@ -4154,6 +4164,30 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Polls for an active application context menu after a physical right-click, waiting
+    /// up to <c>MenuNavigationDelayMs + ContextMenuDetectionRetries × ContextMenuDetectionRetryDelayMs</c> ms.
+    /// Returns the first detected popup, or <c>null</c> if none appears within the timeout.
+    /// </summary>
+    private AutomationElement? FindActiveContextMenuPopupWithRetry()
+    {
+        Thread.Sleep(MenuNavigationDelayMs);
+        var popup = FindActiveContextMenuPopup();
+
+        for (int retry = 0; retry < ContextMenuDetectionRetries && popup == null; retry++)
+        {
+            _logger.LogDebug(
+                "Context menu not yet visible; retrying ({Retry}/{Total}).",
+                retry + 1,
+                ContextMenuDetectionRetries);
+
+            Thread.Sleep(ContextMenuDetectionRetryDelayMs);
+            popup = FindActiveContextMenuPopup();
+        }
+
+        return popup;
     }
 
     private AutomationElement? FindContextSubMenuPopup(AutomationElement submenuItem)
