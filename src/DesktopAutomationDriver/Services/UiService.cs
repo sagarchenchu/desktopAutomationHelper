@@ -3859,10 +3859,47 @@ public class UiService : IUiService
                 guard,
                 smallOperationDeadline))
         {
+            _logger.LogWarning(
+                "Small ComboBox user-like commit did not succeed. Falling back to visual search strategies. requested={Requested}, combo={Combo}",
+                itemName,
+                SafeElementName(comboBox));
+
+            if (IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) &&
+                IsComboBoxTargetGuardValid(comboBox, guard, itemName, "small-combobox paged visible search fallback") &&
+                TrySelectComboBoxByPagedVisibleSearch(session, comboBox, itemName, guard, operationDeadline))
+            {
+                var actual = GetComboBoxCurrentValue(session, comboBox);
+
+                return new
+                {
+                    selected = itemName,
+                    actual,
+                    comboBox = SafeElementName(comboBox),
+                    verified = true,
+                    strategy = "small-combobox-paged-visible-search-fallback"
+                };
+            }
+
+            if (IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) &&
+                IsComboBoxTargetGuardValid(comboBox, guard, itemName, "small-combobox anchor-window search fallback") &&
+                TrySelectComboBoxByVisibleAnchorWindowSearch(session, comboBox, itemName, guard, operationDeadline))
+            {
+                var actual = GetComboBoxCurrentValue(session, comboBox);
+
+                return new
+                {
+                    selected = itemName,
+                    actual,
+                    comboBox = SafeElementName(comboBox),
+                    verified = true,
+                    strategy = "small-combobox-anchor-window-search-fallback"
+                };
+            }
+
             var actualAfterCommit = GetComboBoxCurrentValue(session, comboBox);
 
             _logger.LogWarning(
-                "Small ComboBox item did not commit or stabilize. requested={Requested}, actual={Actual}, combo={Combo}",
+                "Small ComboBox item did not commit or stabilize after all fallback strategies. requested={Requested}, actual={Actual}, combo={Combo}",
                 itemName,
                 actualAfterCommit,
                 SafeElementName(comboBox));
