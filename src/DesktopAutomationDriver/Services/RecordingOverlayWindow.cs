@@ -166,9 +166,15 @@ public sealed class RecordingOverlayWindow : Form
     private const int DropdownItemPhysicalClickSettleMs = 250;
     private const int DropdownItemFallbackDelayMs = 150;
     private const int ComboBoxSelectionCommitDelayMs = 150;
+    // Kept separate from selection commit delay so optional TAB-blur fallback timing can diverge if re-enabled.
+    private const int ComboBoxBlurCommitDelayMs = ComboBoxSelectionCommitDelayMs;
     private const int ComboBoxPostCommitCollapseTimeoutMs = 2500;
     private const int ComboBoxPostCommitPollDelayMs = 100;
     private const int ComboBoxPostCommitStableDelayMs = 500;
+    private const int ComboBoxSingleSelectionTimeoutMs = 8000;
+    private const int SmallComboBoxSelectionTimeoutMs = 4000;
+    private const int SmallComboBoxMaxScrollAttempts = 1;
+    private const bool ComboBoxAllowTabBlurCommitFallback = false;
     private const int ComboBoxRefetchRectangleTolerancePx = 3;
     private const int DropdownItemMinPadX = 6;
     private const int DropdownItemMaxPadX = 18;
@@ -4758,6 +4764,8 @@ public sealed class RecordingOverlayWindow : Form
     private bool TrySelectComboBoxByDirectUia(
         AutomationElement comboBox,
         string requestedValue,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline,
         out string strategy)
     {
         strategy = "direct-uia-not-used";
@@ -4774,6 +4782,12 @@ public sealed class RecordingOverlayWindow : Form
 
             if (logicalMatch != null)
             {
+                if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                    !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "direct UIA logical commit"))
+                {
+                    return false;
+                }
+
                 var capabilities = DetectComboBoxItemPatternCapabilities(logicalMatch);
 
                 if (capabilities.HasAnyUsefulPattern &&
@@ -4782,6 +4796,8 @@ public sealed class RecordingOverlayWindow : Form
                         logicalMatch,
                         requestedValue,
                         capabilities,
+                        guard,
+                        operationDeadline,
                         "assistive-direct-uia-logical-or-popup"))
                 {
                     strategy = "direct-uia-pattern-based";
@@ -4796,7 +4812,9 @@ public sealed class RecordingOverlayWindow : Form
                     capabilities.ToString());
             }
 
-            if (OpenComboBoxDropdown(comboBox))
+            if (IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) &&
+                IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "direct UIA reopen") &&
+                OpenComboBoxDropdown(comboBox))
             {
                 Thread.Sleep(MenuNavigationDelayMs);
 
@@ -4815,6 +4833,8 @@ public sealed class RecordingOverlayWindow : Form
                             popupMatch,
                             requestedValue,
                             capabilities,
+                            guard,
+                            operationDeadline,
                             "assistive-direct-uia-logical-or-popup"))
                     {
                         strategy = "direct-uia-pattern-based";
@@ -4830,7 +4850,9 @@ public sealed class RecordingOverlayWindow : Form
                 }
             }
 
-            if (TrySetComboBoxValueByValuePattern(comboBox, requestedValue, "assistive-direct-uia-valuepattern"))
+            if (IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) &&
+                IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "direct UIA value-pattern commit") &&
+                TrySetComboBoxValueByValuePattern(comboBox, requestedValue, "assistive-direct-uia-valuepattern"))
             {
                 strategy = "direct-uia-valuepattern";
                 return true;
@@ -4948,6 +4970,119 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
+    /// <summary>
+    /// Captures ComboBox identity so multi-step selection can abort if UI focus or UIA refresh points at another ComboBox.
+    /// </summary>
+    private sealed class ComboBoxTargetGuard
+    {
+        public string AutomationId { get; init; } = string.Empty;
+        public string Name { get; init; } = string.Empty;
+        public string ControlType { get; init; } = string.Empty;
+        public string RuntimeId { get; init; } = string.Empty;
+        public System.Drawing.Rectangle BoundingRectangle { get; init; }
+    }
+
+    private ComboBoxTargetGuard CaptureComboBoxTargetGuard(AutomationElement comboBox)
+    {
+        return new ComboBoxTargetGuard
+        {
+            AutomationId = SafeElementAutomationId(comboBox) ?? string.Empty,
+            Name = SafeElementName(comboBox) ?? string.Empty,
+            ControlType = comboBox.ControlType.ToString(),
+            RuntimeId = SafeRuntimeId(comboBox),
+            BoundingRectangle = comboBox.BoundingRectangle
+        };
+    }
+
+    private string SafeRuntimeId(AutomationElement element)
+    {
+        try
+        {
+            var runtimeId = element.Properties.RuntimeId.ValueOrDefault;
+            return runtimeId == null ? string.Empty : string.Join(".", runtimeId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to read ComboBox RuntimeId.");
+            return string.Empty;
+        }
+    }
+
+    private bool IsSameComboBoxTarget(
+        AutomationElement comboBox,
+        ComboBoxTargetGuard guard)
+    {
+        try
+        {
+            var runtimeId = SafeRuntimeId(comboBox);
+            if (!string.IsNullOrWhiteSpace(guard.RuntimeId) &&
+                string.Equals(runtimeId, guard.RuntimeId, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var automationId = SafeElementAutomationId(comboBox);
+            var name = SafeElementName(comboBox);
+            var rect = comboBox.BoundingRectangle;
+
+            var sameAutomationId =
+                string.Equals(automationId, guard.AutomationId, StringComparison.OrdinalIgnoreCase);
+
+            var sameName =
+                string.Equals(name, guard.Name, StringComparison.OrdinalIgnoreCase);
+
+            var closeRect =
+                Math.Abs(rect.Left - guard.BoundingRectangle.Left) <= ComboBoxRefetchRectangleTolerancePx &&
+                Math.Abs(rect.Top - guard.BoundingRectangle.Top) <= ComboBoxRefetchRectangleTolerancePx;
+
+            return sameAutomationId && sameName && closeRect;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool IsComboBoxTargetGuardValid(
+        AutomationElement comboBox,
+        ComboBoxTargetGuard guard,
+        string requestedValue,
+        string action)
+    {
+        if (IsSameComboBoxTarget(comboBox, guard))
+            return true;
+
+        _logger.LogWarning(
+            "Assistive ComboBox target changed before {Action}. Aborting to avoid opening another dropdown. requested={Requested}, originalName={OriginalName}, currentName={CurrentName}",
+            action,
+            requestedValue,
+            guard.Name,
+            SafeElementName(comboBox));
+
+        return false;
+    }
+
+    private bool IsComboBoxOperationWithinDeadline(
+        DateTime operationDeadline,
+        AutomationElement comboBox,
+        string requestedValue)
+    {
+        if (DateTime.UtcNow <= operationDeadline)
+            return true;
+
+        _logger.LogWarning(
+            "Assistive ComboBox selection operation timed out before HTTP timeout. requested={Requested}, combo={Combo}",
+            requestedValue,
+            SafeElementName(comboBox));
+
+        return false;
+    }
+
+    private static bool IsComboBoxTabBlurCommitFallbackAllowed()
+    {
+        return ComboBoxAllowTabBlurCommitFallback;
+    }
+
     private ComboBoxItemPatternCapabilities DetectComboBoxItemPatternCapabilities(
         AutomationElement item)
     {
@@ -4979,10 +5114,19 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     private ComboBoxItemPatternCapabilities ProbeComboBoxDropdownItemCapabilities(
-        AutomationElement comboBox)
+        AutomationElement comboBox,
+        string requestedValue,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline)
     {
         try
         {
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "capability probe reopen"))
+            {
+                return new ComboBoxItemPatternCapabilities();
+            }
+
             if (!OpenComboBoxDropdown(comboBox))
                 return new ComboBoxItemPatternCapabilities();
 
@@ -5031,6 +5175,8 @@ public sealed class RecordingOverlayWindow : Form
         AutomationElement item,
         string requestedValue,
         ComboBoxItemPatternCapabilities capabilities,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline,
         string source)
     {
         try
@@ -5046,6 +5192,12 @@ public sealed class RecordingOverlayWindow : Form
             {
                 try
                 {
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "ScrollIntoView"))
+                    {
+                        return false;
+                    }
+
                     item.Patterns.ScrollItem.Pattern.ScrollIntoView();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
                 }
@@ -5059,6 +5211,12 @@ public sealed class RecordingOverlayWindow : Form
             {
                 try
                 {
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "SelectionItem commit"))
+                    {
+                        return false;
+                    }
+
                     item.Patterns.SelectionItem.Pattern.Select();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
@@ -5075,6 +5233,12 @@ public sealed class RecordingOverlayWindow : Form
             {
                 try
                 {
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "Invoke commit"))
+                    {
+                        return false;
+                    }
+
                     item.Patterns.Invoke.Pattern.Invoke();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
@@ -5089,6 +5253,12 @@ public sealed class RecordingOverlayWindow : Form
 
             if (capabilities.HasScrollItem)
             {
+                if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                    !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "physical click"))
+                {
+                    return false;
+                }
+
                 if (TryPhysicalClickComboBoxListItem(item, requestedValue, source))
                 {
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
@@ -5175,10 +5345,92 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
+    private bool CommitSmallComboBoxItemUserLike(
+        AutomationElement comboBox,
+        string requestedValue,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline)
+    {
+        const string source = "assistive-small-combobox-userlike-click";
+
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "small ComboBox reopen"))
+            {
+                return false;
+            }
+
+            if (!OpenComboBoxDropdown(comboBox))
+                return false;
+
+            Thread.Sleep(MenuNavigationDelayMs);
+
+            var freshItem = FindComboBoxItemByTextWithScroll(
+                comboBox,
+                requestedValue,
+                maxScrollAttempts: SmallComboBoxMaxScrollAttempts);
+
+            if (freshItem == null)
+                return false;
+
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "physical click"))
+            {
+                return false;
+            }
+
+            if (TryPhysicalClickComboBoxListItem(
+                    freshItem,
+                    requestedValue,
+                    source))
+            {
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                if (VerifyComboBoxSelectedValueStableAfterCollapse(
+                        comboBox,
+                        requestedValue,
+                        source))
+                {
+                    return true;
+                }
+            }
+
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "small ComboBox pattern fallback"))
+            {
+                return false;
+            }
+
+            return CommitExactVisibleComboBoxItem(
+                comboBox,
+                freshItem,
+                requestedValue,
+                guard,
+                operationDeadline,
+                "assistive-small-combobox-pattern-fallback");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Assistive small ComboBox user-like commit failed. requested={Requested}, combo={Combo}",
+                requestedValue,
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
     private bool CommitExactVisibleComboBoxItem(
         AutomationElement comboBox,
         AutomationElement item,
         string requestedValue,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline,
         string source)
     {
         try
@@ -5194,11 +5446,23 @@ public sealed class RecordingOverlayWindow : Form
             {
                 try
                 {
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "SelectionItem commit"))
+                    {
+                        return false;
+                    }
+
                     item.Patterns.SelectionItem.Pattern.Select();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
                     if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                         return true;
+
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "ENTER commit"))
+                    {
+                        return false;
+                    }
 
                     Keyboard.Press(VirtualKeyShort.RETURN);
                     Keyboard.Release(VirtualKeyShort.RETURN);
@@ -5217,23 +5481,44 @@ public sealed class RecordingOverlayWindow : Form
             {
                 try
                 {
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "Invoke commit"))
+                    {
+                        return false;
+                    }
+
                     item.Patterns.Invoke.Pattern.Invoke();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
                     if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                         return true;
 
-                    Keyboard.Press(VirtualKeyShort.TAB);
-                    Keyboard.Release(VirtualKeyShort.TAB);
-                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+                    if (IsComboBoxTabBlurCommitFallbackAllowed())
+                    {
+                        if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                            !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "TAB blur fallback"))
+                        {
+                            return false;
+                        }
 
-                    if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source + "-invoke-tab"))
-                        return true;
+                        Keyboard.Press(VirtualKeyShort.TAB);
+                        Keyboard.Release(VirtualKeyShort.TAB);
+                        Thread.Sleep(ComboBoxBlurCommitDelayMs);
+
+                        if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source + "-tab-blur"))
+                            return true;
+                    }
                 }
                 catch (Exception ex)
                 {
                     _logger.LogDebug(ex, "Assistive InvokePattern commit failed.");
                 }
+            }
+
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "physical click"))
+            {
+                return false;
             }
 
             if (TryPhysicalClickComboBoxListItem(item, requestedValue, source))
@@ -5247,6 +5532,12 @@ public sealed class RecordingOverlayWindow : Form
             if (TryFocusComboBoxListItem(item, requestedValue, source))
             {
                 Thread.Sleep(ComboBoxAnchorMoveDelayMs);
+
+                if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                    !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "ENTER commit"))
+                {
+                    return false;
+                }
 
                 Keyboard.Press(VirtualKeyShort.RETURN);
                 Keyboard.Release(VirtualKeyShort.RETURN);
@@ -5934,14 +6225,28 @@ public sealed class RecordingOverlayWindow : Form
 
     private bool TrySelectComboBoxByPagedVisibleSearch(
         AutomationElement comboBox,
-        string itemName)
+        string itemName,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline)
     {
         var requested = NormalizeMenuText(itemName);
+        if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) ||
+            !IsComboBoxTargetGuardValid(comboBox, guard, itemName, "paged visible search reset"))
+        {
+            return false;
+        }
+
         if (!ResetComboBoxDropdownToTop(comboBox))
             return false;
 
         for (var page = 0; page < ComboBoxPagedSearchMaxPages; page++)
         {
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, itemName, "paged visible search"))
+            {
+                return false;
+            }
+
             var items = GetCurrentVisibleComboBoxBatch(comboBox, ComboBoxPagedSearchMaxVisibleItems);
             var signature = BuildComboBoxVisibleBatchSignature(items);
 
@@ -5965,6 +6270,8 @@ public sealed class RecordingOverlayWindow : Form
                             item,
                             itemName,
                             matchCapabilities,
+                            guard,
+                            operationDeadline,
                             "assistive-visible-search-pattern-based"))
                     {
                         return true;
@@ -5974,6 +6281,8 @@ public sealed class RecordingOverlayWindow : Form
                         comboBox,
                         item,
                         itemName,
+                        guard,
+                        operationDeadline,
                         "assistive-huge-list-visible-search");
                 }
             }
@@ -6682,6 +6991,9 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
+            var guard = CaptureComboBoxTargetGuard(comboBox);
+            var operationDeadline = DateTime.UtcNow.AddMilliseconds(ComboBoxSingleSelectionTimeoutMs);
+
             BringElementWindowToForeground(comboBox);
             Thread.Sleep(WindowActivationDelayMs);
 
@@ -6693,9 +7005,18 @@ public sealed class RecordingOverlayWindow : Form
                 SafeElementName(comboBox),
                 itemName);
 
-            var probedCapabilities = ProbeComboBoxDropdownItemCapabilities(comboBox);
+            var probedCapabilities = ProbeComboBoxDropdownItemCapabilities(
+                comboBox,
+                itemName,
+                guard,
+                operationDeadline);
             if (probedCapabilities.HasAnyUsefulPattern &&
-                TrySelectComboBoxByDirectUia(comboBox, itemName, out var directStrategy))
+                TrySelectComboBoxByDirectUia(
+                    comboBox,
+                    itemName,
+                    guard,
+                    operationDeadline,
+                    out var directStrategy))
             {
                 RecordComboBoxSelection(comboBox, comboInfo, itemName, directStrategy);
                 return true;
@@ -6710,7 +7031,9 @@ public sealed class RecordingOverlayWindow : Form
                     "Fallback to visual search because no useful ListItem patterns were detected");
             }
 
-            if (OpenComboBoxDropdown(comboBox))
+            if (IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) &&
+                IsComboBoxTargetGuardValid(comboBox, guard, itemName, "reopen") &&
+                OpenComboBoxDropdown(comboBox))
             {
                 Thread.Sleep(MenuNavigationDelayMs);
 
@@ -6721,7 +7044,7 @@ public sealed class RecordingOverlayWindow : Form
                         SafeElementName(comboBox),
                         itemName);
 
-                    if (TrySelectComboBoxByPagedVisibleSearch(comboBox, itemName))
+                    if (TrySelectComboBoxByPagedVisibleSearch(comboBox, itemName, guard, operationDeadline))
                     {
                         RecordComboBoxSelection(comboBox, comboInfo, itemName, "huge-list-paged-visible-search");
                         return true;
@@ -6732,7 +7055,7 @@ public sealed class RecordingOverlayWindow : Form
                         SafeElementName(comboBox),
                         itemName);
 
-                    if (TrySelectComboBoxByVisibleAnchorWindowSearch(comboBox, itemName))
+                    if (TrySelectComboBoxByVisibleAnchorWindowSearch(comboBox, itemName, guard, operationDeadline))
                     {
                         RecordComboBoxSelection(comboBox, comboInfo, itemName, "huge-list-visible-anchor-window-search");
                         return true;
@@ -6750,47 +7073,31 @@ public sealed class RecordingOverlayWindow : Form
                     return false;
                 }
 
-                var item = FindComboBoxItemByTextWithScroll(
-                    comboBox,
-                    itemName,
-                    ComboBoxScrollSearchMaxAttempts);
-
-                if (item != null)
-                {
-                    if (CommitExactVisibleComboBoxItem(
-                            comboBox,
-                            item,
-                            itemName,
-                            "assistive-small-combobox-exact-visible-commit"))
-                    {
-                        RecordComboBoxSelection(
-                            comboBox,
-                            comboInfo,
-                            itemName,
-                            "small-combobox-exact-visible-commit");
-
-                        return true;
-                    }
-
-                    var actualAfterCommit = GetComboBoxCurrentValue(comboBox);
-
-                    _logger.LogWarning(
-                        "Assistive small ComboBox exact item was found but final commit did not verify. requested={Requested}, actual={Actual}, combo={Combo}, item={Item}",
+                var smallOperationDeadline = DateTime.UtcNow.AddMilliseconds(SmallComboBoxSelectionTimeoutMs);
+                if (CommitSmallComboBoxItemUserLike(
+                        comboBox,
                         itemName,
-                        actualAfterCommit,
-                        SafeElementName(comboBox),
-                        SafeElementName(item));
-                }
-            }
+                        guard,
+                        smallOperationDeadline))
+                {
+                    RecordComboBoxSelection(
+                        comboBox,
+                        comboInfo,
+                        itemName,
+                        "small-combobox-exact-visible-commit");
 
-            if (TrySelectComboBoxByKeyboard(comboBox, itemName))
-            {
-                RecordComboBoxSelection(comboBox, comboInfo, itemName, "keyboard-typeahead");
-                return true;
+                    return true;
+                }
+
+                _logger.LogWarning(
+                    "Assistive small ComboBox item did not commit or stabilize. requested={Requested}, actual={Actual}, combo={Combo}",
+                    itemName,
+                    GetComboBoxCurrentValue(comboBox),
+                    SafeElementName(comboBox));
             }
 
             _logger.LogWarning(
-                "ComboBox keyboard type-ahead fallback did not verify. requested={Requested}, actual={Actual}",
+                "ComboBox selection did not verify. requested={Requested}, actual={Actual}",
                 itemName,
                 GetComboBoxCurrentValue(comboBox));
 
@@ -6863,10 +7170,18 @@ public sealed class RecordingOverlayWindow : Form
 
     private bool TrySelectComboBoxByVisibleAnchorWindowSearch(
         AutomationElement comboBox,
-        string requestedValue)
+        string requestedValue,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline)
     {
         try
         {
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "visible anchor reset"))
+            {
+                return false;
+            }
+
             if (!ResetComboBoxDropdownToTop(comboBox))
                 return false;
 
@@ -6874,6 +7189,12 @@ public sealed class RecordingOverlayWindow : Form
 
             for (var window = 0; window < ComboBoxAnchorWindowSearchMaxWindows; window++)
             {
+                if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                    !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "visible anchor reopen"))
+                {
+                    return false;
+                }
+
                 if (!EnsureComboBoxDropdownOpen(comboBox))
                     return false;
 
@@ -6907,6 +7228,8 @@ public sealed class RecordingOverlayWindow : Form
                             exactItem,
                             requestedValue,
                             matchCapabilities,
+                            guard,
+                            operationDeadline,
                             "assistive-visible-search-pattern-based"))
                     {
                         return true;
@@ -6916,6 +7239,8 @@ public sealed class RecordingOverlayWindow : Form
                         comboBox,
                         exactItem,
                         requestedValue,
+                        guard,
+                        operationDeadline,
                         "assistive-huge-list-visible-search");
                 }
 
@@ -7562,17 +7887,25 @@ public sealed class RecordingOverlayWindow : Form
                 secondActual,
                 secondMatched);
 
-            if (!secondMatched)
+            if (secondMatched)
             {
-                _logger.LogWarning(
-                    "Assistive ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
+                _logger.LogInformation(
+                    "ComboBox selection committed and stable. No further fallback will run. source={Source}, combo={Combo}, requested={Requested}",
                     source,
-                    requestedValue,
-                    GetComboBoxCurrentValue(comboBox),
-                    SafeElementName(comboBox));
+                    SafeElementName(comboBox),
+                    requestedValue);
+
+                return true;
             }
 
-            return secondMatched;
+            _logger.LogWarning(
+                "Assistive ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
+                source,
+                requestedValue,
+                GetComboBoxCurrentValue(comboBox),
+                SafeElementName(comboBox));
+
+            return false;
         }
         catch (Exception ex)
         {
