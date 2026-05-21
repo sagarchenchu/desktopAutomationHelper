@@ -166,12 +166,14 @@ public sealed class RecordingOverlayWindow : Form
     private const int DropdownItemPhysicalClickSettleMs = 250;
     private const int DropdownItemFallbackDelayMs = 150;
     private const int ComboBoxSelectionCommitDelayMs = 150;
+    // Kept separate from selection commit delay so optional TAB-blur fallback timing can diverge if re-enabled.
     private const int ComboBoxBlurCommitDelayMs = ComboBoxSelectionCommitDelayMs;
     private const int ComboBoxPostCommitCollapseTimeoutMs = 2500;
     private const int ComboBoxPostCommitPollDelayMs = 100;
     private const int ComboBoxPostCommitStableDelayMs = 500;
     private const int ComboBoxSingleSelectionTimeoutMs = 8000;
     private const int SmallComboBoxSelectionTimeoutMs = 4000;
+    private const int SmallComboBoxMaxScrollAttempts = 1;
     private const bool ComboBoxAllowTabBlurCommitFallback = false;
     private const int ComboBoxRefetchRectangleTolerancePx = 3;
     private const int DropdownItemMinPadX = 6;
@@ -5026,8 +5028,8 @@ public sealed class RecordingOverlayWindow : Form
                 string.Equals(name, guard.Name, StringComparison.OrdinalIgnoreCase);
 
             var closeRect =
-                Math.Abs(rect.Left - guard.BoundingRectangle.Left) <= 3 &&
-                Math.Abs(rect.Top - guard.BoundingRectangle.Top) <= 3;
+                Math.Abs(rect.Left - guard.BoundingRectangle.Left) <= ComboBoxRefetchRectangleTolerancePx &&
+                Math.Abs(rect.Top - guard.BoundingRectangle.Top) <= ComboBoxRefetchRectangleTolerancePx;
 
             return sameAutomationId && sameName && closeRect;
         }
@@ -5366,7 +5368,7 @@ public sealed class RecordingOverlayWindow : Form
             var freshItem = FindComboBoxItemByTextWithScroll(
                 comboBox,
                 requestedValue,
-                maxScrollAttempts: 1);
+                maxScrollAttempts: SmallComboBoxMaxScrollAttempts);
 
             if (freshItem == null)
                 return false;
