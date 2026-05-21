@@ -3957,21 +3957,24 @@ public sealed class RecordingOverlayWindow : Form
 
             menu.Items.Add(selectItem);
 
-            var openSubmenu = new ToolStripMenuItem($"Open Submenu: {capturedMenuPath}");
-            openSubmenu.Click += (_, _) =>
+            if (ContextMenuItemHasSubmenu(item))
             {
-                RunAssistiveActionAfterMenuClose($"Open Context Submenu: {capturedMenuPath}", () =>
+                var openSubmenu = new ToolStripMenuItem($"Open Submenu: {capturedMenuPath}");
+                openSubmenu.Click += (_, _) =>
                 {
-                    OpenApplicationContextSubmenuAndShowItems(
-                        targetElement,
-                        elementInfo,
-                        originalRightClickPoint,
-                        targetHwnd,
-                        capturedPath);
-                });
-            };
+                    RunAssistiveActionAfterMenuClose($"Open Context Submenu: {capturedMenuPath}", () =>
+                    {
+                        OpenApplicationContextSubmenuAndShowItems(
+                            targetElement,
+                            elementInfo,
+                            originalRightClickPoint,
+                            targetHwnd,
+                            capturedPath);
+                    });
+                };
 
-            menu.Items.Add(openSubmenu);
+                menu.Items.Add(openSubmenu);
+            }
         }
 
         AddCloseItem(menu);
@@ -4464,6 +4467,35 @@ public sealed class RecordingOverlayWindow : Form
                controlType == ControlType.ListItem ||
                controlType == ControlType.Button ||
                controlType == ControlType.Text;
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="item"/> appears to have a nested submenu —
+    /// i.e. it supports the <c>ExpandCollapse</c> UIA pattern, or at least one of its immediate
+    /// children is a context-menu container type (Menu, Pane, Window, ToolBar, Custom).
+    /// Returns <c>false</c> on any exception so the caller conservatively omits the
+    /// "Open Submenu" option rather than surfacing a spurious entry for a leaf item.
+    /// </summary>
+    private static bool ContextMenuItemHasSubmenu(AutomationElement item)
+    {
+        try
+        {
+            if (item.Patterns.ExpandCollapse.IsSupported)
+                return true;
+
+            foreach (var child in item.FindAllChildren())
+            {
+                try
+                {
+                    if (IsContextMenuContainerType(child.ControlType))
+                        return true;
+                }
+                catch { /* ignore stale child */ }
+            }
+        }
+        catch { /* fail safe: treat as no submenu */ }
+
+        return false;
     }
 
     /// <summary>
