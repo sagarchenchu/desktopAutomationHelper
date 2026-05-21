@@ -1662,11 +1662,8 @@ public sealed class RecordingOverlayWindow : Form
                     capturedClickPoint,
                     capturedClickHwnd.ToInt64());
 
-                ShowApplicationContextMenuItemsAfterRightClick(
-                    element,
-                    elementInfo,
-                    capturedClickPoint,
-                    capturedClickHwnd);
+                TryPhysicalRightClickPoint(capturedClickPoint, "Right Click", capturedClickHwnd);
+                RecordPlainRightClickFallback(element, elementInfo, capturedClickPoint);
             });
         };
         menu.Items.Add(rightClickItem);
