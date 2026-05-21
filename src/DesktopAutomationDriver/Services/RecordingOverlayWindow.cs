@@ -4176,11 +4176,11 @@ public sealed class RecordingOverlayWindow : Form
         Thread.Sleep(MenuNavigationDelayMs);
         var popup = FindActiveContextMenuPopup();
 
-        for (int retry = 0; retry < ContextMenuDetectionRetries && popup == null; retry++)
+        for (int attempt = 1; attempt <= ContextMenuDetectionRetries && popup == null; attempt++)
         {
             _logger.LogDebug(
-                "Context menu not yet visible; retrying ({Retry}/{Total}).",
-                retry + 1,
+                "Context menu not yet visible; retrying ({Attempt}/{Total}).",
+                attempt,
                 ContextMenuDetectionRetries);
 
             Thread.Sleep(ContextMenuDetectionRetryDelayMs);
