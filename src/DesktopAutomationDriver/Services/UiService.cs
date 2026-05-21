@@ -48,7 +48,7 @@ public class UiService : IUiService
     private const int ComboBoxPostCommitCollapseTimeoutMs = 2500;
     private const int ComboBoxPostCommitPollDelayMs = 100;
     private const int ComboBoxPostCommitStableDelayMs = 500;
-    private const int ComboBoxSingleSelectionTimeoutMs = 8000;
+    private const int ComboBoxSingleSelectionTimeoutMs = 20000;
     private const int SmallComboBoxSelectionTimeoutMs = 4000;
     private const int SmallComboBoxMaxScrollAttempts = 1;
     private const bool ComboBoxAllowTabBlurCommitFallback = false;
