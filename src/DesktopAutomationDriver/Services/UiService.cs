@@ -6146,6 +6146,49 @@ public class UiService : IUiService
 
                         return true;
                     }
+
+                    // If dropdown is still expanded and item is highlighted, press Enter to commit.
+                    if (IsComboBoxExpanded(comboBox))
+                    {
+                        var isItemHighlighted = false;
+                        try
+                        {
+                            isItemHighlighted = item.Patterns.SelectionItem.IsSupported &&
+                                                item.Patterns.SelectionItem.Pattern.IsSelected;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug(
+                                ex,
+                                "ComboBox SelectionItem.IsSelected read failed. source={Source}, requested={Requested}",
+                                source,
+                                requestedValue);
+                        }
+
+                        if (isItemHighlighted &&
+                            IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) &&
+                            IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "SelectionItem highlight Enter"))
+                        {
+                            _logger.LogInformation(
+                                "ComboBox dropdown still expanded after SelectionItem.Select with item highlighted — pressing Enter. source={Source}, requested={Requested}",
+                                source,
+                                requestedValue);
+
+                            Keyboard.Press(VirtualKeyShort.RETURN);
+                            Keyboard.Release(VirtualKeyShort.RETURN);
+                            Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                            if (VerifyComboBoxValueAfterEnterWithDropdownStateCheck(session, comboBox, requestedValue, source + "-selectionitem-enter"))
+                            {
+                                _logger.LogInformation(
+                                    "ComboBox item committed by SelectionItem highlight + Enter. source={Source}, requested={Requested}",
+                                    source,
+                                    requestedValue);
+
+                                return true;
+                            }
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -6180,6 +6223,31 @@ public class UiService : IUiService
 
                         return true;
                     }
+
+                    // If dropdown is still expanded after Invoke, press Enter to commit.
+                    if (IsComboBoxExpanded(comboBox) &&
+                        IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) &&
+                        IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "Invoke Enter"))
+                    {
+                        _logger.LogInformation(
+                            "ComboBox dropdown still expanded after InvokePattern — pressing Enter. source={Source}, requested={Requested}",
+                            source,
+                            requestedValue);
+
+                        Keyboard.Press(VirtualKeyShort.RETURN);
+                        Keyboard.Release(VirtualKeyShort.RETURN);
+                        Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                        if (VerifyComboBoxValueAfterEnterWithDropdownStateCheck(session, comboBox, requestedValue, source + "-invoke-enter"))
+                        {
+                            _logger.LogInformation(
+                                "ComboBox item committed by Invoke + Enter. source={Source}, requested={Requested}",
+                                source,
+                                requestedValue);
+
+                            return true;
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -6208,6 +6276,45 @@ public class UiService : IUiService
                     {
                         _logger.LogInformation(
                             "ComboBox item committed using physical click after ScrollIntoView. source={Source}, requested={Requested}",
+                            source,
+                            requestedValue);
+
+                        return true;
+                    }
+                }
+            }
+
+            // Final fallback: if dropdown is still expanded after all pattern attempts, focus the
+            // visible item and press Enter to commit the highlighted selection.
+            if (IsComboBoxExpanded(comboBox) &&
+                IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) &&
+                IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "pattern final Enter"))
+            {
+                var itemVisible = IsElementVisibleAndClickableEnough(item);
+
+                _logger.LogInformation(
+                    "ComboBox dropdown still expanded after all pattern attempts — attempting final Enter fallback. source={Source}, requested={Requested}, itemVisible={ItemVisible}",
+                    source,
+                    requestedValue,
+                    itemVisible);
+
+                if (itemVisible)
+                {
+                    TryFocusComboBoxListItem(item, requestedValue, source + "-final-enter");
+                    Thread.Sleep(ComboBoxAnchorMoveDelayMs);
+                }
+
+                if (IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) &&
+                    IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "pattern final Enter press"))
+                {
+                    Keyboard.Press(VirtualKeyShort.RETURN);
+                    Keyboard.Release(VirtualKeyShort.RETURN);
+                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                    if (VerifyComboBoxValueAfterEnterWithDropdownStateCheck(session, comboBox, requestedValue, source + "-final-enter"))
+                    {
+                        _logger.LogInformation(
+                            "ComboBox item committed by final Enter fallback. source={Source}, requested={Requested}",
                             source,
                             requestedValue);
 
@@ -8619,6 +8726,56 @@ public class UiService : IUiService
             SafeElementName(comboBox));
 
         return false;
+    }
+
+    /// <summary>
+    /// Checks whether the combobox committed the requested value after an Enter press,
+    /// without requiring the dropdown to have collapsed first.  The current dropdown
+    /// expand/collapse state is read and logged so callers can diagnose stuck-open dropdowns.
+    /// </summary>
+    private bool VerifyComboBoxValueAfterEnterWithDropdownStateCheck(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string requestedValue,
+        string source)
+    {
+        try
+        {
+            Thread.Sleep(ComboBoxPostCommitStableDelayMs);
+
+            var expandState = GetComboBoxExpandState(comboBox);
+            var freshComboBox = RefreshComboBoxElement(session, comboBox) ?? comboBox;
+            var actual = GetComboBoxCurrentValue(session, freshComboBox);
+            var matched = ComboBoxValueMatches(actual, requestedValue);
+
+            _logger.LogInformation(
+                "ComboBox value check after Enter commit. source={Source}, requested={Requested}, actual={Actual}, matched={Matched}, dropdownState={DropdownState}",
+                source,
+                requestedValue,
+                actual,
+                matched,
+                expandState);
+
+            if (matched && string.Equals(expandState, "Expanded", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation(
+                    "ComboBox value matched but dropdown still expanded after Enter. source={Source}, requested={Requested}",
+                    source,
+                    requestedValue);
+            }
+
+            return matched;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ComboBox value verification after Enter failed. source={Source}, requested={Requested}",
+                source,
+                requestedValue);
+
+            return false;
+        }
     }
 
     private bool IsElementVisibleOnScreen(AutomationElement element)
