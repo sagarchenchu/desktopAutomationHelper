@@ -43,12 +43,14 @@ public class UiService : IUiService
     private const int MenuFocusDelayMs = 75;
     private const int KeyboardInputReadyDelayMs = 100;
     private const int ComboBoxSelectionCommitDelayMs = 150;
+    // Kept separate from selection commit delay so optional TAB-blur fallback timing can diverge if re-enabled.
     private const int ComboBoxBlurCommitDelayMs = ComboBoxSelectionCommitDelayMs;
     private const int ComboBoxPostCommitCollapseTimeoutMs = 2500;
     private const int ComboBoxPostCommitPollDelayMs = 100;
     private const int ComboBoxPostCommitStableDelayMs = 500;
     private const int ComboBoxSingleSelectionTimeoutMs = 8000;
     private const int SmallComboBoxSelectionTimeoutMs = 4000;
+    private const int SmallComboBoxMaxScrollAttempts = 1;
     private const bool ComboBoxAllowTabBlurCommitFallback = false;
     private const int ComboBoxRefetchRectangleTolerancePx = 3;
     // Menu parent chains in supported desktop apps are shallow; 20 gives ample room for deeply
@@ -5930,8 +5932,8 @@ public class UiService : IUiService
                 string.Equals(name, guard.Name, StringComparison.OrdinalIgnoreCase);
 
             var closeRect =
-                Math.Abs(rect.Left - guard.BoundingRectangle.Left) <= 3 &&
-                Math.Abs(rect.Top - guard.BoundingRectangle.Top) <= 3;
+                Math.Abs(rect.Left - guard.BoundingRectangle.Left) <= ComboBoxRefetchRectangleTolerancePx &&
+                Math.Abs(rect.Top - guard.BoundingRectangle.Top) <= ComboBoxRefetchRectangleTolerancePx;
 
             return sameAutomationId && sameName && closeRect;
         }
@@ -6322,7 +6324,7 @@ public class UiService : IUiService
                 session,
                 comboBox,
                 requestedValue,
-                maxScrollAttempts: 1);
+                maxScrollAttempts: SmallComboBoxMaxScrollAttempts);
 
             if (freshItem == null)
                 return false;
