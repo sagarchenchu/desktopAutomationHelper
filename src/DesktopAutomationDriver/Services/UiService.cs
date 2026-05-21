@@ -113,6 +113,11 @@ public class UiService : IUiService
     private const int MaxApplicationContextMenuCandidates = 80;
     private const int MaxApplicationContextMenuSearchDepth = 4;
     private const int MaxApplicationContextMenuPlaybackItems = 100;
+    private const int ContextMenuNearClickMarginLeading = 30;
+    private const int ContextMenuNearClickMarginTrailing = 250;
+    private const int ContextMenuTopLeftProximityThreshold = 80;
+    private const int ContextMenuFarFromClickThreshold = 300;
+    private const int ContextMenuMinimumCandidateScore = -50;
     private const int DefaultListResponseLimit = 500;
     private const int MaxListResponseLimit = 5000;
     private const string DesktopRootName = "Desktop";
@@ -1570,13 +1575,32 @@ public class UiService : IUiService
         BringElementWindowToForeground(element);
         Thread.Sleep(WindowActivationDelayMs);
 
+        // Capture the right-click point and target HWND before the right-click so we can
+        // scope context-menu popup detection to only the relevant popup.
+        var rect = element.BoundingRectangle;
+        var rightClickPoint = new Point(
+            (int)Math.Round(rect.Left + rect.Width / 2.0),
+            (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+        IntPtr targetHwnd = IntPtr.Zero;
+        try
+        {
+            var hwnd = SafeWindowHandle(element);
+            if (hwnd != IntPtr.Zero)
+            {
+                var root = GetAncestor(hwnd, GA_ROOT);
+                targetHwnd = root != IntPtr.Zero ? root : hwnd;
+            }
+        }
+        catch { /* best effort */ }
+
         if (!TryInstantPhysicalRightClick(element, "ContextMenuPath RightClick"))
             throw new InvalidOperationException($"Failed to right-click element '{SafeElementName(element)}'.");
 
         Thread.Sleep(MenuExpandDelayMs);
 
         var session = RequireSession();
-        var currentRoot = FindActiveContextMenuPopup(session)
+        var currentRoot = FindActiveContextMenuPopup(session, rightClickPoint, targetHwnd)
             ?? throw new InvalidOperationException("No application context menu was detected after right-click.");
 
         for (var i = 0; i < pathParts.Count; i++)
@@ -1615,7 +1639,8 @@ public class UiService : IUiService
 
             Thread.Sleep(MenuExpandDelayMs);
 
-            currentRoot = FindContextSubMenuPopup(session, item) ?? FindActiveContextMenuPopup(session);
+            currentRoot = FindContextSubMenuPopup(session, item, rightClickPoint, targetHwnd)
+                ?? FindActiveContextMenuPopup(session, rightClickPoint, targetHwnd);
 
             if (currentRoot == null)
                 throw new InvalidOperationException($"Context submenu popup was not found after opening '{part}'.");
@@ -9096,34 +9121,247 @@ public class UiService : IUiService
         }
     }
 
-    private AutomationElement? FindActiveContextMenuPopup(AutomationSession session)
+    /// <summary>
+    /// Score model used to rank context-menu popup candidates by proximity and ownership.
+    /// </summary>
+    private sealed class ContextMenuCandidateScore
     {
+        public required AutomationElement Element { get; init; }
+        public int Score { get; init; }
+        public string Reason { get; init; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Returns a numeric score for <paramref name="candidate"/> based on how likely it is to be
+    /// the context menu that appeared after a right-click at <paramref name="rightClickPoint"/>
+    /// inside the window identified by <paramref name="targetHwnd"/>.
+    /// Higher scores are better. Returns -1000 for candidates with no valid bounding rectangle
+    /// or when an exception occurs; candidates with a score at or below
+    /// <see cref="ContextMenuMinimumCandidateScore"/> are dropped by the caller.
+    /// </summary>
+    private int ScoreContextMenuCandidate(
+        AutomationElement candidate,
+        Point rightClickPoint,
+        IntPtr targetHwnd,
+        out string reason)
+    {
+        reason = string.Empty;
+
         try
         {
-            foreach (var candidate in GetContextMenuPopupCandidates(session))
+            var score = 0;
+            var rect = candidate.BoundingRectangle;
+            var hwnd = SafeWindowHandle(candidate);
+
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                return -1000;
+
+            var nearClick =
+                rightClickPoint.X >= rect.Left - ContextMenuNearClickMarginLeading &&
+                rightClickPoint.X <= rect.Right + ContextMenuNearClickMarginTrailing &&
+                rightClickPoint.Y >= rect.Top - ContextMenuNearClickMarginLeading &&
+                rightClickPoint.Y <= rect.Bottom + ContextMenuNearClickMarginTrailing;
+
+            if (nearClick)
             {
-                var items = GetContextMenuItems(session, candidate, maxItems: 1);
-                if (items.Count > 0)
-                    return candidate;
+                score += 100;
+                reason += "near-click;";
+            }
+
+            var dx = Math.Abs(rect.Left - rightClickPoint.X);
+            var dy = Math.Abs(rect.Top - rightClickPoint.Y);
+
+            if (dx <= ContextMenuTopLeftProximityThreshold && dy <= ContextMenuTopLeftProximityThreshold)
+            {
+                score += 80;
+                reason += "top-left-near-click;";
+            }
+
+            if (targetHwnd != IntPtr.Zero)
+            {
+                if (hwnd == targetHwnd)
+                {
+                    score += 80;
+                    reason += "same-hwnd;";
+                }
+                else
+                {
+                    try
+                    {
+                        var root = hwnd != IntPtr.Zero ? GetAncestor(hwnd, GA_ROOT) : IntPtr.Zero;
+                        if (root != IntPtr.Zero && root == targetHwnd)
+                        {
+                            score += 80;
+                            reason += "same-root-hwnd;";
+                        }
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
+                }
+            }
+
+            if (!nearClick && dx > ContextMenuFarFromClickThreshold && dy > ContextMenuFarFromClickThreshold)
+            {
+                score -= 100;
+                reason += "far-from-click;";
+            }
+
+            var name = SafeElementName(candidate);
+            var className = SafeElementClassName(candidate);
+
+            if (name.Contains("Start", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("Audio", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("Volume", StringComparison.OrdinalIgnoreCase) ||
+                className.Contains("Shell", StringComparison.OrdinalIgnoreCase) ||
+                className.Contains("Tray", StringComparison.OrdinalIgnoreCase))
+            {
+                score -= 200;
+                reason += "system-shell-penalty;";
+            }
+
+            var itemCount = GetContextMenuItems(candidate, maxItems: 5).Count;
+            if (itemCount > 0)
+            {
+                score += 20;
+                reason += $"items={itemCount};";
+            }
+
+            return score;
+        }
+        catch
+        {
+            reason = "exception;";
+            return -1000;
+        }
+    }
+
+    private List<AutomationElement> GetContextMenuItems(
+        AutomationElement menuRoot,
+        int maxItems)
+    {
+        var results = new List<AutomationElement>();
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        try
+        {
+            var queue = new Queue<AutomationElement>();
+            queue.Enqueue(menuRoot);
+
+            while (queue.Count > 0 && results.Count < maxItems)
+            {
+                var current = queue.Dequeue();
+                IReadOnlyList<AutomationElement> children;
+
+                try
+                {
+                    children = current.FindAllChildren();
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (var child in children)
+                {
+                    if (results.Count >= maxItems)
+                        break;
+
+                    try
+                    {
+                        var ct = child.ControlType;
+                        var name = SafeElementName(child);
+
+                        if (IsContextMenuItemType(ct) && !string.IsNullOrWhiteSpace(name))
+                        {
+                            var key = GetElementDedupeKey(child);
+                            if (key == null || seenKeys.Add(key))
+                                results.Add(child);
+                        }
+
+                        if (IsContextMenuContainerType(ct))
+                            queue.Enqueue(child);
+                    }
+                    catch
+                    {
+                        // ignore stale child
+                    }
+                }
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to detect active context menu popup.");
+            _logger.LogWarning(ex, "Failed reading context menu items.");
         }
 
-        return null;
+        return results;
+    }
+
+    private AutomationElement? FindActiveContextMenuPopup(
+        AutomationSession session,
+        Point rightClickPoint,
+        IntPtr targetHwnd)
+    {
+        try
+        {
+            var candidates = GetContextMenuPopupCandidates(session, rightClickPoint, targetHwnd);
+            var scored = new List<ContextMenuCandidateScore>();
+
+            foreach (var candidate in candidates)
+            {
+                var items = GetContextMenuItems(session, candidate, maxItems: 1);
+                if (items.Count == 0)
+                    continue;
+
+                var score = ScoreContextMenuCandidate(
+                    candidate,
+                    rightClickPoint,
+                    targetHwnd,
+                    out var reason);
+
+                scored.Add(new ContextMenuCandidateScore
+                {
+                    Element = candidate,
+                    Score = score,
+                    Reason = reason
+                });
+            }
+
+            var best = scored.OrderByDescending(x => x.Score).FirstOrDefault();
+
+            if (best == null)
+                return null;
+
+            _logger.LogInformation(
+                "Selected context menu popup candidate. score={Score}, reason={Reason}, name={Name}, rect={Rect}, targetHwnd=0x{TargetHwnd:X}, click={ClickPoint}",
+                best.Score,
+                best.Reason,
+                SafeElementName(best.Element),
+                best.Element.BoundingRectangle,
+                targetHwnd.ToInt64(),
+                rightClickPoint);
+
+            return best.Element;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to detect scoped active context menu popup.");
+            return null;
+        }
     }
 
     private AutomationElement? FindContextSubMenuPopup(
         AutomationSession session,
-        AutomationElement submenuItem)
+        AutomationElement submenuItem,
+        Point rightClickPoint,
+        IntPtr targetHwnd)
     {
         try
         {
             var itemRect = submenuItem.BoundingRectangle;
 
-            foreach (var candidate in GetContextMenuPopupCandidates(session))
+            foreach (var candidate in GetContextMenuPopupCandidates(session, rightClickPoint, targetHwnd))
             {
                 var rect = candidate.BoundingRectangle;
 
@@ -9147,17 +9385,39 @@ public class UiService : IUiService
         return null;
     }
 
-    private List<AutomationElement> GetContextMenuPopupCandidates(AutomationSession session)
+    private List<AutomationElement> GetContextMenuPopupCandidates(
+        AutomationSession session,
+        Point rightClickPoint,
+        IntPtr targetHwnd)
     {
         var results = new List<AutomationElement>();
 
         try
         {
+            var driverPid = Environment.ProcessId;
+            var targetPid = session.Application.ProcessId;
             var desktop = session.Automation.GetDesktop();
             var queue = new Queue<(AutomationElement Element, int Depth)>();
 
             foreach (var child in desktop.FindAllChildren())
+            {
+                try
+                {
+                    var childPid = child.Properties.ProcessId.Value;
+
+                    if (childPid == driverPid)
+                        continue;
+
+                    if (childPid != targetPid)
+                        continue;
+                }
+                catch
+                {
+                    continue;
+                }
+
                 queue.Enqueue((child, 1));
+            }
 
             while (queue.Count > 0 && results.Count < MaxApplicationContextMenuCandidates)
             {
@@ -9168,12 +9428,20 @@ public class UiService : IUiService
                     var ct = element.ControlType;
                     var rect = element.BoundingRectangle;
 
-                    if (IsContextMenuContainerType(ct) &&
-                        !rect.IsEmpty &&
-                        rect.Width > 0 &&
-                        rect.Height > 0)
+                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                        continue;
+
+                    if (IsContextMenuContainerType(ct))
                     {
-                        results.Add(element);
+                        var score = ScoreContextMenuCandidate(
+                            element,
+                            rightClickPoint,
+                            targetHwnd,
+                            out _);
+
+                        // Drop obviously unrelated candidates (system-shell / far + penalised).
+                        if (score > ContextMenuMinimumCandidateScore)
+                            results.Add(element);
                     }
 
                     if (depth >= MaxApplicationContextMenuSearchDepth)
@@ -9194,7 +9462,7 @@ public class UiService : IUiService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed collecting context menu popup candidates.");
+            _logger.LogWarning(ex, "Failed collecting scoped context menu popup candidates.");
         }
 
         return results;
