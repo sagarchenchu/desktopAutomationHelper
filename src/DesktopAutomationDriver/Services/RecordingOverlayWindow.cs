@@ -4974,16 +4974,16 @@ public sealed class RecordingOverlayWindow : Form
         public string Name { get; init; } = string.Empty;
         public string ControlType { get; init; } = string.Empty;
         public string RuntimeId { get; init; } = string.Empty;
-        public FlaUI.Core.Shapes.Rectangle BoundingRectangle { get; init; }
+        public System.Drawing.Rectangle BoundingRectangle { get; init; }
     }
 
     private ComboBoxTargetGuard CaptureComboBoxTargetGuard(AutomationElement comboBox)
     {
         return new ComboBoxTargetGuard
         {
-            AutomationId = SafeElementAutomationId(comboBox),
-            Name = SafeElementName(comboBox),
-            ControlType = comboBox.ControlType?.ToString() ?? string.Empty,
+            AutomationId = SafeElementAutomationId(comboBox) ?? string.Empty,
+            Name = SafeElementName(comboBox) ?? string.Empty,
+            ControlType = comboBox.ControlType.ToString(),
             RuntimeId = SafeRuntimeId(comboBox),
             BoundingRectangle = comboBox.BoundingRectangle
         };
@@ -5070,6 +5070,11 @@ public sealed class RecordingOverlayWindow : Form
             SafeElementName(comboBox));
 
         return false;
+    }
+
+    private static bool IsComboBoxTabBlurCommitFallbackAllowed()
+    {
+        return ComboBoxAllowTabBlurCommitFallback;
     }
 
     private ComboBoxItemPatternCapabilities DetectComboBoxItemPatternCapabilities(
@@ -5482,7 +5487,7 @@ public sealed class RecordingOverlayWindow : Form
                     if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, source))
                         return true;
 
-                    if (ComboBoxAllowTabBlurCommitFallback)
+                    if (IsComboBoxTabBlurCommitFallbackAllowed())
                     {
                         if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
                             !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "TAB blur fallback"))
@@ -5835,9 +5840,6 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
-            var guard = CaptureComboBoxTargetGuard(comboBox);
-            var operationDeadline = DateTime.UtcNow.AddMilliseconds(ComboBoxSingleSelectionTimeoutMs);
-
             BringElementWindowToForeground(comboBox);
             Thread.Sleep(WindowActivationDelayMs);
 
@@ -6983,6 +6985,9 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
+            var guard = CaptureComboBoxTargetGuard(comboBox);
+            var operationDeadline = DateTime.UtcNow.AddMilliseconds(ComboBoxSingleSelectionTimeoutMs);
+
             BringElementWindowToForeground(comboBox);
             Thread.Sleep(WindowActivationDelayMs);
 
