@@ -4970,6 +4970,9 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
+    /// <summary>
+    /// Captures ComboBox identity so multi-step selection can abort if UI focus or UIA refresh points at another ComboBox.
+    /// </summary>
     private sealed class ComboBoxTargetGuard
     {
         public string AutomationId { get; init; } = string.Empty;
@@ -4991,15 +4994,16 @@ public sealed class RecordingOverlayWindow : Form
         };
     }
 
-    private static string SafeRuntimeId(AutomationElement element)
+    private string SafeRuntimeId(AutomationElement element)
     {
         try
         {
             var runtimeId = element.Properties.RuntimeId.ValueOrDefault;
             return runtimeId == null ? string.Empty : string.Join(".", runtimeId);
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogDebug(ex, "Failed to read ComboBox RuntimeId.");
             return string.Empty;
         }
     }
@@ -7883,6 +7887,17 @@ public sealed class RecordingOverlayWindow : Form
                 secondActual,
                 secondMatched);
 
+            if (secondMatched)
+            {
+                _logger.LogInformation(
+                    "ComboBox selection committed and stable. No further fallback will run. source={Source}, combo={Combo}, requested={Requested}",
+                    source,
+                    SafeElementName(comboBox),
+                    requestedValue);
+
+                return true;
+            }
+
             if (!secondMatched)
             {
                 _logger.LogWarning(
@@ -7892,16 +7907,8 @@ public sealed class RecordingOverlayWindow : Form
                     GetComboBoxCurrentValue(comboBox),
                     SafeElementName(comboBox));
             }
-            else
-            {
-                _logger.LogInformation(
-                    "ComboBox selection committed and stable. No further fallback will run. source={Source}, combo={Combo}, requested={Requested}",
-                    source,
-                    SafeElementName(comboBox),
-                    requestedValue);
-            }
 
-            return secondMatched;
+            return false;
         }
         catch (Exception ex)
         {
