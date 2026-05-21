@@ -8701,15 +8701,12 @@ public class UiService : IUiService
                 return true;
             }
 
-            if (!secondMatched)
-            {
-                _logger.LogWarning(
-                    "ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
-                    source,
-                    requestedValue,
-                    GetComboBoxCurrentValue(session, comboBox),
-                    SafeElementName(comboBox));
-            }
+            _logger.LogWarning(
+                "ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
+                source,
+                requestedValue,
+                GetComboBoxCurrentValue(session, comboBox),
+                SafeElementName(comboBox));
 
             return false;
         }
