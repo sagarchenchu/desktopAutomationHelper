@@ -3863,6 +3863,9 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
+            var elementLabel = ElementInfo.GetLabel(elementInfo);
+            _statusLabel.Text = $"  ↯ Performing right-click on {elementLabel} — opening context menu…  ";
+
             var success = TryPhysicalRightClickPoint(
                 originalRightClickPoint,
                 "Open Application Context Menu",
@@ -3870,6 +3873,8 @@ public sealed class RecordingOverlayWindow : Form
 
             if (!success)
                 throw new InvalidOperationException("Could not open application context menu.");
+
+            _statusLabel.Text = "  Reading application context menu items…  ";
 
             var contextMenu = FindActiveContextMenuPopupWithRetry();
 
@@ -3879,6 +3884,7 @@ public sealed class RecordingOverlayWindow : Form
                     "No application context menu detected after right-click. point={Point}",
                     originalRightClickPoint);
 
+                _statusLabel.Text = $"  No context menu appeared — recording plain right-click on {elementLabel}  ";
                 RecordPlainRightClickFallback(targetElement, elementInfo, originalRightClickPoint);
                 return;
             }
@@ -3891,9 +3897,12 @@ public sealed class RecordingOverlayWindow : Form
                     "Application context menu detected but no menu items found. point={Point}",
                     originalRightClickPoint);
 
+                _statusLabel.Text = $"  Context menu had no readable items — recording plain right-click on {elementLabel}  ";
                 RecordPlainRightClickFallback(targetElement, elementInfo, originalRightClickPoint);
                 return;
             }
+
+            _statusLabel.Text = $"  ✔ Context menu read ({items.Count} items) — select an option below  ";
 
             ShowApplicationContextMenuItemsMenu(
                 targetElement,
@@ -3921,9 +3930,14 @@ public sealed class RecordingOverlayWindow : Form
         var menu = new NoActivateContextMenuStrip { ShowImageMargin = false };
         menu.Font = new Font("Segoe UI", 10f);
 
+        var visibleItems = items
+            .Where(i => !string.IsNullOrWhiteSpace(SafeElementName(i)))
+            .Take(MaxApplicationContextMenuDisplayItems)
+            .ToList();
+
         var pathLabel = parentPath.Count == 0
-            ? "Application Context Menu"
-            : $"Application Context Menu: {string.Join(" > ", parentPath)}";
+            ? $"Select a context menu option  ({visibleItems.Count} items)"
+            : $"Submenu: {string.Join(" > ", parentPath)}  ({visibleItems.Count} items)";
 
         menu.Items.Add(new ToolStripMenuItem(pathLabel)
         {
@@ -3932,22 +3946,20 @@ public sealed class RecordingOverlayWindow : Form
         });
         menu.Items.Add(new ToolStripSeparator());
 
-        foreach (var item in items.Take(MaxApplicationContextMenuDisplayItems))
+        foreach (var item in visibleItems)
         {
-            var itemName = SafeElementName(item);
-
-            if (string.IsNullOrWhiteSpace(itemName))
-                continue;
-
+            var itemName = SafeElementName(item)!; // visibleItems are already filtered for non-null/non-whitespace names
             var capturedName = itemName;
-            var capturedPath = parentPath.Concat(new[] { capturedName }).ToArray();
+            var capturedPath = (IReadOnlyList<string>)parentPath.Concat(new[] { capturedName }).ToArray();
             var capturedMenuPath = string.Join(" > ", capturedPath);
 
-            var selectItem = new ToolStripMenuItem(capturedMenuPath);
+            var selectItem = new ToolStripMenuItem(capturedName);
             selectItem.Click += (_, _) =>
             {
                 RunAssistiveActionAfterMenuClose($"Context Menu: {capturedMenuPath}", () =>
                 {
+                    _statusLabel.Text = $"  ↯ Selecting context menu item '{capturedMenuPath}'…  ";
+
                     var selected = SelectApplicationContextMenuPath(
                         originalRightClickPoint,
                         targetHwnd,
@@ -3969,11 +3981,13 @@ public sealed class RecordingOverlayWindow : Form
 
             if (ContextMenuItemHasSubmenu(item))
             {
-                var openSubmenu = new ToolStripMenuItem($"Open Submenu: {capturedMenuPath}");
+                var openSubmenu = new ToolStripMenuItem($"{capturedName}  ▶  (open submenu items)");
                 openSubmenu.Click += (_, _) =>
                 {
                     RunAssistiveActionAfterMenuClose($"Open Context Submenu: {capturedMenuPath}", () =>
                     {
+                        _statusLabel.Text = $"  ↯ Opening submenu '{capturedMenuPath}'…  ";
+
                         OpenApplicationContextSubmenuAndShowItems(
                             targetElement,
                             elementInfo,
@@ -3999,6 +4013,8 @@ public sealed class RecordingOverlayWindow : Form
         IntPtr targetHwnd,
         IReadOnlyList<string> submenuPath)
     {
+        _statusLabel.Text = $"  Reading submenu '{string.Join(" > ", submenuPath)}'…  ";
+
         if (!OpenApplicationContextMenuPathToSubmenu(
                 originalRightClickPoint,
                 targetHwnd,
@@ -4012,6 +4028,8 @@ public sealed class RecordingOverlayWindow : Form
 
         if (items.Count == 0)
             throw new InvalidOperationException($"Context submenu '{string.Join(" > ", submenuPath)}' has no readable items.");
+
+        _statusLabel.Text = $"  ✔ Submenu read ({items.Count} items) — select an option below  ";
 
         ShowApplicationContextMenuItemsMenu(
             targetElement,
