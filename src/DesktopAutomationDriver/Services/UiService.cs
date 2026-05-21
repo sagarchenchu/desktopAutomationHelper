@@ -6137,19 +6137,25 @@ public class UiService : IUiService
                     item.Patterns.SelectionItem.Pattern.Select();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
+                    // If the dropdown has already collapsed, verify via the normal stable-collapse path.
+                    // If the dropdown is still expanded, SelectionItem.Select() only highlighted the item
+                    // without closing the dropdown — skip the expensive collapse wait and immediately
+                    // press Enter to finalise the highlighted selection.
+                    if (!IsComboBoxExpanded(comboBox))
                     {
-                        _logger.LogInformation(
-                            "ComboBox item committed using SelectionItemPattern. source={Source}, requested={Requested}",
-                            source,
-                            requestedValue);
+                        if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
+                        {
+                            _logger.LogInformation(
+                                "ComboBox item committed using SelectionItemPattern. source={Source}, requested={Requested}",
+                                source,
+                                requestedValue);
 
-                        return true;
+                            return true;
+                        }
                     }
-
-                    // If dropdown is still expanded and item is highlighted, press Enter to commit.
-                    if (IsComboBoxExpanded(comboBox))
+                    else
                     {
+                        // Dropdown still open — check if item is highlighted and press Enter to commit.
                         var isItemHighlighted = false;
                         try
                         {
@@ -6166,7 +6172,6 @@ public class UiService : IUiService
                         }
 
                         if (isItemHighlighted &&
-                            IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) &&
                             IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "SelectionItem highlight Enter"))
                         {
                             _logger.LogInformation(
@@ -6214,38 +6219,44 @@ public class UiService : IUiService
                     item.Patterns.Invoke.Pattern.Invoke();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
-                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
+                    // If the dropdown has already collapsed, verify via the normal stable-collapse path.
+                    // If the dropdown is still expanded, Invoke() did not close it — skip the expensive
+                    // collapse wait and immediately press Enter to finalise the selection.
+                    if (!IsComboBoxExpanded(comboBox))
                     {
-                        _logger.LogInformation(
-                            "ComboBox item committed using InvokePattern. source={Source}, requested={Requested}",
-                            source,
-                            requestedValue);
-
-                        return true;
-                    }
-
-                    // If dropdown is still expanded after Invoke, press Enter to commit.
-                    if (IsComboBoxExpanded(comboBox) &&
-                        IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) &&
-                        IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "Invoke Enter"))
-                    {
-                        _logger.LogInformation(
-                            "ComboBox dropdown still expanded after InvokePattern — pressing Enter. source={Source}, requested={Requested}",
-                            source,
-                            requestedValue);
-
-                        Keyboard.Press(VirtualKeyShort.RETURN);
-                        Keyboard.Release(VirtualKeyShort.RETURN);
-                        Thread.Sleep(ComboBoxSelectionCommitDelayMs);
-
-                        if (VerifyComboBoxValueAfterEnterWithDropdownStateCheck(session, comboBox, requestedValue, source + "-invoke-enter"))
+                        if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source))
                         {
                             _logger.LogInformation(
-                                "ComboBox item committed by Invoke + Enter. source={Source}, requested={Requested}",
+                                "ComboBox item committed using InvokePattern. source={Source}, requested={Requested}",
                                 source,
                                 requestedValue);
 
                             return true;
+                        }
+                    }
+                    else
+                    {
+                        // Dropdown still open after Invoke — press Enter to commit.
+                        if (IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "Invoke Enter"))
+                        {
+                            _logger.LogInformation(
+                                "ComboBox dropdown still expanded after InvokePattern — pressing Enter. source={Source}, requested={Requested}",
+                                source,
+                                requestedValue);
+
+                            Keyboard.Press(VirtualKeyShort.RETURN);
+                            Keyboard.Release(VirtualKeyShort.RETURN);
+                            Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                            if (VerifyComboBoxValueAfterEnterWithDropdownStateCheck(session, comboBox, requestedValue, source + "-invoke-enter"))
+                            {
+                                _logger.LogInformation(
+                                    "ComboBox item committed by Invoke + Enter. source={Source}, requested={Requested}",
+                                    source,
+                                    requestedValue);
+
+                                return true;
+                            }
                         }
                     }
                 }
