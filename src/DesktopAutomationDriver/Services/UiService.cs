@@ -43,9 +43,15 @@ public class UiService : IUiService
     private const int MenuFocusDelayMs = 75;
     private const int KeyboardInputReadyDelayMs = 100;
     private const int ComboBoxSelectionCommitDelayMs = 150;
+    // Kept separate from selection commit delay so optional TAB-blur fallback timing can diverge if re-enabled.
+    private const int ComboBoxBlurCommitDelayMs = ComboBoxSelectionCommitDelayMs;
     private const int ComboBoxPostCommitCollapseTimeoutMs = 2500;
     private const int ComboBoxPostCommitPollDelayMs = 100;
     private const int ComboBoxPostCommitStableDelayMs = 500;
+    private const int ComboBoxSingleSelectionTimeoutMs = 8000;
+    private const int SmallComboBoxSelectionTimeoutMs = 4000;
+    private const int SmallComboBoxMaxScrollAttempts = 1;
+    private const bool ComboBoxAllowTabBlurCommitFallback = false;
     private const int ComboBoxRefetchRectangleTolerancePx = 3;
     // Menu parent chains in supported desktop apps are shallow; 20 gives ample room for deeply
     // nested menus while preventing unbounded traversal of unstable UIA ancestors. If exceeded,
@@ -3710,15 +3716,28 @@ public class UiService : IUiService
             throw new ArgumentException("selectcomboboxitem requires a non-empty value.");
 
         var session = RequireSession();
+        var guard = CaptureComboBoxTargetGuard(comboBox);
+        var operationDeadline = DateTime.UtcNow.AddMilliseconds(ComboBoxSingleSelectionTimeoutMs);
 
         _logger.LogInformation(
             "ComboBox selection starting with UIA direct strategy. combo={Combo}, value={Value}",
             SafeElementName(comboBox),
             itemName);
 
-        var probedCapabilities = ProbeComboBoxDropdownItemCapabilities(session, comboBox);
+        var probedCapabilities = ProbeComboBoxDropdownItemCapabilities(
+            session,
+            comboBox,
+            itemName,
+            guard,
+            operationDeadline);
         if (probedCapabilities.HasAnyUsefulPattern &&
-            TrySelectComboBoxByDirectUia(session, comboBox, itemName, out var directStrategy))
+            TrySelectComboBoxByDirectUia(
+                session,
+                comboBox,
+                itemName,
+                guard,
+                operationDeadline,
+                out var directStrategy))
         {
             return new
             {
@@ -3739,6 +3758,12 @@ public class UiService : IUiService
                 "Fallback to visual search because no useful ListItem patterns were detected");
         }
 
+        if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) ||
+            !IsComboBoxTargetGuardValid(comboBox, guard, itemName, "reopen"))
+        {
+            throw new InvalidOperationException($"ComboBox selection aborted for '{itemName}'.");
+        }
+
         if (!OpenComboBoxDropdown(session, comboBox))
             throw new InvalidOperationException($"Failed to open ComboBox '{SafeElementName(comboBox)}'.");
 
@@ -3751,7 +3776,7 @@ public class UiService : IUiService
                 SafeElementName(comboBox),
                 itemName);
 
-            if (TrySelectComboBoxByPagedVisibleSearch(session, comboBox, itemName))
+            if (TrySelectComboBoxByPagedVisibleSearch(session, comboBox, itemName, guard, operationDeadline))
             {
                 var actual = GetComboBoxCurrentValue(session, comboBox);
 
@@ -3770,7 +3795,7 @@ public class UiService : IUiService
                 SafeElementName(comboBox),
                 itemName);
 
-            if (TrySelectComboBoxByVisibleAnchorWindowSearch(session, comboBox, itemName))
+            if (TrySelectComboBoxByVisibleAnchorWindowSearch(session, comboBox, itemName, guard, operationDeadline))
             {
                 var actual = GetComboBoxCurrentValue(session, comboBox);
 
@@ -3791,7 +3816,9 @@ public class UiService : IUiService
                     SafeElementName(comboBox),
                     itemName);
 
-                if (TrySelectComboBoxByKeyboardSafe(session, comboBox, itemName))
+                if (IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) &&
+                    IsComboBoxTargetGuardValid(comboBox, guard, itemName, "keyboard fallback") &&
+                    TrySelectComboBoxByKeyboardSafe(session, comboBox, itemName, guard, operationDeadline))
                 {
                     var actual = GetComboBoxCurrentValue(session, comboBox);
 
@@ -3824,60 +3851,21 @@ public class UiService : IUiService
                 $"visibleBatch='{string.Join(", ", visibleBatch)}'");
         }
 
-        var item = FindComboBoxItemByTextWithScroll(
-            session,
-            comboBox,
-            itemName,
-            ComboBoxScrollSearchMaxAttempts);
-
-        if (item == null)
-        {
-            _logger.LogInformation(
-                "ComboBox item '{Item}' was not found by visible/scroll search. Trying keyboard type-ahead fallback.",
-                itemName);
-
-            if (TrySelectComboBoxByKeyboardSafe(session, comboBox, itemName))
-            {
-                var actual = GetComboBoxCurrentValue(session, comboBox);
-
-                return new
-                {
-                    selected = itemName,
-                    actual,
-                    comboBox = SafeElementName(comboBox),
-                    verified = true,
-                    strategy = "keyboard-typeahead"
-                };
-            }
-
-            var available = FindDynamicComboBoxItems(session, comboBox, maxItems: MaxAssistiveDropdownItemsToDisplay)
-                .Select(SafeElementName)
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .ToList();
-
-            throw new InvalidOperationException(
-                $"ComboBox item '{itemName}' was not found after scrolling or keyboard type-ahead. " +
-                $"dropdownListDetected={FindDynamicComboBoxList(session, comboBox) != null}, " +
-                $"expandedState={GetComboBoxExpandState(comboBox)}, " +
-                $"currentValue='{GetComboBoxCurrentValue(session, comboBox)}', " +
-                $"availableFirst{MaxAssistiveDropdownItemsToDisplay}='{string.Join(", ", available)}'");
-        }
-
-        if (!CommitExactVisibleComboBoxItem(
+        var smallOperationDeadline = DateTime.UtcNow.AddMilliseconds(SmallComboBoxSelectionTimeoutMs);
+        if (!CommitSmallComboBoxItemUserLike(
                 session,
                 comboBox,
-                item,
                 itemName,
-                "small-combobox-exact-visible-commit"))
+                guard,
+                smallOperationDeadline))
         {
             var actualAfterCommit = GetComboBoxCurrentValue(session, comboBox);
 
             _logger.LogWarning(
-                "Small ComboBox exact item was found but final commit did not verify. requested={Requested}, actual={Actual}, combo={Combo}, item={Item}",
+                "Small ComboBox item did not commit or stabilize. requested={Requested}, actual={Actual}, combo={Combo}",
                 itemName,
                 actualAfterCommit,
-                SafeElementName(comboBox),
-                SafeElementName(item));
+                SafeElementName(comboBox));
 
             throw new InvalidOperationException(
                 $"ComboBox item '{itemName}' was visible/found but did not commit. Actual='{actualAfterCommit}'.");
@@ -5658,6 +5646,8 @@ public class UiService : IUiService
         AutomationSession session,
         AutomationElement comboBox,
         string requestedValue,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline,
         out string strategy)
     {
         strategy = "direct-uia-not-used";
@@ -5675,6 +5665,12 @@ public class UiService : IUiService
 
             if (logicalMatch != null)
             {
+                if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                    !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "direct UIA logical commit"))
+                {
+                    return false;
+                }
+
                 var capabilities = DetectComboBoxItemPatternCapabilities(logicalMatch);
 
                 if (capabilities.HasAnyUsefulPattern &&
@@ -5684,6 +5680,8 @@ public class UiService : IUiService
                         logicalMatch,
                         requestedValue,
                         capabilities,
+                        guard,
+                        operationDeadline,
                         "direct-uia-logical-or-popup"))
                 {
                     strategy = "direct-uia-pattern-based";
@@ -5698,7 +5696,9 @@ public class UiService : IUiService
                     capabilities.ToString());
             }
 
-            if (OpenComboBoxDropdown(session, comboBox))
+            if (IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) &&
+                IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "direct UIA reopen") &&
+                OpenComboBoxDropdown(session, comboBox))
             {
                 Thread.Sleep(MenuExpandDelayMs);
 
@@ -5719,6 +5719,8 @@ public class UiService : IUiService
                             popupMatch,
                             requestedValue,
                             capabilities,
+                            guard,
+                            operationDeadline,
                             "direct-uia-logical-or-popup"))
                     {
                         strategy = "direct-uia-pattern-based";
@@ -5734,7 +5736,9 @@ public class UiService : IUiService
                 }
             }
 
-            if (TrySetComboBoxValueByValuePattern(session, comboBox, requestedValue, "direct-uia-valuepattern"))
+            if (IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) &&
+                IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "direct UIA value-pattern commit") &&
+                TrySetComboBoxValueByValuePattern(session, comboBox, requestedValue, "direct-uia-valuepattern"))
             {
                 strategy = "direct-uia-valuepattern";
                 return true;
@@ -5870,6 +5874,119 @@ public class UiService : IUiService
         }
     }
 
+    /// <summary>
+    /// Captures ComboBox identity so multi-step selection can abort if UI focus or UIA refresh points at another ComboBox.
+    /// </summary>
+    private sealed class ComboBoxTargetGuard
+    {
+        public string AutomationId { get; init; } = string.Empty;
+        public string Name { get; init; } = string.Empty;
+        public string ControlType { get; init; } = string.Empty;
+        public string RuntimeId { get; init; } = string.Empty;
+        public Rectangle BoundingRectangle { get; init; }
+    }
+
+    private ComboBoxTargetGuard CaptureComboBoxTargetGuard(AutomationElement comboBox)
+    {
+        return new ComboBoxTargetGuard
+        {
+            AutomationId = SafeElementAutomationId(comboBox) ?? string.Empty,
+            Name = SafeElementName(comboBox) ?? string.Empty,
+            ControlType = comboBox.ControlType.ToString(),
+            RuntimeId = SafeRuntimeId(comboBox),
+            BoundingRectangle = comboBox.BoundingRectangle
+        };
+    }
+
+    private string SafeRuntimeId(AutomationElement element)
+    {
+        try
+        {
+            var runtimeId = element.Properties.RuntimeId.ValueOrDefault;
+            return runtimeId == null ? string.Empty : string.Join(".", runtimeId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to read ComboBox RuntimeId.");
+            return string.Empty;
+        }
+    }
+
+    private bool IsSameComboBoxTarget(
+        AutomationElement comboBox,
+        ComboBoxTargetGuard guard)
+    {
+        try
+        {
+            var runtimeId = SafeRuntimeId(comboBox);
+            if (!string.IsNullOrWhiteSpace(guard.RuntimeId) &&
+                string.Equals(runtimeId, guard.RuntimeId, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var automationId = SafeElementAutomationId(comboBox);
+            var name = SafeElementName(comboBox);
+            var rect = comboBox.BoundingRectangle;
+
+            var sameAutomationId =
+                string.Equals(automationId, guard.AutomationId, StringComparison.OrdinalIgnoreCase);
+
+            var sameName =
+                string.Equals(name, guard.Name, StringComparison.OrdinalIgnoreCase);
+
+            var closeRect =
+                Math.Abs(rect.Left - guard.BoundingRectangle.Left) <= ComboBoxRefetchRectangleTolerancePx &&
+                Math.Abs(rect.Top - guard.BoundingRectangle.Top) <= ComboBoxRefetchRectangleTolerancePx;
+
+            return sameAutomationId && sameName && closeRect;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool IsComboBoxTargetGuardValid(
+        AutomationElement comboBox,
+        ComboBoxTargetGuard guard,
+        string requestedValue,
+        string action)
+    {
+        if (IsSameComboBoxTarget(comboBox, guard))
+            return true;
+
+        _logger.LogWarning(
+            "ComboBox target changed before {Action}. Aborting to avoid opening another dropdown. requested={Requested}, originalName={OriginalName}, currentName={CurrentName}",
+            action,
+            requestedValue,
+            guard.Name,
+            SafeElementName(comboBox));
+
+        return false;
+    }
+
+    private bool IsComboBoxOperationWithinDeadline(
+        DateTime operationDeadline,
+        AutomationElement comboBox,
+        string requestedValue)
+    {
+        if (DateTime.UtcNow <= operationDeadline)
+            return true;
+
+        _logger.LogWarning(
+            "ComboBox selection operation timed out before HTTP timeout. requested={Requested}, combo={Combo}",
+            requestedValue,
+            SafeElementName(comboBox));
+
+        return false;
+    }
+
+    private static bool IsComboBoxTabBlurCommitFallbackAllowed()
+    {
+        return ComboBoxAllowTabBlurCommitFallback;
+    }
+
     private ComboBoxItemPatternCapabilities DetectComboBoxItemPatternCapabilities(
         AutomationElement item)
     {
@@ -5902,10 +6019,19 @@ public class UiService : IUiService
 
     private ComboBoxItemPatternCapabilities ProbeComboBoxDropdownItemCapabilities(
         AutomationSession session,
-        AutomationElement comboBox)
+        AutomationElement comboBox,
+        string requestedValue,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline)
     {
         try
         {
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "capability probe reopen"))
+            {
+                return new ComboBoxItemPatternCapabilities();
+            }
+
             if (!OpenComboBoxDropdown(session, comboBox))
                 return new ComboBoxItemPatternCapabilities();
 
@@ -5955,6 +6081,8 @@ public class UiService : IUiService
         AutomationElement item,
         string requestedValue,
         ComboBoxItemPatternCapabilities capabilities,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline,
         string source)
     {
         try
@@ -5970,6 +6098,12 @@ public class UiService : IUiService
             {
                 try
                 {
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "ScrollIntoView"))
+                    {
+                        return false;
+                    }
+
                     item.Patterns.ScrollItem.Pattern.ScrollIntoView();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
@@ -5994,6 +6128,12 @@ public class UiService : IUiService
             {
                 try
                 {
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "SelectionItem commit"))
+                    {
+                        return false;
+                    }
+
                     item.Patterns.SelectionItem.Pattern.Select();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
@@ -6022,6 +6162,12 @@ public class UiService : IUiService
             {
                 try
                 {
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "Invoke commit"))
+                    {
+                        return false;
+                    }
+
                     item.Patterns.Invoke.Pattern.Invoke();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
@@ -6048,6 +6194,12 @@ public class UiService : IUiService
 
             if (capabilities.HasScrollItem)
             {
+                if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                    !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "physical click"))
+                {
+                    return false;
+                }
+
                 if (TryPhysicalClickComboBoxListItem(item, requestedValue, source))
                 {
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
@@ -6147,11 +6299,97 @@ public class UiService : IUiService
         }
     }
 
+    private bool CommitSmallComboBoxItemUserLike(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string requestedValue,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline)
+    {
+        const string source = "small-combobox-userlike-click";
+
+        try
+        {
+            BringElementWindowToForeground(comboBox);
+            Thread.Sleep(WindowActivationDelayMs);
+
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "small ComboBox reopen"))
+            {
+                return false;
+            }
+
+            if (!OpenComboBoxDropdown(session, comboBox))
+                return false;
+
+            Thread.Sleep(MenuExpandDelayMs);
+
+            var freshItem = FindComboBoxItemByTextWithScroll(
+                session,
+                comboBox,
+                requestedValue,
+                maxScrollAttempts: SmallComboBoxMaxScrollAttempts);
+
+            if (freshItem == null)
+                return false;
+
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "physical click"))
+            {
+                return false;
+            }
+
+            if (TryPhysicalClickComboBoxListItem(
+                    freshItem,
+                    requestedValue,
+                    source))
+            {
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+                if (VerifyComboBoxSelectedValueStableAfterCollapse(
+                        session,
+                        comboBox,
+                        requestedValue,
+                        source))
+                {
+                    return true;
+                }
+            }
+
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "small ComboBox pattern fallback"))
+            {
+                return false;
+            }
+
+            return CommitExactVisibleComboBoxItem(
+                session,
+                comboBox,
+                freshItem,
+                requestedValue,
+                guard,
+                operationDeadline,
+                "small-combobox-pattern-fallback");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Small ComboBox user-like commit failed. requested={Requested}, combo={Combo}",
+                requestedValue,
+                SafeElementName(comboBox));
+
+            return false;
+        }
+    }
+
     private bool CommitExactVisibleComboBoxItem(
         AutomationSession session,
         AutomationElement comboBox,
         AutomationElement item,
         string requestedValue,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline,
         string source)
     {
         try
@@ -6167,6 +6405,12 @@ public class UiService : IUiService
             {
                 try
                 {
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "SelectionItem commit"))
+                    {
+                        return false;
+                    }
+
                     item.Patterns.SelectionItem.Pattern.Select();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
@@ -6178,6 +6422,12 @@ public class UiService : IUiService
                             requestedValue);
 
                         return true;
+                    }
+
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "ENTER commit"))
+                    {
+                        return false;
                     }
 
                     Keyboard.Press(VirtualKeyShort.RETURN);
@@ -6208,6 +6458,12 @@ public class UiService : IUiService
             {
                 try
                 {
+                    if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                        !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "Invoke commit"))
+                    {
+                        return false;
+                    }
+
                     item.Patterns.Invoke.Pattern.Invoke();
                     Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
@@ -6221,18 +6477,27 @@ public class UiService : IUiService
                         return true;
                     }
 
-                    Keyboard.Press(VirtualKeyShort.TAB);
-                    Keyboard.Release(VirtualKeyShort.TAB);
-                    Thread.Sleep(ComboBoxSelectionCommitDelayMs);
-
-                    if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source + "-invoke-tab"))
+                    if (IsComboBoxTabBlurCommitFallbackAllowed())
                     {
-                        _logger.LogInformation(
-                            "ComboBox item committed by InvokePattern plus TAB. source={Source}, requested={Requested}",
-                            source,
-                            requestedValue);
+                        if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                            !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "TAB blur fallback"))
+                        {
+                            return false;
+                        }
 
-                        return true;
+                        Keyboard.Press(VirtualKeyShort.TAB);
+                        Keyboard.Release(VirtualKeyShort.TAB);
+                        Thread.Sleep(ComboBoxBlurCommitDelayMs);
+
+                        if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, source + "-tab-blur"))
+                        {
+                            _logger.LogInformation(
+                                "ComboBox item committed by optional TAB blur fallback. source={Source}, requested={Requested}",
+                                source,
+                                requestedValue);
+
+                            return true;
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -6243,6 +6508,12 @@ public class UiService : IUiService
                         source,
                         requestedValue);
                 }
+            }
+
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "physical click"))
+            {
+                return false;
             }
 
             if (TryPhysicalClickComboBoxListItem(item, requestedValue, source))
@@ -6263,6 +6534,12 @@ public class UiService : IUiService
             if (TryFocusComboBoxListItem(item, requestedValue, source))
             {
                 Thread.Sleep(ComboBoxAnchorMoveDelayMs);
+
+                if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                    !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "ENTER commit"))
+                {
+                    return false;
+                }
 
                 Keyboard.Press(VirtualKeyShort.RETURN);
                 Keyboard.Release(VirtualKeyShort.RETURN);
@@ -6689,14 +6966,28 @@ public class UiService : IUiService
     private bool TrySelectComboBoxByPagedVisibleSearch(
         AutomationSession session,
         AutomationElement comboBox,
-        string itemName)
+        string itemName,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline)
     {
         var requested = NormalizeMenuText(itemName);
+        if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) ||
+            !IsComboBoxTargetGuardValid(comboBox, guard, itemName, "paged visible search reset"))
+        {
+            return false;
+        }
+
         if (!ResetComboBoxDropdownToTop(session, comboBox))
             return false;
 
         for (var page = 0; page < ComboBoxPagedSearchMaxPages; page++)
         {
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, itemName, "paged visible search"))
+            {
+                return false;
+            }
+
             var items = GetCurrentVisibleComboBoxBatch(session, comboBox, ComboBoxPagedSearchMaxVisibleItems);
             var signature = BuildComboBoxVisibleBatchSignature(items);
 
@@ -6721,6 +7012,8 @@ public class UiService : IUiService
                             item,
                             itemName,
                             matchCapabilities,
+                            guard,
+                            operationDeadline,
                             "visible-search-pattern-based"))
                     {
                         return true;
@@ -6731,6 +7024,8 @@ public class UiService : IUiService
                         comboBox,
                         item,
                         itemName,
+                        guard,
+                        operationDeadline,
                         "huge-list-visible-search");
                 }
             }
@@ -7345,15 +7640,26 @@ public class UiService : IUiService
     private bool TrySelectComboBoxByKeyboardSafe(
         AutomationSession session,
         AutomationElement comboBox,
-        string itemName)
+        string itemName,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(itemName))
                 return false;
 
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, itemName, "keyboard focus"))
+            {
+                return false;
+            }
+
             BringElementWindowToForeground(comboBox);
             Thread.Sleep(WindowActivationDelayMs);
+
+            if (!IsComboBoxTargetGuardValid(comboBox, guard, itemName, "keyboard open"))
+                return false;
 
             if (!FocusElementForKeyboardInput(comboBox, "ComboBoxTypeAhead"))
             {
@@ -7367,7 +7673,9 @@ public class UiService : IUiService
 
             Thread.Sleep(ComboBoxTypeAheadFocusDelayMs);
 
-            if (!OpenComboBoxDropdown(session, comboBox))
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, itemName, "keyboard reopen") ||
+                !OpenComboBoxDropdown(session, comboBox))
             {
                 _logger.LogWarning(
                     "ComboBox keyboard type-ahead skipped because dropdown could not be opened. combo={Combo}, item={Item}",
@@ -7406,12 +7714,21 @@ public class UiService : IUiService
                 SafeElementName(comboBox),
                 itemName);
 
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, itemName) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, itemName, "keyboard type-ahead"))
+            {
+                return false;
+            }
+
             // Use Keyboard.Type for literal character-by-character input so that special
             // characters in item names (e.g. "+", "^", "%") are never misinterpreted as
             // modifier keys the way SendKeysString would treat them.
             Keyboard.Type(itemName);
 
             Thread.Sleep(ComboBoxTypeAheadCommitDelayMs);
+
+            if (!IsComboBoxTargetGuardValid(comboBox, guard, itemName, "ENTER commit"))
+                return false;
 
             Keyboard.Press(VirtualKeyShort.RETURN);
             Keyboard.Release(VirtualKeyShort.RETURN);
@@ -7453,10 +7770,18 @@ public class UiService : IUiService
     private bool TrySelectComboBoxByVisibleAnchorWindowSearch(
         AutomationSession session,
         AutomationElement comboBox,
-        string requestedValue)
+        string requestedValue,
+        ComboBoxTargetGuard guard,
+        DateTime operationDeadline)
     {
         try
         {
+            if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "visible anchor reset"))
+            {
+                return false;
+            }
+
             if (!ResetComboBoxDropdownToTop(session, comboBox))
                 return false;
 
@@ -7464,6 +7789,12 @@ public class UiService : IUiService
 
             for (var window = 0; window < ComboBoxAnchorWindowSearchMaxWindows; window++)
             {
+                if (!IsComboBoxOperationWithinDeadline(operationDeadline, comboBox, requestedValue) ||
+                    !IsComboBoxTargetGuardValid(comboBox, guard, requestedValue, "visible anchor reopen"))
+                {
+                    return false;
+                }
+
                 if (!EnsureComboBoxDropdownOpen(session, comboBox))
                     return false;
 
@@ -7498,6 +7829,8 @@ public class UiService : IUiService
                             exactItem,
                             requestedValue,
                             matchCapabilities,
+                            guard,
+                            operationDeadline,
                             "visible-search-pattern-based"))
                     {
                         return true;
@@ -7508,6 +7841,8 @@ public class UiService : IUiService
                         comboBox,
                         exactItem,
                         requestedValue,
+                        guard,
+                        operationDeadline,
                         "huge-list-visible-search");
                 }
 
@@ -8355,17 +8690,25 @@ public class UiService : IUiService
                 secondActual,
                 secondMatched);
 
-            if (!secondMatched)
+            if (secondMatched)
             {
-                _logger.LogWarning(
-                    "ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
+                _logger.LogInformation(
+                    "ComboBox selection committed and stable. No further fallback will run. source={Source}, combo={Combo}, requested={Requested}",
                     source,
-                    requestedValue,
-                    GetComboBoxCurrentValue(session, comboBox),
-                    SafeElementName(comboBox));
+                    SafeElementName(comboBox),
+                    requestedValue);
+
+                return true;
             }
 
-            return secondMatched;
+            _logger.LogWarning(
+                "ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
+                source,
+                requestedValue,
+                GetComboBoxCurrentValue(session, comboBox),
+                SafeElementName(comboBox));
+
+            return false;
         }
         catch (Exception ex)
         {
