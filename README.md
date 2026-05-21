@@ -330,6 +330,7 @@ These operations require both `locator` and `locator2`.
 | `click` | `locator` | Click/invoke an element. | `null` |
 | `doubleclick` | `locator` | Double-click an element. | `null` |
 | `rightclick` | `locator` | Right-click an element. Uses FlaUI first, then physical right-click fallback when needed. | `{ "rightClicked": true, "strategy": "...", "element": {...} }` |
+| `contextmenupath` | `locator`, `value` | Right-click an element, then click an item (or nested path) in the context menu that appears. `value` is a `>`-separated path such as `Export Excel` or `Export > Export Excel`. | `{ "selected": "Export Excel", "strategy": "context-menu-path", "element": {...} }` |
 | `hover` | `locator` | Move mouse over an element. | `null` |
 | `focus` | `locator` | Give keyboard focus to an element. | `null` |
 | `type` | `locator`, `value` | Type text into an element. Date pickers use segmented date typing when applicable. | `null` or typed date metadata |
@@ -364,6 +365,7 @@ These operations require both `locator` and `locator2`.
 | `dumpmenus`, `dumplogicalmenus` | optional `locator`, `limit` | Dump logical menu items for diagnostics. | Menu dump metadata |
 | `selectdynamicmenuitem` | `locator`, `value` | Compatibility operation for a dynamic submenu item; delegates to dynamic path traversal. | `{ "selected": "...", "parent": "...", "dropdown": "..." }` |
 | `selectdynamicmenupath` | `locator`, `value` | Open a dynamic root `MenuItem` and select child path `Child>Leaf` or full `Root>Child>Leaf`. | `{ "selected": "Child>Leaf", "parent": "...", "dropdown": "..." }` |
+| `contextmenupath` | `locator`, `value` | Right-click the located element, then navigate the application's context menu using the `>`-separated path in `value` and click the final item. Supports multi-level submenus (e.g. `Export > Export Excel`). See also the **Element actions** table for examples. | `{ "selected": "Export > Export Excel", "strategy": "context-menu-path", "element": {...} }` |
 
 Dynamic menu example:
 
@@ -534,6 +536,54 @@ Right-click an element:
 }
 ```
 
+Right-click an element and click a context menu item (e.g. **Copy**):
+
+```json
+{
+  "operation": "contextmenupath",
+  "locator": { "name": "Grid", "controlType": "Table" },
+  "value": "Copy"
+}
+```
+
+Response:
+
+```json
+{
+  "sessionId": null,
+  "status": 0,
+  "value": {
+    "selected": "Copy",
+    "strategy": "context-menu-path",
+    "element": { "name": "Grid", "controlType": "Table", "automationId": "dgData" }
+  }
+}
+```
+
+Right-click and click a **nested** context menu item (e.g. **Export → Export Excel**):
+
+```json
+{
+  "operation": "contextmenupath",
+  "locator": { "name": "Grid", "controlType": "Table" },
+  "value": "Export > Export Excel"
+}
+```
+
+Response:
+
+```json
+{
+  "sessionId": null,
+  "status": 0,
+  "value": {
+    "selected": "Export > Export Excel",
+    "strategy": "context-menu-path",
+    "element": { "name": "Grid", "controlType": "Table", "automationId": "dgData" }
+  }
+}
+```
+
 #### `mousescroll` examples
 
 Scroll down 5 clicks over a list:
@@ -637,7 +687,7 @@ After `POST /record/start`, use the overlay hotkeys to select the mode:
 | Hotkey | Mode | Details |
 |---|---|---|
 | `Ctrl+P` | Passive | Automatically captures mouse clicks and keyboard actions with the element under the cursor. Use this for quick observation-style recordings. |
-| `Ctrl+A` | Assistive | Right-click an element to open an action menu, then choose what to record/perform. Use this when you need deterministic locators, assertions, menu actions, grid/header dropdown actions, or dynamic menu paths. |
+| `Ctrl+A` | Assistive | Right-click an element to open an action menu, then choose what to record/perform. Use this when you need deterministic locators, assertions, menu actions (including right-click context menus), grid/header dropdown actions, or dynamic menu paths. |
 | `Ctrl+S` | Stop | Stops recording and writes the JSON export. Equivalent to `POST /record/stop`. |
 
 Assistive mode records richer action metadata, including the selected action type,
@@ -657,6 +707,43 @@ path-oriented action such as:
   "description": "Select dynamic menu path File>Recent>Report1"
 }
 ```
+
+Assistive right-click context menu example: right-clicking a grid and selecting **Copy**
+(or a nested path like **Export > Export Excel**) is exported as:
+
+```json
+{
+  "actionType": "MenuPathClick",
+  "mode": "Assistive",
+  "operation": "contextmenupath",
+  "value": "Copy",
+  "element": { "name": "Grid", "controlType": "Table", "automationId": "dgData" },
+  "metadata": {
+    "fallbackPoint": "640,480",
+    "strategy": "context-menu-path"
+  },
+  "description": "Select context menu path Copy on Grid Table"
+}
+```
+
+Nested submenu example (`Export > Export Excel`):
+
+```json
+{
+  "actionType": "MenuPathClick",
+  "mode": "Assistive",
+  "operation": "contextmenupath",
+  "value": "Export > Export Excel",
+  "element": { "name": "Grid", "controlType": "Table", "automationId": "dgData" },
+  "metadata": {
+    "fallbackPoint": "640,480",
+    "strategy": "context-menu-path"
+  },
+  "description": "Select context menu path Export > Export Excel on Grid Table"
+}
+```
+
+These recorded actions are replayed directly by `/playback` using `contextmenupath`.
 
 ### GET /record/status
 
@@ -822,7 +909,7 @@ Playback action mapping:
 | Recorded action | `/ui` operation |
 |---|---|
 | `Click` | `click`, `sendkeys`, `alertok`, or `alertcancel` depending on recorded value/description |
-| `MenuPathClick` | `clicklogicalmenupath` |
+| `MenuPathClick` | `contextmenupath` (when recorded via right-click context menu) or `clicklogicalmenupath` (when recorded via logical menu bar) |
 | `DoubleClick` | `doubleclick` |
 | `RightClick` | `rightclick` |
 | `Hover` | `hover` |
