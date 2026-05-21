@@ -4248,6 +4248,7 @@ public sealed class RecordingOverlayWindow : Form
                 return results;
 
             var driverPid = Environment.ProcessId;
+            var targetPid = _service.GetRecordingTargetProcessId();
             var desktop = _automation.GetDesktop();
             var queue = new Queue<(AutomationElement Element, int Depth)>();
 
@@ -4255,7 +4256,15 @@ public sealed class RecordingOverlayWindow : Form
             {
                 try
                 {
-                    if (child.Properties.ProcessId.Value == driverPid)
+                    var childPid = child.Properties.ProcessId.Value;
+
+                    if (childPid == driverPid)
+                        continue;
+
+                    // When the recording target process is known, skip windows that
+                    // belong to other processes (e.g. Start menu, audio mixer, taskbar
+                    // popups) so only the target application's context menus are detected.
+                    if (targetPid.HasValue && childPid != targetPid.Value)
                         continue;
                 }
                 catch { /* skip ProcessId failures for protected/inaccessible windows */ }
