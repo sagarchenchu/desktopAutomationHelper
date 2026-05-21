@@ -7898,15 +7898,12 @@ public sealed class RecordingOverlayWindow : Form
                 return true;
             }
 
-            if (!secondMatched)
-            {
-                _logger.LogWarning(
-                    "Assistive ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
-                    source,
-                    requestedValue,
-                    GetComboBoxCurrentValue(comboBox),
-                    SafeElementName(comboBox));
-            }
+            _logger.LogWarning(
+                "Assistive ComboBox rollback/default detected after dropdown collapse. source={Source}, requested={Requested}, actual={Actual}, combo={Combo}",
+                source,
+                requestedValue,
+                GetComboBoxCurrentValue(comboBox),
+                SafeElementName(comboBox));
 
             return false;
         }
