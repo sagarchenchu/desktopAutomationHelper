@@ -394,6 +394,10 @@ public sealed class RecordingOverlayWindow : Form
     // Guard against showing multiple context menus simultaneously (e.g. rapid right-clicks).
     private bool _menuOpen;
 
+    // Guard against overlapping async assistive actions (e.g. context-menu path selection that opens a dialog).
+    // 0 = idle, 1 = running. Use Interlocked for atomic check-and-set across UI and background threads.
+    private int _assistiveActionRunning;
+
     // One-shot 10 s fallback timer started whenever _menuOpen is set to true.
     // Disposed/stopped in ReapplyClickThroughStyle() (called from every menu.Closed handler)
     // so it does not outlive the menu it guards.
@@ -3625,6 +3629,103 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     /// <summary>
+    /// Non-blocking variant of <see cref="RunAssistiveActionAfterMenuClose"/> for actions that may
+    /// open a modal dialog or block (e.g. application context-menu path selection).  The
+    /// <paramref name="action"/> is executed on a background thread so that the overlay message
+    /// pump remains responsive.  <paramref name="onCompleted"/> is marshalled back to the UI
+    /// thread and called only on success.
+    /// </summary>
+    private void RunAssistiveActionAfterMenuCloseAsync(
+        string actionName,
+        Action action,
+        Action? onCompleted = null)
+    {
+        try
+        {
+            _menuOpen = false;
+            ReapplyClickThroughStyle();
+
+            var timer = new System.Windows.Forms.Timer { Interval = MenuCloseDelayMs };
+
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+
+                // Atomically replace true→false to detect and log a stale running flag, then set it.
+                // The timer tick runs on the UI thread so this is normally not a race, but using
+                // Interlocked makes the intent explicit and protects against future refactoring.
+                if (Interlocked.CompareExchange(ref _assistiveActionRunning, 0, 1) == 1)
+                {
+                    _logger.LogWarning(
+                        "Assistive action '{ActionName}' requested while another action is running. Clearing stale state and continuing.",
+                        actionName);
+                }
+
+                Interlocked.Exchange(ref _assistiveActionRunning, 1);
+
+                _logger.LogInformation("Assistive async action starting: {ActionName}", actionName);
+                _statusLabel.Text = $"Running: {actionName}";
+
+                Task.Run(() =>
+                {
+                    Exception? failure = null;
+
+                    try
+                    {
+                        action();
+                    }
+                    catch (Exception ex)
+                    {
+                        failure = ex;
+                    }
+
+                    try
+                    {
+                        BeginInvoke(new Action(() =>
+                        {
+                            try
+                            {
+                                if (failure != null)
+                                {
+                                    _statusLabel.Text = $"{actionName} failed: {failure.Message}";
+                                    _logger.LogError(failure, "Assistive async action failed: {ActionName}", actionName);
+                                }
+                                else
+                                {
+                                    _logger.LogInformation("Assistive async action completed: {ActionName}", actionName);
+                                    _statusLabel.Text = $"Completed: {actionName}";
+                                    onCompleted?.Invoke();
+                                }
+                            }
+                            finally
+                            {
+                                Interlocked.Exchange(ref _assistiveActionRunning, 0);
+                                _menuOpen = false;
+                                ReapplyClickThroughStyle();
+                            }
+                        }));
+                    }
+                    catch (Exception ex)
+                    {
+                        Interlocked.Exchange(ref _assistiveActionRunning, 0);
+                        _logger.LogError(ex, "BeginInvoke failed for async action: {ActionName}", actionName);
+                    }
+                });
+            };
+
+            timer.Start();
+        }
+        catch (Exception ex)
+        {
+            Interlocked.Exchange(ref _assistiveActionRunning, 0);
+            _menuOpen = false;
+            _statusLabel.Text = $"{actionName} scheduling failed: {ex.Message}";
+            _logger.LogError(ex, "Assistive async action scheduling failed: {ActionName}", actionName);
+        }
+    }
+
+    /// <summary>
     /// Performs a physical mouse click at <paramref name="point"/> using Win32 <c>SetCursorPos</c>
     /// and <c>SendInput</c> (LEFTDOWN + LEFTUP), briefly hiding the overlay so it cannot steal
     /// the click.  Brings the target window to the foreground first when
@@ -3961,25 +4062,34 @@ public sealed class RecordingOverlayWindow : Form
             var selectItem = new ToolStripMenuItem(capturedName);
             selectItem.Click += (_, _) =>
             {
-                RunAssistiveActionAfterMenuClose($"Context Menu: {capturedMenuPath}", () =>
-                {
-                    _statusLabel.Text = $"  ↯ Selecting context menu item '{capturedMenuPath}'…  ";
+                RunAssistiveActionAfterMenuCloseAsync(
+                    $"Context Menu: {capturedMenuPath}",
+                    () =>
+                    {
+                        // Do not touch WinForms controls directly from this background thread.
+                        var selected = SelectApplicationContextMenuPath(
+                            originalRightClickPoint,
+                            targetHwnd,
+                            capturedMenuPath);
 
-                    var selected = SelectApplicationContextMenuPath(
-                        originalRightClickPoint,
-                        targetHwnd,
-                        capturedMenuPath);
+                        if (!selected)
+                            throw new InvalidOperationException(
+                                $"Failed to select context menu item '{capturedMenuPath}'.");
+                    },
+                    onCompleted: () =>
+                    {
+                        RecordContextMenuAction(
+                            targetElement,
+                            elementInfo,
+                            capturedMenuPath,
+                            originalRightClickPoint);
 
-                    if (!selected)
-                        throw new InvalidOperationException(
-                            $"Failed to select context menu item '{capturedMenuPath}'.");
+                        ClearPopupCache();
+                        StartPopupProbeAfterAction();
 
-                    RecordContextMenuAction(
-                        targetElement,
-                        elementInfo,
-                        capturedMenuPath,
-                        originalRightClickPoint);
-                });
+                        _statusLabel.Text =
+                            $"Context menu path selected. If a new window opened, Ctrl+Right-click it and choose Switch Window.";
+                    });
             };
 
             menu.Items.Add(selectItem);
