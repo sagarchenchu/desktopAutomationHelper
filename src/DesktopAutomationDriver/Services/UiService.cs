@@ -1708,8 +1708,10 @@ public class UiService : IUiService
         if (string.IsNullOrWhiteSpace(value))
             throw new ArgumentException("Date value is required.");
 
-        if (!WinFormsDateTimePickerHelper.TryParseDateParts(value, out var month, out var day, out var year))
-            throw new ArgumentException("Invalid date value. Use MM/DD/YYYY or MM-DD-YYYY.");
+        var format = WinFormsDateTimePickerHelper.DetectDateFormat(element);
+
+        if (!WinFormsDateTimePickerHelper.TryParseDateParts(value, format, out var first, out var second, out var third, out _))
+            throw new ArgumentException($"Invalid date value. Use {format.DisplayFormat}.");
 
         BringElementWindowToForeground(element);
         Thread.Sleep(WindowActivationDelayMs);
@@ -1720,19 +1722,19 @@ public class UiService : IUiService
         Keyboard.Press(VirtualKeyShort.HOME);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-        Keyboard.Type(month);
+        Keyboard.Type(first);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Press(VirtualKeyShort.RIGHT);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-        Keyboard.Type(day);
+        Keyboard.Type(second);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Press(VirtualKeyShort.RIGHT);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-        Keyboard.Type(year);
+        Keyboard.Type(third);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Press(VirtualKeyShort.RETURN);
@@ -1741,7 +1743,9 @@ public class UiService : IUiService
         {
             typed = true,
             strategy = "date-segments",
-            value = $"{month}/{day}/{year}",
+            format = format.DisplayFormat,
+            formatSource = format.Source,
+            value = $"{first}{format.Separator}{second}{format.Separator}{third}",
             element = new
             {
                 name = SafeElementName(element),
