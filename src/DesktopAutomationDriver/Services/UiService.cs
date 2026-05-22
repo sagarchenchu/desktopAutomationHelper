@@ -1719,25 +1719,25 @@ public class UiService : IUiService
         ClickDatePickerMonthSection(element);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerClickDelayMs);
 
-        Keyboard.Press(VirtualKeyShort.HOME);
+        SendDatePickerKey(VirtualKeyShort.HOME);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Type(first);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-        Keyboard.Press(VirtualKeyShort.RIGHT);
+        SendDatePickerKey(VirtualKeyShort.RIGHT);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Type(second);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-        Keyboard.Press(VirtualKeyShort.RIGHT);
+        SendDatePickerKey(VirtualKeyShort.RIGHT);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
         Keyboard.Type(third);
         Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-        Keyboard.Press(VirtualKeyShort.RETURN);
+        SendDatePickerKey(VirtualKeyShort.RETURN);
 
         return new
         {
@@ -5626,6 +5626,13 @@ public class UiService : IUiService
             _logger.LogWarning(ex, "Click Date Month Section failed");
             return false;
         }
+    }
+
+    private static void SendDatePickerKey(VirtualKeyShort key)
+    {
+        Keyboard.Press(key);
+        Thread.Sleep(25);
+        Keyboard.Release(key);
     }
 
     private static bool IsComboBoxElement(AutomationElement element)
