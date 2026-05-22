@@ -5029,7 +5029,15 @@ public sealed class RecordingOverlayWindow : Form
 
             RunAssistiveActionAfterMenuClose(label, () =>
             {
-                if (!PerformAssistiveDateType(element, info, value, clearFirst, effectiveFormat))
+                var freshElement = ResolveFreshAssistiveDateElement(element);
+
+                if (freshElement == null)
+                {
+                    _statusLabel.Text = "Type Date failed: DateTimePicker could not be resolved.";
+                    return;
+                }
+
+                if (!PerformAssistiveDateType(freshElement, info, value, clearFirst, effectiveFormat))
                 {
                     _logger.LogWarning(
                         "Assistive date type action '{Label}' was not recorded because execution failed. Element={Element}",
@@ -5141,25 +5149,25 @@ public sealed class RecordingOverlayWindow : Form
                 Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
             }
 
-            SendKey(VirtualKeyShort.HOME);
+            SendDatePickerKey(VirtualKeyShort.HOME);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
             Keyboard.Type(first);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-            SendKey(VirtualKeyShort.RIGHT);
+            SendDatePickerKey(VirtualKeyShort.RIGHT);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
             Keyboard.Type(second);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-            SendKey(VirtualKeyShort.RIGHT);
+            SendDatePickerKey(VirtualKeyShort.RIGHT);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
             Keyboard.Type(third);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-            SendKey(VirtualKeyShort.RETURN);
+            SendDatePickerKey(VirtualKeyShort.RETURN);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerCommitDelayMs);
 
             if (!VerifyAssistiveDatePickerValue(element, parsedDate))
@@ -5168,6 +5176,11 @@ public sealed class RecordingOverlayWindow : Form
                     "Assistive Type Date did not verify after segment typing. expected={Expected}, element={Element}",
                     parsedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                     ElementInfo.GetLabel(info));
+
+                _statusLabel.Text =
+                    $"Type Date failed verification. Expected {parsedDate:yyyy-MM-dd}.";
+
+                return false;
             }
 
             _statusLabel.Text = $"Typed date {value} using format {format.DisplayFormat}";
@@ -5267,9 +5280,82 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
-    private static void SendKey(VirtualKeyShort key)
+    private static void SendDatePickerKey(VirtualKeyShort key)
     {
         Keyboard.Press(key);
+        Thread.Sleep(25);
+        Keyboard.Release(key);
+    }
+
+    private AutomationElement? ResolveFreshAssistiveDateElement(AutomationElement originalElement)
+    {
+        try
+        {
+            if (_automation == null)
+                return originalElement;
+
+            try
+            {
+                _ = originalElement.BoundingRectangle;
+
+                if (WinFormsDateTimePickerHelper.IsDateTimePicker(originalElement))
+                    return originalElement;
+            }
+            catch
+            {
+                // stale, resolve below
+            }
+
+            try
+            {
+                var rect = originalElement.BoundingRectangle;
+
+                if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+                {
+                    var center = new System.Drawing.Point(
+                        (int)Math.Round(rect.Left + rect.Width / 2.0),
+                        (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                    var elementAtCenter = _automation.FromPoint(center);
+                    var candidate = FindDateTimePickerAncestorOrSelf(elementAtCenter);
+
+                    if (candidate != null)
+                        return candidate;
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+
+            return originalElement;
+        }
+        catch
+        {
+            return originalElement;
+        }
+    }
+
+    private static AutomationElement? FindDateTimePickerAncestorOrSelf(AutomationElement? element)
+    {
+        var current = element;
+
+        for (var depth = 0; current != null && depth < 6; depth++)
+        {
+            try
+            {
+                if (WinFormsDateTimePickerHelper.IsDateTimePicker(current))
+                    return current;
+
+                current = current.Parent;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        return null;
     }
 
     private static bool IsComboBoxElement(AutomationElement? element)
