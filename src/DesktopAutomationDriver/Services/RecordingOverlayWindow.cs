@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using DesktopAutomationDriver.Models.Recording;
 using FlaUI.Core;
@@ -1839,8 +1840,16 @@ public sealed class RecordingOverlayWindow : Form
             menu.Items.Add(new ToolStripSeparator());
             if (WinFormsDateTimePickerHelper.IsDateTimePicker(typeTarget))
             {
-                AddAssistiveDateTypeItem(menu, "Type Date…", typeTarget, typeTargetInfo, clearFirst: false);
-                AddAssistiveDateTypeItem(menu, "Clear + Type Date…", typeTarget, typeTargetInfo, clearFirst: true);
+                AddAssistiveDateTypeItem(menu, "Type Date…", typeTarget, typeTargetInfo, clearFirst: false, format: null);
+                AddAssistiveDateTypeItem(menu, "Type Date as MM/DD/YYYY…", typeTarget, typeTargetInfo, clearFirst: false,
+                    format: new DatePickerFormatInfo { Order = DatePickerFormatOrder.MonthDayYear, DisplayFormat = "MM/DD/YYYY", Separator = "/", Source = "manual" });
+                AddAssistiveDateTypeItem(menu, "Type Date as DD/MM/YYYY…", typeTarget, typeTargetInfo, clearFirst: false,
+                    format: new DatePickerFormatInfo { Order = DatePickerFormatOrder.DayMonthYear, DisplayFormat = "DD/MM/YYYY", Separator = "/", Source = "manual" });
+                AddAssistiveDateTypeItem(menu, "Clear + Type Date…", typeTarget, typeTargetInfo, clearFirst: true, format: null);
+                AddAssistiveDateTypeItem(menu, "Clear + Type Date as MM/DD/YYYY…", typeTarget, typeTargetInfo, clearFirst: true,
+                    format: new DatePickerFormatInfo { Order = DatePickerFormatOrder.MonthDayYear, DisplayFormat = "MM/DD/YYYY", Separator = "/", Source = "manual" });
+                AddAssistiveDateTypeItem(menu, "Clear + Type Date as DD/MM/YYYY…", typeTarget, typeTargetInfo, clearFirst: true,
+                    format: new DatePickerFormatInfo { Order = DatePickerFormatOrder.DayMonthYear, DisplayFormat = "DD/MM/YYYY", Separator = "/", Source = "manual" });
             }
 
             AddAssistiveTypeItem(menu, "Type…", typeTarget, typeTargetInfo, clearFirst: false);
@@ -5006,19 +5015,29 @@ public sealed class RecordingOverlayWindow : Form
         string label,
         AutomationElement element,
         ElementInfo? info,
-        bool clearFirst)
+        bool clearFirst,
+        DatePickerFormatInfo? format)
     {
         var item = new ToolStripMenuItem(label);
 
         item.Click += (_, _) =>
         {
-            var value = ShowDatePrompt(info?.Name ?? info?.AutomationId ?? "date element");
+            var effectiveFormat = format ?? WinFormsDateTimePickerHelper.DetectDateFormat(element);
+            var value = ShowDatePrompt(info?.Name ?? info?.AutomationId ?? "date element", effectiveFormat);
             if (value == null)
                 return;
 
             RunAssistiveActionAfterMenuClose(label, () =>
             {
-                if (!PerformAssistiveDateType(element, info, value, clearFirst))
+                var freshElement = ResolveFreshAssistiveDateElement(element);
+
+                if (freshElement == null)
+                {
+                    _statusLabel.Text = "Type Date failed: DateTimePicker could not be resolved.";
+                    return;
+                }
+
+                if (!PerformAssistiveDateType(freshElement, info, value, clearFirst, effectiveFormat))
                 {
                     _logger.LogWarning(
                         "Assistive date type action '{Label}' was not recorded because execution failed. Element={Element}",
@@ -5104,16 +5123,17 @@ public sealed class RecordingOverlayWindow : Form
         AutomationElement element,
         ElementInfo? info,
         string value,
-        bool clearFirst)
+        bool clearFirst,
+        DatePickerFormatInfo format)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(value))
                 return false;
 
-            if (!WinFormsDateTimePickerHelper.TryParseDateParts(value, out var month, out var day, out var year))
+            if (!WinFormsDateTimePickerHelper.TryParseDateParts(value, format, out var first, out var second, out var third, out var parsedDate))
             {
-                _statusLabel.Text = "Invalid date. Use MM/DD/YYYY or MM-DD-YYYY.";
+                _statusLabel.Text = $"Invalid date. Use {format.DisplayFormat}.";
                 return false;
             }
 
@@ -5129,28 +5149,41 @@ public sealed class RecordingOverlayWindow : Form
                 Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
             }
 
-            SendKey(VirtualKeyShort.HOME);
+            SendDatePickerKey(VirtualKeyShort.HOME);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-            Keyboard.Type(month);
+            Keyboard.Type(first);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-            SendKey(VirtualKeyShort.RIGHT);
+            SendDatePickerKey(VirtualKeyShort.RIGHT);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-            Keyboard.Type(day);
+            Keyboard.Type(second);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-            SendKey(VirtualKeyShort.RIGHT);
+            SendDatePickerKey(VirtualKeyShort.RIGHT);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-            Keyboard.Type(year);
+            Keyboard.Type(third);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerSegmentDelayMs);
 
-            SendKey(VirtualKeyShort.RETURN);
+            SendDatePickerKey(VirtualKeyShort.RETURN);
             Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerCommitDelayMs);
 
-            _statusLabel.Text = $"Typed date {month}/{day}/{year}";
+            if (!VerifyAssistiveDatePickerValue(element, parsedDate))
+            {
+                _logger.LogWarning(
+                    "Assistive Type Date did not verify after segment typing. expected={Expected}, element={Element}",
+                    parsedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    ElementInfo.GetLabel(info));
+
+                _statusLabel.Text =
+                    $"Type Date failed verification. Expected {parsedDate:yyyy-MM-dd}.";
+
+                return false;
+            }
+
+            _statusLabel.Text = $"Typed date {value} using format {format.DisplayFormat}";
             return true;
         }
         catch (Exception ex)
@@ -5159,6 +5192,70 @@ public sealed class RecordingOverlayWindow : Form
             _statusLabel.Text = "Date typing failed: " + ex.Message;
             return false;
         }
+    }
+
+    private bool VerifyAssistiveDatePickerValue(AutomationElement element, DateTime expectedDate)
+    {
+        Thread.Sleep(WinFormsDateTimePickerHelper.DatePickerCommitDelayMs);
+
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            try
+            {
+                var actual = GetDatePickerCurrentValue(element);
+
+                var matched =
+                    DateTime.TryParse(actual, CultureInfo.CurrentCulture, DateTimeStyles.None, out var actualDate) &&
+                    actualDate.Date == expectedDate.Date;
+
+                _logger.LogInformation(
+                    "Assistive DateTimePicker verify attempt={Attempt}, expected={Expected}, actual={Actual}, matched={Matched}",
+                    attempt,
+                    expectedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    actual,
+                    matched);
+
+                if (matched)
+                    return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Assistive DateTimePicker verify attempt failed.");
+            }
+
+            Thread.Sleep(150);
+        }
+
+        return false;
+    }
+
+    private static string? GetDatePickerCurrentValue(AutomationElement element)
+    {
+        try
+        {
+            if (element.Patterns.Value.IsSupported)
+                return element.Patterns.Value.Pattern.Value;
+        }
+        catch { /* ignore */ }
+
+        try
+        {
+            return element.Name;
+        }
+        catch { /* ignore */ }
+
+        return null;
+    }
+
+    private static string GetDatePromptExample(DatePickerFormatInfo format)
+    {
+        var sep = format.Separator;
+        return format.Order switch
+        {
+            DatePickerFormatOrder.DayMonthYear  => $"31{sep}12{sep}2026",
+            DatePickerFormatOrder.YearMonthDay  => $"2026{sep}12{sep}31",
+            _                                   => $"12{sep}31{sep}2026"
+        };
     }
 
     private bool ClickDatePickerMonthSection(AutomationElement element)
@@ -5183,9 +5280,82 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
-    private static void SendKey(VirtualKeyShort key)
+    private static void SendDatePickerKey(VirtualKeyShort key)
     {
         Keyboard.Press(key);
+        Thread.Sleep(25);
+        Keyboard.Release(key);
+    }
+
+    private AutomationElement? ResolveFreshAssistiveDateElement(AutomationElement originalElement)
+    {
+        try
+        {
+            if (_automation == null)
+                return originalElement;
+
+            try
+            {
+                _ = originalElement.BoundingRectangle;
+
+                if (WinFormsDateTimePickerHelper.IsDateTimePicker(originalElement))
+                    return originalElement;
+            }
+            catch
+            {
+                // stale, resolve below
+            }
+
+            try
+            {
+                var rect = originalElement.BoundingRectangle;
+
+                if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+                {
+                    var center = new System.Drawing.Point(
+                        (int)Math.Round(rect.Left + rect.Width / 2.0),
+                        (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                    var elementAtCenter = _automation.FromPoint(center);
+                    var candidate = FindDateTimePickerAncestorOrSelf(elementAtCenter);
+
+                    if (candidate != null)
+                        return candidate;
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+
+            return originalElement;
+        }
+        catch
+        {
+            return originalElement;
+        }
+    }
+
+    private static AutomationElement? FindDateTimePickerAncestorOrSelf(AutomationElement? element)
+    {
+        var current = element;
+
+        for (var depth = 0; current != null && depth < 6; depth++)
+        {
+            try
+            {
+                if (WinFormsDateTimePickerHelper.IsDateTimePicker(current))
+                    return current;
+
+                current = current.Parent;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        return null;
     }
 
     private static bool IsComboBoxElement(AutomationElement? element)
@@ -11491,7 +11661,7 @@ public sealed class RecordingOverlayWindow : Form
     /// Shows a small modal input dialog prompting the user to enter a date value
     /// for a segmented date picker. Returns the entered text, or null if cancelled.
     /// </summary>
-    private static string? ShowDatePrompt(string elementLabel)
+    private static string? ShowDatePrompt(string elementLabel, DatePickerFormatInfo format)
     {
         string? result = null;
 
@@ -11500,8 +11670,8 @@ public sealed class RecordingOverlayWindow : Form
             Text = "Type date into element",
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterScreen,
-            Width = 400,
-            Height = 145,
+            Width = 420,
+            Height = 185,
             MaximizeBox = false,
             MinimizeBox = false,
             TopMost = true
@@ -11509,26 +11679,27 @@ public sealed class RecordingOverlayWindow : Form
 
         var label = new WinLabel
         {
-            Text = $"Date to type into \"{elementLabel}\" (MM/DD/YYYY):",
+            Text = $"Date to type into \"{elementLabel}\" ({format.DisplayFormat}):\n" +
+                   $"Example: {GetDatePromptExample(format)}  |  Detected from: {format.Source}",
             Left = 12,
             Top = 12,
-            Width = 370,
+            Width = 390,
             AutoSize = true
         };
 
         var textBox = new System.Windows.Forms.TextBox
         {
             Left = 12,
-            Top = 35,
-            Width = 360
+            Top = 65,
+            Width = 380
         };
 
         var okBtn = new System.Windows.Forms.Button
         {
             Text = "OK",
             DialogResult = DialogResult.OK,
-            Left = 206,
-            Top = 68,
+            Left = 226,
+            Top = 98,
             Width = 80
         };
 
@@ -11536,8 +11707,8 @@ public sealed class RecordingOverlayWindow : Form
         {
             Text = "Cancel",
             DialogResult = DialogResult.Cancel,
-            Left = 292,
-            Top = 68,
+            Left = 312,
+            Top = 98,
             Width = 80
         };
 
