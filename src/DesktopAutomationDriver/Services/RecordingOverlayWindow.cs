@@ -923,6 +923,32 @@ public sealed class RecordingOverlayWindow : Form
                 return;
             }
 
+            if (Interlocked.CompareExchange(ref _assistiveActionRunning, 0, 0) == 1)
+            {
+                var popup = DetectActivePopupWindowLightweight();
+
+                if (popup != null)
+                {
+                    _lastDetectedPopupWindow = popup;
+                    _lastDetectedPopupHwnd = AssistivePopupResolver.SafeWindowHandle(popup);
+                    _lastPopupDetectionUtc = DateTime.UtcNow;
+
+                    _logger.LogInformation(
+                        "Assistive right-click accepted while previous async action is still running because popup/dialog is active. popup={Popup}, hwnd=0x{Hwnd:X}",
+                        SafeElementName(popup),
+                        _lastDetectedPopupHwnd.ToInt64());
+
+                    ShowWindowContextMenu(capturedPoint);
+                    return;
+                }
+
+                _logger.LogInformation(
+                    "Assistive right-click ignored because previous async action is still running and no popup/dialog is detected.");
+
+                _statusLabel.Text = "Previous action still running. Wait or close the opened dialog.";
+                return;
+            }
+
             if (_awaitingDragTarget)
             {
                 _awaitingDragTarget = false;
@@ -3652,17 +3678,15 @@ public sealed class RecordingOverlayWindow : Form
                 timer.Stop();
                 timer.Dispose();
 
-                // Atomically replace true→false to detect and log a stale running flag, then set it.
-                // The timer tick runs on the UI thread so this is normally not a race, but using
-                // Interlocked makes the intent explicit and protects against future refactoring.
-                if (Interlocked.CompareExchange(ref _assistiveActionRunning, 0, 1) == 1)
+                // Atomically set _assistiveActionRunning to 1 and detect if it was already 1 (stale).
+                // Using Interlocked.Exchange makes the intent explicit and protects against future
+                // refactoring that could race on the flag.
+                if (Interlocked.Exchange(ref _assistiveActionRunning, 1) == 1)
                 {
                     _logger.LogWarning(
                         "Assistive action '{ActionName}' requested while another action is running. Clearing stale state and continuing.",
                         actionName);
                 }
-
-                Interlocked.Exchange(ref _assistiveActionRunning, 1);
 
                 _logger.LogInformation("Assistive async action starting: {ActionName}", actionName);
                 _statusLabel.Text = $"Running: {actionName}";
@@ -3702,6 +3726,7 @@ public sealed class RecordingOverlayWindow : Form
                             {
                                 Interlocked.Exchange(ref _assistiveActionRunning, 0);
                                 _menuOpen = false;
+                                ClearPopupCache();
                                 ReapplyClickThroughStyle();
                             }
                         }));
@@ -4084,7 +4109,6 @@ public sealed class RecordingOverlayWindow : Form
                             capturedMenuPath,
                             originalRightClickPoint);
 
-                        ClearPopupCache();
                         StartPopupProbeAfterAction();
 
                         _statusLabel.Text =
@@ -4695,37 +4719,71 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
+            // Prefer a real user-like physical click first.
+            // InvokePattern can block when the menu action opens a modal dialog/window.
+            try
+            {
+                var rect = item.BoundingRectangle;
+
+                if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+                {
+                    var point = new System.Drawing.Point(
+                        (int)Math.Round(rect.Left + rect.Width / 2.0),
+                        (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+                    _logger.LogInformation(
+                        "Activating context menu item by physical click first. item={Item}, point={Point}",
+                        itemName,
+                        point);
+
+                    if (TryPhysicalClickPoint(point, $"Context Menu Item: {itemName}"))
+                    {
+                        Thread.Sleep(PostClickSettleMs);
+                        return true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Physical click activation failed for context menu item. item={Item}",
+                    itemName);
+            }
+
+            // Fallback only. May block for modal-opening menu items.
             if (item.Patterns.Invoke.IsSupported)
             {
+                _logger.LogInformation(
+                    "Activating context menu item by InvokePattern fallback. item={Item}",
+                    itemName);
+
                 item.Patterns.Invoke.Pattern.Invoke();
                 Thread.Sleep(PostClickSettleMs);
                 return true;
             }
 
+            // Final fallback.
             if (item.Patterns.SelectionItem.IsSupported)
             {
-                var selectionItemPattern = item.Patterns.SelectionItem.Pattern;
-                selectionItemPattern.Select();
+                _logger.LogInformation(
+                    "Activating context menu item by SelectionItemPattern fallback. item={Item}",
+                    itemName);
+
+                item.Patterns.SelectionItem.Pattern.Select();
                 Thread.Sleep(PostClickSettleMs);
                 return true;
             }
 
-            var rect = item.BoundingRectangle;
-
-            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
-            {
-                var point = new System.Drawing.Point(
-                    (int)Math.Round(rect.Left + rect.Width / 2.0),
-                    (int)Math.Round(rect.Top + rect.Height / 2.0));
-
-                return TryPhysicalClickPoint(point, $"Context Menu Item: {itemName}");
-            }
+            _logger.LogWarning(
+                "Context menu item could not be activated. No click/invoke/select path worked. item={Item}",
+                itemName);
 
             return false;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed activating context menu item {Item}", itemName);
+            _logger.LogWarning(ex, "Failed activating context menu item. item={Item}", itemName);
             return false;
         }
     }
