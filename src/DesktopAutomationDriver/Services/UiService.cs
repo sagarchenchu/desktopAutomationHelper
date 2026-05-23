@@ -4564,8 +4564,8 @@ public class UiService : IUiService
 
         if (action is not ("button" or "close" or "enter" or "escape" or "makecurrent"))
             throw new ArgumentException(
-                $"Unsupported popup action '{action}'. " +
-                "Supported actions (case-insensitive): button, close, enter, escape, makecurrent.");
+                "Unsupported popup action. " +
+                "Supported actions: button, close, enter, escape, makecurrent.");
 
         if (requireTarget &&
             string.IsNullOrWhiteSpace(request.Value) &&
@@ -4573,8 +4573,8 @@ public class UiService : IUiService
             string.IsNullOrWhiteSpace(request.ClassName))
         {
             throw new ArgumentException(
-                "'value' (window title), 'hwnd', or 'className' is required for 'popupok' " +
-                "to identify the target popup window.");
+                "'popupok' requires value, hwnd, or className. " +
+                "Use alertok for best-detected alert OK.");
         }
 
         var button = string.IsNullOrWhiteSpace(request.Button)
@@ -4594,7 +4594,8 @@ public class UiService : IUiService
             "enter"       => TrySendEnterToPopup(popup),
             "escape"      => TrySendEscapeToPopup(popup),
             "makecurrent" => true,
-            _             => TryClickPopupButton(popup.Element, button)
+            "button"      => TryClickPopupButton(popup.Element, button),
+            _             => throw new InvalidOperationException($"Unhandled action '{action}'.")
         };
 
         return new { success, action, button, window = ToPopupDto(popup) };
@@ -4723,13 +4724,13 @@ public class UiService : IUiService
         // Pass 2: normalized match — strip access-key prefix '&' and trim whitespace.
         foreach (var name in buttonNames)
         {
-            var normalizedTarget = NormalizeButtonName(name);
+            var normalizedTarget = NormalizePopupButtonText(name);
 
             foreach (var btn in allButtons)
             {
                 try
                 {
-                    if (!string.Equals(NormalizeButtonName(btn.Name), normalizedTarget, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(NormalizePopupButtonText(btn.Name), normalizedTarget, StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     return InvokeOrClickButton(btn);
@@ -4741,12 +4742,12 @@ public class UiService : IUiService
         // Pass 3: contains match, but only when exactly one button matches (to avoid ambiguity).
         foreach (var name in buttonNames)
         {
-            var normalizedTarget = NormalizeButtonName(name);
+            var normalizedTarget = NormalizePopupButtonText(name);
 
             var containsMatches = allButtons
                 .Where(btn =>
                 {
-                    try { return NormalizeButtonName(btn.Name).Contains(normalizedTarget, StringComparison.OrdinalIgnoreCase); }
+                    try { return NormalizePopupButtonText(btn.Name).Contains(normalizedTarget, StringComparison.OrdinalIgnoreCase); }
                     catch { return false; }
                 })
                 .ToList();
@@ -4777,7 +4778,7 @@ public class UiService : IUiService
     /// Strips the Win32 access-key prefix (<c>&amp;</c>) from a button label and trims whitespace,
     /// so that "&amp;OK" and "OK" compare equal.
     /// </summary>
-    private static string NormalizeButtonName(string? name)
+    private static string NormalizePopupButtonText(string? name)
     {
         if (string.IsNullOrWhiteSpace(name))
             return string.Empty;
