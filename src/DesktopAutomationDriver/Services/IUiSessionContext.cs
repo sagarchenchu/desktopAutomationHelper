@@ -28,7 +28,21 @@ public interface IUiSessionContext
     AutomationSession Attach(int processId);
 
     /// <summary>
-    /// Closes the active session and terminates the application.
+    /// Closes the active session gracefully: sends WM_CLOSE to tracked windows and
+    /// releases automation resources, but does NOT force-kill the process.
     /// </summary>
     void Close();
+
+    /// <summary>
+    /// Quits the active session: sends WM_CLOSE to tracked windows, then
+    /// force-kills the process tree only if this driver launched it.
+    /// Attached sessions are never force-killed.
+    /// </summary>
+    void Quit();
+
+    /// <summary>
+    /// Returns a snapshot of all currently tracked windows for the active session,
+    /// or an empty list when no session is active.
+    /// </summary>
+    IReadOnlyList<TrackedWindowInfo> ListTrackedWindows();
 }

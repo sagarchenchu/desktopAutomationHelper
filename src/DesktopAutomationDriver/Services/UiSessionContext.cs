@@ -115,10 +115,32 @@ public class UiSessionContext : IUiSessionContext, IDisposable
         lock (_lock)
         {
             if (_activeSession == null) return;
-            _logger.LogInformation("UI session closed.");
-            _activeSession.Dispose();
+            _logger.LogInformation("UI session: gracefully closing windows (no process kill).");
+            _activeSession.CloseWindowsGracefully();
+            _activeSession.ReleaseAutomationResources();
             _activeSession = null;
         }
+    }
+
+    /// <inheritdoc/>
+    public void Quit()
+    {
+        lock (_lock)
+        {
+            if (_activeSession == null) return;
+            _logger.LogInformation(
+                "UI session quit. WasLaunchedByDriver={WasLaunched}",
+                _activeSession.WasLaunchedByDriver);
+            _activeSession.Dispose(); // kills process tree only when WasLaunchedByDriver
+            _activeSession = null;
+        }
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<TrackedWindowInfo> ListTrackedWindows()
+    {
+        lock (_lock)
+            return _activeSession?.GetTrackedWindows() ?? [];
     }
 
     public void Dispose()
