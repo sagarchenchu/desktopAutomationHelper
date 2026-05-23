@@ -4631,10 +4631,14 @@ public class UiService : IUiService
         AutomationSession session,
         AutomationElement root,
         UiLocator locator,
-        UiLocator? parentLocator = null)
+        UiLocator? parentLocator = null,
+        bool preferAttributes = false,
+        bool xpathOnly = false,
+        bool preferXPath = false)
     {
         var rootHandle = SafeWindowHandle(root).ToInt64();
         var parentKey = parentLocator == null ? "" : DescribeLocator(parentLocator);
+        var strategyKey = xpathOnly ? "xo" : preferXPath ? "px" : preferAttributes ? "pa" : "def";
         var locatorKey = string.Join(
             ";",
             locator.XPath ?? "",
@@ -4642,7 +4646,7 @@ public class UiService : IUiService
             locator.AutomationId ?? "",
             locator.ClassName ?? "",
             locator.ControlType ?? "");
-        return string.Join("|", "element", session.SessionId, rootHandle, parentKey, locatorKey);
+        return string.Join("|", "element", session.SessionId, rootHandle, parentKey, strategyKey, locatorKey);
     }
 
     private static bool TryGetCachedElement(
@@ -4783,7 +4787,11 @@ public class UiService : IUiService
         }
 
         var cacheKey = policy.UseElementCache && !policy.RefreshRootEveryRetry
-            ? BuildElementCacheKey(session, root, locator, req.ParentLocator)
+            ? BuildElementCacheKey(
+                session, root, locator, req.ParentLocator,
+                preferAttributes: preferAttributes,
+                xpathOnly: xpathOnly,
+                preferXPath: req.PreferXPath == true)
             : null;
 
         // The cache check and store are separate lock acquisitions (same as the FindWindowCache
@@ -4879,8 +4887,8 @@ public class UiService : IUiService
                     parentDescription ?? "");
 
                 var timeoutDesc = policy.Timeout.TotalMilliseconds >= 1000
-                    ? $"{policy.Timeout.TotalSeconds}s"
-                    : $"{policy.Timeout.TotalMilliseconds}ms";
+                    ? $"{(int)policy.Timeout.TotalSeconds}s"
+                    : $"{(int)policy.Timeout.TotalMilliseconds}ms";
                 throw new InvalidOperationException(
                     $"Element not found within {timeoutDesc} using policy={policy.PolicyName}, " +
                     $"lastStrategy={lastResult.Strategy}, locator={DescribeLocator(locator)}, " +
