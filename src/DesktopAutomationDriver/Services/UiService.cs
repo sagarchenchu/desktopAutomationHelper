@@ -573,9 +573,9 @@ public class UiService : IUiService
         _logger.LogInformation(
             "SwitchWindow Win32-first failed for value={Value}, hwnd={Hwnd}, className={ClassName}, processId={ProcessId}, matchMode={MatchMode}. Falling back to UIA/FlaUI.",
             SanitizeValue(req.Value),
-            req.Hwnd,
+            req.Hwnd.HasValue ? req.Hwnd.Value.ToString() : "(none)",
             SanitizeValue(req.ClassName),
-            req.ProcessId,
+            req.ProcessId.HasValue ? req.ProcessId.Value.ToString() : "(none)",
             SanitizeValue(req.MatchMode));
 
         // UIA/FlaUI fallback requires a title fragment.
