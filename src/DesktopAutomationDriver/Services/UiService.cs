@@ -309,7 +309,8 @@ public class UiService : IUiService
                 // to path traversal; selectdynamicmenupath accepts Root>Child>Leaf or Child>Leaf.
                 "selectdynamicmenuitem" => SelectDynamicMenuItem(request),
                 "selectdynamicmenupath" => SelectDynamicMenuPath(request),
-                "selectcomboboxitem" => SelectComboBoxItem(request),
+                // Backward-compatible alias – the canonical operation is "select".
+                "selectcomboboxitem" => Select(request),
                 "draganddrop"     => DragAndDrop(request),
 
                 // ----- Alert / Dialog Handling -----
@@ -2794,17 +2795,31 @@ public class UiService : IUiService
         if (req.Value == null && req.Index == null)
             throw new ArgumentException("Either 'value' (item name) or 'index' is required for 'select'.");
 
+        // Log when the request arrives via the deprecated alias so it is visible in traces.
+        if (string.Equals(req.Operation, "selectcomboboxitem", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation(
+                "selectcomboboxitem is deprecated alias. Routing through select ComboBox pipeline.");
+        }
+
         var element = FindWithRetry(req);
+
         if (element.ControlType == ControlType.ComboBox && !string.IsNullOrWhiteSpace(req.Value))
         {
-            var comboRequest = new UiRequest
-            {
-                Operation = "selectcomboboxitem",
-                Locator = req.Locator,
-                Value = req.Value
-            };
+            var session  = RequireSession();
+            var itemName = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
 
-            return SelectComboBoxItem(comboRequest);
+            if (string.IsNullOrWhiteSpace(itemName))
+                throw new ArgumentException("'select' on ComboBox requires a non-empty 'value'.");
+
+            _logger.LogInformation(
+                "Select operation resolved ComboBox. Routing to ComboBox pipeline. operation={Operation}, value={Value}, index={Index}, comboBox={ComboBox}",
+                SanitizeValue(req.Operation),
+                SanitizeValue(req.Value),
+                req.Index,
+                SafeElementName(element));
+
+            return SelectComboBoxByValue(session, element, itemName, req);
         }
 
         // Win32 native index selection for ComboBox elements.
@@ -4235,26 +4250,26 @@ public class UiService : IUiService
         return null;
     }
 
+    /// <summary>
+    /// Backward-compatible alias. The canonical operation is <c>select</c>.
+    /// Delegates directly to <see cref="Select"/> so both code paths share
+    /// the identical ComboBox selection pipeline.
+    /// </summary>
     private object? SelectComboBoxItem(UiRequest req)
     {
-        if (string.IsNullOrWhiteSpace(req.Value))
-            throw new ArgumentException("value is required for selectcomboboxitem.");
+        return Select(req);
+    }
 
-        var comboBox = FindWithRetry(req);
-        if (!IsComboBoxElement(comboBox))
-        {
-            _logger.LogWarning(
-                "selectcomboboxitem called on non-ComboBox. name={Name}, controlType={ControlType}, className={ClassName}",
-                SafeElementName(comboBox),
-                comboBox.ControlType,
-                SafeElementClassName(comboBox));
-        }
-
-        var itemName = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
-        if (string.IsNullOrWhiteSpace(itemName))
-            throw new ArgumentException("selectcomboboxitem requires a non-empty value.");
-
-        var session = RequireSession();
+    /// <summary>
+    /// Core ComboBox value-selection pipeline, shared by <c>select</c> and
+    /// the legacy <c>selectcomboboxitem</c> alias.
+    /// </summary>
+    private object? SelectComboBoxByValue(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string itemName,
+        UiRequest req)
+    {
         var guard = CaptureComboBoxTargetGuard(comboBox);
         var operationDeadline = DateTime.UtcNow.AddMilliseconds(ComboBoxSingleSelectionTimeoutMs);
 
@@ -4266,13 +4281,20 @@ public class UiService : IUiService
         // --- Strategy 1: Win32 native (pywinauto-style, no dropdown) ---
         if (TrySelectNativeWin32ComboBox(session, comboBox, itemName, out var win32NativeStrategy))
         {
+            _logger.LogInformation(
+                "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+                win32NativeStrategy,
+                itemName,
+                GetComboBoxCurrentValue(session, comboBox));
+
             return new
             {
                 selected = itemName,
                 actual   = GetComboBoxCurrentValue(session, comboBox),
                 comboBox = SafeElementName(comboBox),
                 verified = true,
-                strategy = win32NativeStrategy
+                strategy = win32NativeStrategy,
+                operation = "select"
             };
         }
 
@@ -4296,13 +4318,20 @@ public class UiService : IUiService
                 operationDeadline,
                 out var directStrategy))
         {
+            _logger.LogInformation(
+                "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+                directStrategy,
+                itemName,
+                GetComboBoxCurrentValue(session, comboBox));
+
             return new
             {
                 selected = itemName,
                 actual = GetComboBoxCurrentValue(session, comboBox),
                 comboBox = SafeElementName(comboBox),
                 verified = true,
-                strategy = directStrategy
+                strategy = directStrategy,
+                operation = "select"
             };
         }
 
@@ -4337,13 +4366,20 @@ public class UiService : IUiService
             {
                 var actual = GetComboBoxCurrentValue(session, comboBox);
 
+                _logger.LogInformation(
+                    "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+                    "huge-list-paged-visible-search",
+                    itemName,
+                    actual);
+
                 return new
                 {
                     selected = itemName,
                     actual,
                     comboBox = SafeElementName(comboBox),
                     verified = true,
-                    strategy = "huge-list-paged-visible-search"
+                    strategy = "huge-list-paged-visible-search",
+                    operation = "select"
                 };
             }
 
@@ -4356,13 +4392,20 @@ public class UiService : IUiService
             {
                 var actual = GetComboBoxCurrentValue(session, comboBox);
 
+                _logger.LogInformation(
+                    "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+                    "huge-list-visible-anchor-window-search",
+                    itemName,
+                    actual);
+
                 return new
                 {
                     selected = itemName,
                     actual,
                     comboBox = SafeElementName(comboBox),
                     verified = true,
-                    strategy = "huge-list-visible-anchor-window-search"
+                    strategy = "huge-list-visible-anchor-window-search",
+                    operation = "select"
                 };
             }
 
@@ -4379,13 +4422,20 @@ public class UiService : IUiService
                 {
                     var actual = GetComboBoxCurrentValue(session, comboBox);
 
+                    _logger.LogInformation(
+                        "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+                        "huge-list-explicit-typeahead-fallback",
+                        itemName,
+                        actual);
+
                     return new
                     {
                         selected = itemName,
                         actual,
                         comboBox = SafeElementName(comboBox),
                         verified = true,
-                        strategy = "huge-list-explicit-typeahead-fallback"
+                        strategy = "huge-list-explicit-typeahead-fallback",
+                        operation = "select"
                     };
                 }
             }
@@ -4433,7 +4483,8 @@ public class UiService : IUiService
                     actual,
                     comboBox = SafeElementName(comboBox),
                     verified = true,
-                    strategy = "small-combobox-paged-visible-search-fallback"
+                    strategy = "small-combobox-paged-visible-search-fallback",
+                    operation = "select"
                 };
             }
 
@@ -4449,7 +4500,8 @@ public class UiService : IUiService
                     actual,
                     comboBox = SafeElementName(comboBox),
                     verified = true,
-                    strategy = "small-combobox-anchor-window-search-fallback"
+                    strategy = "small-combobox-anchor-window-search-fallback",
+                    operation = "select"
                 };
             }
 
@@ -4467,13 +4519,20 @@ public class UiService : IUiService
 
         var actualAfterVerifiedCommit = GetComboBoxCurrentValue(session, comboBox);
 
+        _logger.LogInformation(
+            "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+            "small-combobox-exact-visible-commit",
+            itemName,
+            actualAfterVerifiedCommit);
+
         return new
         {
             selected = itemName,
             actual = actualAfterVerifiedCommit,
             comboBox = SafeElementName(comboBox),
             verified = true,
-            strategy = "small-combobox-exact-visible-commit"
+            strategy = "small-combobox-exact-visible-commit",
+            operation = "select"
         };
     }
 
