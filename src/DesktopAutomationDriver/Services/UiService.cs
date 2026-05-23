@@ -4265,6 +4265,18 @@ public class UiService : IUiService
     }
 
     /// <summary>
+    /// Returns <c>true</c> when the locator has at least one non-XPath attribute that
+    /// can be used for a focused UIA tree query (AutomationId, Name, ClassName, or ControlType).
+    /// </summary>
+    private static bool HasUsableAttributeLocator(UiLocator locator)
+    {
+        return !string.IsNullOrWhiteSpace(locator.AutomationId) ||
+               !string.IsNullOrWhiteSpace(locator.Name) ||
+               !string.IsNullOrWhiteSpace(locator.ClassName) ||
+               !string.IsNullOrWhiteSpace(locator.ControlType);
+    }
+
+    /// <summary>
     /// Returns the locator from the request or throws if missing.
     /// </summary>
     private static UiLocator RequireLocator(UiRequest req)
@@ -4722,6 +4734,8 @@ public class UiService : IUiService
     /// <para>
     /// When <see cref="UiRequest.ParentLocator"/> is set, the parent element is resolved
     /// first and the child <see cref="UiRequest.Locator"/> is searched within that narrower scope.
+    /// Set <see cref="UiRequest.FallbackToWindowRootIfParentChildNotFound"/> to <c>true</c>
+    /// to allow a full-window retry when the child is not found inside the parent.
     /// </para>
     /// </summary>
     private AutomationElement FindWithRetry(UiRequest req)
@@ -4738,28 +4752,33 @@ public class UiService : IUiService
 
         // Resolve optional parent container to narrow the search scope.
         var searchRoot = root;
+        string? parentDescription = null;
+
         if (req.ParentLocator != null)
         {
-            var parent = TryFindElementBySmartStrategy(
+            var parentResult = TryFindElementBySmartStrategy(
                 root,
                 session,
                 req.ParentLocator,
                 preferAttributes: preferAttributes,
-                xpathOnly: xpathOnly,
-                out _);
+                xpathOnly: xpathOnly);
 
-            if (parent == null)
+            if (parentResult.Element == null)
             {
                 throw new InvalidOperationException(
-                    $"Parent locator not found: {DescribeLocator(req.ParentLocator)}");
+                    $"Parent locator not found using strategy={parentResult.Strategy}: " +
+                    DescribeLocator(req.ParentLocator));
             }
 
-            searchRoot = parent;
+            searchRoot = parentResult.Element;
+            parentDescription = DescribeLocator(req.ParentLocator);
 
             _logger.LogInformation(
-                "UI parent locator resolved. operation={Operation}, parent={Parent}, childLocator={Child}",
+                "UI parent locator resolved. operation={Operation}, policy={Policy}, strategy={Strategy}, parent={Parent}, child={Child}",
                 SanitizeValue(req.Operation),
-                DescribeLocator(req.ParentLocator),
+                policy.PolicyName,
+                parentResult.Strategy,
+                parentDescription,
                 DescribeLocator(locator));
         }
 
@@ -4771,57 +4790,101 @@ public class UiService : IUiService
         // pattern). The potential race (two threads both miss the cache and both store the same
         // element) is benign: the second store merely overwrites the first with an equivalent value.
         if (cacheKey != null &&
-            TryGetCachedElement(cacheKey, locator, out var cached))
+            TryGetCachedElement(cacheKey, locator, out var cached) &&
+            cached != null)
         {
             _logger.LogInformation(
-                "UI locator resolved. operation={Operation}, policy={Policy}, strategy=cache, elapsedMs=0, locator={Locator}",
+                "UI locator resolved. operation={Operation}, policy={Policy}, strategy=cache, locator={Locator}, parent={Parent}",
                 SanitizeValue(req.Operation),
                 policy.PolicyName,
-                DescribeLocator(locator));
+                DescribeLocator(locator),
+                parentDescription ?? "");
 
-            return cached!;
+            return cached;
         }
 
         var findSw = Stopwatch.StartNew();
+        var lastResult = LocatorSearchResult.NotFound("not-started");
 
         while (true)
         {
-            var element = TryFindElementBySmartStrategy(
+            lastResult = TryFindElementBySmartStrategy(
                 searchRoot,
                 session,
                 locator,
                 preferAttributes: preferAttributes,
-                xpathOnly: xpathOnly,
-                out var strategyName);
+                xpathOnly: xpathOnly);
 
-            if (element != null)
+            if (lastResult.Element != null)
             {
                 findSw.Stop();
 
                 if (cacheKey != null)
-                {
-                    StoreCachedElement(cacheKey, element);
-                }
+                    StoreCachedElement(cacheKey, lastResult.Element);
 
                 _logger.LogInformation(
-                    "UI locator resolved. operation={Operation}, policy={Policy}, strategy={Strategy}, elapsedMs={ElapsedMs}, locator={Locator}",
+                    "UI locator resolved. operation={Operation}, policy={Policy}, strategy={Strategy}, elapsedMs={ElapsedMs}, locator={Locator}, parent={Parent}",
                     SanitizeValue(req.Operation),
                     policy.PolicyName,
-                    strategyName,
+                    lastResult.Strategy,
                     findSw.ElapsedMilliseconds,
-                    DescribeLocator(locator));
+                    DescribeLocator(locator),
+                    parentDescription ?? "");
 
-                return element;
+                return lastResult.Element;
+            }
+
+            // When a parent was used but child was not found inside it, optionally retry
+            // from the full window root before sleeping or timing out.
+            if (req.ParentLocator != null &&
+                req.FallbackToWindowRootIfParentChildNotFound == true)
+            {
+                var rootFallback = TryFindElementBySmartStrategy(
+                    root,
+                    session,
+                    locator,
+                    preferAttributes: preferAttributes,
+                    xpathOnly: xpathOnly);
+
+                if (rootFallback.Element != null)
+                {
+                    findSw.Stop();
+
+                    if (cacheKey != null)
+                        StoreCachedElement(cacheKey, rootFallback.Element);
+
+                    _logger.LogInformation(
+                        "UI locator resolved by window-root fallback. operation={Operation}, policy={Policy}, strategy={Strategy}, elapsedMs={ElapsedMs}, locator={Locator}, parent={Parent}",
+                        SanitizeValue(req.Operation),
+                        policy.PolicyName,
+                        rootFallback.Strategy,
+                        findSw.ElapsedMilliseconds,
+                        DescribeLocator(locator),
+                        parentDescription ?? "");
+
+                    return rootFallback.Element;
+                }
+
+                lastResult = rootFallback;
             }
 
             if (DateTime.UtcNow >= deadline)
             {
+                _logger.LogWarning(
+                    "UI locator not found. operation={Operation}, policy={Policy}, lastStrategy={Strategy}, locator={Locator}, parent={Parent}",
+                    SanitizeValue(req.Operation),
+                    policy.PolicyName,
+                    lastResult.Strategy,
+                    DescribeLocator(locator),
+                    parentDescription ?? "");
+
                 var timeoutDesc = policy.Timeout.TotalMilliseconds >= 1000
                     ? $"{policy.Timeout.TotalSeconds}s"
                     : $"{policy.Timeout.TotalMilliseconds}ms";
                 throw new InvalidOperationException(
-                    $"Element not found within {timeoutDesc} using policy={policy.PolicyName}: " +
-                    DescribeLocator(locator));
+                    $"Element not found within {timeoutDesc} using policy={policy.PolicyName}, " +
+                    $"lastStrategy={lastResult.Strategy}, locator={DescribeLocator(locator)}, " +
+                    $"parent={parentDescription ?? ""}");
             }
 
             Thread.Sleep(policy.RetryInterval);
@@ -4833,15 +4896,14 @@ public class UiService : IUiService
                 // Also re-resolve the parent scope when the root changes.
                 if (req.ParentLocator != null)
                 {
-                    var parent = TryFindElementBySmartStrategy(
+                    var parentRetry = TryFindElementBySmartStrategy(
                         root,
                         session,
                         req.ParentLocator,
                         preferAttributes: preferAttributes,
-                        xpathOnly: xpathOnly,
-                        out _);
+                        xpathOnly: xpathOnly);
 
-                    searchRoot = parent ?? root;
+                    searchRoot = parentRetry.Element ?? root;
                 }
                 else
                 {
@@ -4878,7 +4940,7 @@ public class UiService : IUiService
     /// Attempts a single element search using the legacy XPath-first strategy.
     /// Used by <see cref="FindLocatorWithRetry"/> (which has no <see cref="UiRequest"/>
     /// context) and as a fallback when neither strategy flag is set.
-    /// When XPath is present it is tried first; attribute conditions follow.
+    /// When XPath is present it is tried first; attribute-priority search follows.
     /// </summary>
     private AutomationElement? TryFindElement(
         AutomationElement root, AutomationSession session, UiLocator locator)
@@ -4892,7 +4954,7 @@ public class UiService : IUiService
                     return byXPath;
             }
 
-            return TryFindElementByCondition(root, session, locator);
+            return TryFindElementByFastAttributes(root, session, locator).Element;
         }
         catch
         {
@@ -4924,50 +4986,53 @@ public class UiService : IUiService
     ///   <item><term>default</term><description>XPath first (legacy behavior), then attribute conditions.</description></item>
     /// </list>
     /// </summary>
-    private AutomationElement? TryFindElementBySmartStrategy(
+    private LocatorSearchResult TryFindElementBySmartStrategy(
         AutomationElement root,
         AutomationSession session,
         UiLocator locator,
         bool preferAttributes,
-        bool xpathOnly,
-        out string strategyName)
+        bool xpathOnly)
     {
         if (xpathOnly)
         {
-            strategyName = "xpath";
-            if (!string.IsNullOrWhiteSpace(locator.XPath))
-                return FindByXPath(root, session, locator.XPath);
+            if (string.IsNullOrWhiteSpace(locator.XPath))
+                return LocatorSearchResult.NotFound("xpath-only-no-xpath");
 
-            return null;
+            var byXPath = FindByXPath(root, session, locator.XPath);
+            return byXPath != null
+                ? LocatorSearchResult.Found(byXPath, "xpath-only")
+                : LocatorSearchResult.NotFound("xpath-only");
         }
 
         if (preferAttributes)
         {
-            var byAttributes = TryFindElementByFastAttributes(root, session, locator, out strategyName);
-            if (byAttributes != null)
+            var byAttributes = TryFindElementByFastAttributes(root, session, locator);
+            if (byAttributes.Element != null)
                 return byAttributes;
 
             if (!string.IsNullOrWhiteSpace(locator.XPath))
             {
-                strategyName = "xpath";
-                return FindByXPath(root, session, locator.XPath);
+                var byXPath = FindByXPath(root, session, locator.XPath);
+                if (byXPath != null)
+                    return LocatorSearchResult.Found(byXPath, "xpath-fallback");
             }
 
-            return null;
+            return LocatorSearchResult.NotFound("attribute-first-not-found");
         }
 
         // XPath-first (legacy / stable)
         if (!string.IsNullOrWhiteSpace(locator.XPath))
         {
-            strategyName = "xpath";
             var byXPath = FindByXPath(root, session, locator.XPath);
             if (byXPath != null)
-                return byXPath;
+                return LocatorSearchResult.Found(byXPath, "xpath-first");
         }
 
-        var byCondition = TryFindElementByCondition(root, session, locator);
-        strategyName = "condition-fallback";
-        return byCondition;
+        var fallbackAttributes = TryFindElementByFastAttributes(root, session, locator);
+        if (fallbackAttributes.Element != null)
+            return fallbackAttributes;
+
+        return LocatorSearchResult.NotFound("not-found");
     }
 
     /// <summary>
@@ -4981,24 +5046,23 @@ public class UiService : IUiService
     ///   <item>Full condition-based fallback (all attributes AND-ed)</item>
     /// </list>
     /// </summary>
-    private AutomationElement? TryFindElementByFastAttributes(
+    private LocatorSearchResult TryFindElementByFastAttributes(
         AutomationElement root,
         AutomationSession session,
-        UiLocator locator,
-        out string strategyName)
+        UiLocator locator)
     {
         try
         {
+            if (!HasUsableAttributeLocator(locator))
+                return LocatorSearchResult.NotFound("no-attribute-locator");
+
             // 1. AutomationId + ControlType
             if (!string.IsNullOrWhiteSpace(locator.AutomationId) &&
                 !string.IsNullOrWhiteSpace(locator.ControlType))
             {
                 var match = FindFirstByAutomationIdAndControlType(root, session, locator);
-                if (match != null)
-                {
-                    strategyName = "automationid-controltype";
-                    return match;
-                }
+                if (match != null && LocatorMatchesExceptXPath(match, locator))
+                    return LocatorSearchResult.Found(match, "automationid-controltype");
             }
 
             // 2. AutomationId only
@@ -5007,10 +5071,7 @@ public class UiService : IUiService
                 var cf = session.Automation.ConditionFactory;
                 var match = root.FindFirstDescendant(cf.ByAutomationId(locator.AutomationId));
                 if (match != null && LocatorMatchesExceptXPath(match, locator))
-                {
-                    strategyName = "automationid";
-                    return match;
-                }
+                    return LocatorSearchResult.Found(match, "automationid");
             }
 
             // 3. Name + ControlType
@@ -5018,11 +5079,8 @@ public class UiService : IUiService
                 !string.IsNullOrWhiteSpace(locator.ControlType))
             {
                 var match = FindFirstByNameAndControlType(root, session, locator);
-                if (match != null)
-                {
-                    strategyName = "name-controltype";
-                    return match;
-                }
+                if (match != null && LocatorMatchesExceptXPath(match, locator))
+                    return LocatorSearchResult.Found(match, "name-controltype");
             }
 
             // 4. Name + ClassName
@@ -5033,10 +5091,7 @@ public class UiService : IUiService
                 var match = root.FindFirstDescendant(
                     new AndCondition(cf.ByName(locator.Name), cf.ByClassName(locator.ClassName)));
                 if (match != null && LocatorMatchesExceptXPath(match, locator))
-                {
-                    strategyName = "name-classname";
-                    return match;
-                }
+                    return LocatorSearchResult.Found(match, "name-classname");
             }
 
             // 5. ControlType + ClassName
@@ -5048,16 +5103,15 @@ public class UiService : IUiService
                 var match = root.FindFirstDescendant(
                     new AndCondition(cf.ByControlType(controlType), cf.ByClassName(locator.ClassName)));
                 if (match != null && LocatorMatchesExceptXPath(match, locator))
-                {
-                    strategyName = "controltype-classname";
-                    return match;
-                }
+                    return LocatorSearchResult.Found(match, "controltype-classname");
             }
 
             // 6. Full condition-based fallback
             var fallback = TryFindElementByCondition(root, session, locator);
-            strategyName = "condition-fallback";
-            return fallback;
+            if (fallback != null)
+                return LocatorSearchResult.Found(fallback, "condition-fallback");
+
+            return LocatorSearchResult.NotFound("attributes-not-found");
         }
         catch (Exception ex)
         {
@@ -5066,8 +5120,7 @@ public class UiService : IUiService
                 "Fast attribute locator search failed. locator={Locator}",
                 DescribeLocator(locator));
 
-            strategyName = "condition-fallback";
-            return null;
+            return LocatorSearchResult.NotFound("attributes-exception");
         }
     }
 
@@ -5168,6 +5221,34 @@ public class UiService : IUiService
             return false;
 
         return true;
+    }
+
+    // =========================================================================
+    // Locator search result
+    // =========================================================================
+
+    /// <summary>
+    /// Carries the outcome of a smart locator search together with the strategy
+    /// name that produced the result.  Strategy names are used in structured log
+    /// messages so callers can tell at a glance which path was taken.
+    /// </summary>
+    private sealed class LocatorSearchResult
+    {
+        public AutomationElement? Element { get; init; }
+
+        /// <summary>
+        /// Identifies which search path found (or failed to find) the element.
+        /// Common values: cache, parent-scope, automationid-controltype, automationid,
+        /// name-controltype, name-classname, controltype-classname, xpath-first,
+        /// xpath-fallback, xpath-only, condition-fallback, not-found, attributes-exception.
+        /// </summary>
+        public string Strategy { get; init; } = "not-found";
+
+        public static LocatorSearchResult Found(AutomationElement element, string strategy)
+            => new() { Element = element, Strategy = strategy };
+
+        public static LocatorSearchResult NotFound(string strategy)
+            => new() { Element = null, Strategy = strategy };
     }
 
     // =========================================================================

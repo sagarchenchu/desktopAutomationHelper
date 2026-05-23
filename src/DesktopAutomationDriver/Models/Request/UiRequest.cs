@@ -118,4 +118,12 @@ public class UiRequest
     /// reducing the search space and improving performance.
     /// </summary>
     public UiLocator? ParentLocator { get; set; }
+
+    /// <summary>
+    /// When true and <see cref="ParentLocator"/> is set, a failed child lookup inside
+    /// the parent will be retried against the full window root before giving up.
+    /// Defaults to <c>false</c> so that <see cref="ParentLocator"/> always narrows the
+    /// search scope for speed.
+    /// </summary>
+    public bool? FallbackToWindowRootIfParentChildNotFound { get; set; }
 }
