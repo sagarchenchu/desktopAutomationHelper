@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 using DesktopAutomationDriver.Models.Request;
 using FlaUI.Core;
@@ -517,6 +518,52 @@ public class UiService : IUiService
             throw new ArgumentException("'value' must be a partial window title for 'switchwindow'.");
 
         var session = _ctx.ActiveSession;
+
+        // --- Win32-first fast path ---
+        // Enumerate top-level HWNDs directly (no UIA tree walk) and activate the
+        // matching window via Win32, which is significantly faster than the UIA search.
+        var win32Match = FindWin32WindowForSwitch(req.Value, session);
+
+        if (win32Match != null)
+        {
+            _logger.LogInformation(
+                "SwitchWindow Win32-first match found. hwnd=0x{Hwnd:X}, pid={Pid}, title={Title}",
+                win32Match.Hwnd.ToInt64(),
+                win32Match.ProcessId,
+                win32Match.Title);
+
+            if (ActivateWin32Window(win32Match.Hwnd))
+            {
+                // Ensure a session exists (attach by process ID when none is active).
+                if (session == null)
+                    session = _ctx.Attach(win32Match.ProcessId);
+
+                // Wrap the HWND in a FlaUI element so the session has a typed ActiveWindow.
+                var flauiWindow = ResolveFlaUIWindowFromHwnd(session, win32Match.Hwnd);
+
+                if (flauiWindow != null)
+                    return SwitchToWindow(session, flauiWindow);
+
+                // Activation succeeded but FlaUI cannot wrap the handle (rare; e.g. cross-
+                // process/elevated window). Return a partial result without setting ActiveWindow.
+                _logger.LogInformation(
+                    "SwitchWindow Win32-first activated window but FlaUI resolution failed; returning foreground-only result. hwnd=0x{Hwnd:X}",
+                    win32Match.Hwnd.ToInt64());
+
+                return new
+                {
+                    title = win32Match.Title,
+                    hwnd = win32Match.Hwnd.ToInt64(),
+                    strategy = "win32-first-foreground-only"
+                };
+            }
+        }
+
+        // --- Fallback: existing UIA/FlaUI search logic ---
+        _logger.LogInformation(
+            "SwitchWindow Win32-first path did not activate a window. Falling back to UIA/FlaUI search. titleFragment={Title}",
+            SanitizeValue(req.Value));
+
         var deadline = DateTime.UtcNow + DefaultRetry;
 
         if (session != null)
@@ -762,6 +809,150 @@ public class UiService : IUiService
             controlType = SafeElementControlType(asWindow),
             hwnd = SafeWindowHandle(asWindow).ToInt64()
         };
+    }
+
+    // =========================================================================
+    // Win32-first SwitchWindow helpers
+    // =========================================================================
+
+    /// <summary>
+    /// Enumerates visible top-level windows via Win32 <c>EnumWindows</c>.
+    /// When <paramref name="processId"/> is provided, only windows owned by that
+    /// process are returned.
+    /// </summary>
+    private List<Win32WindowInfo> EnumerateTopLevelWin32Windows(int? processId = null)
+    {
+        var result = new List<Win32WindowInfo>();
+        var shellWindow = GetShellWindow();
+
+        EnumWindows((hWnd, _) =>
+        {
+            if (hWnd == IntPtr.Zero || hWnd == shellWindow)
+                return true;
+
+            if (!IsWindowVisible(hWnd))
+                return true;
+
+            var length = GetWindowTextLength(hWnd);
+            if (length <= 0)
+                return true;
+
+            var sb = new StringBuilder(length + 1);
+            GetWindowText(hWnd, sb, sb.Capacity);
+
+            var title = sb.ToString();
+            if (string.IsNullOrWhiteSpace(title))
+                return true;
+
+            GetWindowThreadProcessId(hWnd, out var pid);
+
+            if (processId.HasValue && pid != (uint)processId.Value)
+                return true;
+
+            result.Add(new Win32WindowInfo
+            {
+                Hwnd = hWnd,
+                ProcessId = (int)pid,
+                Title = title
+            });
+
+            return true;
+        }, IntPtr.Zero);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Searches visible top-level windows via Win32 for one whose title matches
+    /// <paramref name="titleFragment"/>.
+    /// <list type="number">
+    ///   <item>Exact match (case-insensitive) filtered to the session's process.</item>
+    ///   <item>Contains match filtered to the session's process.</item>
+    ///   <item>Exact/contains match across all processes (if process filter was active).</item>
+    /// </list>
+    /// Returns null when no match is found.
+    /// </summary>
+    private Win32WindowInfo? FindWin32WindowForSwitch(
+        string titleFragment,
+        AutomationSession? session)
+    {
+        if (string.IsNullOrWhiteSpace(titleFragment))
+            return null;
+
+        int? pid = null;
+        try { pid = session?.Application?.ProcessId; }
+        catch { pid = null; }
+
+        var windows = EnumerateTopLevelWin32Windows(pid);
+
+        var exact = windows.FirstOrDefault(w =>
+            string.Equals(w.Title, titleFragment, StringComparison.OrdinalIgnoreCase));
+        if (exact != null)
+            return exact;
+
+        var contains = windows.FirstOrDefault(w =>
+            w.Title.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
+        if (contains != null)
+            return contains;
+
+        // Widen to all processes if the process filter was active and yielded nothing.
+        if (pid.HasValue)
+        {
+            windows = EnumerateTopLevelWin32Windows(null);
+
+            exact = windows.FirstOrDefault(w =>
+                string.Equals(w.Title, titleFragment, StringComparison.OrdinalIgnoreCase));
+            if (exact != null)
+                return exact;
+
+            contains = windows.FirstOrDefault(w =>
+                w.Title.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
+            if (contains != null)
+                return contains;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Restores a minimized window (if needed) and brings it to the foreground
+    /// using Win32 APIs. Returns <c>true</c> when <c>SetForegroundWindow</c> reports
+    /// success.
+    /// </summary>
+    private static bool ActivateWin32Window(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+            return false;
+
+        try
+        {
+            if (IsIconic(hwnd))
+                ShowWindow(hwnd, SW_RESTORE);
+
+            return SetForegroundWindow(hwnd);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Converts a raw Win32 window handle back to a FlaUI <see cref="Window"/>
+    /// using <c>AutomationBase.FromHandle</c>.
+    /// Returns null when the conversion fails (e.g. the window is no longer valid).
+    /// </summary>
+    private static Window? ResolveFlaUIWindowFromHwnd(AutomationSession session, IntPtr hwnd)
+    {
+        try
+        {
+            var element = session.Automation.FromHandle(hwnd);
+            return element?.AsWindow();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private object? Screenshot(UiRequest req)
@@ -5229,6 +5420,26 @@ public class UiService : IUiService
             return false;
 
         return true;
+    }
+
+    // =========================================================================
+    // Locator search result
+    // =========================================================================
+
+    /// <summary>
+    // =========================================================================
+    // Win32 window discovery model
+    // =========================================================================
+
+    /// <summary>
+    /// Lightweight record returned by the Win32 top-level window enumerator,
+    /// carrying the handle, owning process identifier, and window title.
+    /// </summary>
+    private sealed class Win32WindowInfo
+    {
+        public IntPtr Hwnd { get; init; }
+        public int ProcessId { get; init; }
+        public string Title { get; init; } = string.Empty;
     }
 
     // =========================================================================
@@ -11461,4 +11672,36 @@ public class UiService : IUiService
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr GetForegroundWindow();
+
+    // =========================================================================
+    // Win32 window enumeration P/Invoke
+    // =========================================================================
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int GetWindowTextLength(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetShellWindow();
+
+    private const int SW_RESTORE = 9;
 }
