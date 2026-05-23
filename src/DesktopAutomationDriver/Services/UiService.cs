@@ -1463,7 +1463,7 @@ public class UiService : IUiService
                 foreach (var w in session.Application.GetAllTopLevelWindows(session.Automation))
                 {
                     var h = SafeWindowHandle(w).ToInt64();
-                    if (seenHandles.Add(h != 0 ? h : -1))
+                    if (h != 0 && seenHandles.Add(h))
                         windows.Add(w);
                 }
             }
@@ -4450,7 +4450,7 @@ public class UiService : IUiService
         if (!string.IsNullOrWhiteSpace(criteria.ClassName))
         { score += 40; reason += "class;"; }
 
-        // Penalise the main application window when no title filter is set.
+        // Penalize the main application window when no title filter is set.
         try
         {
             var activeHwnd = session?.ActiveWindow != null
@@ -4643,11 +4643,11 @@ public class UiService : IUiService
     private static bool PostCloseMessage(IntPtr hwnd)
     {
         const uint WM_CLOSE = 0x0010;
-        return PostMessageForPopup(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+        return PostWinMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
     }
 
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool PostMessageForPopup(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    private static extern bool PostWinMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
     private static bool TrySendEnterToPopup(PopupWindowInfo popup)
     {
