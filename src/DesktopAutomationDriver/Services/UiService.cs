@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -131,6 +132,12 @@ public class UiService : IUiService
 
     private sealed record CachedWindowMatch(AutomationElement Element, DateTime ExpiresAt);
 
+    private static readonly TimeSpan ElementCacheDuration = TimeSpan.FromSeconds(10);
+    private static readonly object ElementCacheLock = new();
+    private static readonly Dictionary<string, CachedElementMatch> ElementCache = new();
+
+    private sealed record CachedElementMatch(AutomationElement Element, DateTime ExpiresAt);
+
     private enum DropdownItemClickRegion
     {
         LeftCenter,
@@ -209,105 +216,121 @@ public class UiService : IUiService
 
         _logger.LogDebug("UI operation: {Operation}", SanitizeValue(request.Operation));
 
-        return request.Operation.ToLowerInvariant() switch
+        var sw = Stopwatch.StartNew();
+
+        try
         {
-            // ----- Session & Window Management -----
-            "launch"       => Launch(request),
-            "close"        => Close(),
-            "quit"         => Close(),
-            "closewindow"  => CloseWindowByTitle(request),
-            "maximize"     => Maximize(),
-            "minimize"     => Minimize(),
-            "switchwindow"  => SwitchWindow(request),
-            "switchwinodw"  => SwitchWindow(request),
-            "switch_window" => SwitchWindow(request),
-            "switchto"      => SwitchWindow(request),
-            "refresh"        => Refresh(),
-            "screenshot"     => Screenshot(request),
-            "listelements"   => ListElements(request),
-            "listwindows"    => ListWindows(request),
-            "getcurrentroot" => GetCurrentRoot(request),
-            "findlocator"    => FindLocatorDebug(request),
+            return request.Operation.ToLowerInvariant() switch
+            {
+                // ----- Session & Window Management -----
+                "launch"       => Launch(request),
+                "close"        => Close(),
+                "quit"         => Close(),
+                "closewindow"  => CloseWindowByTitle(request),
+                "maximize"     => Maximize(),
+                "minimize"     => Minimize(),
+                "switchwindow"  => SwitchWindow(request),
+                "switchwinodw"  => SwitchWindow(request),
+                "switch_window" => SwitchWindow(request),
+                "switchto"      => SwitchWindow(request),
+                "refresh"        => Refresh(),
+                "screenshot"     => Screenshot(request),
+                "listelements"   => ListElements(request),
+                "listwindows"    => ListWindows(request),
+                "getcurrentroot" => GetCurrentRoot(request),
+                "findlocator"    => FindLocatorDebug(request),
 
-            // ----- Element Query -----
-            "exists"         => Exists(request),
-            "waitfor"        => WaitFor(request),
-            "isenabled"      => IsEnabled(request),
-            "isvisible"      => IsVisible(request),
-            "isclickable"    => IsClickable(request),
-            "iseditable"     => IsEditable(request),
-            "ischecked"      => IsChecked(request),
-            "getvalue"       => GetValue(request),
-            "gettext"        => GetText(request),
-            "getname"        => GetName(request),
-            "getcontroltype" => GetControlType(request),
-            "getselected"    => GetSelected(request),
-            "gettable"       => GetTable(request),
-            "gettabledata"   => GetTable(request),
-            "gettableheaders"=> GetTableHeaders(request),
+                // ----- Element Query -----
+                "exists"         => Exists(request),
+                "waitfor"        => WaitFor(request),
+                "isenabled"      => IsEnabled(request),
+                "isvisible"      => IsVisible(request),
+                "isclickable"    => IsClickable(request),
+                "iseditable"     => IsEditable(request),
+                "ischecked"      => IsChecked(request),
+                "getvalue"       => GetValue(request),
+                "gettext"        => GetText(request),
+                "getname"        => GetName(request),
+                "getcontroltype" => GetControlType(request),
+                "getselected"    => GetSelected(request),
+                "gettable"       => GetTable(request),
+                "gettabledata"   => GetTable(request),
+                "gettableheaders"=> GetTableHeaders(request),
 
-            // ----- Position Comparison -----
-            "isrightof"   => IsRightOf(request),
-            "isleftof"    => IsLeftOf(request),
-            "isabove"     => IsAbove(request),
-            "isbelow"     => IsBelow(request),
-            "getposition" => GetPosition(request),
+                // ----- Position Comparison -----
+                "isrightof"   => IsRightOf(request),
+                "isleftof"    => IsLeftOf(request),
+                "isabove"     => IsAbove(request),
+                "isbelow"     => IsBelow(request),
+                "getposition" => GetPosition(request),
 
-            // ----- Element Actions -----
-            "click"            => Click(request),
-            "clickmenu"        => ClickMenuPath(request),
-            "clickmenupath"    => IsLogicalMenuMode(request) ? ClickLogicalMenuPath(request) : ClickMenuPath(request),
-            "clicklogicalmenupath" => ClickLogicalMenuPath(request),
-            "clickmenulogical" => ClickLogicalMenuPath(request),
-            "menupath"         => ClickLogicalMenuPath(request),
-            "contextmenupath"  => ContextMenuPath(request),
-            "inspectlogicalmenu" => InspectLogicalMenu(request),
-            "inspectmenupathcandidates" => InspectMenuPathCandidates(request),
-            "dumpmenus"        => DumpLogicalMenus(request),
-            "dumplogicalmenus" => DumpLogicalMenus(request),
-            "doubleclick"      => DoubleClick(request),
-            "rightclick"       => RightClick(request),
-            "hover"            => Hover(request),
-            "focus"            => Focus(request),
-            "type"             => TypeText(request),
-            "typedate"         => TypeDate(request),
-            "clear"            => Clear(request),
-            "sendkeys"         => SendKeys(request),
-            "expandtreeitem"   => ExpandTreeItem(request),
-            "collapsetreeitem" => CollapseTreeItem(request),
-            "selecttreeitem"   => SelectTreeItem(request),
-            "expandtreepath"   => ExpandTreePath(request),
-            "selecttreepath"   => SelectTreePath(request),
-            "scroll"           => Scroll(request),
-            "mousescroll"      => MouseScroll(request),
-            "wheelscroll"      => MouseScroll(request),
-            "check"            => Check(request),
-            "uncheck"          => Uncheck(request),
-            "select"           => Select(request),
-            "selectaid"        => SelectByAid(request),
-            "typeandselect"    => TypeAndSelect(request),
-            "clickgridcell"    => ClickGridCell(request),
-            "doubleclickgridcell" => DoubleClickGridCell(request),
-            "openheaderdropdown" => OpenHeaderDropdown(request),
-            "selectheaderdropdownitem" => SelectHeaderDropdownItem(request),
-            // Dynamic menu playback operations use a root MenuItem locator.
-            // selectdynamicmenuitem is kept for one-level compatibility and delegates
-            // to path traversal; selectdynamicmenupath accepts Root>Child>Leaf or Child>Leaf.
-            "selectdynamicmenuitem" => SelectDynamicMenuItem(request),
-            "selectdynamicmenupath" => SelectDynamicMenuPath(request),
-            "selectcomboboxitem" => SelectComboBoxItem(request),
-            "draganddrop"     => DragAndDrop(request),
+                // ----- Element Actions -----
+                "click"            => Click(request),
+                "clickmenu"        => ClickMenuPath(request),
+                "clickmenupath"    => IsLogicalMenuMode(request) ? ClickLogicalMenuPath(request) : ClickMenuPath(request),
+                "clicklogicalmenupath" => ClickLogicalMenuPath(request),
+                "clickmenulogical" => ClickLogicalMenuPath(request),
+                "menupath"         => ClickLogicalMenuPath(request),
+                "contextmenupath"  => ContextMenuPath(request),
+                "inspectlogicalmenu" => InspectLogicalMenu(request),
+                "inspectmenupathcandidates" => InspectMenuPathCandidates(request),
+                "dumpmenus"        => DumpLogicalMenus(request),
+                "dumplogicalmenus" => DumpLogicalMenus(request),
+                "doubleclick"      => DoubleClick(request),
+                "rightclick"       => RightClick(request),
+                "hover"            => Hover(request),
+                "focus"            => Focus(request),
+                "type"             => TypeText(request),
+                "typedate"         => TypeDate(request),
+                "clear"            => Clear(request),
+                "sendkeys"         => SendKeys(request),
+                "expandtreeitem"   => ExpandTreeItem(request),
+                "collapsetreeitem" => CollapseTreeItem(request),
+                "selecttreeitem"   => SelectTreeItem(request),
+                "expandtreepath"   => ExpandTreePath(request),
+                "selecttreepath"   => SelectTreePath(request),
+                "scroll"           => Scroll(request),
+                "mousescroll"      => MouseScroll(request),
+                "wheelscroll"      => MouseScroll(request),
+                "check"            => Check(request),
+                "uncheck"          => Uncheck(request),
+                "select"           => Select(request),
+                "selectaid"        => SelectByAid(request),
+                "typeandselect"    => TypeAndSelect(request),
+                "clickgridcell"    => ClickGridCell(request),
+                "doubleclickgridcell" => DoubleClickGridCell(request),
+                "openheaderdropdown" => OpenHeaderDropdown(request),
+                "selectheaderdropdownitem" => SelectHeaderDropdownItem(request),
+                // Dynamic menu playback operations use a root MenuItem locator.
+                // selectdynamicmenuitem is kept for one-level compatibility and delegates
+                // to path traversal; selectdynamicmenupath accepts Root>Child>Leaf or Child>Leaf.
+                "selectdynamicmenuitem" => SelectDynamicMenuItem(request),
+                "selectdynamicmenupath" => SelectDynamicMenuPath(request),
+                "selectcomboboxitem" => SelectComboBoxItem(request),
+                "draganddrop"     => DragAndDrop(request),
 
-            // ----- Alert / Dialog Handling -----
-            "alertok"     => AlertOk(request),
-            "alertcancel" => AlertCancel(request),
-            "alertclose"  => AlertClose(request),
-            "popupok"     => PopUpOk(request),
+                // ----- Alert / Dialog Handling -----
+                "alertok"     => AlertOk(request),
+                "alertcancel" => AlertCancel(request),
+                "alertclose"  => AlertClose(request),
+                "popupok"     => PopUpOk(request),
 
-            _ => throw new ArgumentException(
-                $"Unknown operation '{request.Operation}'. " +
-                "See GET /ui/operations for the full list.")
-        };
+                _ => throw new ArgumentException(
+                    $"Unknown operation '{request.Operation}'. " +
+                    "See GET /ui/operations for the full list.")
+            };
+        }
+        finally
+        {
+            sw.Stop();
+
+            _logger.LogInformation(
+                "UI API operation completed. operation={Operation}, elapsedMs={ElapsedMs}, policy={Policy}, locator={Locator}",
+                request.Operation,
+                sw.ElapsedMilliseconds,
+                GetOperationPolicy(request).PolicyName,
+                request.Locator == null ? "" : DescribeLocator(request.Locator));
+        }
     }
 
     // =========================================================================
@@ -4107,6 +4130,106 @@ public class UiService : IUiService
         return session;
     }
 
+    // =========================================================================
+    // Operation performance policy
+    // =========================================================================
+
+    private sealed class UiOperationPolicy
+    {
+        public TimeSpan Timeout { get; init; }
+        public TimeSpan RetryInterval { get; init; }
+        public bool AllowDesktopPopupScan { get; init; }
+        public bool RefreshRootEveryRetry { get; init; }
+        public bool UseElementCache { get; init; }
+        public string PolicyName { get; init; } = "default";
+    }
+
+    private UiOperationPolicy GetOperationPolicy(UiRequest req)
+    {
+        var op = req.Operation.ToLowerInvariant();
+
+        if (req.TimeoutMs.HasValue)
+        {
+            return new UiOperationPolicy
+            {
+                Timeout = TimeSpan.FromMilliseconds(req.TimeoutMs.Value),
+                RetryInterval = TimeSpan.FromMilliseconds(req.Fast == true ? 100 : 500),
+                AllowDesktopPopupScan = req.DisableAutoFollow != true && IsSlowWindowOperation(op),
+                RefreshRootEveryRetry = IsSlowWindowOperation(op),
+                UseElementCache = req.UseCache == true || req.Fast == true,
+                PolicyName = req.Fast == true ? "request-fast-override" : "request-timeout-override"
+            };
+        }
+
+        if (IsFastElementOperation(op))
+        {
+            return new UiOperationPolicy
+            {
+                Timeout = TimeSpan.FromMilliseconds(1000),
+                RetryInterval = TimeSpan.FromMilliseconds(100),
+                AllowDesktopPopupScan = false,
+                RefreshRootEveryRetry = false,
+                UseElementCache = true,
+                PolicyName = "fast-element-operation"
+            };
+        }
+
+        if (IsSlowWindowOperation(op))
+        {
+            return new UiOperationPolicy
+            {
+                Timeout = TimeSpan.FromMilliseconds(8000),
+                RetryInterval = TimeSpan.FromMilliseconds(300),
+                AllowDesktopPopupScan = true,
+                RefreshRootEveryRetry = true,
+                UseElementCache = false,
+                PolicyName = "slow-window-operation"
+            };
+        }
+
+        return new UiOperationPolicy
+        {
+            Timeout = DefaultRetry,
+            RetryInterval = RetryInterval,
+            AllowDesktopPopupScan = true,
+            RefreshRootEveryRetry = true,
+            UseElementCache = false,
+            PolicyName = "default-stable"
+        };
+    }
+
+    private static bool IsFastElementOperation(string op)
+    {
+        return op is
+            "click" or
+            "type" or
+            "sendkeys" or
+            "clear" or
+            "gettext" or
+            "getvalue" or
+            "setvalue" or
+            "check" or
+            "uncheck" or
+            "select" or
+            "typedate" or
+            "rightclick";
+    }
+
+    private static bool IsSlowWindowOperation(string op)
+    {
+        return op is
+            "switchwindow" or
+            "waitforwindow" or
+            "waitforpopup" or
+            "contextmenupath" or
+            "openheaderdropdown" or
+            "selectheaderdropdownitem" or
+            "gettable" or
+            "gettableheaders" or
+            "selectdynamicmenuitem" or
+            "selectdynamicmenupath";
+    }
+
     /// <summary>
     /// Returns the locator from the request or throws if missing.
     /// </summary>
@@ -4127,7 +4250,13 @@ public class UiService : IUiService
     /// dialogs, OS security prompts) that appear as a result of application actions.
     /// Falls back to the application's main window when no active window is set.
     /// </summary>
-    private AutomationElement GetWindowRoot(AutomationSession session)
+    /// <param name="session">The active automation session.</param>
+    /// <param name="allowDesktopPopupScan">
+    /// When <c>true</c> (default), performs the full desktop descendant scan and popup
+    /// auto-follow logic.  Set to <c>false</c> for fast element operations (click, type,
+    /// clear, etc.) to skip the expensive desktop traversal.
+    /// </param>
+    private AutomationElement GetWindowRoot(AutomationSession session, bool allowDesktopPopupScan = true)
     {
         if (session.AutoFollowNewWindows)
         {
@@ -4143,7 +4272,7 @@ public class UiService : IUiService
                     _logger.LogInformation(
                         "Auto-followed new window: '{Title}'", SafeElementName(newWindow));
                 }
-                else
+                else if (allowDesktopPopupScan)
                 {
                     // GetAllTopLevelWindows only scans direct children of the desktop UIA
                     // element filtered by the application's PID.  Owned dialog windows
@@ -4452,6 +4581,48 @@ public class UiService : IUiService
             FindWindowCache[cacheKey] = new CachedWindowMatch(element, DateTime.UtcNow + FindWindowCacheDuration);
     }
 
+    private static string BuildElementCacheKey(AutomationSession session, AutomationElement root, UiLocator locator)
+    {
+        var rootHandle = SafeWindowHandle(root).ToInt64();
+        var locatorKey = string.Join(
+            ";",
+            locator.XPath ?? "",
+            locator.Name ?? "",
+            locator.AutomationId ?? "",
+            locator.ClassName ?? "",
+            locator.ControlType ?? "");
+        return string.Join("|", "element", session.SessionId, rootHandle, locatorKey);
+    }
+
+    private static bool TryGetCachedElement(
+        string cacheKey,
+        UiLocator locator,
+        out AutomationElement? cached)
+    {
+        lock (ElementCacheLock)
+        {
+            if (ElementCache.TryGetValue(cacheKey, out var entry))
+            {
+                if (entry.ExpiresAt > DateTime.UtcNow && IsElementAlive(entry.Element))
+                {
+                    cached = entry.Element;
+                    return true;
+                }
+
+                ElementCache.Remove(cacheKey);
+            }
+        }
+
+        cached = null;
+        return false;
+    }
+
+    private static void StoreCachedElement(string cacheKey, AutomationElement element)
+    {
+        lock (ElementCacheLock)
+            ElementCache[cacheKey] = new CachedElementMatch(element, DateTime.UtcNow + ElementCacheDuration);
+    }
+
     private static List<object> SnapshotWindowTitles(AutomationBase automation)
     {
         var results = new List<object>();
@@ -4500,37 +4671,66 @@ public class UiService : IUiService
     }
 
     /// <summary>
-    /// Finds an element using a locator with up to 5 s retry (500 ms interval).
+    /// Finds an element using a locator, applying the operation-based performance policy
+    /// (<see cref="GetOperationPolicy"/>) to determine timeout, retry interval, and whether
+    /// to perform desktop popup scanning on each retry.
     /// <para>
-    /// The window root is re-evaluated on every retry iteration so that newly
-    /// opened dialogs (e.g. a modal confirmation dialog that appears after
-    /// clicking OK) are picked up by the auto-follow logic inside
-    /// <see cref="GetWindowRoot"/> and subsequent retries search the correct
-    /// window rather than the stale previous root.
+    /// For fast element operations (click, type, clear, etc.) the root is fetched once and
+    /// reused across retries with a short timeout, avoiding the expensive desktop scan.
+    /// For slow window operations the root is re-evaluated on every iteration so that newly
+    /// opened dialogs are picked up by the auto-follow logic inside <see cref="GetWindowRoot"/>.
     /// </para>
     /// </summary>
     private AutomationElement FindWithRetry(UiRequest req)
     {
         var locator = RequireLocator(req);
         var session = RequireSession();
+        var policy = GetOperationPolicy(req);
 
-        var deadline = DateTime.UtcNow + DefaultRetry;
+        var deadline = DateTime.UtcNow + policy.Timeout;
+
+        var root = GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan);
+
+        var cacheKey = policy.UseElementCache
+            ? BuildElementCacheKey(session, root, locator)
+            : null;
+
+        if (cacheKey != null &&
+            TryGetCachedElement(cacheKey, locator, out var cached) &&
+            cached != null)
+        {
+            _logger.LogInformation(
+                "UI element resolved from cache. operation={Operation}, policy={Policy}, locator={Locator}",
+                req.Operation,
+                policy.PolicyName,
+                DescribeLocator(locator));
+
+            return cached;
+        }
+
         while (true)
         {
-            // Re-query the root on every iteration: if a new dialog opened since
-            // the last attempt, GetWindowRoot will auto-follow it and return the
-            // dialog as the new root, allowing the element search to succeed.
-            var root = GetWindowRoot(session);
             var element = TryFindElement(root, session, locator);
+
             if (element != null)
+            {
+                if (cacheKey != null)
+                    StoreCachedElement(cacheKey, element);
+
                 return element;
+            }
 
             if (DateTime.UtcNow >= deadline)
                 throw new InvalidOperationException(
-                    $"Element not found within {DefaultRetry.TotalSeconds}s: " +
+                    $"Element not found within {policy.Timeout.TotalMilliseconds}ms using policy={policy.PolicyName}: " +
                     DescribeLocator(locator));
 
-            Thread.Sleep(RetryInterval);
+            Thread.Sleep(policy.RetryInterval);
+
+            if (policy.RefreshRootEveryRetry)
+            {
+                root = GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan);
+            }
         }
     }
 

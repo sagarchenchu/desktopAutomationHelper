@@ -69,4 +69,28 @@ public class UiRequest
     /// bounded visible-list search fails. Defaults to false for huge ComboBoxes.
     /// </summary>
     public bool? AllowKeyboardFallback { get; set; }
+
+    /// <summary>
+    /// Overrides the default operation timeout in milliseconds.
+    /// When set, the policy timeout is derived from this value regardless of the operation type.
+    /// </summary>
+    public int? TimeoutMs { get; set; }
+
+    /// <summary>
+    /// When true, forces fast-path behavior: short timeout (100 ms retry interval),
+    /// no desktop popup scanning, and element caching enabled.
+    /// </summary>
+    public bool? Fast { get; set; }
+
+    /// <summary>
+    /// When true, disables the automatic popup/dialog window follow logic for this operation.
+    /// Useful for operations where popup detection is not needed and scanning would add latency.
+    /// </summary>
+    public bool? DisableAutoFollow { get; set; }
+
+    /// <summary>
+    /// When true, enables element locator caching for this operation.
+    /// A previously found element matching the locator will be returned from cache without re-scanning.
+    /// </summary>
+    public bool? UseCache { get; set; }
 }
