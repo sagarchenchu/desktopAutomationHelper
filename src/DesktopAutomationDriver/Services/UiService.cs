@@ -4231,6 +4231,40 @@ public class UiService : IUiService
     }
 
     /// <summary>
+    /// Returns <c>true</c> when attribute-based search (AutomationId, Name, ClassName, ControlType)
+    /// should be tried before XPath for the given request.
+    /// Fast element operations use this by default; callers can opt in or out explicitly.
+    /// </summary>
+    private bool ShouldPreferAttributeSearch(UiRequest req)
+    {
+        if (req.XPathOnly == true)
+            return false;
+
+        if (req.PreferAttributes == true)
+            return true;
+
+        if (req.PreferXPath == true)
+            return false;
+
+        var policy = GetOperationPolicy(req);
+        return policy.PolicyName == "fast-element-operation" || req.Fast == true;
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when XPath should be the primary (or sole) search strategy.
+    /// </summary>
+    private bool ShouldUseXPathFirst(UiRequest req)
+    {
+        if (req.XPathOnly == true)
+            return true;
+
+        if (req.PreferXPath == true)
+            return true;
+
+        return !ShouldPreferAttributeSearch(req);
+    }
+
+    /// <summary>
     /// Returns the locator from the request or throws if missing.
     /// </summary>
     private static UiLocator RequireLocator(UiRequest req)
@@ -4581,9 +4615,14 @@ public class UiService : IUiService
             FindWindowCache[cacheKey] = new CachedWindowMatch(element, DateTime.UtcNow + FindWindowCacheDuration);
     }
 
-    private static string BuildElementCacheKey(AutomationSession session, AutomationElement root, UiLocator locator)
+    private static string BuildElementCacheKey(
+        AutomationSession session,
+        AutomationElement root,
+        UiLocator locator,
+        UiLocator? parentLocator = null)
     {
         var rootHandle = SafeWindowHandle(root).ToInt64();
+        var parentKey = parentLocator == null ? "" : DescribeLocator(parentLocator);
         var locatorKey = string.Join(
             ";",
             locator.XPath ?? "",
@@ -4591,7 +4630,7 @@ public class UiService : IUiService
             locator.AutomationId ?? "",
             locator.ClassName ?? "",
             locator.ControlType ?? "");
-        return string.Join("|", "element", session.SessionId, rootHandle, locatorKey);
+        return string.Join("|", "element", session.SessionId, rootHandle, parentKey, locatorKey);
     }
 
     private static bool TryGetCachedElement(
@@ -4680,19 +4719,52 @@ public class UiService : IUiService
     /// For slow window operations the root is re-evaluated on every iteration so that newly
     /// opened dialogs are picked up by the auto-follow logic inside <see cref="GetWindowRoot"/>.
     /// </para>
+    /// <para>
+    /// When <see cref="UiRequest.ParentLocator"/> is set, the parent element is resolved
+    /// first and the child <see cref="UiRequest.Locator"/> is searched within that narrower scope.
+    /// </para>
     /// </summary>
     private AutomationElement FindWithRetry(UiRequest req)
     {
         var locator = RequireLocator(req);
         var session = RequireSession();
         var policy = GetOperationPolicy(req);
+        var preferAttributes = ShouldPreferAttributeSearch(req);
+        var xpathOnly = req.XPathOnly == true;
 
         var deadline = DateTime.UtcNow + policy.Timeout;
 
         var root = GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan);
 
+        // Resolve optional parent container to narrow the search scope.
+        var searchRoot = root;
+        if (req.ParentLocator != null)
+        {
+            var parent = TryFindElementBySmartStrategy(
+                root,
+                session,
+                req.ParentLocator,
+                preferAttributes: preferAttributes,
+                xpathOnly: xpathOnly,
+                out _);
+
+            if (parent == null)
+            {
+                throw new InvalidOperationException(
+                    $"Parent locator not found: {DescribeLocator(req.ParentLocator)}");
+            }
+
+            searchRoot = parent;
+
+            _logger.LogInformation(
+                "UI parent locator resolved. operation={Operation}, parent={Parent}, childLocator={Child}",
+                SanitizeValue(req.Operation),
+                DescribeLocator(req.ParentLocator),
+                DescribeLocator(locator));
+        }
+
         var cacheKey = policy.UseElementCache && !policy.RefreshRootEveryRetry
-            ? BuildElementCacheKey(session, root, locator)
+            ? BuildElementCacheKey(session, root, locator, req.ParentLocator)
             : null;
 
         // The cache check and store are separate lock acquisitions (same as the FindWindowCache
@@ -4702,7 +4774,7 @@ public class UiService : IUiService
             TryGetCachedElement(cacheKey, locator, out var cached))
         {
             _logger.LogInformation(
-                "UI element resolved from cache. operation={Operation}, policy={Policy}, locator={Locator}",
+                "UI locator resolved. operation={Operation}, policy={Policy}, strategy=cache, elapsedMs=0, locator={Locator}",
                 SanitizeValue(req.Operation),
                 policy.PolicyName,
                 DescribeLocator(locator));
@@ -4710,16 +4782,34 @@ public class UiService : IUiService
             return cached!;
         }
 
+        var findSw = Stopwatch.StartNew();
+
         while (true)
         {
-            var element = TryFindElement(root, session, locator);
+            var element = TryFindElementBySmartStrategy(
+                searchRoot,
+                session,
+                locator,
+                preferAttributes: preferAttributes,
+                xpathOnly: xpathOnly,
+                out var strategyName);
 
             if (element != null)
             {
+                findSw.Stop();
+
                 if (cacheKey != null)
                 {
                     StoreCachedElement(cacheKey, element);
                 }
+
+                _logger.LogInformation(
+                    "UI locator resolved. operation={Operation}, policy={Policy}, strategy={Strategy}, elapsedMs={ElapsedMs}, locator={Locator}",
+                    SanitizeValue(req.Operation),
+                    policy.PolicyName,
+                    strategyName,
+                    findSw.ElapsedMilliseconds,
+                    DescribeLocator(locator));
 
                 return element;
             }
@@ -4739,6 +4829,24 @@ public class UiService : IUiService
             if (policy.RefreshRootEveryRetry)
             {
                 root = GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan);
+
+                // Also re-resolve the parent scope when the root changes.
+                if (req.ParentLocator != null)
+                {
+                    var parent = TryFindElementBySmartStrategy(
+                        root,
+                        session,
+                        req.ParentLocator,
+                        preferAttributes: preferAttributes,
+                        xpathOnly: xpathOnly,
+                        out _);
+
+                    searchRoot = parent ?? root;
+                }
+                else
+                {
+                    searchRoot = root;
+                }
             }
         }
     }
@@ -4767,29 +4875,230 @@ public class UiService : IUiService
     }
 
     /// <summary>
-    /// Attempts a single element search. Returns null when not found.
-    /// When <see cref="UiLocator.XPath"/> is set it is evaluated via <see cref="FindByXPath"/>;
-    /// otherwise the standard attribute-condition approach is used.
+    /// Attempts a single element search using the legacy XPath-first strategy.
+    /// Used by <see cref="FindLocatorWithRetry"/> (which has no <see cref="UiRequest"/>
+    /// context) and as a fallback when neither strategy flag is set.
+    /// When XPath is present it is tried first; attribute conditions follow.
     /// </summary>
-    private static AutomationElement? TryFindElement(
+    private AutomationElement? TryFindElement(
         AutomationElement root, AutomationSession session, UiLocator locator)
     {
         try
         {
             if (!string.IsNullOrWhiteSpace(locator.XPath))
-                return FindByXPath(root, session, locator.XPath);
+            {
+                var byXPath = FindByXPath(root, session, locator.XPath);
+                if (byXPath != null)
+                    return byXPath;
+            }
 
-            var condition = BuildCondition(session, locator);
-            var element = root.FindFirstDescendant(condition);
-            if (element != null)
-                return element;
-
-            return TryFindWinFormsDateTimePickerByPartialClassName(root, session, locator);
+            return TryFindElementByCondition(root, session, locator);
         }
         catch
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Attribute-condition-based element search (no XPath).
+    /// Builds a combined AND condition from all non-empty locator properties and
+    /// also handles WinForms <c>DateTimePicker</c> partial class-name matching.
+    /// </summary>
+    private static AutomationElement? TryFindElementByCondition(
+        AutomationElement root, AutomationSession session, UiLocator locator)
+    {
+        var condition = BuildCondition(session, locator);
+        var element = root.FindFirstDescendant(condition);
+        if (element != null)
+            return element;
+
+        return TryFindWinFormsDateTimePickerByPartialClassName(root, session, locator);
+    }
+
+    /// <summary>
+    /// Dispatches element search based on the caller's strategy flags.
+    /// <list type="bullet">
+    ///   <item><term><paramref name="xpathOnly"/>=true</term><description>Only XPath is tried.</description></item>
+    ///   <item><term><paramref name="preferAttributes"/>=true</term><description>Attribute search runs first; XPath is the fallback.</description></item>
+    ///   <item><term>default</term><description>XPath first (legacy behavior), then attribute conditions.</description></item>
+    /// </list>
+    /// </summary>
+    private AutomationElement? TryFindElementBySmartStrategy(
+        AutomationElement root,
+        AutomationSession session,
+        UiLocator locator,
+        bool preferAttributes,
+        bool xpathOnly,
+        out string strategyName)
+    {
+        if (xpathOnly)
+        {
+            strategyName = "xpath";
+            if (!string.IsNullOrWhiteSpace(locator.XPath))
+                return FindByXPath(root, session, locator.XPath);
+
+            return null;
+        }
+
+        if (preferAttributes)
+        {
+            var byAttributes = TryFindElementByFastAttributes(root, session, locator, out strategyName);
+            if (byAttributes != null)
+                return byAttributes;
+
+            if (!string.IsNullOrWhiteSpace(locator.XPath))
+            {
+                strategyName = "xpath";
+                return FindByXPath(root, session, locator.XPath);
+            }
+
+            return null;
+        }
+
+        // XPath-first (legacy / stable)
+        if (!string.IsNullOrWhiteSpace(locator.XPath))
+        {
+            strategyName = "xpath";
+            var byXPath = FindByXPath(root, session, locator.XPath);
+            if (byXPath != null)
+                return byXPath;
+        }
+
+        var byCondition = TryFindElementByCondition(root, session, locator);
+        strategyName = byCondition != null ? "condition-fallback" : "condition-fallback";
+        return byCondition;
+    }
+
+    /// <summary>
+    /// Searches for an element using the prioritised attribute strategy:
+    /// <list type="number">
+    ///   <item>AutomationId + ControlType</item>
+    ///   <item>AutomationId only</item>
+    ///   <item>Name + ControlType</item>
+    ///   <item>Name + ClassName</item>
+    ///   <item>ControlType + ClassName</item>
+    ///   <item>Full condition-based fallback (all attributes AND-ed)</item>
+    /// </list>
+    /// </summary>
+    private AutomationElement? TryFindElementByFastAttributes(
+        AutomationElement root,
+        AutomationSession session,
+        UiLocator locator,
+        out string strategyName)
+    {
+        try
+        {
+            // 1. AutomationId + ControlType
+            if (!string.IsNullOrWhiteSpace(locator.AutomationId) &&
+                !string.IsNullOrWhiteSpace(locator.ControlType))
+            {
+                var match = FindFirstByAutomationIdAndControlType(root, session, locator);
+                if (match != null)
+                {
+                    strategyName = "automationid-controltype";
+                    return match;
+                }
+            }
+
+            // 2. AutomationId only
+            if (!string.IsNullOrWhiteSpace(locator.AutomationId))
+            {
+                var cf = session.Automation.ConditionFactory;
+                var match = root.FindFirstDescendant(cf.ByAutomationId(locator.AutomationId));
+                if (match != null && LocatorMatchesExceptXPath(match, locator))
+                {
+                    strategyName = "automationid";
+                    return match;
+                }
+            }
+
+            // 3. Name + ControlType
+            if (!string.IsNullOrWhiteSpace(locator.Name) &&
+                !string.IsNullOrWhiteSpace(locator.ControlType))
+            {
+                var match = FindFirstByNameAndControlType(root, session, locator);
+                if (match != null)
+                {
+                    strategyName = "name-controltype";
+                    return match;
+                }
+            }
+
+            // 4. Name + ClassName
+            if (!string.IsNullOrWhiteSpace(locator.Name) &&
+                !string.IsNullOrWhiteSpace(locator.ClassName))
+            {
+                var cf = session.Automation.ConditionFactory;
+                var match = root.FindFirstDescendant(
+                    new AndCondition(cf.ByName(locator.Name), cf.ByClassName(locator.ClassName)));
+                if (match != null && LocatorMatchesExceptXPath(match, locator))
+                {
+                    strategyName = "name-classname";
+                    return match;
+                }
+            }
+
+            // 5. ControlType + ClassName
+            if (!string.IsNullOrWhiteSpace(locator.ControlType) &&
+                !string.IsNullOrWhiteSpace(locator.ClassName))
+            {
+                var cf = session.Automation.ConditionFactory;
+                var controlType = ParseControlType(locator.ControlType);
+                var match = root.FindFirstDescendant(
+                    new AndCondition(cf.ByControlType(controlType), cf.ByClassName(locator.ClassName)));
+                if (match != null && LocatorMatchesExceptXPath(match, locator))
+                {
+                    strategyName = "controltype-classname";
+                    return match;
+                }
+            }
+
+            // 6. Full condition-based fallback
+            var fallback = TryFindElementByCondition(root, session, locator);
+            strategyName = "condition-fallback";
+            return fallback;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(
+                ex,
+                "Fast attribute locator search failed. locator={Locator}",
+                DescribeLocator(locator));
+
+            strategyName = "condition-fallback";
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Finds the first descendant matching both <c>AutomationId</c> and <c>ControlType</c>
+    /// from <paramref name="locator"/>.
+    /// </summary>
+    private static AutomationElement? FindFirstByAutomationIdAndControlType(
+        AutomationElement root, AutomationSession session, UiLocator locator)
+    {
+        var cf = session.Automation.ConditionFactory;
+        var controlType = ParseControlType(locator.ControlType!);
+        return root.FindFirstDescendant(
+            new AndCondition(
+                cf.ByAutomationId(locator.AutomationId!),
+                cf.ByControlType(controlType)));
+    }
+
+    /// <summary>
+    /// Finds the first descendant matching both <c>Name</c> and <c>ControlType</c>
+    /// from <paramref name="locator"/>.
+    /// </summary>
+    private static AutomationElement? FindFirstByNameAndControlType(
+        AutomationElement root, AutomationSession session, UiLocator locator)
+    {
+        var cf = session.Automation.ConditionFactory;
+        var controlType = ParseControlType(locator.ControlType!);
+        return root.FindFirstDescendant(
+            new AndCondition(
+                cf.ByName(locator.Name!),
+                cf.ByControlType(controlType)));
     }
 
     private static AutomationElement? TryFindWinFormsDateTimePickerByPartialClassName(
@@ -4825,6 +5134,33 @@ public class UiService : IUiService
 
         if (!string.IsNullOrWhiteSpace(locator.AutomationId) &&
             !string.Equals(SafeElementAutomationId(element), locator.AutomationId, StringComparison.Ordinal))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(locator.ControlType) &&
+            !string.Equals(element.ControlType.ToString(), locator.ControlType, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when all non-XPath locator properties that are present
+    /// (Name, AutomationId, ClassName, ControlType) match the element.
+    /// Used by fast attribute search to verify candidates that were found by a
+    /// single-attribute query.
+    /// </summary>
+    private static bool LocatorMatchesExceptXPath(AutomationElement element, UiLocator locator)
+    {
+        if (!string.IsNullOrWhiteSpace(locator.Name) &&
+            !string.Equals(SafeElementName(element), locator.Name, StringComparison.Ordinal))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(locator.AutomationId) &&
+            !string.Equals(SafeElementAutomationId(element), locator.AutomationId, StringComparison.Ordinal))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(locator.ClassName) &&
+            !string.Equals(SafeElementClassName(element), locator.ClassName, StringComparison.OrdinalIgnoreCase))
             return false;
 
         if (!string.IsNullOrWhiteSpace(locator.ControlType) &&
