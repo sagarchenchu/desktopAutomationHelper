@@ -7297,7 +7297,11 @@ public class UiService : IUiService
             if (string.IsNullOrWhiteSpace(itemText))
             {
                 try { itemText = item.Properties.Name.Value ?? string.Empty; }
-                catch { itemText = string.Empty; }
+                catch (Exception nameEx)
+                {
+                    _logger.LogDebug(nameEx, "Could not read Properties.Name from ComboBox ListItem at index {Index}.", index);
+                    itemText = string.Empty;
+                }
             }
 
             // Try SelectionItem pattern first.
