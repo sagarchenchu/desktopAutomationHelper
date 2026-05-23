@@ -2779,6 +2779,25 @@ public class UiService : IUiService
             return SelectComboBoxItem(comboRequest);
         }
 
+        // Win32 native index selection for ComboBox elements.
+        if (element.ControlType == ControlType.ComboBox && req.Index.HasValue)
+        {
+            var session = RequireSession();
+            if (TrySelectNativeWin32ComboBoxByIndex(session, element, req.Index.Value, out var win32IndexStrategy))
+            {
+                var hwnd = SafeWindowHandle(element);
+                var selectedText = Win32ComboBoxHelper.GetSelectedText(hwnd);
+                return new
+                {
+                    selected = selectedText,
+                    index    = req.Index.Value,
+                    comboBox = SafeElementName(element),
+                    verified = true,
+                    strategy = win32IndexStrategy
+                };
+            }
+        }
+
         var cf = RequireSession().Automation.ConditionFactory;
 
         // Strategy 1: For editable combo boxes the Value pattern lets us set the text
@@ -4212,7 +4231,25 @@ public class UiService : IUiService
         var operationDeadline = DateTime.UtcNow.AddMilliseconds(ComboBoxSingleSelectionTimeoutMs);
 
         _logger.LogInformation(
-            "ComboBox selection starting with UIA direct strategy. combo={Combo}, value={Value}",
+            "ComboBox selection starting. Trying Win32 native strategy first. combo={Combo}, value={Value}",
+            SafeElementName(comboBox),
+            itemName);
+
+        // --- Strategy 1: Win32 native (pywinauto-style, no dropdown) ---
+        if (TrySelectNativeWin32ComboBox(session, comboBox, itemName, out var win32NativeStrategy))
+        {
+            return new
+            {
+                selected = itemName,
+                actual   = GetComboBoxCurrentValue(session, comboBox),
+                comboBox = SafeElementName(comboBox),
+                verified = true,
+                strategy = win32NativeStrategy
+            };
+        }
+
+        _logger.LogInformation(
+            "ComboBox Win32 native strategy did not apply. Falling back to UIA direct strategy. combo={Combo}, value={Value}",
             SafeElementName(comboBox),
             itemName);
 
@@ -6836,6 +6873,114 @@ public class UiService : IUiService
         {
             _logger.LogWarning(ex, "GetLogicalComboBoxItems failed for {Combo}", SafeElementName(comboBox));
             return [];
+        }
+    }
+
+    // =========================================================================
+    // Win32 native ComboBox strategies (pywinauto-style)
+    // =========================================================================
+
+    /// <summary>
+    /// Attempts to select <paramref name="requestedValue"/> in a native Win32 ComboBox
+    /// using CB_FINDSTRINGEXACT / CB_SETCURSEL (no dropdown open).
+    /// Returns true and sets <paramref name="strategy"/> when the selection is confirmed.
+    /// </summary>
+    private bool TrySelectNativeWin32ComboBox(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string requestedValue,
+        out string strategy)
+    {
+        strategy = "win32-native-not-used";
+
+        try
+        {
+            var hwnd      = SafeWindowHandle(comboBox);
+            var className = SafeElementClassName(comboBox);
+
+            if (!Win32ComboBoxHelper.IsLikelyNativeWin32ComboBox(hwnd, className))
+                return false;
+
+            _logger.LogInformation(
+                "Trying native Win32 ComboBox selection. hwnd=0x{Hwnd:X}, className={ClassName}, value={Value}",
+                hwnd.ToInt64(), className, requestedValue);
+
+            if (!Win32ComboBoxHelper.SelectByText(hwnd, requestedValue, _logger, "ui-win32-native-combobox"))
+                return false;
+
+            Win32ComboBoxHelper.HideDropdown(hwnd);
+            Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+            if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, "ui-win32-native-combobox"))
+            {
+                _logger.LogInformation(
+                    "ComboBox selection strategy selected: win32-native-combobox. combo={Combo}, value={Value}",
+                    SafeElementName(comboBox), requestedValue);
+
+                strategy = "win32-native-combobox";
+                return true;
+            }
+
+            _logger.LogWarning(
+                "Native Win32 ComboBox selection did not verify. requested={Requested}, actual={Actual}, hwnd=0x{Hwnd:X}",
+                requestedValue, GetComboBoxCurrentValue(session, comboBox), hwnd.ToInt64());
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Native Win32 ComboBox selection failed. combo={Combo}, value={Value}",
+                SafeElementName(comboBox), requestedValue);
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Attempts to select the item at <paramref name="index"/> in a native Win32 ComboBox
+    /// using CB_SETCURSEL.
+    /// Returns true and sets <paramref name="strategy"/> when the selection succeeds.
+    /// </summary>
+    private bool TrySelectNativeWin32ComboBoxByIndex(
+        AutomationSession session,
+        AutomationElement comboBox,
+        int index,
+        out string strategy)
+    {
+        strategy = "win32-native-index-not-used";
+
+        try
+        {
+            var hwnd      = SafeWindowHandle(comboBox);
+            var className = SafeElementClassName(comboBox);
+
+            if (!Win32ComboBoxHelper.IsLikelyNativeWin32ComboBox(hwnd, className))
+                return false;
+
+            _logger.LogInformation(
+                "Trying native Win32 ComboBox index selection. hwnd=0x{Hwnd:X}, className={ClassName}, index={Index}",
+                hwnd.ToInt64(), className, index);
+
+            if (!Win32ComboBoxHelper.SelectByIndex(hwnd, index, _logger, "ui-win32-native-combobox-index"))
+                return false;
+
+            Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+            _logger.LogInformation(
+                "ComboBox selection strategy selected: win32-native-combobox-index. combo={Combo}, index={Index}, selected={Selected}",
+                SafeElementName(comboBox), index, Win32ComboBoxHelper.GetSelectedText(hwnd));
+
+            strategy = "win32-native-combobox-index";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Native Win32 ComboBox index selection failed. combo={Combo}, index={Index}",
+                SafeElementName(comboBox), index);
+
+            return false;
         }
     }
 
