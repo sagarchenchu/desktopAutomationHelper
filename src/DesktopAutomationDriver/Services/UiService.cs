@@ -7258,9 +7258,10 @@ public class UiService : IUiService
             if (index >= items.Length)
             {
                 _logger.LogInformation(
-                    "UIA ComboBox index search failed. index={Index}, availableCount={Count}",
+                    "UIA ComboBox index search failed. index={Index}, availableCount={Count}, comboBox={ComboBox}",
                     index,
-                    items.Length);
+                    items.Length,
+                    SafeElementName(comboBox));
                 return false;
             }
 
@@ -7292,7 +7293,10 @@ public class UiService : IUiService
 
             // Collapse the dropdown.
             try { comboBox.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
-            catch { /* best effort */ }
+            catch (Exception collapseEx)
+            {
+                _logger.LogDebug(collapseEx, "ComboBox collapse failed after index selection. comboBox={ComboBox}", SafeElementName(comboBox));
+            }
 
             WaitForComboBoxDropdownToClose(comboBox, timeoutMs: 1000);
 
