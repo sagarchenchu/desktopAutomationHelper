@@ -7343,11 +7343,20 @@ public class UiService : IUiService
                 strategy);
 
             // Verify that the final ComboBox value matches the selected item.
-            // Reuse the existing value-based verifier; it waits for full collapse and
-            // checks for rollback/default-value reset, returning false if the value did
-            // not actually change to the expected item text.
-            if (!string.IsNullOrWhiteSpace(itemText) &&
-                !VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, itemText, strategy))
+            // An empty item text means we have nothing to compare against, so we
+            // cannot prove the selection succeeded — fail safe.
+            if (string.IsNullOrWhiteSpace(itemText))
+            {
+                _logger.LogWarning(
+                    "UIA ComboBox index selection cannot verify because item text is empty. index={Index}, strategy={Strategy}, comboBox={ComboBox}",
+                    index,
+                    strategy,
+                    SafeElementName(comboBox));
+
+                return false;
+            }
+
+            if (!VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, itemText, strategy))
             {
                 _logger.LogWarning(
                     "UIA ComboBox index selection verification failed. strategy={Strategy}, index={Index}, expected={Expected}, comboBox={ComboBox}",
