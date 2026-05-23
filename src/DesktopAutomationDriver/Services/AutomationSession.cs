@@ -116,6 +116,12 @@ public class AutomationSession : IDisposable
     internal static readonly TimeSpan DesktopScanThrottle = TimeSpan.FromSeconds(2);
 
     /// <summary>
+    /// Brief pause after broadcasting WM_CLOSE to tracked windows so the messages
+    /// can be processed before the UIA Window-pattern close attempt begins.
+    /// </summary>
+    private const int WmCloseProcessingDelayMs = 200;
+
+    /// <summary>
     /// Seeds the set of known window handles with the initial application windows,
     /// so that windows already open at launch are not treated as "new" later.
     /// </summary>
@@ -237,7 +243,7 @@ public class AutomationSession : IDisposable
         }
         catch { /* best effort */ }
 
-        Thread.Sleep(200); // Brief pause so WM_CLOSE messages can be processed.
+        Thread.Sleep(WmCloseProcessingDelayMs); // Brief pause so WM_CLOSE messages can be processed.
 
         // Step 2: graceful close via the Window UIA pattern for the main application windows.
         try

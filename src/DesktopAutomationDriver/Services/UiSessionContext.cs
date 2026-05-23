@@ -158,9 +158,8 @@ public class UiSessionContext : IUiSessionContext, IDisposable
                 if (hwnd == IntPtr.Zero) continue;
 
                 int pid;
-                try { pid = w.Properties.ProcessId.ValueOrDefault; }
+                try { pid = w.Properties.ProcessId.Value; }
                 catch { pid = session.Application.ProcessId; }
-                if (pid == 0) pid = session.Application.ProcessId;
 
                 string title;
                 try { title = w.Properties.Name.Value ?? string.Empty; }
