@@ -4565,7 +4565,7 @@ public class UiService : IUiService
         if (action is not ("button" or "close" or "enter" or "escape" or "makecurrent"))
             throw new ArgumentException(
                 $"Unsupported popup action '{action}'. " +
-                "Supported actions: button, close, enter, escape, makecurrent.");
+                "Supported actions (case-insensitive): button, close, enter, escape, makecurrent.");
 
         if (requireTarget &&
             string.IsNullOrWhiteSpace(request.Value) &&
