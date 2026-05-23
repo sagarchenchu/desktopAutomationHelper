@@ -323,7 +323,7 @@ public class UiService : IUiService
                 "alertok"     => PopupAction(request, defaultAction: "button", defaultButton: "OK|Yes|&OK|&Yes|Save"),
                 "alertcancel" => PopupAction(request, defaultAction: "button", defaultButton: "Cancel|No|&Cancel|&No"),
                 "alertclose"  => PopupAction(request, defaultAction: "close"),
-                "popupok"     => PopupAction(request, defaultAction: "enter"),
+                "popupok"     => PopupAction(request, defaultAction: "enter", requireTarget: true),
 
                 _ => throw new ArgumentException(
                     $"Unknown operation '{request.Operation}'. " +
@@ -4553,13 +4553,29 @@ public class UiService : IUiService
     private object PopupAction(
         UiRequest request,
         string? defaultAction = null,
-        string? defaultButton = null)
+        string? defaultButton = null,
+        bool requireTarget = false)
     {
         var session = TryGetSessionOrNull();
 
         var action = string.IsNullOrWhiteSpace(request.Action)
             ? defaultAction ?? "button"
             : request.Action.Trim().ToLowerInvariant();
+
+        if (action is not ("button" or "close" or "enter" or "escape" or "makecurrent"))
+            throw new ArgumentException(
+                $"Unsupported popup action '{action}'. " +
+                "Supported actions: button, close, enter, escape, makecurrent.");
+
+        if (requireTarget &&
+            string.IsNullOrWhiteSpace(request.Value) &&
+            !request.Hwnd.HasValue &&
+            string.IsNullOrWhiteSpace(request.ClassName))
+        {
+            throw new ArgumentException(
+                "'value' (window title), 'hwnd', or 'className' is required for 'popupok' " +
+                "to identify the target popup window.");
+        }
 
         var button = string.IsNullOrWhiteSpace(request.Button)
             ? defaultButton
@@ -4677,28 +4693,96 @@ public class UiService : IUiService
     {
         var buttonNames = ParseButtonNames(buttonSpec);
 
+        // Collect all visible buttons once to avoid multiple UIA tree traversals.
+        AutomationElement[] allButtons;
+        try
+        {
+            allButtons = popupRoot.FindAllDescendants(cf => cf.ByControlType(ControlType.Button));
+        }
+        catch
+        {
+            allButtons = [];
+        }
+
+        // Pass 1: exact UIA name match (as before — fastest and most precise).
         foreach (var name in buttonNames)
         {
-            try
+            foreach (var btn in allButtons)
             {
-                var btn = popupRoot.FindFirstDescendant(cf =>
-                    cf.ByControlType(ControlType.Button).And(cf.ByName(name)));
-
-                if (btn == null) continue;
-
-                if (btn.Patterns.Invoke.PatternOrDefault != null)
+                try
                 {
-                    btn.Patterns.Invoke.Pattern.Invoke();
-                    return true;
-                }
+                    if (!string.Equals(btn.Name, name, StringComparison.OrdinalIgnoreCase))
+                        continue;
 
-                btn.Click();
-                return true;
+                    return InvokeOrClickButton(btn);
+                }
+                catch { /* try next */ }
             }
-            catch { /* try next name */ }
+        }
+
+        // Pass 2: normalized match — strip access-key prefix '&' and trim whitespace.
+        foreach (var name in buttonNames)
+        {
+            var normalizedTarget = NormalizeButtonName(name);
+
+            foreach (var btn in allButtons)
+            {
+                try
+                {
+                    if (!string.Equals(NormalizeButtonName(btn.Name), normalizedTarget, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    return InvokeOrClickButton(btn);
+                }
+                catch { /* try next */ }
+            }
+        }
+
+        // Pass 3: contains match, but only when exactly one button matches (to avoid ambiguity).
+        foreach (var name in buttonNames)
+        {
+            var normalizedTarget = NormalizeButtonName(name);
+
+            var containsMatches = allButtons
+                .Where(btn =>
+                {
+                    try { return NormalizeButtonName(btn.Name).Contains(normalizedTarget, StringComparison.OrdinalIgnoreCase); }
+                    catch { return false; }
+                })
+                .ToList();
+
+            if (containsMatches.Count == 1)
+            {
+                try { return InvokeOrClickButton(containsMatches[0]); }
+                catch { /* try next name */ }
+            }
         }
 
         return false;
+    }
+
+    private static bool InvokeOrClickButton(AutomationElement btn)
+    {
+        if (btn.Patterns.Invoke.PatternOrDefault != null)
+        {
+            btn.Patterns.Invoke.Pattern.Invoke();
+            return true;
+        }
+
+        btn.Click();
+        return true;
+    }
+
+    /// <summary>
+    /// Strips the Win32 access-key prefix (<c>&amp;</c>) from a button label and trims whitespace,
+    /// so that "&amp;OK" and "OK" compare equal.
+    /// </summary>
+    private static string NormalizeButtonName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return string.Empty;
+
+        return name.Replace("&", string.Empty).Trim();
     }
 
     private static IReadOnlyList<string> ParseButtonNames(string? buttonSpec)
