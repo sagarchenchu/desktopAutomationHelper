@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using DesktopAutomationDriver.Models.Request;
 using FlaUI.Core;
@@ -514,23 +515,30 @@ public class UiService : IUiService
 
     private object? SwitchWindow(UiRequest req)
     {
-        if (string.IsNullOrWhiteSpace(req.Value))
-            throw new ArgumentException("'value' must be a partial window title for 'switchwindow'.");
+        // At least one of value, hwnd, or className must be provided.
+        if (string.IsNullOrWhiteSpace(req.Value) &&
+            !req.Hwnd.HasValue &&
+            string.IsNullOrWhiteSpace(req.ClassName))
+        {
+            throw new ArgumentException(
+                "'switchwindow' requires at least one of: value (title), hwnd, or className.");
+        }
 
         var session = _ctx.ActiveSession;
 
         // --- Win32-first fast path ---
         // Enumerate top-level HWNDs directly (no UIA tree walk) and activate the
         // matching window via Win32, which is significantly faster than the UIA search.
-        var win32Match = FindWin32WindowForSwitch(req.Value, session);
+        var win32Match = FindWin32WindowForSwitch(req, session);
 
         if (win32Match != null)
         {
             _logger.LogInformation(
-                "SwitchWindow Win32-first match found. hwnd=0x{Hwnd:X}, pid={Pid}, title={Title}",
+                "SwitchWindow Win32-first match found. hwnd=0x{Hwnd:X}, pid={Pid}, title={Title}, className={ClassName}",
                 win32Match.Hwnd.ToInt64(),
                 win32Match.ProcessId,
-                win32Match.Title);
+                win32Match.Title,
+                win32Match.ClassName);
 
             if (ActivateWin32Window(win32Match.Hwnd))
             {
@@ -552,17 +560,24 @@ public class UiService : IUiService
 
                 return new
                 {
-                    title = win32Match.Title,
-                    hwnd = win32Match.Hwnd.ToInt64(),
-                    strategy = "win32-first-foreground-only"
+                    title     = win32Match.Title,
+                    className = win32Match.ClassName,
+                    hwnd      = win32Match.Hwnd.ToInt64(),
+                    processId = win32Match.ProcessId,
+                    strategy  = "win32-first-foreground-only"
                 };
             }
         }
 
         // --- Fallback: existing UIA/FlaUI search logic ---
         _logger.LogInformation(
-            "SwitchWindow Win32-first path did not activate a window. Falling back to UIA/FlaUI search. titleFragment={Title}",
-            SanitizeValue(req.Value));
+            "SwitchWindow Win32-first failed for value={Value}, hwnd={Hwnd}, className={ClassName}, processId={ProcessId}, matchMode={MatchMode}. Falling back to UIA/FlaUI.",
+            SanitizeValue(req.Value), req.Hwnd, req.ClassName, req.ProcessId, req.MatchMode);
+
+        // UIA/FlaUI fallback requires a title fragment.
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new InvalidOperationException(
+                "No matching window was found. The Win32 search by hwnd/className yielded no result and no title value was provided for the UIA/FlaUI fallback.");
 
         var deadline = DateTime.UtcNow + DefaultRetry;
 
@@ -841,15 +856,20 @@ public class UiService : IUiService
             if (!IsWindowVisible(hWnd))
                 return true;
 
-            var length = GetWindowTextLength(hWnd);
-            if (length <= 0)
-                return true;
+            var titleLen = GetWindowTextLength(hWnd);
+            string title = string.Empty;
+            if (titleLen > 0)
+            {
+                var sb = new StringBuilder(titleLen + 1);
+                GetWindowText(hWnd, sb, sb.Capacity);
+                title = sb.ToString();
+            }
 
-            var sb = new StringBuilder(length + 1);
-            GetWindowText(hWnd, sb, sb.Capacity);
+            var className = GetWin32ClassName(hWnd);
 
-            var title = sb.ToString();
-            if (string.IsNullOrWhiteSpace(title))
+            // Skip windows that have neither a visible title nor a meaningful class name
+            // to avoid returning noise windows in broad all-process searches.
+            if (string.IsNullOrWhiteSpace(title) && string.IsNullOrWhiteSpace(className))
                 return true;
 
             GetWindowThreadProcessId(hWnd, out var pid);
@@ -861,7 +881,8 @@ public class UiService : IUiService
             {
                 Hwnd = hWnd,
                 ProcessId = (int)pid,
-                Title = title
+                Title = title,
+                ClassName = className
             });
 
             return true;
@@ -871,55 +892,247 @@ public class UiService : IUiService
     }
 
     /// <summary>
-    /// Searches visible top-level windows via Win32 for one whose title matches
-    /// <paramref name="titleFragment"/>.
-    /// <list type="number">
-    ///   <item>Exact match (case-insensitive) filtered to the session's process.</item>
-    ///   <item>Contains match filtered to the session's process.</item>
-    ///   <item>Exact/contains match across all processes (if process filter was active).</item>
-    /// </list>
-    /// Returns null when no match is found.
+    /// Searches visible top-level windows via Win32 for the best match using the
+    /// extended criteria from <paramref name="req"/> (HWND, className, processId,
+    /// matchMode, and/or title/value).
     /// </summary>
     private Win32WindowInfo? FindWin32WindowForSwitch(
-        string titleFragment,
+        UiRequest req,
         AutomationSession? session)
     {
-        if (string.IsNullOrWhiteSpace(titleFragment))
-            return null;
+        var criteria = BuildWin32SwitchCriteria(req, session);
 
-        int? pid = null;
-        try { pid = session?.Application?.ProcessId; }
-        catch { pid = null; }
-
-        var windows = EnumerateTopLevelWin32Windows(pid);
-
-        var exact = windows.FirstOrDefault(w =>
-            string.Equals(w.Title, titleFragment, StringComparison.OrdinalIgnoreCase));
-        if (exact != null)
-            return exact;
-
-        var contains = windows.FirstOrDefault(w =>
-            w.Title.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
-        if (contains != null)
-            return contains;
-
-        // Widen to all processes if the process filter was active and yielded nothing.
-        if (pid.HasValue)
+        // 1. Exact HWND wins unconditionally.
+        if (criteria.Hwnd.HasValue && criteria.Hwnd.Value != IntPtr.Zero)
         {
-            windows = EnumerateTopLevelWin32Windows(null);
+            var hwnd = criteria.Hwnd.Value;
 
-            exact = windows.FirstOrDefault(w =>
-                string.Equals(w.Title, titleFragment, StringComparison.OrdinalIgnoreCase));
-            if (exact != null)
-                return exact;
+            if (IsWindow(hwnd))
+            {
+                GetWindowThreadProcessId(hwnd, out var pid);
 
-            contains = windows.FirstOrDefault(w =>
-                w.Title.Contains(titleFragment, StringComparison.OrdinalIgnoreCase));
-            if (contains != null)
-                return contains;
+                var info = new Win32WindowInfo
+                {
+                    Hwnd      = hwnd,
+                    ProcessId = (int)pid,
+                    Title     = GetWindowTitle(hwnd),
+                    ClassName = GetWin32ClassName(hwnd)
+                };
+
+                _logger.LogInformation(
+                    "SwitchWindow Win32 exact HWND match. hwnd=0x{Hwnd:X}, pid={Pid}, title={Title}, className={ClassName}",
+                    hwnd.ToInt64(), info.ProcessId, info.Title, info.ClassName);
+
+                return info;
+            }
+
+            _logger.LogWarning(
+                "SwitchWindow requested HWND was not a valid window. hwnd=0x{Hwnd:X}",
+                hwnd.ToInt64());
         }
 
-        return null;
+        // 2. Process-filtered search first.
+        if (criteria.ProcessId.HasValue)
+        {
+            var processMatch = FindBestWin32WindowMatch(
+                EnumerateTopLevelWin32Windows(criteria.ProcessId),
+                criteria);
+
+            if (processMatch != null)
+                return processMatch;
+        }
+
+        // 3. Widen to all processes if process-filtered search failed.
+        return FindBestWin32WindowMatch(
+            EnumerateTopLevelWin32Windows(null),
+            criteria);
+    }
+
+    /// <summary>
+    /// Builds the switch criteria from a <see cref="UiRequest"/>, resolving the
+    /// process ID from the active session when the request does not supply one.
+    /// </summary>
+    private Win32SwitchCriteria BuildWin32SwitchCriteria(
+        UiRequest request,
+        AutomationSession? session)
+    {
+        int? processId = request.ProcessId;
+        if (!processId.HasValue)
+        {
+            try { processId = session?.Application?.ProcessId; }
+            catch { processId = null; }
+        }
+
+        IntPtr? hwnd = null;
+        if (request.Hwnd.HasValue && request.Hwnd.Value != 0)
+            hwnd = new IntPtr(request.Hwnd.Value);
+
+        var matchMode = string.IsNullOrWhiteSpace(request.MatchMode)
+            ? "contains"
+            : request.MatchMode.Trim().ToLowerInvariant();
+
+        if (matchMode is not ("exact" or "contains" or "regex"))
+            matchMode = "contains";
+
+        return new Win32SwitchCriteria
+        {
+            TitleOrValue = !string.IsNullOrWhiteSpace(request.Value) ? request.Value : null,
+            Hwnd         = hwnd,
+            ClassName    = string.IsNullOrWhiteSpace(request.ClassName) ? null : request.ClassName,
+            ProcessId    = processId,
+            MatchMode    = matchMode
+        };
+    }
+
+    /// <summary>
+    /// Scores each window in <paramref name="windows"/> against <paramref name="criteria"/>
+    /// and returns the highest-scoring candidate, or null when no window qualifies.
+    /// </summary>
+    private Win32WindowInfo? FindBestWin32WindowMatch(
+        IReadOnlyCollection<Win32WindowInfo> windows,
+        Win32SwitchCriteria criteria)
+    {
+        Win32WindowInfo? best = null;
+        int bestScore = 0;
+        string bestReason = string.Empty;
+
+        foreach (var window in windows)
+        {
+            var score = ScoreWin32WindowCandidate(window, criteria, out var reason);
+            if (score > bestScore || (score == bestScore && best != null &&
+                window.Title.Length < best.Title.Length))
+            {
+                best = window;
+                bestScore = score;
+                bestReason = reason;
+            }
+        }
+
+        if (best == null)
+            return null;
+
+        _logger.LogInformation(
+            "SwitchWindow Win32 best match. score={Score}, reason={Reason}, hwnd=0x{Hwnd:X}, pid={Pid}, title={Title}, className={ClassName}",
+            bestScore, bestReason, best.Hwnd.ToInt64(), best.ProcessId, best.Title, best.ClassName);
+
+        return best;
+    }
+
+    /// <summary>
+    /// Returns a positive match score for <paramref name="window"/> against the
+    /// given criteria, or 0 when the window does not qualify.
+    /// </summary>
+    private static int ScoreWin32WindowCandidate(
+        Win32WindowInfo window,
+        Win32SwitchCriteria criteria,
+        out string reason)
+    {
+        reason = string.Empty;
+        var score = 0;
+
+        if (criteria.ProcessId.HasValue && window.ProcessId == criteria.ProcessId.Value)
+        {
+            score += 50;
+            reason += "pid;";
+        }
+
+        if (!string.IsNullOrWhiteSpace(criteria.ClassName))
+        {
+            if (!ClassNameMatches(window.ClassName, criteria.ClassName))
+                return 0;
+
+            score += string.Equals(window.ClassName, criteria.ClassName,
+                StringComparison.OrdinalIgnoreCase) ? 50 : 25;
+            reason += "class;";
+        }
+
+        if (!string.IsNullOrWhiteSpace(criteria.TitleOrValue))
+        {
+            if (!TitleMatches(window.Title, criteria.TitleOrValue, criteria.MatchMode))
+                return 0;
+
+            score += criteria.MatchMode switch
+            {
+                "exact" => 80,
+                "regex" => 60,
+                _ => string.Equals(window.Title, criteria.TitleOrValue,
+                         StringComparison.OrdinalIgnoreCase) ? 80 : 40
+            };
+            reason += $"title-{criteria.MatchMode};";
+        }
+
+        // Require at least one of title or className when neither was provided; don't random-match.
+        if (string.IsNullOrWhiteSpace(criteria.TitleOrValue) &&
+            string.IsNullOrWhiteSpace(criteria.ClassName))
+        {
+            return 0;
+        }
+
+        return score;
+    }
+
+    /// <summary>Returns true when <paramref name="actualTitle"/> satisfies the match.</summary>
+    private static bool TitleMatches(string actualTitle, string? expected, string matchMode)
+    {
+        if (string.IsNullOrWhiteSpace(expected))
+            return true;
+
+        actualTitle ??= string.Empty;
+
+        return matchMode switch
+        {
+            "exact" => string.Equals(actualTitle, expected, StringComparison.OrdinalIgnoreCase),
+            "regex" => Regex.IsMatch(actualTitle, expected,
+                           RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),
+            _ => actualTitle.Contains(expected, StringComparison.OrdinalIgnoreCase)
+        };
+    }
+
+    /// <summary>
+    /// Returns true when <paramref name="actualClassName"/> equals or contains
+    /// <paramref name="expectedClassName"/> (case-insensitive).
+    /// </summary>
+    private static bool ClassNameMatches(string actualClassName, string? expectedClassName)
+    {
+        if (string.IsNullOrWhiteSpace(expectedClassName))
+            return true;
+
+        actualClassName ??= string.Empty;
+
+        return string.Equals(actualClassName, expectedClassName, StringComparison.OrdinalIgnoreCase)
+            || actualClassName.Contains(expectedClassName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Reads the Win32 class name of a window handle.</summary>
+    private static string GetWin32ClassName(IntPtr hwnd)
+    {
+        try
+        {
+            var sb = new StringBuilder(256);
+            GetClassName(hwnd, sb, sb.Capacity);
+            return sb.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>Reads the window title for an HWND without going through UIA.</summary>
+    private static string GetWindowTitle(IntPtr hwnd)
+    {
+        try
+        {
+            var len = GetWindowTextLength(hwnd);
+            if (len <= 0) return string.Empty;
+            var sb = new StringBuilder(len + 1);
+            GetWindowText(hwnd, sb, sb.Capacity);
+            return sb.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     /// <summary>
@@ -5464,6 +5677,20 @@ public class UiService : IUiService
         public IntPtr Hwnd { get; init; }
         public int ProcessId { get; init; }
         public string Title { get; init; } = string.Empty;
+        public string ClassName { get; init; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Resolved criteria used to search for a Win32 top-level window.
+    /// Built from a <see cref="UiRequest"/> by <c>BuildWin32SwitchCriteria</c>.
+    /// </summary>
+    private sealed class Win32SwitchCriteria
+    {
+        public string? TitleOrValue { get; init; }
+        public IntPtr? Hwnd { get; init; }
+        public string? ClassName { get; init; }
+        public int? ProcessId { get; init; }
+        public string MatchMode { get; init; } = "contains";
     }
 
     // =========================================================================
@@ -11726,6 +11953,12 @@ public class UiService : IUiService
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetShellWindow();
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
 
     private const int SW_RESTORE = 9;
 }
