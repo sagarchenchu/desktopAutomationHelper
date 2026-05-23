@@ -326,7 +326,7 @@ public class UiService : IUiService
 
             _logger.LogInformation(
                 "UI API operation completed. operation={Operation}, elapsedMs={ElapsedMs}, policy={Policy}, locator={Locator}",
-                request.Operation,
+                SanitizeValue(request.Operation),
                 sw.ElapsedMilliseconds,
                 GetOperationPolicy(request).PolicyName,
                 request.Locator == null ? "" : DescribeLocator(request.Locator));
@@ -4691,21 +4691,23 @@ public class UiService : IUiService
 
         var root = GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan);
 
-        var cacheKey = policy.UseElementCache
+        var cacheKey = policy.UseElementCache && !policy.RefreshRootEveryRetry
             ? BuildElementCacheKey(session, root, locator)
             : null;
 
+        // The cache check and store are separate lock acquisitions (same as the FindWindowCache
+        // pattern). The potential race (two threads both miss the cache and both store the same
+        // element) is benign: the second store merely overwrites the first with an equivalent value.
         if (cacheKey != null &&
-            TryGetCachedElement(cacheKey, locator, out var cached) &&
-            cached != null)
+            TryGetCachedElement(cacheKey, locator, out var cached))
         {
             _logger.LogInformation(
                 "UI element resolved from cache. operation={Operation}, policy={Policy}, locator={Locator}",
-                req.Operation,
+                SanitizeValue(req.Operation),
                 policy.PolicyName,
                 DescribeLocator(locator));
 
-            return cached;
+            return cached!;
         }
 
         while (true)
@@ -4715,15 +4717,22 @@ public class UiService : IUiService
             if (element != null)
             {
                 if (cacheKey != null)
+                {
                     StoreCachedElement(cacheKey, element);
+                }
 
                 return element;
             }
 
             if (DateTime.UtcNow >= deadline)
+            {
+                var timeoutDesc = policy.Timeout.TotalMilliseconds >= 1000
+                    ? $"{policy.Timeout.TotalSeconds}s"
+                    : $"{policy.Timeout.TotalMilliseconds}ms";
                 throw new InvalidOperationException(
-                    $"Element not found within {policy.Timeout.TotalMilliseconds}ms using policy={policy.PolicyName}: " +
+                    $"Element not found within {timeoutDesc} using policy={policy.PolicyName}: " +
                     DescribeLocator(locator));
+            }
 
             Thread.Sleep(policy.RetryInterval);
 
