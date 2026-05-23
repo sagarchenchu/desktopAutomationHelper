@@ -4966,7 +4966,7 @@ public class UiService : IUiService
         }
 
         var byCondition = TryFindElementByCondition(root, session, locator);
-        strategyName = byCondition != null ? "condition-fallback" : "condition-fallback";
+        strategyName = "condition-fallback";
         return byCondition;
     }
 
