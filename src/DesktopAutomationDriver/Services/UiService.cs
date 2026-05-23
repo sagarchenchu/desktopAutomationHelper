@@ -791,7 +791,15 @@ public class UiService : IUiService
 
         var switchedHandle = SafeWindowHandle(asWindow);
         if (switchedHandle != IntPtr.Zero)
-            session.SeedWindowHandles([switchedHandle]);
+        {
+            var pid = SafeProcessId(asWindow) ?? session.Application.ProcessId;
+            session.TrackWindow(
+                switchedHandle,
+                pid,
+                SafeElementName(asWindow),
+                SafeElementClassName(asWindow),
+                isMainWindow: false);
+        }
 
         asWindow.SetForeground();
         Thread.Sleep(WindowActivationDelayMs);
@@ -4508,6 +4516,17 @@ public class UiService : IUiService
                     session.ActiveWindow = newWindow;
                     _logger.LogInformation(
                         "Auto-followed new window: '{Title}'", SafeElementName(newWindow));
+
+                    // Register the newly-appeared window in the ownership tracker so it
+                    // will be closed when the session ends.
+                    var newHwnd = SafeWindowHandle(newWindow);
+                    if (newHwnd != IntPtr.Zero)
+                        session.TrackWindow(
+                            newHwnd,
+                            SafeProcessId(newWindow) ?? session.Application.ProcessId,
+                            SafeElementName(newWindow),
+                            SafeElementClassName(newWindow),
+                            isMainWindow: false);
                 }
                 else if (allowDesktopPopupScan)
                 {
@@ -4550,6 +4569,16 @@ public class UiService : IUiService
                                 _logger.LogInformation(
                                     "Auto-followed popup/dialog window: '{Title}'",
                                     SafeElementName(newPopup));
+
+                                // Track the popup so it will be closed during cleanup.
+                                var popupHwnd = SafeWindowHandle(newPopup);
+                                if (popupHwnd != IntPtr.Zero)
+                                    session.TrackWindow(
+                                        popupHwnd,
+                                        SafeProcessId(newPopup) ?? session.Application.ProcessId,
+                                        SafeElementName(newPopup),
+                                        SafeElementClassName(newPopup),
+                                        isMainWindow: false);
                             }
                         }
                         catch (Exception ex)
