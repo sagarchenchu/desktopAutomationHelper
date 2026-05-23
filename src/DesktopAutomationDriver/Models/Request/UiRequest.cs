@@ -126,4 +126,32 @@ public class UiRequest
     /// search scope for speed.
     /// </summary>
     public bool? FallbackToWindowRootIfParentChildNotFound { get; set; }
+
+    // -------------------------------------------------------------------------
+    // switchwindow extended matching
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Native window handle for an exact HWND match in 'switchwindow'.
+    /// Passed as a JSON number; stored as <c>long</c> to accommodate 64-bit handles.
+    /// </summary>
+    public long? Hwnd { get; set; }
+
+    /// <summary>
+    /// Win32 class name filter for 'switchwindow'.
+    /// Matched case-insensitively; a substring match is also accepted.
+    /// </summary>
+    public string? ClassName { get; set; }
+
+    /// <summary>
+    /// Optional process ID override for 'switchwindow'.
+    /// When provided it replaces the session application PID for the Win32 search.
+    /// </summary>
+    public int? ProcessId { get; set; }
+
+    /// <summary>
+    /// Title matching mode for 'switchwindow'.
+    /// Accepted values: <c>exact</c>, <c>contains</c> (default), <c>regex</c>.
+    /// </summary>
+    public string? MatchMode { get; set; }
 }
