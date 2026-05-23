@@ -572,7 +572,11 @@ public class UiService : IUiService
         // --- Fallback: existing UIA/FlaUI search logic ---
         _logger.LogInformation(
             "SwitchWindow Win32-first failed for value={Value}, hwnd={Hwnd}, className={ClassName}, processId={ProcessId}, matchMode={MatchMode}. Falling back to UIA/FlaUI.",
-            SanitizeValue(req.Value), req.Hwnd, req.ClassName, req.ProcessId, req.MatchMode);
+            SanitizeValue(req.Value),
+            req.Hwnd,
+            SanitizeValue(req.ClassName),
+            req.ProcessId,
+            SanitizeValue(req.MatchMode));
 
         // UIA/FlaUI fallback requires a title fragment.
         if (string.IsNullOrWhiteSpace(req.Value))
@@ -1082,10 +1086,34 @@ public class UiService : IUiService
         return matchMode switch
         {
             "exact" => string.Equals(actualTitle, expected, StringComparison.OrdinalIgnoreCase),
-            "regex" => Regex.IsMatch(actualTitle, expected,
-                           RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),
+            "regex" => TryRegexMatch(actualTitle, expected),
             _ => actualTitle.Contains(expected, StringComparison.OrdinalIgnoreCase)
         };
+    }
+
+    /// <summary>
+    /// Attempts to match <paramref name="input"/> against the user-supplied
+    /// <paramref name="pattern"/> using a case-insensitive regex with a short timeout
+    /// to guard against catastrophic backtracking.  Returns false when the pattern is
+    /// invalid or the match times out.
+    /// </summary>
+    private static bool TryRegexMatch(string input, string pattern)
+    {
+        try
+        {
+            return Regex.IsMatch(input, pattern,
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                matchTimeout: TimeSpan.FromSeconds(1));
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
+        catch (ArgumentException)
+        {
+            // Invalid regex pattern; treat as no match rather than throwing.
+            return false;
+        }
     }
 
     /// <summary>
