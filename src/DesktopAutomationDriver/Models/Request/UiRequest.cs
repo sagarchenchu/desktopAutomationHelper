@@ -162,4 +162,38 @@ public class UiRequest
     /// Defaults to false; only launched sessions are killed by default.
     /// </summary>
     public bool ForceKillAttachedProcess { get; set; } = false;
+
+    // -------------------------------------------------------------------------
+    // Popup pipeline fields
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Popup action to perform.
+    /// Accepted values: <c>button</c> (default), <c>close</c>, <c>enter</c>, <c>escape</c>, <c>makecurrent</c>.
+    /// </summary>
+    public string? Action { get; set; }
+
+    /// <summary>
+    /// Button name(s) to click for 'popupaction' with action=button.
+    /// Pipe-separated list of candidates tried in order, e.g. <c>OK|Yes|Save</c>.
+    /// </summary>
+    public string? Button { get; set; }
+
+    /// <summary>
+    /// When true (default), popup discovery also scans the desktop root for windows
+    /// outside the application process. Set to false to restrict search to app windows only.
+    /// </summary>
+    public bool? DesktopSearch { get; set; }
+
+    /// <summary>
+    /// When true, popup discovery only considers windows belonging to the current
+    /// session application process. Defaults to false.
+    /// </summary>
+    public bool? SameProcessOnly { get; set; }
+
+    /// <summary>
+    /// When true (default for topwindow/waitforpopup/popupaction), the found popup
+    /// is made the session's active window. Set to false to find without switching focus.
+    /// </summary>
+    public bool? MakeCurrent { get; set; }
 }
