@@ -313,11 +313,17 @@ public class UiService : IUiService
                 "selectcomboboxitem" => Select(request),
                 "draganddrop"     => DragAndDrop(request),
 
-                // ----- Alert / Dialog Handling -----
-                "alertok"     => AlertOk(request),
-                "alertcancel" => AlertCancel(request),
-                "alertclose"  => AlertClose(request),
-                "popupok"     => PopUpOk(request),
+                // ----- Popup Pipeline -----
+                "topwindow"    => TopWindow(request),
+                "waitforpopup" => WaitForPopup(request),
+                "popupexists"  => PopupExists(request),
+                "popupaction"  => PopupAction(request),
+
+                // ----- Alert / Dialog Handling (backward-compatible aliases) -----
+                "alertok"     => PopupAction(request, defaultAction: "button", defaultButton: "OK|Yes|&OK|&Yes|Save"),
+                "alertcancel" => PopupAction(request, defaultAction: "button", defaultButton: "Cancel|No|&Cancel|&No"),
+                "alertclose"  => PopupAction(request, defaultAction: "close"),
+                "popupok"     => PopupAction(request, defaultAction: "enter"),
 
                 _ => throw new ArgumentException(
                     $"Unknown operation '{request.Operation}'. " +
@@ -1445,61 +1451,85 @@ public class UiService : IUiService
 
     private object? ListWindows(UiRequest req)
     {
-        var session = RequireSession();
-        var cf = session.Automation.ConditionFactory;
-        var windows = new List<AutomationElement>();
+        var session = TryGetSessionOrNull();
         var seenHandles = new HashSet<long>();
+        var windows = new List<AutomationElement>();
 
-        try
-        {
-            foreach (var window in session.Application.GetAllTopLevelWindows(session.Automation))
-            {
-                windows.Add(window);
-
-                var hwnd = SafeWindowHandle(window).ToInt64();
-                if (hwnd != 0)
-                    seenHandles.Add(hwnd);
-            }
-        }
-        catch
-        {
-            // Ignore unstable application window enumerations.
-        }
-
-        if (req.IncludeDesktopDescendants == true)
+        // Collect app-level windows first (when a session is available).
+        if (session != null)
         {
             try
             {
-                var desktopDescendants = session.Automation.GetDesktop()
-                    .FindAllDescendants(cf.ByControlType(ControlType.Window));
-
-                foreach (var window in desktopDescendants)
+                foreach (var w in session.Application.GetAllTopLevelWindows(session.Automation))
                 {
-                    var hwnd = SafeWindowHandle(window).ToInt64();
-                    if (hwnd != 0 && seenHandles.Add(hwnd))
-                    {
-                        windows.Add(window);
-                    }
+                    var h = SafeWindowHandle(w).ToInt64();
+                    if (seenHandles.Add(h != 0 ? h : -1))
+                        windows.Add(w);
                 }
             }
-            catch
+            catch { /* ignore unstable enumerations */ }
+        }
+
+        // Desktop children (always; this covers other processes and session-less calls).
+        var automation = (AutomationBase?)session?.Automation;
+        UIA3Automation? tempAuto = null;
+
+        if (automation == null)
+        {
+            tempAuto = new UIA3Automation();
+            automation = tempAuto;
+        }
+
+        try
+        {
+            var cf = automation.ConditionFactory;
+            var desktopChildren = automation.GetDesktop().FindAllChildren(cf.ByControlType(ControlType.Window));
+            foreach (var w in desktopChildren)
             {
-                // Ignore unstable desktop window enumerations.
+                var h = SafeWindowHandle(w).ToInt64();
+                if (h != 0 && seenHandles.Add(h))
+                    windows.Add(w);
             }
+
+            if (req.IncludeDesktopDescendants == true)
+            {
+                var descendants = automation.GetDesktop().FindAllDescendants(cf.ByControlType(ControlType.Window));
+                foreach (var w in descendants)
+                {
+                    var h = SafeWindowHandle(w).ToInt64();
+                    if (h != 0 && seenHandles.Add(h))
+                        windows.Add(w);
+                }
+            }
+        }
+        catch { /* ignore */ }
+        finally
+        {
+            tempAuto?.Dispose();
         }
 
         IEnumerable<AutomationElement> filtered = windows;
         if (!string.IsNullOrWhiteSpace(req.Value))
             filtered = windows.Where(w => TitleContains(w, req.Value));
 
-        return filtered.Select(w => new
+        var fg = GetForegroundWindow();
+
+        return filtered.Select(w =>
         {
-            title = SafeElementName(w),
-            automationId = SafeElementAutomationId(w),
-            className = SafeElementClassName(w),
-            processId = SafeProcessId(w),
-            hwnd = SafeWindowHandle(w).ToInt64(),
-            isOffscreen = SafeIsOffscreen(w)
+            var hwndPtr = SafeWindowHandle(w);
+            var hwndVal = hwndPtr.ToInt64();
+            return new
+            {
+                title        = SafeElementName(w),
+                automationId = SafeElementAutomationId(w),
+                className    = SafeElementClassName(w),
+                processId    = SafeProcessId(w),
+                hwnd         = hwndVal,
+                hwndHex      = $"0x{hwndVal:X}",
+                visible      = hwndPtr != IntPtr.Zero && IsWindowVisible(hwndPtr),
+                foreground   = hwndPtr == fg,
+                isOffscreen  = SafeIsOffscreen(w)
+            };
         }).ToList();
     }
 
@@ -4132,6 +4162,556 @@ public class UiService : IUiService
         }
     }
 
+    // =========================================================================
+    // Unified Popup Pipeline
+    // =========================================================================
+
+    private sealed class PopupWindowInfo
+    {
+        public AutomationElement Element { get; init; } = null!;
+        public IntPtr Hwnd { get; init; }
+        public int ProcessId { get; init; }
+        public string Title { get; init; } = string.Empty;
+        public string ClassName { get; init; } = string.Empty;
+        public bool IsModal { get; init; }
+        public bool IsForeground { get; init; }
+        public bool SameProcess { get; init; }
+        public int Score { get; init; }
+        public string Reason { get; init; } = string.Empty;
+    }
+
+    private static object ToPopupDto(PopupWindowInfo popup) => new
+    {
+        hwnd       = popup.Hwnd.ToInt64(),
+        hwndHex    = $"0x{popup.Hwnd.ToInt64():X}",
+        popup.ProcessId,
+        title      = popup.Title,
+        className  = popup.ClassName,
+        isModal    = popup.IsModal,
+        isForeground = popup.IsForeground,
+        sameProcess  = popup.SameProcess,
+        score      = popup.Score,
+        reason     = popup.Reason
+    };
+
+    private sealed class PopupSearchCriteria
+    {
+        public string? TitleOrValue { get; init; }
+        public IntPtr? Hwnd { get; init; }
+        public string? ClassName { get; init; }
+        public int? ProcessId { get; init; }
+        public string MatchMode { get; init; } = "contains";
+        public bool DesktopSearch { get; init; } = true;
+        public bool SameProcessOnly { get; init; }
+    }
+
+    private PopupSearchCriteria BuildPopupSearchCriteria(UiRequest request, AutomationSession? session)
+    {
+        IntPtr? hwnd = null;
+        if (request.Hwnd.HasValue && request.Hwnd.Value != 0)
+            hwnd = new IntPtr(request.Hwnd.Value);
+
+        var matchMode = string.IsNullOrWhiteSpace(request.MatchMode)
+            ? "contains"
+            : request.MatchMode.Trim().ToLowerInvariant();
+
+        if (matchMode is not ("exact" or "contains" or "regex"))
+            matchMode = "contains";
+
+        int? processId = request.ProcessId;
+
+        if (!processId.HasValue && request.SameProcessOnly == true)
+        {
+            try { processId = session?.Application?.ProcessId; }
+            catch { processId = null; }
+        }
+
+        return new PopupSearchCriteria
+        {
+            TitleOrValue   = request.Value,
+            Hwnd           = hwnd,
+            ClassName      = request.ClassName,
+            ProcessId      = processId,
+            MatchMode      = matchMode,
+            DesktopSearch  = request.DesktopSearch != false,
+            SameProcessOnly = request.SameProcessOnly == true
+        };
+    }
+
+    private PopupWindowInfo? FindBestPopupWindow(UiRequest request, AutomationSession? session)
+    {
+        var criteria = BuildPopupSearchCriteria(request, session);
+
+        // Direct HWND lookup bypasses the scoring path.
+        if (criteria.Hwnd.HasValue && criteria.Hwnd.Value != IntPtr.Zero)
+        {
+            var byHwnd = TryBuildPopupInfoFromHwnd(criteria.Hwnd.Value, session, criteria, "hwnd");
+            if (byHwnd != null)
+                return byHwnd;
+        }
+
+        var candidates = new List<PopupWindowInfo>();
+
+        // 1. App top-level windows.
+        if (session?.Application != null)
+        {
+            try
+            {
+                foreach (var win in session.Application.GetAllTopLevelWindows(session.Automation))
+                {
+                    var info = TryBuildPopupInfo(win, session, criteria, "app-top-level");
+                    if (info != null) candidates.Add(info);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Popup discovery: failed reading app top-level windows.");
+            }
+        }
+
+        // 2. Active/main window descendants.
+        try
+        {
+            var root = session?.ActiveWindow;
+            if (root != null)
+            {
+                foreach (var win in root.FindAllDescendants(cf => cf.ByControlType(ControlType.Window)))
+                {
+                    var info = TryBuildPopupInfo(win, session, criteria, "active-descendant");
+                    if (info != null) candidates.Add(info);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Popup discovery: failed reading active window descendants.");
+        }
+
+        // 3. Desktop-level search.
+        if (criteria.DesktopSearch && session?.Automation != null)
+        {
+            try
+            {
+                var desktop = session.Automation.GetDesktop();
+                foreach (var win in desktop.FindAllChildren(cf => cf.ByControlType(ControlType.Window)))
+                {
+                    var info = TryBuildPopupInfo(win, session, criteria, "desktop-child");
+                    if (info != null) candidates.Add(info);
+                }
+
+                // Deeper scan only when no direct desktop child matched.
+                if (candidates.Count == 0)
+                {
+                    foreach (var win in desktop.FindAllDescendants(cf => cf.ByControlType(ControlType.Window)))
+                    {
+                        var info = TryBuildPopupInfo(win, session, criteria, "desktop-descendant");
+                        if (info != null) candidates.Add(info);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Popup discovery: desktop scan failed.");
+            }
+        }
+        else if (criteria.DesktopSearch && session?.Automation == null)
+        {
+            // No session – use a temporary automation for desktop scan.
+            try
+            {
+                using var tempAuto = new UIA3Automation();
+                foreach (var win in tempAuto.GetDesktop().FindAllChildren(cf => cf.ByControlType(ControlType.Window)))
+                {
+                    var info = TryBuildPopupInfo(win, null, criteria, "desktop-child-nosession");
+                    if (info != null) candidates.Add(info);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Popup discovery: session-less desktop scan failed.");
+            }
+        }
+
+        // 4. Foreground HWND fallback.
+        try
+        {
+            var fg = GetForegroundWindow();
+            if (fg != IntPtr.Zero)
+            {
+                var fgInfo = TryBuildPopupInfoFromHwnd(fg, session, criteria, "foreground");
+                if (fgInfo != null) candidates.Add(fgInfo);
+            }
+        }
+        catch { /* ignore */ }
+
+        var best = candidates
+            .GroupBy(x => x.Hwnd)
+            .Select(g => g.OrderByDescending(x => x.Score).First())
+            .OrderByDescending(x => x.Score)
+            .FirstOrDefault();
+
+        if (best != null)
+            _logger.LogInformation(
+                "Popup selected. hwnd=0x{Hwnd:X}, title={Title}, class={Class}, score={Score}, reason={Reason}",
+                best.Hwnd.ToInt64(), best.Title, best.ClassName, best.Score, best.Reason);
+
+        return best;
+    }
+
+    private PopupWindowInfo? TryBuildPopupInfo(
+        AutomationElement element,
+        AutomationSession? session,
+        PopupSearchCriteria criteria,
+        string reasonPrefix)
+    {
+        try
+        {
+            var hwnd = SafeWindowHandle(element);
+            if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return null;
+            return TryBuildPopupInfoFromHwndAndElement(hwnd, element, session, criteria, reasonPrefix);
+        }
+        catch { return null; }
+    }
+
+    private PopupWindowInfo? TryBuildPopupInfoFromHwnd(
+        IntPtr hwnd,
+        AutomationSession? session,
+        PopupSearchCriteria criteria,
+        string reasonPrefix)
+    {
+        try
+        {
+            if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return null;
+
+            AutomationElement? element = null;
+            try { element = session?.Automation?.FromHandle(hwnd); }
+            catch { element = null; }
+
+            if (element == null) return null;
+
+            return TryBuildPopupInfoFromHwndAndElement(hwnd, element, session, criteria, reasonPrefix);
+        }
+        catch { return null; }
+    }
+
+    private PopupWindowInfo? TryBuildPopupInfoFromHwndAndElement(
+        IntPtr hwnd,
+        AutomationElement element,
+        AutomationSession? session,
+        PopupSearchCriteria criteria,
+        string reasonPrefix)
+    {
+        if (!IsWindowVisible(hwnd)) return null;
+
+        GetWindowThreadProcessId(hwnd, out var pid);
+        var processId = (int)pid;
+        var title     = GetWindowTitle(hwnd);
+        var className = GetWin32ClassName(hwnd);
+
+        var appPid = 0;
+        try { appPid = session?.Application?.ProcessId ?? 0; }
+        catch { appPid = 0; }
+
+        var sameProcess = appPid != 0 && processId == appPid;
+
+        if (criteria.SameProcessOnly && !sameProcess) return null;
+        if (criteria.ProcessId.HasValue && processId != criteria.ProcessId.Value) return null;
+        if (!TitleMatches(title, criteria.TitleOrValue, criteria.MatchMode)) return null;
+        if (!ClassNameMatches(className, criteria.ClassName)) return null;
+
+        var foreground   = GetForegroundWindow();
+        var isForeground = foreground == hwnd;
+
+        var isModal = false;
+        try
+        {
+            var wp = element.Patterns.Window.PatternOrDefault;
+            if (wp != null) isModal = wp.IsModal;
+        }
+        catch { isModal = false; }
+
+        var score  = 0;
+        var reason = reasonPrefix + ";";
+
+        if (isForeground)  { score += 100; reason += "foreground;"; }
+        if (sameProcess)   { score +=  80; reason += "same-process;"; }
+        if (isModal)       { score +=  70; reason += "modal;"; }
+
+        if (string.Equals(className, "#32770", StringComparison.OrdinalIgnoreCase))
+        { score += 50; reason += "dialog-class;"; }
+
+        if (!string.IsNullOrWhiteSpace(criteria.TitleOrValue))
+        {
+            var exact = string.Equals(title, criteria.TitleOrValue, StringComparison.OrdinalIgnoreCase);
+            score += exact ? 50 : 25;
+            reason += "title;";
+        }
+
+        if (!string.IsNullOrWhiteSpace(criteria.ClassName))
+        { score += 40; reason += "class;"; }
+
+        // Penalise the main application window when no title filter is set.
+        try
+        {
+            var activeHwnd = session?.ActiveWindow != null
+                ? SafeWindowHandle(session.ActiveWindow)
+                : IntPtr.Zero;
+
+            if (activeHwnd == hwnd && string.IsNullOrWhiteSpace(criteria.TitleOrValue))
+            { score -= 40; reason += "active-main-penalty;"; }
+        }
+        catch { /* ignore */ }
+
+        if (score <= 0) score = 1;
+
+        return new PopupWindowInfo
+        {
+            Element     = element,
+            Hwnd        = hwnd,
+            ProcessId   = processId,
+            Title       = title,
+            ClassName   = className,
+            IsModal     = isModal,
+            IsForeground = isForeground,
+            SameProcess  = sameProcess,
+            Score        = score,
+            Reason       = reason
+        };
+    }
+
+    private AutomationSession? TryGetSessionOrNull()
+    {
+        try { return RequireSession(); }
+        catch { return null; }
+    }
+
+    private object TopWindow(UiRequest request)
+    {
+        var session = TryGetSessionOrNull();
+        var popup   = FindBestPopupWindow(request, session);
+
+        if (popup == null)
+            return new { found = false, message = "No top/popup window found." };
+
+        if (request.MakeCurrent != false)
+            MakePopupCurrent(session, popup);
+
+        return new { found = true, window = ToPopupDto(popup) };
+    }
+
+    private object WaitForPopup(UiRequest request)
+    {
+        var session   = TryGetSessionOrNull();
+        var timeoutMs = request.TimeoutMs ?? 5000;
+        var deadline  = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        PopupWindowInfo? popup = null;
+        while (DateTime.UtcNow <= deadline)
+        {
+            popup = FindBestPopupWindow(request, session);
+            if (popup != null) break;
+            Thread.Sleep(200);
+        }
+
+        if (popup == null)
+            return new
+            {
+                found     = false,
+                timeoutMs,
+                value     = request.Value,
+                className = request.ClassName,
+                hwnd      = request.Hwnd
+            };
+
+        if (request.MakeCurrent != false)
+            MakePopupCurrent(session, popup);
+
+        return new { found = true, timeoutMs, window = ToPopupDto(popup) };
+    }
+
+    private object PopupExists(UiRequest request)
+    {
+        var session   = TryGetSessionOrNull();
+        var timeoutMs = request.TimeoutMs ?? 500;
+        var deadline  = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        PopupWindowInfo? popup = null;
+        while (DateTime.UtcNow <= deadline)
+        {
+            popup = FindBestPopupWindow(request, session);
+            if (popup != null) break;
+            Thread.Sleep(100);
+        }
+
+        return new
+        {
+            exists = popup != null,
+            window = popup == null ? (object?)null : ToPopupDto(popup)
+        };
+    }
+
+    private object PopupAction(
+        UiRequest request,
+        string? defaultAction = null,
+        string? defaultButton = null)
+    {
+        var session = TryGetSessionOrNull();
+
+        var action = string.IsNullOrWhiteSpace(request.Action)
+            ? defaultAction ?? "button"
+            : request.Action.Trim().ToLowerInvariant();
+
+        var button = string.IsNullOrWhiteSpace(request.Button)
+            ? defaultButton
+            : request.Button;
+
+        var popup = WaitForPopupInternal(request, session);
+
+        if (popup == null)
+            return new { success = false, action, button, message = "Popup not found." };
+
+        MakePopupCurrent(session, popup);
+
+        var success = action switch
+        {
+            "close"       => TryClosePopup(popup),
+            "enter"       => TrySendEnterToPopup(popup),
+            "escape"      => TrySendEscapeToPopup(popup),
+            "makecurrent" => true,
+            _             => TryClickPopupButton(popup.Element, button)
+        };
+
+        return new { success, action, button, window = ToPopupDto(popup) };
+    }
+
+    private PopupWindowInfo? WaitForPopupInternal(UiRequest request, AutomationSession? session)
+    {
+        var timeoutMs = request.TimeoutMs ?? 5000;
+        var deadline  = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        while (DateTime.UtcNow <= deadline)
+        {
+            var popup = FindBestPopupWindow(request, session);
+            if (popup != null) return popup;
+            Thread.Sleep(200);
+        }
+
+        return null;
+    }
+
+    private void MakePopupCurrent(AutomationSession? session, PopupWindowInfo popup)
+    {
+        try
+        {
+            if (IsIconic(popup.Hwnd))
+                ShowWindow(popup.Hwnd, SW_RESTORE);
+
+            SetForegroundWindow(popup.Hwnd);
+
+            if (session != null)
+            {
+                try
+                {
+                    session.ActiveWindow = popup.Element;
+                    session.TrackWindow(
+                        popup.Hwnd,
+                        popup.ProcessId,
+                        popup.Title,
+                        popup.ClassName,
+                        isMainWindow: false);
+                }
+                catch { /* ignore session update failure */ }
+            }
+        }
+        catch { /* ignore */ }
+    }
+
+    private static bool TryClosePopup(PopupWindowInfo popup)
+    {
+        try
+        {
+            CloseElement(popup.Element);
+            return true;
+        }
+        catch
+        {
+            try { return ActivateWin32Window(popup.Hwnd) && PostCloseMessage(popup.Hwnd); }
+            catch { return false; }
+        }
+    }
+
+    private static bool PostCloseMessage(IntPtr hwnd)
+    {
+        const uint WM_CLOSE = 0x0010;
+        return PostMessageForPopup(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostMessageForPopup(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    private static bool TrySendEnterToPopup(PopupWindowInfo popup)
+    {
+        try
+        {
+            popup.Element.Focus();
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Keyboard.Release(VirtualKeyShort.RETURN);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private static bool TrySendEscapeToPopup(PopupWindowInfo popup)
+    {
+        try
+        {
+            popup.Element.Focus();
+            Keyboard.Press(VirtualKeyShort.ESCAPE);
+            Keyboard.Release(VirtualKeyShort.ESCAPE);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private static bool TryClickPopupButton(AutomationElement popupRoot, string? buttonSpec)
+    {
+        var buttonNames = ParseButtonNames(buttonSpec);
+
+        foreach (var name in buttonNames)
+        {
+            try
+            {
+                var btn = popupRoot.FindFirstDescendant(cf =>
+                    cf.ByControlType(ControlType.Button).And(cf.ByName(name)));
+
+                if (btn == null) continue;
+
+                if (btn.Patterns.Invoke.PatternOrDefault != null)
+                {
+                    btn.Patterns.Invoke.Pattern.Invoke();
+                    return true;
+                }
+
+                btn.Click();
+                return true;
+            }
+            catch { /* try next name */ }
+        }
+
+        return false;
+    }
+
+    private static IReadOnlyList<string> ParseButtonNames(string? buttonSpec)
+    {
+        if (string.IsNullOrWhiteSpace(buttonSpec))
+            return ["OK", "Yes", "Save"];
+
+        return buttonSpec
+            .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToList();
+    }
+
     private object? ClickGridCell(UiRequest req)
     {
         PerformGridCellAction(req, doubleClick: false);
@@ -4872,6 +5452,12 @@ public class UiService : IUiService
             "switchwindow" or
             "waitforwindow" or
             "waitforpopup" or
+            "topwindow" or
+            "popupaction" or
+            "alertok" or
+            "alertcancel" or
+            "alertclose" or
+            "popupok" or
             "contextmenupath" or
             "openheaderdropdown" or
             "selectheaderdropdownitem" or
