@@ -1,6 +1,9 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using DesktopAutomationDriver.Models.Request;
 using FlaUI.Core;
@@ -131,6 +134,12 @@ public class UiService : IUiService
 
     private sealed record CachedWindowMatch(AutomationElement Element, DateTime ExpiresAt);
 
+    private static readonly TimeSpan ElementCacheDuration = TimeSpan.FromSeconds(10);
+    private static readonly object ElementCacheLock = new();
+    private static readonly Dictionary<string, CachedElementMatch> ElementCache = new();
+
+    private sealed record CachedElementMatch(AutomationElement Element, DateTime ExpiresAt);
+
     private enum DropdownItemClickRegion
     {
         LeftCenter,
@@ -209,105 +218,123 @@ public class UiService : IUiService
 
         _logger.LogDebug("UI operation: {Operation}", SanitizeValue(request.Operation));
 
-        return request.Operation.ToLowerInvariant() switch
+        var sw = Stopwatch.StartNew();
+
+        try
         {
-            // ----- Session & Window Management -----
-            "launch"       => Launch(request),
-            "close"        => Close(),
-            "quit"         => Close(),
-            "closewindow"  => CloseWindowByTitle(request),
-            "maximize"     => Maximize(),
-            "minimize"     => Minimize(),
-            "switchwindow"  => SwitchWindow(request),
-            "switchwinodw"  => SwitchWindow(request),
-            "switch_window" => SwitchWindow(request),
-            "switchto"      => SwitchWindow(request),
-            "refresh"        => Refresh(),
-            "screenshot"     => Screenshot(request),
-            "listelements"   => ListElements(request),
-            "listwindows"    => ListWindows(request),
-            "getcurrentroot" => GetCurrentRoot(request),
-            "findlocator"    => FindLocatorDebug(request),
+            return request.Operation.ToLowerInvariant() switch
+            {
+                // ----- Session & Window Management -----
+                "launch"       => Launch(request),
+                "close"        => Close(),
+                "quit"         => Quit(request),
+                "closewindow"  => CloseActiveWindow(request),
+                "maximize"     => Maximize(),
+                "minimize"     => Minimize(),
+                "switchwindow"  => SwitchWindow(request),
+                "switchwinodw"  => SwitchWindow(request),
+                "switch_window" => SwitchWindow(request),
+                "switchto"      => SwitchWindow(request),
+                "refresh"        => Refresh(),
+                "screenshot"     => Screenshot(request),
+                "listelements"   => ListElements(request),
+                "listwindows"    => ListWindows(request),
+                "listtrackedwindows" => ListTrackedWindows(),
+                "getcurrentroot" => GetCurrentRoot(request),
+                "findlocator"    => FindLocatorDebug(request),
 
-            // ----- Element Query -----
-            "exists"         => Exists(request),
-            "waitfor"        => WaitFor(request),
-            "isenabled"      => IsEnabled(request),
-            "isvisible"      => IsVisible(request),
-            "isclickable"    => IsClickable(request),
-            "iseditable"     => IsEditable(request),
-            "ischecked"      => IsChecked(request),
-            "getvalue"       => GetValue(request),
-            "gettext"        => GetText(request),
-            "getname"        => GetName(request),
-            "getcontroltype" => GetControlType(request),
-            "getselected"    => GetSelected(request),
-            "gettable"       => GetTable(request),
-            "gettabledata"   => GetTable(request),
-            "gettableheaders"=> GetTableHeaders(request),
+                // ----- Element Query -----
+                "exists"         => Exists(request),
+                "waitfor"        => WaitFor(request),
+                "isenabled"      => IsEnabled(request),
+                "isvisible"      => IsVisible(request),
+                "isclickable"    => IsClickable(request),
+                "iseditable"     => IsEditable(request),
+                "ischecked"      => IsChecked(request),
+                "getvalue"       => GetValue(request),
+                "gettext"        => GetText(request),
+                "getname"        => GetName(request),
+                "getcontroltype" => GetControlType(request),
+                "getselected"    => GetSelected(request),
+                "gettable"       => GetTable(request),
+                "gettabledata"   => GetTable(request),
+                "gettableheaders"=> GetTableHeaders(request),
 
-            // ----- Position Comparison -----
-            "isrightof"   => IsRightOf(request),
-            "isleftof"    => IsLeftOf(request),
-            "isabove"     => IsAbove(request),
-            "isbelow"     => IsBelow(request),
-            "getposition" => GetPosition(request),
+                // ----- Position Comparison -----
+                "isrightof"   => IsRightOf(request),
+                "isleftof"    => IsLeftOf(request),
+                "isabove"     => IsAbove(request),
+                "isbelow"     => IsBelow(request),
+                "getposition" => GetPosition(request),
 
-            // ----- Element Actions -----
-            "click"            => Click(request),
-            "clickmenu"        => ClickMenuPath(request),
-            "clickmenupath"    => IsLogicalMenuMode(request) ? ClickLogicalMenuPath(request) : ClickMenuPath(request),
-            "clicklogicalmenupath" => ClickLogicalMenuPath(request),
-            "clickmenulogical" => ClickLogicalMenuPath(request),
-            "menupath"         => ClickLogicalMenuPath(request),
-            "contextmenupath"  => ContextMenuPath(request),
-            "inspectlogicalmenu" => InspectLogicalMenu(request),
-            "inspectmenupathcandidates" => InspectMenuPathCandidates(request),
-            "dumpmenus"        => DumpLogicalMenus(request),
-            "dumplogicalmenus" => DumpLogicalMenus(request),
-            "doubleclick"      => DoubleClick(request),
-            "rightclick"       => RightClick(request),
-            "hover"            => Hover(request),
-            "focus"            => Focus(request),
-            "type"             => TypeText(request),
-            "typedate"         => TypeDate(request),
-            "clear"            => Clear(request),
-            "sendkeys"         => SendKeys(request),
-            "expandtreeitem"   => ExpandTreeItem(request),
-            "collapsetreeitem" => CollapseTreeItem(request),
-            "selecttreeitem"   => SelectTreeItem(request),
-            "expandtreepath"   => ExpandTreePath(request),
-            "selecttreepath"   => SelectTreePath(request),
-            "scroll"           => Scroll(request),
-            "mousescroll"      => MouseScroll(request),
-            "wheelscroll"      => MouseScroll(request),
-            "check"            => Check(request),
-            "uncheck"          => Uncheck(request),
-            "select"           => Select(request),
-            "selectaid"        => SelectByAid(request),
-            "typeandselect"    => TypeAndSelect(request),
-            "clickgridcell"    => ClickGridCell(request),
-            "doubleclickgridcell" => DoubleClickGridCell(request),
-            "openheaderdropdown" => OpenHeaderDropdown(request),
-            "selectheaderdropdownitem" => SelectHeaderDropdownItem(request),
-            // Dynamic menu playback operations use a root MenuItem locator.
-            // selectdynamicmenuitem is kept for one-level compatibility and delegates
-            // to path traversal; selectdynamicmenupath accepts Root>Child>Leaf or Child>Leaf.
-            "selectdynamicmenuitem" => SelectDynamicMenuItem(request),
-            "selectdynamicmenupath" => SelectDynamicMenuPath(request),
-            "selectcomboboxitem" => SelectComboBoxItem(request),
-            "draganddrop"     => DragAndDrop(request),
+                // ----- Element Actions -----
+                "click"            => Click(request),
+                "clickmenu"        => ClickMenuPath(request),
+                "clickmenupath"    => IsLogicalMenuMode(request) ? ClickLogicalMenuPath(request) : ClickMenuPath(request),
+                "clicklogicalmenupath" => ClickLogicalMenuPath(request),
+                "clickmenulogical" => ClickLogicalMenuPath(request),
+                "menupath"         => ClickLogicalMenuPath(request),
+                "contextmenupath"  => ContextMenuPath(request),
+                "inspectlogicalmenu" => InspectLogicalMenu(request),
+                "inspectmenupathcandidates" => InspectMenuPathCandidates(request),
+                "dumpmenus"        => DumpLogicalMenus(request),
+                "dumplogicalmenus" => DumpLogicalMenus(request),
+                "doubleclick"      => DoubleClick(request),
+                "rightclick"       => RightClick(request),
+                "hover"            => Hover(request),
+                "focus"            => Focus(request),
+                "type"             => TypeText(request),
+                "typedate"         => TypeDate(request),
+                "clear"            => Clear(request),
+                "sendkeys"         => SendKeys(request),
+                "expandtreeitem"   => ExpandTreeItem(request),
+                "collapsetreeitem" => CollapseTreeItem(request),
+                "selecttreeitem"   => SelectTreeItem(request),
+                "expandtreepath"   => ExpandTreePath(request),
+                "selecttreepath"   => SelectTreePath(request),
+                "scroll"           => Scroll(request),
+                "mousescroll"      => MouseScroll(request),
+                "wheelscroll"      => MouseScroll(request),
+                "check"            => Check(request),
+                "uncheck"          => Uncheck(request),
+                "select"           => Select(request),
+                "selectaid"        => SelectByAid(request),
+                "typeandselect"    => TypeAndSelect(request),
+                "clickgridcell"    => ClickGridCell(request),
+                "doubleclickgridcell" => DoubleClickGridCell(request),
+                "openheaderdropdown" => OpenHeaderDropdown(request),
+                "selectheaderdropdownitem" => SelectHeaderDropdownItem(request),
+                // Dynamic menu playback operations use a root MenuItem locator.
+                // selectdynamicmenuitem is kept for one-level compatibility and delegates
+                // to path traversal; selectdynamicmenupath accepts Root>Child>Leaf or Child>Leaf.
+                "selectdynamicmenuitem" => SelectDynamicMenuItem(request),
+                "selectdynamicmenupath" => SelectDynamicMenuPath(request),
+                // Backward-compatible alias – the canonical operation is "select".
+                "selectcomboboxitem" => Select(request),
+                "draganddrop"     => DragAndDrop(request),
 
-            // ----- Alert / Dialog Handling -----
-            "alertok"     => AlertOk(request),
-            "alertcancel" => AlertCancel(request),
-            "alertclose"  => AlertClose(request),
-            "popupok"     => PopUpOk(request),
+                // ----- Alert / Dialog Handling -----
+                "alertok"     => AlertOk(request),
+                "alertcancel" => AlertCancel(request),
+                "alertclose"  => AlertClose(request),
+                "popupok"     => PopUpOk(request),
 
-            _ => throw new ArgumentException(
-                $"Unknown operation '{request.Operation}'. " +
-                "See GET /ui/operations for the full list.")
-        };
+                _ => throw new ArgumentException(
+                    $"Unknown operation '{request.Operation}'. " +
+                    "See GET /ui/operations for the full list.")
+            };
+        }
+        finally
+        {
+            sw.Stop();
+
+            _logger.LogInformation(
+                "UI API operation completed. operation={Operation}, elapsedMs={ElapsedMs}, policy={Policy}, locator={Locator}",
+                SanitizeValue(request.Operation),
+                sw.ElapsedMilliseconds,
+                GetOperationPolicy(request).PolicyName,
+                request.Locator == null ? "" : DescribeLocator(request.Locator));
+        }
     }
 
     // =========================================================================
@@ -326,7 +353,74 @@ public class UiService : IUiService
     private object? Close()
     {
         RequireSession();
+        _logger.LogInformation("UI operation: close (graceful WM_CLOSE, no process kill).");
         _ctx.Close();
+        return null;
+    }
+
+    private object? Quit(UiRequest req)
+    {
+        RequireSession();
+        var session = _ctx.ActiveSession;
+        _logger.LogInformation(
+            "UI operation: quit. wasLaunchedByDriver={WasLaunched}, forceKillAttached={ForceKill}",
+            session?.WasLaunchedByDriver ?? false,
+            req.ForceKillAttachedProcess);
+        _ctx.Quit(req.ForceKillAttachedProcess);
+        return null;
+    }
+
+    private object? ListTrackedWindows()
+    {
+        var windows = _ctx.ListTrackedWindows();
+        return windows.Select(w => new
+        {
+            hwnd        = w.Hwnd.ToInt64(),
+            processId   = w.ProcessId,
+            title       = w.Title,
+            className   = w.ClassName,
+            isMainWindow = w.IsMainWindow,
+            firstSeenUtc = w.FirstSeenUtc,
+            lastSeenUtc  = w.LastSeenUtc
+        }).ToArray();
+    }
+
+    /// <summary>
+    /// Closes the currently active window for the session (i.e. <c>session.ActiveWindow</c>
+    /// or the application's main window when no explicit active window is set).
+    /// When <c>req.Value</c> is non-empty, falls back to title-based window search for
+    /// backward compatibility.
+    /// </summary>
+    private object? CloseActiveWindow(UiRequest req)
+    {
+        // If a title is given, delegate to the existing title-based close for backward compat.
+        if (!string.IsNullOrWhiteSpace(req.Value))
+            return CloseWindowByTitle(req);
+
+        var session = _ctx.ActiveSession;
+        if (session == null)
+            throw new InvalidOperationException("No active session. Launch or attach first.");
+
+        // Use the session's current active window, or fall back to the application's main window.
+        var window = session.ActiveWindow;
+        if (window == null)
+        {
+            var windows = session.Application.GetAllTopLevelWindows(session.Automation);
+            window = windows.FirstOrDefault();
+        }
+
+        if (window == null)
+        {
+            _logger.LogWarning("closewindow: no active or top-level window found in session.");
+            return null;
+        }
+
+        _logger.LogInformation(
+            "closewindow: closing active window. title={Title}",
+            SafeElementName(window));
+
+        var cf = session.Automation.ConditionFactory;
+        CloseWindowElement(window, cf);
         return null;
     }
 
@@ -490,10 +584,74 @@ public class UiService : IUiService
 
     private object? SwitchWindow(UiRequest req)
     {
-        if (string.IsNullOrWhiteSpace(req.Value))
-            throw new ArgumentException("'value' must be a partial window title for 'switchwindow'.");
+        // At least one of value, hwnd, or className must be provided.
+        if (string.IsNullOrWhiteSpace(req.Value) &&
+            !req.Hwnd.HasValue &&
+            string.IsNullOrWhiteSpace(req.ClassName))
+        {
+            throw new ArgumentException(
+                "'switchwindow' requires at least one of: value (title), hwnd, or className.");
+        }
 
         var session = _ctx.ActiveSession;
+
+        // --- Win32-first fast path ---
+        // Enumerate top-level HWNDs directly (no UIA tree walk) and activate the
+        // matching window via Win32, which is significantly faster than the UIA search.
+        var win32Match = FindWin32WindowForSwitch(req, session);
+
+        if (win32Match != null)
+        {
+            _logger.LogInformation(
+                "SwitchWindow Win32-first match found. hwnd=0x{Hwnd:X}, pid={Pid}, title={Title}, className={ClassName}",
+                win32Match.Hwnd.ToInt64(),
+                win32Match.ProcessId,
+                win32Match.Title,
+                win32Match.ClassName);
+
+            if (ActivateWin32Window(win32Match.Hwnd))
+            {
+                // Ensure a session exists (attach by process ID when none is active).
+                if (session == null)
+                    session = _ctx.Attach(win32Match.ProcessId);
+
+                // Wrap the HWND in a FlaUI element so the session has a typed ActiveWindow.
+                var flauiWindow = ResolveFlaUIWindowFromHwnd(session, win32Match.Hwnd);
+
+                if (flauiWindow != null)
+                    return SwitchToWindow(session, flauiWindow);
+
+                // Activation succeeded but FlaUI cannot wrap the handle (rare; e.g. cross-
+                // process/elevated window). Return a partial result without setting ActiveWindow.
+                _logger.LogInformation(
+                    "SwitchWindow Win32-first activated window but FlaUI resolution failed; returning foreground-only result. hwnd=0x{Hwnd:X}",
+                    win32Match.Hwnd.ToInt64());
+
+                return new
+                {
+                    title     = win32Match.Title,
+                    className = win32Match.ClassName,
+                    hwnd      = win32Match.Hwnd.ToInt64(),
+                    processId = win32Match.ProcessId,
+                    strategy  = "win32-first-foreground-only"
+                };
+            }
+        }
+
+        // --- Fallback: existing UIA/FlaUI search logic ---
+        _logger.LogInformation(
+            "SwitchWindow Win32-first failed for value={Value}, hwnd={Hwnd}, className={ClassName}, processId={ProcessId}, matchMode={MatchMode}. Falling back to UIA/FlaUI.",
+            SanitizeValue(req.Value),
+            req.Hwnd.HasValue ? req.Hwnd.Value.ToString() : "(none)",
+            SanitizeValue(req.ClassName),
+            req.ProcessId.HasValue ? req.ProcessId.Value.ToString() : "(none)",
+            SanitizeValue(req.MatchMode));
+
+        // UIA/FlaUI fallback requires a title fragment.
+        if (string.IsNullOrWhiteSpace(req.Value))
+            throw new InvalidOperationException(
+                "No matching window was found. The Win32 search by hwnd/className yielded no result and no title value was provided for the UIA/FlaUI fallback.");
+
         var deadline = DateTime.UtcNow + DefaultRetry;
 
         if (session != null)
@@ -721,7 +879,15 @@ public class UiService : IUiService
 
         var switchedHandle = SafeWindowHandle(asWindow);
         if (switchedHandle != IntPtr.Zero)
-            session.SeedWindowHandles([switchedHandle]);
+        {
+            var pid = SafeProcessId(asWindow) ?? session.Application.ProcessId;
+            session.TrackWindow(
+                switchedHandle,
+                pid,
+                SafeElementName(asWindow),
+                SafeElementClassName(asWindow),
+                isMainWindow: false);
+        }
 
         asWindow.SetForeground();
         Thread.Sleep(WindowActivationDelayMs);
@@ -739,6 +905,372 @@ public class UiService : IUiService
             controlType = SafeElementControlType(asWindow),
             hwnd = SafeWindowHandle(asWindow).ToInt64()
         };
+    }
+
+    // =========================================================================
+    // Win32-first SwitchWindow helpers
+    // =========================================================================
+
+    /// <summary>
+    /// Enumerates visible top-level windows via Win32 <c>EnumWindows</c>.
+    /// When <paramref name="processId"/> is provided, only windows owned by that
+    /// process are returned.
+    /// </summary>
+    private List<Win32WindowInfo> EnumerateTopLevelWin32Windows(int? processId = null)
+    {
+        var result = new List<Win32WindowInfo>();
+        var shellWindow = GetShellWindow();
+
+        EnumWindows((hWnd, _) =>
+        {
+            if (hWnd == IntPtr.Zero || hWnd == shellWindow)
+                return true;
+
+            if (!IsWindowVisible(hWnd))
+                return true;
+
+            var titleLen = GetWindowTextLength(hWnd);
+            string title = string.Empty;
+            if (titleLen > 0)
+            {
+                var sb = new StringBuilder(titleLen + 1);
+                GetWindowText(hWnd, sb, sb.Capacity);
+                title = sb.ToString();
+            }
+
+            var className = GetWin32ClassName(hWnd);
+
+            // Skip windows that have neither a visible title nor a meaningful class name
+            // to avoid returning noise windows in broad all-process searches.
+            if (string.IsNullOrWhiteSpace(title) && string.IsNullOrWhiteSpace(className))
+                return true;
+
+            GetWindowThreadProcessId(hWnd, out var pid);
+
+            if (processId.HasValue && pid != (uint)processId.Value)
+                return true;
+
+            result.Add(new Win32WindowInfo
+            {
+                Hwnd = hWnd,
+                ProcessId = (int)pid,
+                Title = title,
+                ClassName = className
+            });
+
+            return true;
+        }, IntPtr.Zero);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Searches visible top-level windows via Win32 for the best match using the
+    /// extended criteria from <paramref name="req"/> (HWND, className, processId,
+    /// matchMode, and/or title/value).
+    /// </summary>
+    private Win32WindowInfo? FindWin32WindowForSwitch(
+        UiRequest req,
+        AutomationSession? session)
+    {
+        var criteria = BuildWin32SwitchCriteria(req, session);
+
+        // 1. Exact HWND wins unconditionally.
+        if (criteria.Hwnd.HasValue && criteria.Hwnd.Value != IntPtr.Zero)
+        {
+            var hwnd = criteria.Hwnd.Value;
+
+            if (IsWindow(hwnd))
+            {
+                GetWindowThreadProcessId(hwnd, out var pid);
+
+                var info = new Win32WindowInfo
+                {
+                    Hwnd      = hwnd,
+                    ProcessId = (int)pid,
+                    Title     = GetWindowTitle(hwnd),
+                    ClassName = GetWin32ClassName(hwnd)
+                };
+
+                _logger.LogInformation(
+                    "SwitchWindow Win32 exact HWND match. hwnd=0x{Hwnd:X}, pid={Pid}, title={Title}, className={ClassName}",
+                    hwnd.ToInt64(), info.ProcessId, info.Title, info.ClassName);
+
+                return info;
+            }
+
+            _logger.LogWarning(
+                "SwitchWindow requested HWND was not a valid window. hwnd=0x{Hwnd:X}",
+                hwnd.ToInt64());
+        }
+
+        // 2. Process-filtered search first.
+        if (criteria.ProcessId.HasValue)
+        {
+            var processMatch = FindBestWin32WindowMatch(
+                EnumerateTopLevelWin32Windows(criteria.ProcessId),
+                criteria);
+
+            if (processMatch != null)
+                return processMatch;
+        }
+
+        // 3. Widen to all processes if process-filtered search failed.
+        return FindBestWin32WindowMatch(
+            EnumerateTopLevelWin32Windows(null),
+            criteria);
+    }
+
+    /// <summary>
+    /// Builds the switch criteria from a <see cref="UiRequest"/>, resolving the
+    /// process ID from the active session when the request does not supply one.
+    /// </summary>
+    private Win32SwitchCriteria BuildWin32SwitchCriteria(
+        UiRequest request,
+        AutomationSession? session)
+    {
+        int? processId = request.ProcessId;
+        if (!processId.HasValue)
+        {
+            try { processId = session?.Application?.ProcessId; }
+            catch { processId = null; }
+        }
+
+        IntPtr? hwnd = null;
+        if (request.Hwnd.HasValue && request.Hwnd.Value != 0)
+            hwnd = new IntPtr(request.Hwnd.Value);
+
+        var matchMode = string.IsNullOrWhiteSpace(request.MatchMode)
+            ? "contains"
+            : request.MatchMode.Trim().ToLowerInvariant();
+
+        if (matchMode is not ("exact" or "contains" or "regex"))
+            matchMode = "contains";
+
+        return new Win32SwitchCriteria
+        {
+            TitleOrValue = !string.IsNullOrWhiteSpace(request.Value) ? request.Value : null,
+            Hwnd         = hwnd,
+            ClassName    = string.IsNullOrWhiteSpace(request.ClassName) ? null : request.ClassName,
+            ProcessId    = processId,
+            MatchMode    = matchMode
+        };
+    }
+
+    /// <summary>
+    /// Scores each window in <paramref name="windows"/> against <paramref name="criteria"/>
+    /// and returns the highest-scoring candidate, or null when no window qualifies.
+    /// </summary>
+    private Win32WindowInfo? FindBestWin32WindowMatch(
+        IReadOnlyCollection<Win32WindowInfo> windows,
+        Win32SwitchCriteria criteria)
+    {
+        Win32WindowInfo? best = null;
+        int bestScore = 0;
+        string bestReason = string.Empty;
+
+        foreach (var window in windows)
+        {
+            var score = ScoreWin32WindowCandidate(window, criteria, out var reason);
+            if (score > bestScore || (score == bestScore && best != null &&
+                window.Title.Length < best.Title.Length))
+            {
+                best = window;
+                bestScore = score;
+                bestReason = reason;
+            }
+        }
+
+        if (best == null)
+            return null;
+
+        _logger.LogInformation(
+            "SwitchWindow Win32 best match. score={Score}, reason={Reason}, hwnd=0x{Hwnd:X}, pid={Pid}, title={Title}, className={ClassName}",
+            bestScore, bestReason, best.Hwnd.ToInt64(), best.ProcessId, best.Title, best.ClassName);
+
+        return best;
+    }
+
+    /// <summary>
+    /// Returns a positive match score for <paramref name="window"/> against the
+    /// given criteria, or 0 when the window does not qualify.
+    /// </summary>
+    private static int ScoreWin32WindowCandidate(
+        Win32WindowInfo window,
+        Win32SwitchCriteria criteria,
+        out string reason)
+    {
+        reason = string.Empty;
+        var score = 0;
+
+        if (criteria.ProcessId.HasValue && window.ProcessId == criteria.ProcessId.Value)
+        {
+            score += 50;
+            reason += "pid;";
+        }
+
+        if (!string.IsNullOrWhiteSpace(criteria.ClassName))
+        {
+            if (!ClassNameMatches(window.ClassName, criteria.ClassName))
+                return 0;
+
+            score += string.Equals(window.ClassName, criteria.ClassName,
+                StringComparison.OrdinalIgnoreCase) ? 50 : 25;
+            reason += "class;";
+        }
+
+        if (!string.IsNullOrWhiteSpace(criteria.TitleOrValue))
+        {
+            if (!TitleMatches(window.Title, criteria.TitleOrValue, criteria.MatchMode))
+                return 0;
+
+            score += criteria.MatchMode switch
+            {
+                "exact" => 80,
+                "regex" => 60,
+                _ => string.Equals(window.Title, criteria.TitleOrValue,
+                         StringComparison.OrdinalIgnoreCase) ? 80 : 40
+            };
+            reason += $"title-{criteria.MatchMode};";
+        }
+
+        // Require at least one of title or className when neither was provided; don't random-match.
+        if (string.IsNullOrWhiteSpace(criteria.TitleOrValue) &&
+            string.IsNullOrWhiteSpace(criteria.ClassName))
+        {
+            return 0;
+        }
+
+        return score;
+    }
+
+    /// <summary>Returns true when <paramref name="actualTitle"/> satisfies the match.</summary>
+    private static bool TitleMatches(string actualTitle, string? expected, string matchMode)
+    {
+        if (string.IsNullOrWhiteSpace(expected))
+            return true;
+
+        actualTitle ??= string.Empty;
+
+        return matchMode switch
+        {
+            "exact" => string.Equals(actualTitle, expected, StringComparison.OrdinalIgnoreCase),
+            "regex" => TryRegexMatch(actualTitle, expected),
+            _ => actualTitle.Contains(expected, StringComparison.OrdinalIgnoreCase)
+        };
+    }
+
+    /// <summary>
+    /// Attempts to match <paramref name="input"/> against the user-supplied
+    /// <paramref name="pattern"/> using a case-insensitive regex with a short timeout
+    /// to guard against catastrophic backtracking.  Returns false when the pattern is
+    /// invalid or the match times out.
+    /// </summary>
+    private static bool TryRegexMatch(string input, string pattern)
+    {
+        try
+        {
+            return Regex.IsMatch(input, pattern,
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                matchTimeout: TimeSpan.FromSeconds(1));
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
+        catch (ArgumentException)
+        {
+            // Invalid regex pattern; treat as no match rather than throwing.
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Returns true when <paramref name="actualClassName"/> equals or contains
+    /// <paramref name="expectedClassName"/> (case-insensitive).
+    /// </summary>
+    private static bool ClassNameMatches(string actualClassName, string? expectedClassName)
+    {
+        if (string.IsNullOrWhiteSpace(expectedClassName))
+            return true;
+
+        actualClassName ??= string.Empty;
+
+        return string.Equals(actualClassName, expectedClassName, StringComparison.OrdinalIgnoreCase)
+            || actualClassName.Contains(expectedClassName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Reads the Win32 class name of a window handle.</summary>
+    private static string GetWin32ClassName(IntPtr hwnd)
+    {
+        try
+        {
+            var sb = new StringBuilder(256);
+            GetClassName(hwnd, sb, sb.Capacity);
+            return sb.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>Reads the window title for an HWND without going through UIA.</summary>
+    private static string GetWindowTitle(IntPtr hwnd)
+    {
+        try
+        {
+            var len = GetWindowTextLength(hwnd);
+            if (len <= 0) return string.Empty;
+            var sb = new StringBuilder(len + 1);
+            GetWindowText(hwnd, sb, sb.Capacity);
+            return sb.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Restores a minimized window (if needed) and brings it to the foreground
+    /// using Win32 APIs. Returns <c>true</c> when <c>SetForegroundWindow</c> reports
+    /// success.
+    /// </summary>
+    private static bool ActivateWin32Window(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+            return false;
+
+        try
+        {
+            if (IsIconic(hwnd))
+                ShowWindow(hwnd, SW_RESTORE);
+
+            return SetForegroundWindow(hwnd);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Converts a raw Win32 window handle back to a FlaUI <see cref="Window"/>
+    /// using <c>AutomationBase.FromHandle</c>.
+    /// Returns null when the conversion fails (e.g. the window is no longer valid).
+    /// </summary>
+    private static Window? ResolveFlaUIWindowFromHwnd(AutomationSession session, IntPtr hwnd)
+    {
+        try
+        {
+            var element = session.Automation.FromHandle(hwnd);
+            return element?.AsWindow();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private object? Screenshot(UiRequest req)
@@ -2303,17 +2835,50 @@ public class UiService : IUiService
         if (req.Value == null && req.Index == null)
             throw new ArgumentException("Either 'value' (item name) or 'index' is required for 'select'.");
 
+        // Log when the request arrives via the deprecated alias so it is visible in traces.
+        if (string.Equals(req.Operation, "selectcomboboxitem", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation(
+                "selectcomboboxitem is deprecated alias. Routing through select ComboBox pipeline.");
+        }
+
         var element = FindWithRetry(req);
+
         if (element.ControlType == ControlType.ComboBox && !string.IsNullOrWhiteSpace(req.Value))
         {
-            var comboRequest = new UiRequest
-            {
-                Operation = "selectcomboboxitem",
-                Locator = req.Locator,
-                Value = req.Value
-            };
+            var session  = RequireSession();
+            var itemName = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
 
-            return SelectComboBoxItem(comboRequest);
+            if (string.IsNullOrWhiteSpace(itemName))
+                throw new ArgumentException("'select' on ComboBox requires a non-empty 'value'.");
+
+            _logger.LogInformation(
+                "Select operation resolved ComboBox. Routing to ComboBox pipeline. operation={Operation}, value={Value}, index={Index}, comboBox={ComboBox}",
+                SanitizeValue(req.Operation),
+                SanitizeValue(req.Value),
+                req.Index,
+                SafeElementName(element));
+
+            return SelectComboBoxByValue(session, element, itemName, req);
+        }
+
+        // Win32 native index selection for ComboBox elements.
+        if (element.ControlType == ControlType.ComboBox && req.Index.HasValue)
+        {
+            var session = RequireSession();
+            if (TrySelectNativeWin32ComboBoxByIndex(session, element, req.Index.Value, out var win32IndexStrategy))
+            {
+                var hwnd = SafeWindowHandle(element);
+                var selectedText = Win32ComboBoxHelper.GetSelectedText(hwnd);
+                return new
+                {
+                    selected = selectedText,
+                    index    = req.Index.Value,
+                    comboBox = SafeElementName(element),
+                    verified = true,
+                    strategy = win32IndexStrategy
+                };
+            }
         }
 
         var cf = RequireSession().Automation.ConditionFactory;
@@ -3725,31 +4290,56 @@ public class UiService : IUiService
         return null;
     }
 
+    /// <summary>
+    /// Backward-compatible alias. The canonical operation is <c>select</c>.
+    /// Delegates directly to <see cref="Select"/> so both code paths share
+    /// the identical ComboBox selection pipeline.
+    /// </summary>
     private object? SelectComboBoxItem(UiRequest req)
     {
-        if (string.IsNullOrWhiteSpace(req.Value))
-            throw new ArgumentException("value is required for selectcomboboxitem.");
+        return Select(req);
+    }
 
-        var comboBox = FindWithRetry(req);
-        if (!IsComboBoxElement(comboBox))
-        {
-            _logger.LogWarning(
-                "selectcomboboxitem called on non-ComboBox. name={Name}, controlType={ControlType}, className={ClassName}",
-                SafeElementName(comboBox),
-                comboBox.ControlType,
-                SafeElementClassName(comboBox));
-        }
-
-        var itemName = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
-        if (string.IsNullOrWhiteSpace(itemName))
-            throw new ArgumentException("selectcomboboxitem requires a non-empty value.");
-
-        var session = RequireSession();
+    /// <summary>
+    /// Core ComboBox value-selection pipeline, shared by <c>select</c> and
+    /// the legacy <c>selectcomboboxitem</c> alias.
+    /// </summary>
+    private object? SelectComboBoxByValue(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string itemName,
+        UiRequest req)
+    {
         var guard = CaptureComboBoxTargetGuard(comboBox);
         var operationDeadline = DateTime.UtcNow.AddMilliseconds(ComboBoxSingleSelectionTimeoutMs);
 
         _logger.LogInformation(
-            "ComboBox selection starting with UIA direct strategy. combo={Combo}, value={Value}",
+            "ComboBox selection starting. Trying Win32 native strategy first. combo={Combo}, value={Value}",
+            SafeElementName(comboBox),
+            itemName);
+
+        // --- Strategy 1: Win32 native (pywinauto-style, no dropdown) ---
+        if (TrySelectNativeWin32ComboBox(session, comboBox, itemName, out var win32NativeStrategy))
+        {
+            _logger.LogInformation(
+                "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+                win32NativeStrategy,
+                itemName,
+                GetComboBoxCurrentValue(session, comboBox));
+
+            return new
+            {
+                selected = itemName,
+                actual   = GetComboBoxCurrentValue(session, comboBox),
+                comboBox = SafeElementName(comboBox),
+                verified = true,
+                strategy = win32NativeStrategy,
+                operation = "select"
+            };
+        }
+
+        _logger.LogInformation(
+            "ComboBox Win32 native strategy did not apply. Falling back to UIA direct strategy. combo={Combo}, value={Value}",
             SafeElementName(comboBox),
             itemName);
 
@@ -3768,13 +4358,20 @@ public class UiService : IUiService
                 operationDeadline,
                 out var directStrategy))
         {
+            _logger.LogInformation(
+                "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+                directStrategy,
+                itemName,
+                GetComboBoxCurrentValue(session, comboBox));
+
             return new
             {
                 selected = itemName,
                 actual = GetComboBoxCurrentValue(session, comboBox),
                 comboBox = SafeElementName(comboBox),
                 verified = true,
-                strategy = directStrategy
+                strategy = directStrategy,
+                operation = "select"
             };
         }
 
@@ -3809,13 +4406,20 @@ public class UiService : IUiService
             {
                 var actual = GetComboBoxCurrentValue(session, comboBox);
 
+                _logger.LogInformation(
+                    "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+                    "huge-list-paged-visible-search",
+                    itemName,
+                    actual);
+
                 return new
                 {
                     selected = itemName,
                     actual,
                     comboBox = SafeElementName(comboBox),
                     verified = true,
-                    strategy = "huge-list-paged-visible-search"
+                    strategy = "huge-list-paged-visible-search",
+                    operation = "select"
                 };
             }
 
@@ -3828,13 +4432,20 @@ public class UiService : IUiService
             {
                 var actual = GetComboBoxCurrentValue(session, comboBox);
 
+                _logger.LogInformation(
+                    "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+                    "huge-list-visible-anchor-window-search",
+                    itemName,
+                    actual);
+
                 return new
                 {
                     selected = itemName,
                     actual,
                     comboBox = SafeElementName(comboBox),
                     verified = true,
-                    strategy = "huge-list-visible-anchor-window-search"
+                    strategy = "huge-list-visible-anchor-window-search",
+                    operation = "select"
                 };
             }
 
@@ -3851,13 +4462,20 @@ public class UiService : IUiService
                 {
                     var actual = GetComboBoxCurrentValue(session, comboBox);
 
+                    _logger.LogInformation(
+                        "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+                        "huge-list-explicit-typeahead-fallback",
+                        itemName,
+                        actual);
+
                     return new
                     {
                         selected = itemName,
                         actual,
                         comboBox = SafeElementName(comboBox),
                         verified = true,
-                        strategy = "huge-list-explicit-typeahead-fallback"
+                        strategy = "huge-list-explicit-typeahead-fallback",
+                        operation = "select"
                     };
                 }
             }
@@ -3905,7 +4523,8 @@ public class UiService : IUiService
                     actual,
                     comboBox = SafeElementName(comboBox),
                     verified = true,
-                    strategy = "small-combobox-paged-visible-search-fallback"
+                    strategy = "small-combobox-paged-visible-search-fallback",
+                    operation = "select"
                 };
             }
 
@@ -3921,7 +4540,8 @@ public class UiService : IUiService
                     actual,
                     comboBox = SafeElementName(comboBox),
                     verified = true,
-                    strategy = "small-combobox-anchor-window-search-fallback"
+                    strategy = "small-combobox-anchor-window-search-fallback",
+                    operation = "select"
                 };
             }
 
@@ -3939,13 +4559,20 @@ public class UiService : IUiService
 
         var actualAfterVerifiedCommit = GetComboBoxCurrentValue(session, comboBox);
 
+        _logger.LogInformation(
+            "ComboBox selected by value. operation=select, strategy={Strategy}, requested={Requested}, actual={Actual}",
+            "small-combobox-exact-visible-commit",
+            itemName,
+            actualAfterVerifiedCommit);
+
         return new
         {
             selected = itemName,
             actual = actualAfterVerifiedCommit,
             comboBox = SafeElementName(comboBox),
             verified = true,
-            strategy = "small-combobox-exact-visible-commit"
+            strategy = "small-combobox-exact-visible-commit",
+            operation = "select"
         };
     }
 
@@ -4107,6 +4734,152 @@ public class UiService : IUiService
         return session;
     }
 
+    // =========================================================================
+    // Operation performance policy
+    // =========================================================================
+
+    private sealed class UiOperationPolicy
+    {
+        public TimeSpan Timeout { get; init; }
+        public TimeSpan RetryInterval { get; init; }
+        public bool AllowDesktopPopupScan { get; init; }
+        public bool RefreshRootEveryRetry { get; init; }
+        public bool UseElementCache { get; init; }
+        public string PolicyName { get; init; } = "default";
+    }
+
+    private UiOperationPolicy GetOperationPolicy(UiRequest req)
+    {
+        var op = req.Operation.ToLowerInvariant();
+
+        if (req.TimeoutMs.HasValue)
+        {
+            return new UiOperationPolicy
+            {
+                Timeout = TimeSpan.FromMilliseconds(req.TimeoutMs.Value),
+                RetryInterval = TimeSpan.FromMilliseconds(req.Fast == true ? 100 : 500),
+                AllowDesktopPopupScan = req.DisableAutoFollow != true && IsSlowWindowOperation(op),
+                RefreshRootEveryRetry = IsSlowWindowOperation(op),
+                UseElementCache = req.UseCache == true || req.Fast == true,
+                PolicyName = req.Fast == true ? "request-fast-override" : "request-timeout-override"
+            };
+        }
+
+        if (IsFastElementOperation(op))
+        {
+            return new UiOperationPolicy
+            {
+                Timeout = TimeSpan.FromMilliseconds(1000),
+                RetryInterval = TimeSpan.FromMilliseconds(100),
+                AllowDesktopPopupScan = false,
+                RefreshRootEveryRetry = false,
+                UseElementCache = true,
+                PolicyName = "fast-element-operation"
+            };
+        }
+
+        if (IsSlowWindowOperation(op))
+        {
+            return new UiOperationPolicy
+            {
+                Timeout = TimeSpan.FromMilliseconds(8000),
+                RetryInterval = TimeSpan.FromMilliseconds(300),
+                AllowDesktopPopupScan = true,
+                RefreshRootEveryRetry = true,
+                UseElementCache = false,
+                PolicyName = "slow-window-operation"
+            };
+        }
+
+        return new UiOperationPolicy
+        {
+            Timeout = DefaultRetry,
+            RetryInterval = RetryInterval,
+            AllowDesktopPopupScan = true,
+            RefreshRootEveryRetry = true,
+            UseElementCache = false,
+            PolicyName = "default-stable"
+        };
+    }
+
+    private static bool IsFastElementOperation(string op)
+    {
+        return op is
+            "click" or
+            "type" or
+            "sendkeys" or
+            "clear" or
+            "gettext" or
+            "getvalue" or
+            "setvalue" or
+            "check" or
+            "uncheck" or
+            "select" or
+            "typedate" or
+            "rightclick";
+    }
+
+    private static bool IsSlowWindowOperation(string op)
+    {
+        return op is
+            "switchwindow" or
+            "waitforwindow" or
+            "waitforpopup" or
+            "contextmenupath" or
+            "openheaderdropdown" or
+            "selectheaderdropdownitem" or
+            "gettable" or
+            "gettableheaders" or
+            "selectdynamicmenuitem" or
+            "selectdynamicmenupath";
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when attribute-based search (AutomationId, Name, ClassName, ControlType)
+    /// should be tried before XPath for the given request.
+    /// Fast element operations use this by default; callers can opt in or out explicitly.
+    /// </summary>
+    private bool ShouldPreferAttributeSearch(UiRequest req)
+    {
+        if (req.XPathOnly == true)
+            return false;
+
+        if (req.PreferAttributes == true)
+            return true;
+
+        if (req.PreferXPath == true)
+            return false;
+
+        var policy = GetOperationPolicy(req);
+        return policy.PolicyName == "fast-element-operation" || req.Fast == true;
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when XPath should be the primary (or sole) search strategy.
+    /// </summary>
+    private bool ShouldUseXPathFirst(UiRequest req)
+    {
+        if (req.XPathOnly == true)
+            return true;
+
+        if (req.PreferXPath == true)
+            return true;
+
+        return !ShouldPreferAttributeSearch(req);
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when the locator has at least one non-XPath attribute that
+    /// can be used for a focused UIA tree query (AutomationId, Name, ClassName, or ControlType).
+    /// </summary>
+    private static bool HasUsableAttributeLocator(UiLocator locator)
+    {
+        return !string.IsNullOrWhiteSpace(locator.AutomationId) ||
+               !string.IsNullOrWhiteSpace(locator.Name) ||
+               !string.IsNullOrWhiteSpace(locator.ClassName) ||
+               !string.IsNullOrWhiteSpace(locator.ControlType);
+    }
+
     /// <summary>
     /// Returns the locator from the request or throws if missing.
     /// </summary>
@@ -4127,7 +4900,13 @@ public class UiService : IUiService
     /// dialogs, OS security prompts) that appear as a result of application actions.
     /// Falls back to the application's main window when no active window is set.
     /// </summary>
-    private AutomationElement GetWindowRoot(AutomationSession session)
+    /// <param name="session">The active automation session.</param>
+    /// <param name="allowDesktopPopupScan">
+    /// When <c>true</c> (default), performs the full desktop descendant scan and popup
+    /// auto-follow logic.  Set to <c>false</c> for fast element operations (click, type,
+    /// clear, etc.) to skip the expensive desktop traversal.
+    /// </param>
+    private AutomationElement GetWindowRoot(AutomationSession session, bool allowDesktopPopupScan = true)
     {
         if (session.AutoFollowNewWindows)
         {
@@ -4142,8 +4921,19 @@ public class UiService : IUiService
                     session.ActiveWindow = newWindow;
                     _logger.LogInformation(
                         "Auto-followed new window: '{Title}'", SafeElementName(newWindow));
+
+                    // Register the newly-appeared window in the ownership tracker so it
+                    // will be closed when the session ends.
+                    var newHwnd = SafeWindowHandle(newWindow);
+                    if (newHwnd != IntPtr.Zero)
+                        session.TrackWindow(
+                            newHwnd,
+                            SafeProcessId(newWindow) ?? session.Application.ProcessId,
+                            SafeElementName(newWindow),
+                            SafeElementClassName(newWindow),
+                            isMainWindow: false);
                 }
-                else
+                else if (allowDesktopPopupScan)
                 {
                     // GetAllTopLevelWindows only scans direct children of the desktop UIA
                     // element filtered by the application's PID.  Owned dialog windows
@@ -4184,6 +4974,16 @@ public class UiService : IUiService
                                 _logger.LogInformation(
                                     "Auto-followed popup/dialog window: '{Title}'",
                                     SafeElementName(newPopup));
+
+                                // Track the popup so it will be closed during cleanup.
+                                var popupHwnd = SafeWindowHandle(newPopup);
+                                if (popupHwnd != IntPtr.Zero)
+                                    session.TrackWindow(
+                                        popupHwnd,
+                                        SafeProcessId(newPopup) ?? session.Application.ProcessId,
+                                        SafeElementName(newPopup),
+                                        SafeElementClassName(newPopup),
+                                        isMainWindow: false);
                             }
                         }
                         catch (Exception ex)
@@ -4452,6 +5252,57 @@ public class UiService : IUiService
             FindWindowCache[cacheKey] = new CachedWindowMatch(element, DateTime.UtcNow + FindWindowCacheDuration);
     }
 
+    private static string BuildElementCacheKey(
+        AutomationSession session,
+        AutomationElement root,
+        UiLocator locator,
+        UiLocator? parentLocator = null,
+        bool preferAttributes = false,
+        bool xpathOnly = false,
+        bool preferXPath = false)
+    {
+        var rootHandle = SafeWindowHandle(root).ToInt64();
+        var parentKey = parentLocator == null ? "" : DescribeLocator(parentLocator);
+        var strategyKey = xpathOnly ? "xo" : preferXPath ? "px" : preferAttributes ? "pa" : "def";
+        var locatorKey = string.Join(
+            ";",
+            locator.XPath ?? "",
+            locator.Name ?? "",
+            locator.AutomationId ?? "",
+            locator.ClassName ?? "",
+            locator.ControlType ?? "");
+        return string.Join("|", "element", session.SessionId, rootHandle, parentKey, strategyKey, locatorKey);
+    }
+
+    private static bool TryGetCachedElement(
+        string cacheKey,
+        UiLocator locator,
+        out AutomationElement? cached)
+    {
+        lock (ElementCacheLock)
+        {
+            if (ElementCache.TryGetValue(cacheKey, out var entry))
+            {
+                if (entry.ExpiresAt > DateTime.UtcNow && IsElementAlive(entry.Element))
+                {
+                    cached = entry.Element;
+                    return true;
+                }
+
+                ElementCache.Remove(cacheKey);
+            }
+        }
+
+        cached = null;
+        return false;
+    }
+
+    private static void StoreCachedElement(string cacheKey, AutomationElement element)
+    {
+        lock (ElementCacheLock)
+            ElementCache[cacheKey] = new CachedElementMatch(element, DateTime.UtcNow + ElementCacheDuration);
+    }
+
     private static List<object> SnapshotWindowTitles(AutomationBase automation)
     {
         var results = new List<object>();
@@ -4500,37 +5351,198 @@ public class UiService : IUiService
     }
 
     /// <summary>
-    /// Finds an element using a locator with up to 5 s retry (500 ms interval).
+    /// Finds an element using a locator, applying the operation-based performance policy
+    /// (<see cref="GetOperationPolicy"/>) to determine timeout, retry interval, and whether
+    /// to perform desktop popup scanning on each retry.
     /// <para>
-    /// The window root is re-evaluated on every retry iteration so that newly
-    /// opened dialogs (e.g. a modal confirmation dialog that appears after
-    /// clicking OK) are picked up by the auto-follow logic inside
-    /// <see cref="GetWindowRoot"/> and subsequent retries search the correct
-    /// window rather than the stale previous root.
+    /// For fast element operations (click, type, clear, etc.) the root is fetched once and
+    /// reused across retries with a short timeout, avoiding the expensive desktop scan.
+    /// For slow window operations the root is re-evaluated on every iteration so that newly
+    /// opened dialogs are picked up by the auto-follow logic inside <see cref="GetWindowRoot"/>.
+    /// </para>
+    /// <para>
+    /// When <see cref="UiRequest.ParentLocator"/> is set, the parent element is resolved
+    /// first and the child <see cref="UiRequest.Locator"/> is searched within that narrower scope.
+    /// Set <see cref="UiRequest.FallbackToWindowRootIfParentChildNotFound"/> to <c>true</c>
+    /// to allow a full-window retry when the child is not found inside the parent.
     /// </para>
     /// </summary>
     private AutomationElement FindWithRetry(UiRequest req)
     {
         var locator = RequireLocator(req);
         var session = RequireSession();
+        var policy = GetOperationPolicy(req);
+        var preferAttributes = ShouldPreferAttributeSearch(req);
+        var xpathOnly = req.XPathOnly == true;
 
-        var deadline = DateTime.UtcNow + DefaultRetry;
+        var deadline = DateTime.UtcNow + policy.Timeout;
+
+        var root = GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan);
+
+        // Resolve optional parent container to narrow the search scope.
+        var searchRoot = root;
+        string? parentDescription = null;
+
+        if (req.ParentLocator != null)
+        {
+            var parentResult = TryFindElementBySmartStrategy(
+                root,
+                session,
+                req.ParentLocator,
+                preferAttributes: preferAttributes,
+                xpathOnly: xpathOnly);
+
+            if (parentResult.Element == null)
+            {
+                throw new InvalidOperationException(
+                    $"Parent locator not found using strategy={parentResult.Strategy}: " +
+                    DescribeLocator(req.ParentLocator));
+            }
+
+            searchRoot = parentResult.Element;
+            parentDescription = DescribeLocator(req.ParentLocator);
+
+            _logger.LogInformation(
+                "UI parent locator resolved. operation={Operation}, policy={Policy}, strategy={Strategy}, parent={Parent}, child={Child}",
+                SanitizeValue(req.Operation),
+                policy.PolicyName,
+                parentResult.Strategy,
+                parentDescription,
+                DescribeLocator(locator));
+        }
+
+        var cacheKey = policy.UseElementCache && !policy.RefreshRootEveryRetry
+            ? BuildElementCacheKey(
+                session, root, locator, req.ParentLocator,
+                preferAttributes: preferAttributes,
+                xpathOnly: xpathOnly,
+                preferXPath: req.PreferXPath == true)
+            : null;
+
+        // The cache check and store are separate lock acquisitions (same as the FindWindowCache
+        // pattern). The potential race (two threads both miss the cache and both store the same
+        // element) is benign: the second store merely overwrites the first with an equivalent value.
+        if (cacheKey != null &&
+            TryGetCachedElement(cacheKey, locator, out var cached) &&
+            cached != null)
+        {
+            _logger.LogInformation(
+                "UI locator resolved. operation={Operation}, policy={Policy}, strategy=cache, locator={Locator}, parent={Parent}",
+                SanitizeValue(req.Operation),
+                policy.PolicyName,
+                DescribeLocator(locator),
+                parentDescription ?? "");
+
+            return cached;
+        }
+
+        var findSw = Stopwatch.StartNew();
+        var lastResult = LocatorSearchResult.NotFound("not-started");
+
         while (true)
         {
-            // Re-query the root on every iteration: if a new dialog opened since
-            // the last attempt, GetWindowRoot will auto-follow it and return the
-            // dialog as the new root, allowing the element search to succeed.
-            var root = GetWindowRoot(session);
-            var element = TryFindElement(root, session, locator);
-            if (element != null)
-                return element;
+            lastResult = TryFindElementBySmartStrategy(
+                searchRoot,
+                session,
+                locator,
+                preferAttributes: preferAttributes,
+                xpathOnly: xpathOnly);
+
+            if (lastResult.Element != null)
+            {
+                findSw.Stop();
+
+                if (cacheKey != null)
+                    StoreCachedElement(cacheKey, lastResult.Element);
+
+                _logger.LogInformation(
+                    "UI locator resolved. operation={Operation}, policy={Policy}, strategy={Strategy}, elapsedMs={ElapsedMs}, locator={Locator}, parent={Parent}",
+                    SanitizeValue(req.Operation),
+                    policy.PolicyName,
+                    lastResult.Strategy,
+                    findSw.ElapsedMilliseconds,
+                    DescribeLocator(locator),
+                    parentDescription ?? "");
+
+                return lastResult.Element;
+            }
+
+            // When a parent was used but child was not found inside it, optionally retry
+            // from the full window root before sleeping or timing out.
+            if (req.ParentLocator != null &&
+                req.FallbackToWindowRootIfParentChildNotFound == true)
+            {
+                var rootFallback = TryFindElementBySmartStrategy(
+                    root,
+                    session,
+                    locator,
+                    preferAttributes: preferAttributes,
+                    xpathOnly: xpathOnly);
+
+                if (rootFallback.Element != null)
+                {
+                    findSw.Stop();
+
+                    if (cacheKey != null)
+                        StoreCachedElement(cacheKey, rootFallback.Element);
+
+                    _logger.LogInformation(
+                        "UI locator resolved by window-root fallback. operation={Operation}, policy={Policy}, strategy={Strategy}, elapsedMs={ElapsedMs}, locator={Locator}, parent={Parent}",
+                        SanitizeValue(req.Operation),
+                        policy.PolicyName,
+                        rootFallback.Strategy,
+                        findSw.ElapsedMilliseconds,
+                        DescribeLocator(locator),
+                        parentDescription ?? "");
+
+                    return rootFallback.Element;
+                }
+
+                lastResult = rootFallback;
+            }
 
             if (DateTime.UtcNow >= deadline)
-                throw new InvalidOperationException(
-                    $"Element not found within {DefaultRetry.TotalSeconds}s: " +
-                    DescribeLocator(locator));
+            {
+                _logger.LogWarning(
+                    "UI locator not found. operation={Operation}, policy={Policy}, lastStrategy={Strategy}, locator={Locator}, parent={Parent}",
+                    SanitizeValue(req.Operation),
+                    policy.PolicyName,
+                    lastResult.Strategy,
+                    DescribeLocator(locator),
+                    parentDescription ?? "");
 
-            Thread.Sleep(RetryInterval);
+                var timeoutDesc = policy.Timeout.TotalMilliseconds >= 1000
+                    ? $"{(int)policy.Timeout.TotalSeconds}s"
+                    : $"{(int)policy.Timeout.TotalMilliseconds}ms";
+                throw new InvalidOperationException(
+                    $"Element not found within {timeoutDesc} using policy={policy.PolicyName}, " +
+                    $"lastStrategy={lastResult.Strategy}, locator={DescribeLocator(locator)}, " +
+                    $"parent={parentDescription ?? ""}");
+            }
+
+            Thread.Sleep(policy.RetryInterval);
+
+            if (policy.RefreshRootEveryRetry)
+            {
+                root = GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan);
+
+                // Also re-resolve the parent scope when the root changes.
+                if (req.ParentLocator != null)
+                {
+                    var parentRetry = TryFindElementBySmartStrategy(
+                        root,
+                        session,
+                        req.ParentLocator,
+                        preferAttributes: preferAttributes,
+                        xpathOnly: xpathOnly);
+
+                    searchRoot = parentRetry.Element ?? root;
+                }
+                else
+                {
+                    searchRoot = root;
+                }
+            }
         }
     }
 
@@ -4558,29 +5570,221 @@ public class UiService : IUiService
     }
 
     /// <summary>
-    /// Attempts a single element search. Returns null when not found.
-    /// When <see cref="UiLocator.XPath"/> is set it is evaluated via <see cref="FindByXPath"/>;
-    /// otherwise the standard attribute-condition approach is used.
+    /// Attempts a single element search using the legacy XPath-first strategy.
+    /// Used by <see cref="FindLocatorWithRetry"/> (which has no <see cref="UiRequest"/>
+    /// context) and as a fallback when neither strategy flag is set.
+    /// When XPath is present it is tried first; attribute-priority search follows.
     /// </summary>
-    private static AutomationElement? TryFindElement(
+    private AutomationElement? TryFindElement(
         AutomationElement root, AutomationSession session, UiLocator locator)
     {
         try
         {
             if (!string.IsNullOrWhiteSpace(locator.XPath))
-                return FindByXPath(root, session, locator.XPath);
+            {
+                var byXPath = FindByXPath(root, session, locator.XPath);
+                if (byXPath != null)
+                    return byXPath;
+            }
 
-            var condition = BuildCondition(session, locator);
-            var element = root.FindFirstDescendant(condition);
-            if (element != null)
-                return element;
-
-            return TryFindWinFormsDateTimePickerByPartialClassName(root, session, locator);
+            return TryFindElementByFastAttributes(root, session, locator).Element;
         }
         catch
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Attribute-condition-based element search (no XPath).
+    /// Builds a combined AND condition from all non-empty locator properties and
+    /// also handles WinForms <c>DateTimePicker</c> partial class-name matching.
+    /// </summary>
+    private static AutomationElement? TryFindElementByCondition(
+        AutomationElement root, AutomationSession session, UiLocator locator)
+    {
+        var condition = BuildCondition(session, locator);
+        var element = root.FindFirstDescendant(condition);
+        if (element != null)
+            return element;
+
+        return TryFindWinFormsDateTimePickerByPartialClassName(root, session, locator);
+    }
+
+    /// <summary>
+    /// Dispatches element search based on the caller's strategy flags.
+    /// <list type="bullet">
+    ///   <item><term><paramref name="xpathOnly"/>=true</term><description>Only XPath is tried.</description></item>
+    ///   <item><term><paramref name="preferAttributes"/>=true</term><description>Attribute search runs first; XPath is the fallback.</description></item>
+    ///   <item><term>default</term><description>XPath first (legacy behavior), then attribute conditions.</description></item>
+    /// </list>
+    /// </summary>
+    private LocatorSearchResult TryFindElementBySmartStrategy(
+        AutomationElement root,
+        AutomationSession session,
+        UiLocator locator,
+        bool preferAttributes,
+        bool xpathOnly)
+    {
+        if (xpathOnly)
+        {
+            if (string.IsNullOrWhiteSpace(locator.XPath))
+                return LocatorSearchResult.NotFound("xpath-only-no-xpath");
+
+            var byXPath = FindByXPath(root, session, locator.XPath);
+            return byXPath != null
+                ? LocatorSearchResult.Found(byXPath, "xpath-only")
+                : LocatorSearchResult.NotFound("xpath-only");
+        }
+
+        if (preferAttributes)
+        {
+            var byAttributes = TryFindElementByFastAttributes(root, session, locator);
+            if (byAttributes.Element != null)
+                return byAttributes;
+
+            if (!string.IsNullOrWhiteSpace(locator.XPath))
+            {
+                var byXPath = FindByXPath(root, session, locator.XPath);
+                if (byXPath != null)
+                    return LocatorSearchResult.Found(byXPath, "xpath-fallback");
+            }
+
+            return LocatorSearchResult.NotFound("attribute-first-not-found");
+        }
+
+        // XPath-first (legacy / stable)
+        if (!string.IsNullOrWhiteSpace(locator.XPath))
+        {
+            var byXPath = FindByXPath(root, session, locator.XPath);
+            if (byXPath != null)
+                return LocatorSearchResult.Found(byXPath, "xpath-first");
+        }
+
+        var fallbackAttributes = TryFindElementByFastAttributes(root, session, locator);
+        if (fallbackAttributes.Element != null)
+            return fallbackAttributes;
+
+        return LocatorSearchResult.NotFound("not-found");
+    }
+
+    /// <summary>
+    /// Searches for an element using the prioritised attribute strategy:
+    /// <list type="number">
+    ///   <item>AutomationId + ControlType</item>
+    ///   <item>AutomationId only</item>
+    ///   <item>Name + ControlType</item>
+    ///   <item>Name + ClassName</item>
+    ///   <item>ControlType + ClassName</item>
+    ///   <item>Full condition-based fallback (all attributes AND-ed)</item>
+    /// </list>
+    /// </summary>
+    private LocatorSearchResult TryFindElementByFastAttributes(
+        AutomationElement root,
+        AutomationSession session,
+        UiLocator locator)
+    {
+        try
+        {
+            if (!HasUsableAttributeLocator(locator))
+                return LocatorSearchResult.NotFound("no-attribute-locator");
+
+            // 1. AutomationId + ControlType
+            if (!string.IsNullOrWhiteSpace(locator.AutomationId) &&
+                !string.IsNullOrWhiteSpace(locator.ControlType))
+            {
+                var match = FindFirstByAutomationIdAndControlType(root, session, locator);
+                if (match != null && LocatorMatchesExceptXPath(match, locator))
+                    return LocatorSearchResult.Found(match, "automationid-controltype");
+            }
+
+            // 2. AutomationId only
+            if (!string.IsNullOrWhiteSpace(locator.AutomationId))
+            {
+                var cf = session.Automation.ConditionFactory;
+                var match = root.FindFirstDescendant(cf.ByAutomationId(locator.AutomationId));
+                if (match != null && LocatorMatchesExceptXPath(match, locator))
+                    return LocatorSearchResult.Found(match, "automationid");
+            }
+
+            // 3. Name + ControlType
+            if (!string.IsNullOrWhiteSpace(locator.Name) &&
+                !string.IsNullOrWhiteSpace(locator.ControlType))
+            {
+                var match = FindFirstByNameAndControlType(root, session, locator);
+                if (match != null && LocatorMatchesExceptXPath(match, locator))
+                    return LocatorSearchResult.Found(match, "name-controltype");
+            }
+
+            // 4. Name + ClassName
+            if (!string.IsNullOrWhiteSpace(locator.Name) &&
+                !string.IsNullOrWhiteSpace(locator.ClassName))
+            {
+                var cf = session.Automation.ConditionFactory;
+                var match = root.FindFirstDescendant(
+                    new AndCondition(cf.ByName(locator.Name), cf.ByClassName(locator.ClassName)));
+                if (match != null && LocatorMatchesExceptXPath(match, locator))
+                    return LocatorSearchResult.Found(match, "name-classname");
+            }
+
+            // 5. ControlType + ClassName
+            if (!string.IsNullOrWhiteSpace(locator.ControlType) &&
+                !string.IsNullOrWhiteSpace(locator.ClassName))
+            {
+                var cf = session.Automation.ConditionFactory;
+                var controlType = ParseControlType(locator.ControlType);
+                var match = root.FindFirstDescendant(
+                    new AndCondition(cf.ByControlType(controlType), cf.ByClassName(locator.ClassName)));
+                if (match != null && LocatorMatchesExceptXPath(match, locator))
+                    return LocatorSearchResult.Found(match, "controltype-classname");
+            }
+
+            // 6. Full condition-based fallback
+            var fallback = TryFindElementByCondition(root, session, locator);
+            if (fallback != null)
+                return LocatorSearchResult.Found(fallback, "condition-fallback");
+
+            return LocatorSearchResult.NotFound("attributes-not-found");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(
+                ex,
+                "Fast attribute locator search failed. locator={Locator}",
+                DescribeLocator(locator));
+
+            return LocatorSearchResult.NotFound("attributes-exception");
+        }
+    }
+
+    /// <summary>
+    /// Finds the first descendant matching both <c>AutomationId</c> and <c>ControlType</c>
+    /// from <paramref name="locator"/>.
+    /// </summary>
+    private static AutomationElement? FindFirstByAutomationIdAndControlType(
+        AutomationElement root, AutomationSession session, UiLocator locator)
+    {
+        var cf = session.Automation.ConditionFactory;
+        var controlType = ParseControlType(locator.ControlType!);
+        return root.FindFirstDescendant(
+            new AndCondition(
+                cf.ByAutomationId(locator.AutomationId!),
+                cf.ByControlType(controlType)));
+    }
+
+    /// <summary>
+    /// Finds the first descendant matching both <c>Name</c> and <c>ControlType</c>
+    /// from <paramref name="locator"/>.
+    /// </summary>
+    private static AutomationElement? FindFirstByNameAndControlType(
+        AutomationElement root, AutomationSession session, UiLocator locator)
+    {
+        var cf = session.Automation.ConditionFactory;
+        var controlType = ParseControlType(locator.ControlType!);
+        return root.FindFirstDescendant(
+            new AndCondition(
+                cf.ByName(locator.Name!),
+                cf.ByControlType(controlType)));
     }
 
     private static AutomationElement? TryFindWinFormsDateTimePickerByPartialClassName(
@@ -4623,6 +5827,90 @@ public class UiService : IUiService
             return false;
 
         return true;
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when all non-XPath locator properties that are present
+    /// (Name, AutomationId, ClassName, ControlType) match the element.
+    /// Used by fast attribute search to verify candidates that were found by a
+    /// single-attribute query.
+    /// </summary>
+    private static bool LocatorMatchesExceptXPath(AutomationElement element, UiLocator locator)
+    {
+        if (!string.IsNullOrWhiteSpace(locator.Name) &&
+            !string.Equals(SafeElementName(element), locator.Name, StringComparison.Ordinal))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(locator.AutomationId) &&
+            !string.Equals(SafeElementAutomationId(element), locator.AutomationId, StringComparison.Ordinal))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(locator.ClassName) &&
+            !string.Equals(SafeElementClassName(element), locator.ClassName, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(locator.ControlType) &&
+            !string.Equals(element.ControlType.ToString(), locator.ControlType, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return true;
+    }
+
+    // =========================================================================
+    // Win32 window discovery model
+    // =========================================================================
+
+    /// <summary>
+    /// Lightweight record returned by the Win32 top-level window enumerator,
+    /// carrying the handle, owning process identifier, and window title.
+    /// </summary>
+    private sealed class Win32WindowInfo
+    {
+        public IntPtr Hwnd { get; init; }
+        public int ProcessId { get; init; }
+        public string Title { get; init; } = string.Empty;
+        public string ClassName { get; init; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Resolved criteria used to search for a Win32 top-level window.
+    /// Built from a <see cref="UiRequest"/> by <c>BuildWin32SwitchCriteria</c>.
+    /// </summary>
+    private sealed class Win32SwitchCriteria
+    {
+        public string? TitleOrValue { get; init; }
+        public IntPtr? Hwnd { get; init; }
+        public string? ClassName { get; init; }
+        public int? ProcessId { get; init; }
+        public string MatchMode { get; init; } = "contains";
+    }
+
+    // =========================================================================
+    // Locator search result
+    // =========================================================================
+
+    /// <summary>
+    /// Carries the outcome of a smart locator search together with the strategy
+    /// name that produced the result.  Strategy names are used in structured log
+    /// messages so callers can tell at a glance which path was taken.
+    /// </summary>
+    private sealed class LocatorSearchResult
+    {
+        public AutomationElement? Element { get; init; }
+
+        /// <summary>
+        /// Identifies which search path found (or failed to find) the element.
+        /// Common values: cache, parent-scope, automationid-controltype, automationid,
+        /// name-controltype, name-classname, controltype-classname, xpath-first,
+        /// xpath-fallback, xpath-only, condition-fallback, not-found, attributes-exception.
+        /// </summary>
+        public string Strategy { get; init; } = "not-found";
+
+        public static LocatorSearchResult Found(AutomationElement element, string strategy)
+            => new() { Element = element, Strategy = strategy };
+
+        public static LocatorSearchResult NotFound(string strategy)
+            => new() { Element = null, Strategy = strategy };
     }
 
     // =========================================================================
@@ -5712,6 +7000,114 @@ public class UiService : IUiService
         {
             _logger.LogWarning(ex, "GetLogicalComboBoxItems failed for {Combo}", SafeElementName(comboBox));
             return [];
+        }
+    }
+
+    // =========================================================================
+    // Win32 native ComboBox strategies (pywinauto-style)
+    // =========================================================================
+
+    /// <summary>
+    /// Attempts to select <paramref name="requestedValue"/> in a native Win32 ComboBox
+    /// using CB_FINDSTRINGEXACT / CB_SETCURSEL (no dropdown open).
+    /// Returns true and sets <paramref name="strategy"/> when the selection is confirmed.
+    /// </summary>
+    private bool TrySelectNativeWin32ComboBox(
+        AutomationSession session,
+        AutomationElement comboBox,
+        string requestedValue,
+        out string strategy)
+    {
+        strategy = "win32-native-not-used";
+
+        try
+        {
+            var hwnd      = SafeWindowHandle(comboBox);
+            var className = SafeElementClassName(comboBox);
+
+            if (!Win32ComboBoxHelper.IsLikelyNativeWin32ComboBox(hwnd, className))
+                return false;
+
+            _logger.LogInformation(
+                "Trying native Win32 ComboBox selection. hwnd=0x{Hwnd:X}, className={ClassName}, value={Value}",
+                hwnd.ToInt64(), className, requestedValue);
+
+            if (!Win32ComboBoxHelper.SelectByText(hwnd, requestedValue, _logger, "ui-win32-native-combobox"))
+                return false;
+
+            Win32ComboBoxHelper.HideDropdown(hwnd);
+            Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+            if (VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, requestedValue, "ui-win32-native-combobox"))
+            {
+                _logger.LogInformation(
+                    "ComboBox selection strategy selected: win32-native-combobox. combo={Combo}, value={Value}",
+                    SafeElementName(comboBox), requestedValue);
+
+                strategy = "win32-native-combobox";
+                return true;
+            }
+
+            _logger.LogWarning(
+                "Native Win32 ComboBox selection did not verify. requested={Requested}, actual={Actual}, hwnd=0x{Hwnd:X}",
+                requestedValue, GetComboBoxCurrentValue(session, comboBox), hwnd.ToInt64());
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Native Win32 ComboBox selection failed. combo={Combo}, value={Value}",
+                SafeElementName(comboBox), requestedValue);
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Attempts to select the item at <paramref name="index"/> in a native Win32 ComboBox
+    /// using CB_SETCURSEL.
+    /// Returns true and sets <paramref name="strategy"/> when the selection succeeds.
+    /// </summary>
+    private bool TrySelectNativeWin32ComboBoxByIndex(
+        AutomationSession session,
+        AutomationElement comboBox,
+        int index,
+        out string strategy)
+    {
+        strategy = "win32-native-index-not-used";
+
+        try
+        {
+            var hwnd      = SafeWindowHandle(comboBox);
+            var className = SafeElementClassName(comboBox);
+
+            if (!Win32ComboBoxHelper.IsLikelyNativeWin32ComboBox(hwnd, className))
+                return false;
+
+            _logger.LogInformation(
+                "Trying native Win32 ComboBox index selection. hwnd=0x{Hwnd:X}, className={ClassName}, index={Index}",
+                hwnd.ToInt64(), className, index);
+
+            if (!Win32ComboBoxHelper.SelectByIndex(hwnd, index, _logger, "ui-win32-native-combobox-index"))
+                return false;
+
+            Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+            _logger.LogInformation(
+                "ComboBox selection strategy selected: win32-native-combobox-index. combo={Combo}, index={Index}, selected={Selected}",
+                SafeElementName(comboBox), index, Win32ComboBoxHelper.GetSelectedText(hwnd));
+
+            strategy = "win32-native-combobox-index";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Native Win32 ComboBox index selection failed. combo={Combo}, index={Index}",
+                SafeElementName(comboBox), index);
+
+            return false;
         }
     }
 
@@ -10827,4 +12223,42 @@ public class UiService : IUiService
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr GetForegroundWindow();
+
+    // =========================================================================
+    // Win32 window enumeration P/Invoke
+    // =========================================================================
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int GetWindowTextLength(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetShellWindow();
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    private const int SW_RESTORE = 9;
 }

@@ -5386,6 +5386,66 @@ public sealed class RecordingOverlayWindow : Form
         }
     }
 
+    // =========================================================================
+    // Win32 native ComboBox strategy (pywinauto-style) — Assistive/Recording mode
+    // =========================================================================
+
+    /// <summary>
+    /// Attempts to select <paramref name="requestedValue"/> in a native Win32 ComboBox
+    /// using CB_FINDSTRINGEXACT / CB_SETCURSEL (no dropdown open).
+    /// Returns true and sets <paramref name="strategy"/> when the selection is confirmed.
+    /// </summary>
+    private bool TrySelectNativeWin32ComboBoxAssistive(
+        AutomationElement comboBox,
+        string requestedValue,
+        out string strategy)
+    {
+        strategy = "assistive-win32-native-not-used";
+
+        try
+        {
+            var hwnd      = AssistivePopupResolver.SafeWindowHandle(comboBox);
+            var className = SafeElementClassName(comboBox);
+
+            if (!Win32ComboBoxHelper.IsLikelyNativeWin32ComboBox(hwnd, className))
+                return false;
+
+            _logger.LogInformation(
+                "Assistive trying native Win32 ComboBox selection. hwnd=0x{Hwnd:X}, className={ClassName}, value={Value}",
+                hwnd.ToInt64(), className, requestedValue);
+
+            if (!Win32ComboBoxHelper.SelectByText(hwnd, requestedValue, _logger, "assistive-win32-native-combobox"))
+                return false;
+
+            Win32ComboBoxHelper.HideDropdown(hwnd);
+            Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+            if (VerifyComboBoxSelectedValueStableAfterCollapse(comboBox, requestedValue, "assistive-win32-native-combobox"))
+            {
+                _logger.LogInformation(
+                    "ComboBox selection strategy selected: win32-native-combobox. combo={Combo}, value={Value}",
+                    SafeElementName(comboBox), requestedValue);
+
+                strategy = "win32-native-combobox";
+                return true;
+            }
+
+            _logger.LogWarning(
+                "Assistive native Win32 ComboBox selection did not verify. requested={Requested}, actual={Actual}, hwnd=0x{Hwnd:X}",
+                requestedValue, GetComboBoxCurrentValue(comboBox), hwnd.ToInt64());
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Assistive native Win32 ComboBox selection failed. combo={Combo}, value={Value}",
+                SafeElementName(comboBox), requestedValue);
+
+            return false;
+        }
+    }
+
     private bool TrySelectComboBoxByDirectUia(
         AutomationElement comboBox,
         string requestedValue,
@@ -7626,7 +7686,19 @@ public sealed class RecordingOverlayWindow : Form
             Thread.Sleep(100);
 
             _logger.LogInformation(
-                "Assistive ComboBox selection starting with UIA direct strategy. combo={Combo}, value={Value}",
+                "Assistive ComboBox selection starting. Trying Win32 native strategy first. combo={Combo}, value={Value}",
+                SafeElementName(comboBox),
+                itemName);
+
+            // --- Strategy 1: Win32 native (pywinauto-style, no dropdown) ---
+            if (TrySelectNativeWin32ComboBoxAssistive(comboBox, itemName, out var win32NativeStrategy))
+            {
+                RecordComboBoxSelection(comboBox, comboInfo, itemName, win32NativeStrategy);
+                return true;
+            }
+
+            _logger.LogInformation(
+                "Assistive ComboBox Win32 native strategy did not apply. Falling back to UIA direct strategy. combo={Combo}, value={Value}",
                 SafeElementName(comboBox),
                 itemName);
 

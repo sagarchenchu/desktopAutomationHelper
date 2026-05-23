@@ -1,10 +1,26 @@
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
+using System.Runtime.InteropServices;
 
 // Alias to avoid ambiguity with System.Windows.Forms.Application (added via UseWindowsForms)
 using FlaUIApplication = FlaUI.Core.Application;
 
 namespace DesktopAutomationDriver.Services;
+
+/// <summary>
+/// Holds information about a top-level window that was opened within or by the
+/// automation session.  Used for reliable cleanup when the session is closed.
+/// </summary>
+public sealed class TrackedWindowInfo
+{
+    public IntPtr Hwnd { get; init; }
+    public int ProcessId { get; init; }
+    public string Title { get; init; } = string.Empty;
+    public string ClassName { get; init; } = string.Empty;
+    public DateTime FirstSeenUtc { get; init; } = DateTime.UtcNow;
+    public DateTime LastSeenUtc { get; set; } = DateTime.UtcNow;
+    public bool IsMainWindow { get; init; }
+}
 
 /// <summary>
 /// Represents an active automation session, holding the FlaUI application and
@@ -54,6 +70,24 @@ public class AutomationSession : IDisposable
     public DateTimeOffset CreatedAt { get; }
 
     /// <summary>
+    /// Process ID of the application launched by this session.
+    /// Null for sessions that attached to an already-running process.
+    /// </summary>
+    public int? LaunchedProcessId { get; set; }
+
+    /// <summary>
+    /// When the session application was launched or attached.
+    /// </summary>
+    public DateTime LaunchUtc { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// True when this driver started the process (via <see cref="IUiSessionContext.Launch"/>).
+    /// False for sessions that attached to an already-running process.
+    /// Only launched sessions may be force-killed.
+    /// </summary>
+    public bool WasLaunchedByDriver => LaunchedProcessId.HasValue;
+
+    /// <summary>
     /// The window element that is currently active for the /ui endpoint.
     /// When null, operations fall back to the application's main window.
     /// Updated by the "switchwindow" operation or auto-follow detection.
@@ -71,6 +105,9 @@ public class AutomationSession : IDisposable
     private readonly HashSet<IntPtr> _seenWindowHandles = new();
     private readonly object _windowLock = new();
 
+    // Ownership tracking: all windows opened by or from this session.
+    private readonly Dictionary<IntPtr, TrackedWindowInfo> _trackedWindows = new();
+
     /// <summary>
     /// Timestamp of the last full desktop-descendant scan in <c>GetWindowRoot</c>.
     /// Used to throttle the expensive scan so it runs at most once per
@@ -86,6 +123,12 @@ public class AutomationSession : IDisposable
     internal static readonly TimeSpan DesktopScanThrottle = TimeSpan.FromSeconds(2);
 
     /// <summary>
+    /// Brief pause after broadcasting WM_CLOSE to tracked windows so the messages
+    /// can be processed before the UIA Window-pattern close attempt begins.
+    /// </summary>
+    private const int WmCloseProcessingDelayMs = 200;
+
+    /// <summary>
     /// Seeds the set of known window handles with the initial application windows,
     /// so that windows already open at launch are not treated as "new" later.
     /// </summary>
@@ -94,6 +137,83 @@ public class AutomationSession : IDisposable
         lock (_windowLock)
             foreach (var h in handles)
                 _seenWindowHandles.Add(h);
+    }
+
+    /// <summary>
+    /// Registers a window handle for ownership tracking.  The handle is also seeded
+    /// into the set of known handles so auto-follow does not treat it as "new".
+    /// Calling again for an already-tracked HWND refreshes <see cref="TrackedWindowInfo.LastSeenUtc"/>.
+    /// </summary>
+    internal void TrackWindow(
+        IntPtr hwnd, int processId, string title, string className, bool isMainWindow)
+    {
+        if (hwnd == IntPtr.Zero)
+            return;
+
+        lock (_windowLock)
+        {
+            _seenWindowHandles.Add(hwnd);
+
+            if (_trackedWindows.TryGetValue(hwnd, out var existing))
+            {
+                existing.LastSeenUtc = DateTime.UtcNow;
+            }
+            else
+            {
+                _trackedWindows[hwnd] = new TrackedWindowInfo
+                {
+                    Hwnd        = hwnd,
+                    ProcessId   = processId,
+                    Title       = title,
+                    ClassName   = className,
+                    IsMainWindow = isMainWindow,
+                };
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns a snapshot of all currently tracked windows.
+    /// </summary>
+    internal IReadOnlyList<TrackedWindowInfo> GetTrackedWindows()
+    {
+        lock (_windowLock)
+            return _trackedWindows.Values.ToList();
+    }
+
+    /// <summary>
+    /// Re-scans the application's current top-level windows and registers any
+    /// that are not yet tracked.  Call after a launch or attach to ensure the
+    /// initial windows are recorded for cleanup.
+    /// </summary>
+    internal void RefreshTrackedWindows()
+    {
+        try
+        {
+            var windows = Application.GetAllTopLevelWindows(Automation);
+            foreach (var w in windows)
+            {
+                IntPtr hwnd;
+                try { hwnd = w.Properties.NativeWindowHandle.Value; }
+                catch { continue; }
+                if (hwnd == IntPtr.Zero) continue;
+
+                int pid;
+                try { pid = w.Properties.ProcessId.Value; }
+                catch { pid = Application.ProcessId; }
+
+                string title;
+                try { title = w.Properties.Name.Value ?? string.Empty; }
+                catch { title = string.Empty; }
+
+                string className;
+                try { className = w.ClassName ?? string.Empty; }
+                catch { className = string.Empty; }
+
+                TrackWindow(hwnd, pid, title, className, isMainWindow: true);
+            }
+        }
+        catch { /* best effort */ }
     }
 
     /// <summary>
@@ -146,13 +266,40 @@ public class AutomationSession : IDisposable
     }
 
     /// <summary>
-    /// Sends a graceful close message to every top-level window of the application,
-    /// then kills the process (including its entire child-process tree) as a safety
-    /// net for windows that did not respond to the close message.
+    /// Releases the FlaUI automation and application references without closing any
+    /// windows or killing the process.  Called by the graceful-close path where the
+    /// caller has already sent WM_CLOSE to tracked windows.
     /// </summary>
-    private void CloseAllApplicationWindows()
+    internal void ReleaseAutomationResources()
     {
-        // Step 1: graceful close via the Window UIA pattern.
+        if (_disposed) return;
+        _disposed = true;
+        _elementCache.Clear();
+        try { Automation.Dispose(); } catch { /* best effort */ }
+        try { Application.Dispose(); } catch { /* best effort */ }
+    }
+
+    /// <summary>
+    /// Sends WM_CLOSE to every tracked window and then attempts a graceful UIA
+    /// close for remaining top-level windows.  Does NOT kill the process.
+    /// </summary>
+    internal void CloseWindowsGracefully()
+    {
+        // Step 1: send WM_CLOSE to all tracked HWNDs (popup/dialog windows that
+        // may no longer appear in GetAllTopLevelWindows).
+        try
+        {
+            foreach (var info in GetTrackedWindows())
+            {
+                if (info.Hwnd != IntPtr.Zero)
+                    PostMessage(info.Hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            }
+        }
+        catch { /* best effort */ }
+
+        Thread.Sleep(WmCloseProcessingDelayMs); // allow WM_CLOSE messages to be processed
+
+        // Step 2: graceful close via the Window UIA pattern for remaining windows.
         try
         {
             var windows = Application.GetAllTopLevelWindows(Automation);
@@ -163,19 +310,30 @@ public class AutomationSession : IDisposable
             }
         }
         catch { /* best effort */ }
+    }
 
-        // Brief wait so the application can process WM_CLOSE and dismiss any
-        // "save changes?" dialogs before we force-terminate the process.
+    /// <summary>
+    /// Sends a graceful close message to every top-level window of the application,
+    /// then kills the process tree — but only when this driver launched the process
+    /// (<see cref="WasLaunchedByDriver"/> is true) OR <paramref name="forceKillAttached"/>
+    /// is true.  Attached sessions are never force-killed unless that flag is set.
+    /// </summary>
+    internal void CloseAllApplicationWindows(bool forceKillAttached = false)
+    {
+        // Graceful close via WM_CLOSE and UIA Window.Close().
+        CloseWindowsGracefully();
+
+        // Brief additional wait before the force-kill so the application can process
+        // WM_CLOSE and dismiss any "save changes?" dialogs.
         Thread.Sleep(500);
 
-        // Step 2: kill the process and its entire child-process tree so that any
-        // windows not handled by the graceful close are forcefully terminated.
-        // NOTE: the HasExited guard is intentionally absent. When the graceful close
-        // (step 1) causes the parent process to exit first, child processes become
-        // orphaned but are still running. Kill(entireProcessTree: true) uses a
-        // CreateToolhelp32Snapshot so it can enumerate and kill those orphaned
-        // children even when the parent has already exited; calling Kill() on the
-        // exited parent itself is a safe no-op.
+        // Force-kill only when this driver owns the process, or the caller requests it.
+        if (!WasLaunchedByDriver && !forceKillAttached)
+            return;
+
+        // NOTE: HasExited guard intentionally absent — Kill(entireProcessTree:true) uses
+        // CreateToolhelp32Snapshot and can kill orphaned children even when the parent
+        // has already exited; calling Kill() on an exited parent is a safe no-op.
         System.Diagnostics.Process? proc = null;
         try
         {
@@ -184,12 +342,15 @@ public class AutomationSession : IDisposable
         }
         catch { /* best effort */ }
 
-        // Step 3: fallback via FlaUI's own kill helper (handles the case where the
-        // process ID look-up above failed but the FlaUI handle is still valid).
+        // Fallback via FlaUI's own kill helper.
         try { Application.Kill(); } catch { /* best effort */ }
 
-        // Step 4: wait for the process to fully exit so that callers can reliably
-        // determine that all windows are gone before returning.
+        // Wait for the process to fully exit.
         try { proc?.WaitForExit(3000); } catch { /* best effort */ }
     }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    private const uint WM_CLOSE = 0x0010;
 }

@@ -56,9 +56,17 @@ public class UiSessionContext : IUiSessionContext, IDisposable
             _logger.LogInformation("UI session launched for: {ExePath}",
                 SanitizePath(exePath));
 
+            // Record the launched process ID and launch timestamp.
+            session.LaunchedProcessId = app.ProcessId;
+            session.LaunchUtc = DateTime.UtcNow;
+
             // Seed known window handles so windows already open at launch are not
             // treated as "new" the first time GetWindowRoot checks for new windows.
             SeedKnownWindows(session);
+
+            // Populate the tracked-window registry so initial windows are cleaned up
+            // on close even if they have left the FlaUI top-level-window list by then.
+            session.RefreshTrackedWindows();
             return session;
         }
     }
@@ -101,6 +109,9 @@ public class UiSessionContext : IUiSessionContext, IDisposable
             // Seed known window handles so windows already open at attach are not
             // treated as "new" the first time GetWindowRoot checks for new windows.
             SeedKnownWindows(session);
+
+            // Populate the tracked-window registry for cleanup.
+            session.RefreshTrackedWindows();
             return session;
         }
     }
@@ -111,10 +122,33 @@ public class UiSessionContext : IUiSessionContext, IDisposable
         lock (_lock)
         {
             if (_activeSession == null) return;
-            _logger.LogInformation("UI session closed.");
-            _activeSession.Dispose();
+            _logger.LogInformation("UI session: gracefully closing windows (no process kill).");
+            _activeSession.CloseWindowsGracefully();
+            _activeSession.ReleaseAutomationResources();
             _activeSession = null;
         }
+    }
+
+    /// <inheritdoc/>
+    public void Quit(bool forceKillAttached = false)
+    {
+        lock (_lock)
+        {
+            if (_activeSession == null) return;
+            _logger.LogInformation(
+                "UI session quit. WasLaunchedByDriver={WasLaunched}, ForceKillAttached={ForceKill}",
+                _activeSession.WasLaunchedByDriver, forceKillAttached);
+            _activeSession.CloseAllApplicationWindows(forceKillAttached);
+            _activeSession.ReleaseAutomationResources();
+            _activeSession = null;
+        }
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<TrackedWindowInfo> ListTrackedWindows()
+    {
+        lock (_lock)
+            return _activeSession?.GetTrackedWindows() ?? [];
     }
 
     public void Dispose()
@@ -135,19 +169,38 @@ public class UiSessionContext : IUiSessionContext, IDisposable
     /// Seeding desktop-wide windows prevents pre-existing cross-process windows (e.g.
     /// system dialogs already open at session start) from being mistakenly detected as
     /// new popup windows during subsequent operations.
+    ///
+    /// The application's own initial windows are also registered in the ownership
+    /// tracker so they are closed during cleanup even if they have left the FlaUI
+    /// top-level-window list by the time Close/Quit is called.
     /// </summary>
     private static void SeedKnownWindows(AutomationSession session)
     {
+        // Track (and seed) the launched application's initial top-level windows.
         try
         {
             var windows = session.Application.GetAllTopLevelWindows(session.Automation);
-            session.SeedWindowHandles(windows
-                .Select(w =>
-                {
-                    try { return w.Properties.NativeWindowHandle.Value; }
-                    catch { return IntPtr.Zero; }
-                })
-                .Where(h => h != IntPtr.Zero));
+            foreach (var w in windows)
+            {
+                IntPtr hwnd;
+                try { hwnd = w.Properties.NativeWindowHandle.Value; }
+                catch { continue; }
+                if (hwnd == IntPtr.Zero) continue;
+
+                int pid;
+                try { pid = w.Properties.ProcessId.Value; }
+                catch { pid = session.Application.ProcessId; }
+
+                string title;
+                try { title = w.Properties.Name.Value ?? string.Empty; }
+                catch { title = string.Empty; }
+
+                string className;
+                try { className = w.ClassName ?? string.Empty; }
+                catch { className = string.Empty; }
+
+                session.TrackWindow(hwnd, pid, title, className, isMainWindow: true);
+            }
         }
         catch { /* best effort – auto-follow will still work, just may pick up existing windows once */ }
 
@@ -157,6 +210,8 @@ public class UiSessionContext : IUiSessionContext, IDisposable
         // Using FindAllDescendants ensures that pre-existing owned dialogs
         // (ControlType=Window, LocalizedControlType="dialog") are seeded and
         // will not be falsely detected as new popup windows later.
+        // These desktop-wide windows are seeded only (not tracked) because they
+        // belong to other processes and should not be closed during cleanup.
         try
         {
             var cf = session.Automation.ConditionFactory;
