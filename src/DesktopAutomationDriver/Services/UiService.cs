@@ -347,42 +347,86 @@ public class UiService : IUiService
             throw new ArgumentException("'value' must be the path to the executable for 'launch'.");
 
         var session = _ctx.Launch(req.Value);
-        return new { sessionId = session.SessionId, app = req.Value };
+        return new
+        {
+            sessionId          = session.SessionId,
+            app                = req.Value,
+            launchedProcessId  = session.LaunchedProcessId,
+            trackedWindows     = ToTrackedWindowDtos(session.GetTrackedWindows())
+        };
     }
 
     private object? Close()
     {
-        RequireSession();
+        var session = RequireSession();
         _logger.LogInformation("UI operation: close (graceful WM_CLOSE, no process kill).");
+
+        var trackedBefore = session.GetTrackedWindows();
         _ctx.Close();
-        return null;
+
+        var closedCount = trackedBefore.Count;
+
+        _logger.LogInformation(
+            "Close completed gracefully. closedCount={ClosedCount}",
+            closedCount);
+
+        return new
+        {
+            operation    = "close",
+            forceKilled  = false,
+            closedCount,
+        };
     }
 
     private object? Quit(UiRequest req)
     {
-        RequireSession();
-        var session = _ctx.ActiveSession;
+        var session = RequireSession();
         _logger.LogInformation(
             "UI operation: quit. wasLaunchedByDriver={WasLaunched}, forceKillAttached={ForceKill}",
-            session?.WasLaunchedByDriver ?? false,
+            session.WasLaunchedByDriver,
             req.ForceKillAttachedProcess);
+
+        var wasLaunchedByDriver = session.WasLaunchedByDriver;
+        var processId           = session.LaunchedProcessId ?? (int?)session.Application?.ProcessId;
+
         _ctx.Quit(req.ForceKillAttachedProcess);
-        return null;
+
+        return new
+        {
+            operation           = "quit",
+            wasLaunchedByDriver,
+            processId,
+            forceKillAttached   = req.ForceKillAttachedProcess,
+        };
     }
 
     private object? ListTrackedWindows()
     {
+        var session = _ctx.ActiveSession;
         var windows = _ctx.ListTrackedWindows();
+        return new
+        {
+            launchedProcessId  = session?.LaunchedProcessId,
+            wasLaunchedByDriver = session?.WasLaunchedByDriver ?? false,
+            windows            = ToTrackedWindowDtos(windows)
+        };
+    }
+
+    private object ToTrackedWindowDtos(IEnumerable<TrackedWindowInfo> windows)
+    {
         return windows.Select(w => new
         {
-            hwnd        = w.Hwnd.ToInt64(),
-            processId   = w.ProcessId,
-            title       = w.Title,
-            className   = w.ClassName,
+            hwnd         = w.Hwnd.ToInt64(),
+            hwndHex      = $"0x{w.Hwnd.ToInt64():X}",
+            processId    = w.ProcessId,
+            title        = w.Title,
+            className    = w.ClassName,
             isMainWindow = w.IsMainWindow,
             firstSeenUtc = w.FirstSeenUtc,
-            lastSeenUtc  = w.LastSeenUtc
-        }).ToArray();
+            lastSeenUtc  = w.LastSeenUtc,
+            exists       = IsWindow(w.Hwnd),
+            visible      = IsWindow(w.Hwnd) && IsWindowVisible(w.Hwnd)
+        }).ToList();
     }
 
     /// <summary>
@@ -412,16 +456,32 @@ public class UiService : IUiService
         if (window == null)
         {
             _logger.LogWarning("closewindow: no active or top-level window found in session.");
-            return null;
+            return new { operation = "closewindow", closed = false, reason = "no active or top-level window found" };
         }
 
+        var hwnd      = SafeWindowHandle(window);
+        var title     = SafeElementName(window);
+        var className = SafeElementClassName(window);
+        var processId = SafeProcessId(window);
+
         _logger.LogInformation(
-            "closewindow: closing active window. title={Title}",
-            SafeElementName(window));
+            "closewindow: closing active window. title={Title}, hwnd=0x{Hwnd:X}",
+            title,
+            hwnd.ToInt64());
 
         var cf = session.Automation.ConditionFactory;
         CloseWindowElement(window, cf);
-        return null;
+
+        return new
+        {
+            operation = "closewindow",
+            hwnd      = hwnd.ToInt64(),
+            hwndHex   = $"0x{hwnd.ToInt64():X}",
+            processId,
+            title,
+            className,
+            closed    = true
+        };
     }
 
     /// <summary>
@@ -2839,19 +2899,14 @@ public class UiService : IUiService
         if (string.Equals(req.Operation, "selectcomboboxitem", StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogInformation(
-                "selectcomboboxitem is deprecated alias. Routing through select ComboBox pipeline.");
+                "selectcomboboxitem is deprecated alias. Routing through canonical select pipeline.");
         }
 
+        var session = RequireSession();
         var element = FindWithRetry(req);
 
-        if (element.ControlType == ControlType.ComboBox && !string.IsNullOrWhiteSpace(req.Value))
+        if (IsComboBoxElement(element))
         {
-            var session  = RequireSession();
-            var itemName = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
-
-            if (string.IsNullOrWhiteSpace(itemName))
-                throw new ArgumentException("'select' on ComboBox requires a non-empty 'value'.");
-
             _logger.LogInformation(
                 "Select operation resolved ComboBox. Routing to ComboBox pipeline. operation={Operation}, value={Value}, index={Index}, comboBox={ComboBox}",
                 SanitizeValue(req.Operation),
@@ -2859,29 +2914,21 @@ public class UiService : IUiService
                 req.Index,
                 SafeElementName(element));
 
-            return SelectComboBoxByValue(session, element, itemName, req);
-        }
-
-        // Win32 native index selection for ComboBox elements.
-        if (element.ControlType == ControlType.ComboBox && req.Index.HasValue)
-        {
-            var session = RequireSession();
-            if (TrySelectNativeWin32ComboBoxByIndex(session, element, req.Index.Value, out var win32IndexStrategy))
+            if (!string.IsNullOrWhiteSpace(req.Value))
             {
-                var hwnd = SafeWindowHandle(element);
-                var selectedText = Win32ComboBoxHelper.GetSelectedText(hwnd);
-                return new
-                {
-                    selected = selectedText,
-                    index    = req.Index.Value,
-                    comboBox = SafeElementName(element),
-                    verified = true,
-                    strategy = win32IndexStrategy
-                };
+                var itemName = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
+                return SelectComboBoxByValue(session, element, itemName, req);
             }
+
+            if (req.Index.HasValue)
+            {
+                return SelectComboBoxByIndex(session, element, req.Index.Value, req);
+            }
+
+            throw new ArgumentException("'select' on ComboBox requires either 'value' or 'index'.");
         }
 
-        var cf = RequireSession().Automation.ConditionFactory;
+        var cf = session.Automation.ConditionFactory;
 
         // Strategy 1: For editable combo boxes the Value pattern lets us set the text
         // directly without opening the dropdown, which is the most reliable approach.
@@ -7106,6 +7153,164 @@ public class UiService : IUiService
             _logger.LogWarning(ex,
                 "Native Win32 ComboBox index selection failed. combo={Combo}, index={Index}",
                 SafeElementName(comboBox), index);
+
+            return false;
+        }
+    }
+
+    private object SelectComboBoxByIndex(
+        AutomationSession session,
+        AutomationElement comboBox,
+        int index,
+        UiRequest req)
+    {
+        if (index < 0)
+            throw new ArgumentOutOfRangeException(nameof(index), "ComboBox index must be >= 0.");
+
+        _logger.LogInformation(
+            "Trying ComboBox select by index. index={Index}, comboBox={ComboBox}",
+            index,
+            SafeElementName(comboBox));
+
+        // Strategy 1: Win32 native ComboBox index selection.
+        if (TrySelectNativeWin32ComboBoxByIndex(session, comboBox, index, out var win32Strategy))
+        {
+            var hwnd   = SafeWindowHandle(comboBox);
+            var actual = Win32ComboBoxHelper.GetSelectedText(hwnd);
+
+            _logger.LogInformation(
+                "ComboBox selected by index using Win32 native strategy. index={Index}, actual={Actual}, strategy={Strategy}",
+                index,
+                actual,
+                win32Strategy);
+
+            return new
+            {
+                operation = "select",
+                selectedIndex = index,
+                actual,
+                comboBox = SafeElementName(comboBox),
+                verified = true,
+                strategy = win32Strategy
+            };
+        }
+
+        // Strategy 2: UIA index selection.
+        if (TrySelectComboBoxByUiaIndex(session, comboBox, index, out var uiaStrategy))
+        {
+            var actual = GetComboBoxCurrentValue(session, comboBox);
+
+            _logger.LogInformation(
+                "ComboBox selected by index using UIA strategy. index={Index}, actual={Actual}, strategy={Strategy}",
+                index,
+                actual,
+                uiaStrategy);
+
+            return new
+            {
+                operation = "select",
+                selectedIndex = index,
+                actual,
+                comboBox = SafeElementName(comboBox),
+                verified = true,
+                strategy = uiaStrategy
+            };
+        }
+
+        throw new InvalidOperationException(
+            $"Unable to select ComboBox index {index}. ComboBox={SafeElementName(comboBox)}");
+    }
+
+    private bool TrySelectComboBoxByUiaIndex(
+        AutomationSession session,
+        AutomationElement comboBox,
+        int index,
+        out string strategy)
+    {
+        strategy = "uia-index-not-used";
+
+        try
+        {
+            // Expand the dropdown so items are accessible.
+            OpenComboBoxDropdown(session, comboBox);
+            Thread.Sleep(MenuExpandDelayMs);
+
+            // Collect all ListItem descendants.
+            var cf    = session.Automation.ConditionFactory;
+            var items = comboBox.FindAllDescendants(cf.ByControlType(ControlType.ListItem));
+
+            if (items.Length == 0)
+            {
+                // Some combo boxes nest items inside a List child element.
+                var listChild = comboBox.FindFirstDescendant(cf.ByControlType(ControlType.List));
+                if (listChild != null)
+                    items = listChild.FindAllChildren();
+            }
+
+            if (items.Length == 0)
+            {
+                // Last attempt: look for the popup list near the combo box.
+                var dynamicList = FindDynamicComboBoxList(session, comboBox);
+                if (dynamicList != null)
+                    items = dynamicList.FindAllChildren(cf.ByControlType(ControlType.ListItem));
+            }
+
+            if (index >= items.Length)
+            {
+                _logger.LogInformation(
+                    "UIA ComboBox index search failed. index={Index}, availableCount={Count}",
+                    index,
+                    items.Length);
+                return false;
+            }
+
+            var item     = items[index];
+            var itemText = SafeElementName(item);
+
+            // Try SelectionItem pattern first.
+            item.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
+            Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                item.Patterns.SelectionItem.Pattern.Select();
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+                strategy = "uia-index-selection-item";
+            }
+            else if (item.Patterns.Invoke.IsSupported)
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+                strategy = "uia-index-invoke";
+            }
+            else
+            {
+                item.Click();
+                Thread.Sleep(ComboBoxSelectionCommitDelayMs);
+                strategy = "uia-index-click";
+            }
+
+            // Collapse the dropdown.
+            try { comboBox.Patterns.ExpandCollapse.PatternOrDefault?.Collapse(); }
+            catch { /* best effort */ }
+
+            WaitForComboBoxDropdownToClose(comboBox, timeoutMs: 1000);
+
+            _logger.LogInformation(
+                "UIA ComboBox index selection committed. index={Index}, item={Item}, strategy={Strategy}",
+                index,
+                itemText,
+                strategy);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(
+                ex,
+                "UIA ComboBox index selection failed. comboBox={ComboBox}, index={Index}",
+                SafeElementName(comboBox),
+                index);
 
             return false;
         }
