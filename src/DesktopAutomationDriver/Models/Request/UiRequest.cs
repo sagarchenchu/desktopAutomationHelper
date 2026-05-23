@@ -161,5 +161,5 @@ public class UiRequest
     /// Use with caution: this kills the process unconditionally.
     /// Defaults to false; only launched sessions are killed by default.
     /// </summary>
-    public bool ForceKillAttachedProcess { get; set; }
+    public bool ForceKillAttachedProcess { get; set; } = false;
 }
