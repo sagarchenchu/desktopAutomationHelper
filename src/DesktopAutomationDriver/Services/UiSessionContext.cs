@@ -63,6 +63,10 @@ public class UiSessionContext : IUiSessionContext, IDisposable
             // Seed known window handles so windows already open at launch are not
             // treated as "new" the first time GetWindowRoot checks for new windows.
             SeedKnownWindows(session);
+
+            // Populate the tracked-window registry so initial windows are cleaned up
+            // on close even if they have left the FlaUI top-level-window list by then.
+            session.RefreshTrackedWindows();
             return session;
         }
     }
@@ -105,6 +109,9 @@ public class UiSessionContext : IUiSessionContext, IDisposable
             // Seed known window handles so windows already open at attach are not
             // treated as "new" the first time GetWindowRoot checks for new windows.
             SeedKnownWindows(session);
+
+            // Populate the tracked-window registry for cleanup.
+            session.RefreshTrackedWindows();
             return session;
         }
     }
@@ -123,15 +130,16 @@ public class UiSessionContext : IUiSessionContext, IDisposable
     }
 
     /// <inheritdoc/>
-    public void Quit()
+    public void Quit(bool forceKillAttached = false)
     {
         lock (_lock)
         {
             if (_activeSession == null) return;
             _logger.LogInformation(
-                "UI session quit. WasLaunchedByDriver={WasLaunched}",
-                _activeSession.WasLaunchedByDriver);
-            _activeSession.Dispose(); // kills process tree only when WasLaunchedByDriver
+                "UI session quit. WasLaunchedByDriver={WasLaunched}, ForceKillAttached={ForceKill}",
+                _activeSession.WasLaunchedByDriver, forceKillAttached);
+            _activeSession.CloseAllApplicationWindows(forceKillAttached);
+            _activeSession.ReleaseAutomationResources();
             _activeSession = null;
         }
     }
