@@ -154,4 +154,12 @@ public class UiRequest
     /// Accepted values: <c>exact</c>, <c>contains</c> (default), <c>regex</c>.
     /// </summary>
     public string? MatchMode { get; set; }
+
+    /// <summary>
+    /// When true, the 'quit' operation force-kills the application process tree even if
+    /// this session was attached to an already-running process (not launched by the driver).
+    /// Use with caution: this kills the process unconditionally.
+    /// Defaults to false; only launched sessions are killed by default.
+    /// </summary>
+    public bool ForceKillAttachedProcess { get; set; }
 }

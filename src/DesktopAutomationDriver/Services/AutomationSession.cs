@@ -182,6 +182,41 @@ public class AutomationSession : IDisposable
     }
 
     /// <summary>
+    /// Re-scans the application's current top-level windows and registers any
+    /// that are not yet tracked.  Call after a launch or attach to ensure the
+    /// initial windows are recorded for cleanup.
+    /// </summary>
+    internal void RefreshTrackedWindows()
+    {
+        try
+        {
+            var windows = Application.GetAllTopLevelWindows(Automation);
+            foreach (var w in windows)
+            {
+                IntPtr hwnd;
+                try { hwnd = w.Properties.NativeWindowHandle.Value; }
+                catch { continue; }
+                if (hwnd == IntPtr.Zero) continue;
+
+                int pid;
+                try { pid = w.Properties.ProcessId.Value; }
+                catch { pid = Application.ProcessId; }
+
+                string title;
+                try { title = w.Properties.Name.Value ?? string.Empty; }
+                catch { title = string.Empty; }
+
+                string className;
+                try { className = w.ClassName ?? string.Empty; }
+                catch { className = string.Empty; }
+
+                TrackWindow(hwnd, pid, title, className, isMainWindow: true);
+            }
+        }
+        catch { /* best effort */ }
+    }
+
+    /// <summary>
     /// Inspects <paramref name="currentWindows"/>, registers their handles as known,
     /// and returns the first window whose handle was not previously seen.
     /// Returns null when all windows were already known.
@@ -280,10 +315,10 @@ public class AutomationSession : IDisposable
     /// <summary>
     /// Sends a graceful close message to every top-level window of the application,
     /// then kills the process tree — but only when this driver launched the process
-    /// (<see cref="WasLaunchedByDriver"/> is true).  Attached sessions are never
-    /// force-killed; only their windows receive WM_CLOSE.
+    /// (<see cref="WasLaunchedByDriver"/> is true) OR <paramref name="forceKillAttached"/>
+    /// is true.  Attached sessions are never force-killed unless that flag is set.
     /// </summary>
-    private void CloseAllApplicationWindows()
+    internal void CloseAllApplicationWindows(bool forceKillAttached = false)
     {
         // Graceful close via WM_CLOSE and UIA Window.Close().
         CloseWindowsGracefully();
@@ -292,8 +327,8 @@ public class AutomationSession : IDisposable
         // WM_CLOSE and dismiss any "save changes?" dialogs.
         Thread.Sleep(500);
 
-        // Force-kill only when this driver owns the process.
-        if (!WasLaunchedByDriver)
+        // Force-kill only when this driver owns the process, or the caller requests it.
+        if (!WasLaunchedByDriver && !forceKillAttached)
             return;
 
         // NOTE: HasExited guard intentionally absent — Kill(entireProcessTree:true) uses

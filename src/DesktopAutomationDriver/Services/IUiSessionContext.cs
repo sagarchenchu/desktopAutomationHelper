@@ -36,9 +36,14 @@ public interface IUiSessionContext
     /// <summary>
     /// Quits the active session: sends WM_CLOSE to tracked windows, then
     /// force-kills the process tree only if this driver launched it.
-    /// Attached sessions are never force-killed.
+    /// Attached sessions are never force-killed unless <paramref name="forceKillAttached"/>
+    /// is true.
     /// </summary>
-    void Quit();
+    /// <param name="forceKillAttached">
+    /// When true, the process is killed even if this session was attached to an
+    /// already-running process.  Use with caution.
+    /// </param>
+    void Quit(bool forceKillAttached = false);
 
     /// <summary>
     /// Returns a snapshot of all currently tracked windows for the active session,

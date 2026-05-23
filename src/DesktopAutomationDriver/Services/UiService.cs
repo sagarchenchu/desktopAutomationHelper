@@ -227,8 +227,8 @@ public class UiService : IUiService
                 // ----- Session & Window Management -----
                 "launch"       => Launch(request),
                 "close"        => Close(),
-                "quit"         => Quit(),
-                "closewindow"  => CloseWindowByTitle(request),
+                "quit"         => Quit(request),
+                "closewindow"  => CloseActiveWindow(request),
                 "maximize"     => Maximize(),
                 "minimize"     => Minimize(),
                 "switchwindow"  => SwitchWindow(request),
@@ -358,14 +358,15 @@ public class UiService : IUiService
         return null;
     }
 
-    private object? Quit()
+    private object? Quit(UiRequest req)
     {
         RequireSession();
         var session = _ctx.ActiveSession;
         _logger.LogInformation(
-            "UI operation: quit. wasLaunchedByDriver={WasLaunched}",
-            session?.WasLaunchedByDriver ?? false);
-        _ctx.Quit();
+            "UI operation: quit. wasLaunchedByDriver={WasLaunched}, forceKillAttached={ForceKill}",
+            session?.WasLaunchedByDriver ?? false,
+            req.ForceKillAttachedProcess);
+        _ctx.Quit(req.ForceKillAttachedProcess);
         return null;
     }
 
@@ -382,6 +383,45 @@ public class UiService : IUiService
             firstSeenUtc = w.FirstSeenUtc,
             lastSeenUtc  = w.LastSeenUtc
         }).ToArray();
+    }
+
+    /// <summary>
+    /// Closes the currently active window for the session (i.e. <c>session.ActiveWindow</c>
+    /// or the application's main window when no explicit active window is set).
+    /// When <c>req.Value</c> is non-empty, falls back to title-based window search for
+    /// backward compatibility.
+    /// </summary>
+    private object? CloseActiveWindow(UiRequest req)
+    {
+        // If a title is given, delegate to the existing title-based close for backward compat.
+        if (!string.IsNullOrWhiteSpace(req.Value))
+            return CloseWindowByTitle(req);
+
+        var session = _ctx.ActiveSession;
+        if (session == null)
+            throw new InvalidOperationException("No active session. Launch or attach first.");
+
+        // Use the session's current active window, or fall back to the application's main window.
+        var window = session.ActiveWindow;
+        if (window == null)
+        {
+            var windows = session.Application.GetAllTopLevelWindows(session.Automation);
+            window = windows.FirstOrDefault();
+        }
+
+        if (window == null)
+        {
+            _logger.LogWarning("closewindow: no active or top-level window found in session.");
+            return null;
+        }
+
+        _logger.LogInformation(
+            "closewindow: closing active window. title={Title}",
+            SafeElementName(window));
+
+        var cf = session.Automation.ConditionFactory;
+        CloseWindowElement(window, cf);
+        return null;
     }
 
     /// <summary>
