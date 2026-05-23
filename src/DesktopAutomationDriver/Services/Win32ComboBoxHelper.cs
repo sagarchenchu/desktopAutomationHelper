@@ -227,6 +227,9 @@ internal static class Win32ComboBoxHelper
 
             var controlId = GetWindowLong(hwnd, GWL_ID);
 
+            // WM_COMMAND wParam layout (Win32 standard):
+            //   HIWORD = notification code  (CBN_*)
+            //   LOWORD = control ID
             PostMessage(parent, WM_COMMAND,
                 new IntPtr((CBN_SELCHANGE << 16) | (controlId & 0xFFFF)), hwnd);
 

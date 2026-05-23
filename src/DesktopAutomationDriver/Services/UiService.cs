@@ -227,7 +227,7 @@ public class UiService : IUiService
                 // ----- Session & Window Management -----
                 "launch"       => Launch(request),
                 "close"        => Close(),
-                "quit"         => Close(),
+                "quit"         => Quit(),
                 "closewindow"  => CloseWindowByTitle(request),
                 "maximize"     => Maximize(),
                 "minimize"     => Minimize(),
@@ -239,6 +239,7 @@ public class UiService : IUiService
                 "screenshot"     => Screenshot(request),
                 "listelements"   => ListElements(request),
                 "listwindows"    => ListWindows(request),
+                "listtrackedwindows" => ListTrackedWindows(),
                 "getcurrentroot" => GetCurrentRoot(request),
                 "findlocator"    => FindLocatorDebug(request),
 
@@ -351,8 +352,35 @@ public class UiService : IUiService
     private object? Close()
     {
         RequireSession();
+        _logger.LogInformation("UI operation: close (graceful WM_CLOSE, no process kill).");
         _ctx.Close();
         return null;
+    }
+
+    private object? Quit()
+    {
+        RequireSession();
+        var session = _ctx.ActiveSession;
+        _logger.LogInformation(
+            "UI operation: quit. wasLaunchedByDriver={WasLaunched}",
+            session?.WasLaunchedByDriver ?? false);
+        _ctx.Quit();
+        return null;
+    }
+
+    private object? ListTrackedWindows()
+    {
+        var windows = _ctx.ListTrackedWindows();
+        return windows.Select(w => new
+        {
+            hwnd        = w.Hwnd.ToInt64(),
+            processId   = w.ProcessId,
+            title       = w.Title,
+            className   = w.ClassName,
+            isMainWindow = w.IsMainWindow,
+            firstSeenUtc = w.FirstSeenUtc,
+            lastSeenUtc  = w.LastSeenUtc
+        }).ToArray();
     }
 
     /// <summary>

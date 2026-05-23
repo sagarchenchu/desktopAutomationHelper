@@ -11,7 +11,7 @@ namespace DesktopAutomationDriver.Services;
 /// Holds information about a top-level window that was opened within or by the
 /// automation session.  Used for reliable cleanup when the session is closed.
 /// </summary>
-internal sealed class TrackedWindowInfo
+public sealed class TrackedWindowInfo
 {
     public IntPtr Hwnd { get; init; }
     public int ProcessId { get; init; }
@@ -79,6 +79,13 @@ public class AutomationSession : IDisposable
     /// When the session application was launched or attached.
     /// </summary>
     public DateTime LaunchUtc { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// True when this driver started the process (via <see cref="IUiSessionContext.Launch"/>).
+    /// False for sessions that attached to an already-running process.
+    /// Only launched sessions may be force-killed.
+    /// </summary>
+    public bool WasLaunchedByDriver => LaunchedProcessId.HasValue;
 
     /// <summary>
     /// The window element that is currently active for the /ui endpoint.
@@ -224,15 +231,27 @@ public class AutomationSession : IDisposable
     }
 
     /// <summary>
-    /// Sends a graceful close message to every top-level window of the application,
-    /// then kills the process (including its entire child-process tree) as a safety
-    /// net for windows that did not respond to the close message.
+    /// Releases the FlaUI automation and application references without closing any
+    /// windows or killing the process.  Called by the graceful-close path where the
+    /// caller has already sent WM_CLOSE to tracked windows.
     /// </summary>
-    private void CloseAllApplicationWindows()
+    internal void ReleaseAutomationResources()
     {
-        // Step 1: gracefully close all tracked HWNDs via WM_CLOSE.  This catches
-        // popup / dialog windows opened after session start that may no longer appear
-        // in GetAllTopLevelWindows (e.g. owned dialogs in a different process).
+        if (_disposed) return;
+        _disposed = true;
+        _elementCache.Clear();
+        try { Automation.Dispose(); } catch { /* best effort */ }
+        try { Application.Dispose(); } catch { /* best effort */ }
+    }
+
+    /// <summary>
+    /// Sends WM_CLOSE to every tracked window and then attempts a graceful UIA
+    /// close for remaining top-level windows.  Does NOT kill the process.
+    /// </summary>
+    internal void CloseWindowsGracefully()
+    {
+        // Step 1: send WM_CLOSE to all tracked HWNDs (popup/dialog windows that
+        // may no longer appear in GetAllTopLevelWindows).
         try
         {
             foreach (var info in GetTrackedWindows())
@@ -243,9 +262,9 @@ public class AutomationSession : IDisposable
         }
         catch { /* best effort */ }
 
-        Thread.Sleep(WmCloseProcessingDelayMs); // Brief pause so WM_CLOSE messages can be processed.
+        Thread.Sleep(WmCloseProcessingDelayMs); // allow WM_CLOSE messages to be processed
 
-        // Step 2: graceful close via the Window UIA pattern for the main application windows.
+        // Step 2: graceful close via the Window UIA pattern for remaining windows.
         try
         {
             var windows = Application.GetAllTopLevelWindows(Automation);
@@ -256,18 +275,30 @@ public class AutomationSession : IDisposable
             }
         }
         catch { /* best effort */ }
+    }
 
-        // Brief wait so the application can process WM_CLOSE and dismiss any
-        // "save changes?" dialogs before we force-terminate the process.
+    /// <summary>
+    /// Sends a graceful close message to every top-level window of the application,
+    /// then kills the process tree — but only when this driver launched the process
+    /// (<see cref="WasLaunchedByDriver"/> is true).  Attached sessions are never
+    /// force-killed; only their windows receive WM_CLOSE.
+    /// </summary>
+    private void CloseAllApplicationWindows()
+    {
+        // Graceful close via WM_CLOSE and UIA Window.Close().
+        CloseWindowsGracefully();
+
+        // Brief additional wait before the force-kill so the application can process
+        // WM_CLOSE and dismiss any "save changes?" dialogs.
         Thread.Sleep(500);
 
-        // Step 3: kill the process and its entire child-process tree so that any
-        // windows not handled by the graceful close are forcefully terminated.
-        // NOTE: the HasExited guard is intentionally absent. When the graceful close
-        // causes the parent process to exit first, child processes become orphaned but
-        // are still running. Kill(entireProcessTree: true) uses CreateToolhelp32Snapshot
-        // so it can enumerate and kill those orphaned children even when the parent has
-        // already exited; calling Kill() on the exited parent itself is a safe no-op.
+        // Force-kill only when this driver owns the process.
+        if (!WasLaunchedByDriver)
+            return;
+
+        // NOTE: HasExited guard intentionally absent — Kill(entireProcessTree:true) uses
+        // CreateToolhelp32Snapshot and can kill orphaned children even when the parent
+        // has already exited; calling Kill() on an exited parent is a safe no-op.
         System.Diagnostics.Process? proc = null;
         try
         {
@@ -276,12 +307,10 @@ public class AutomationSession : IDisposable
         }
         catch { /* best effort */ }
 
-        // Step 4: fallback via FlaUI's own kill helper (handles the case where the
-        // process ID look-up above failed but the FlaUI handle is still valid).
+        // Fallback via FlaUI's own kill helper.
         try { Application.Kill(); } catch { /* best effort */ }
 
-        // Step 5: wait for the process to fully exit so that callers can reliably
-        // determine that all windows are gone before returning.
+        // Wait for the process to fully exit.
         try { proc?.WaitForExit(3000); } catch { /* best effort */ }
     }
 
