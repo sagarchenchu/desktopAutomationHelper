@@ -7113,8 +7113,9 @@ public class UiService : IUiService
 
     /// <summary>
     /// Attempts to select the item at <paramref name="index"/> in a native Win32 ComboBox
-    /// using CB_SETCURSEL.
-    /// Returns true and sets <paramref name="strategy"/> when the selection succeeds.
+    /// using CB_SETCURSEL.  Verifies that the selected text matches the expected item text
+    /// before returning success.
+    /// Returns true and sets <paramref name="strategy"/> when the selection is verified.
     /// </summary>
     private bool TrySelectNativeWin32ComboBoxByIndex(
         AutomationSession session,
@@ -7132,18 +7133,42 @@ public class UiService : IUiService
             if (!Win32ComboBoxHelper.IsLikelyNativeWin32ComboBox(hwnd, className))
                 return false;
 
+            // Read expected item text before changing the selection so we can verify afterward.
+            var expectedText = Win32ComboBoxHelper.GetItemText(hwnd, index);
+            if (string.IsNullOrWhiteSpace(expectedText))
+            {
+                _logger.LogWarning(
+                    "Win32 ComboBox index selection aborted: expected item text is empty. hwnd=0x{Hwnd:X}, index={Index}",
+                    hwnd.ToInt64(), index);
+                return false;
+            }
+
             _logger.LogInformation(
-                "Trying native Win32 ComboBox index selection. hwnd=0x{Hwnd:X}, className={ClassName}, index={Index}",
-                hwnd.ToInt64(), className, index);
+                "Trying native Win32 ComboBox index selection. hwnd=0x{Hwnd:X}, className={ClassName}, index={Index}, expected={Expected}",
+                hwnd.ToInt64(), className, index, expectedText);
 
             if (!Win32ComboBoxHelper.SelectByIndex(hwnd, index, _logger, "ui-win32-native-combobox-index"))
                 return false;
 
+            Win32ComboBoxHelper.HideDropdown(hwnd);
             Thread.Sleep(ComboBoxSelectionCommitDelayMs);
 
+            var selectedText = Win32ComboBoxHelper.GetSelectedText(hwnd);
+
+            if (!string.Equals(
+                    NormalizeMenuText(selectedText),
+                    NormalizeMenuText(expectedText),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(
+                    "Win32 ComboBox index selection did not verify. hwnd=0x{Hwnd:X}, index={Index}, expected={Expected}, actual={Actual}",
+                    hwnd.ToInt64(), index, expectedText, selectedText);
+                return false;
+            }
+
             _logger.LogInformation(
-                "ComboBox selection strategy selected: win32-native-combobox-index. combo={Combo}, index={Index}, selected={Selected}",
-                SafeElementName(comboBox), index, Win32ComboBoxHelper.GetSelectedText(hwnd));
+                "ComboBox selection verified: win32-native-combobox-index. combo={Combo}, index={Index}, actual={Actual}",
+                SafeElementName(comboBox), index, selectedText);
 
             strategy = "win32-native-combobox-index";
             return true;
@@ -7268,6 +7293,13 @@ public class UiService : IUiService
             var item     = items[index];
             var itemText = SafeElementName(item);
 
+            // Ensure we have a non-empty item text to verify against after selection.
+            if (string.IsNullOrWhiteSpace(itemText))
+            {
+                try { itemText = item.Properties.Name.Value ?? string.Empty; }
+                catch { itemText = string.Empty; }
+            }
+
             // Try SelectionItem pattern first.
             item.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
             Thread.Sleep(ComboBoxSelectionCommitDelayMs);
@@ -7305,6 +7337,23 @@ public class UiService : IUiService
                 index,
                 itemText,
                 strategy);
+
+            // Verify that the final ComboBox value matches the selected item.
+            // Reuse the existing value-based verifier; it waits for full collapse and
+            // checks for rollback/default-value reset, returning false if the value did
+            // not actually change to the expected item text.
+            if (!string.IsNullOrWhiteSpace(itemText) &&
+                !VerifyComboBoxSelectedValueStableAfterCollapse(session, comboBox, itemText, strategy))
+            {
+                _logger.LogWarning(
+                    "UIA ComboBox index selection verification failed. strategy={Strategy}, index={Index}, expected={Expected}, comboBox={ComboBox}",
+                    strategy,
+                    index,
+                    itemText,
+                    SafeElementName(comboBox));
+
+                return false;
+            }
 
             return true;
         }
