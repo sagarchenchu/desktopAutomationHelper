@@ -93,4 +93,29 @@ public class UiRequest
     /// A previously found element matching the locator will be returned from cache without re-scanning.
     /// </summary>
     public bool? UseCache { get; set; }
+
+    /// <summary>
+    /// When true, XPath is evaluated before attribute-based conditions.
+    /// Preserves the legacy XPath-first search order even for fast operations.
+    /// </summary>
+    public bool? PreferXPath { get; set; }
+
+    /// <summary>
+    /// When true, only XPath is used for element lookup; attribute-based search is skipped.
+    /// The operation will fail if the locator has no XPath expression.
+    /// </summary>
+    public bool? XPathOnly { get; set; }
+
+    /// <summary>
+    /// When true, attribute-based conditions (AutomationId, Name, ClassName, ControlType) are
+    /// tried before XPath. This is the default for fast element operations.
+    /// </summary>
+    public bool? PreferAttributes { get; set; }
+
+    /// <summary>
+    /// Optional parent container locator. When set, the parent element is resolved first
+    /// and the primary <see cref="Locator"/> is searched within that parent scope,
+    /// reducing the search space and improving performance.
+    /// </summary>
+    public UiLocator? ParentLocator { get; set; }
 }
