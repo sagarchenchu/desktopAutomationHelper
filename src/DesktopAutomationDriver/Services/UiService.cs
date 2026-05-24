@@ -2248,11 +2248,16 @@ public class UiService : IUiService
                 if (!ActivateContextMenuItem(item, part))
                     throw new InvalidOperationException($"Failed to activate context menu item '{part}'.");
 
+                _logger.LogInformation(
+                    "ContextMenuPath selected item. value={Value}, activation=physical-click-first. Returning immediately; caller should wait/switch to new window if needed.",
+                    rawValue);
+
                 return new
                 {
                     selected = rawValue,
                     strategy = "context-menu-path",
-                    element = CreateElementSnapshot(element)
+                    activation = "physical-click-first",
+                    target = CreateElementSnapshot(element)
                 };
             }
 
@@ -11901,40 +11906,91 @@ public class UiService : IUiService
         AutomationElement item,
         string itemName)
     {
+        // 1. Physical click first.
+        // This matches real user behavior and avoids blocking InvokePattern
+        // when the menu item opens a modal/new window/export screen.
         try
         {
-            if (item.Patterns.Invoke.IsSupported)
-            {
-                item.Patterns.Invoke.Pattern.Invoke();
-                Thread.Sleep(MenuActionDelayMs);
-                return true;
-            }
-
-            if (item.Patterns.SelectionItem.IsSupported)
-            {
-                item.Patterns.SelectionItem.Pattern.Select();
-                Thread.Sleep(MenuActionDelayMs);
-                return true;
-            }
-
             var rect = item.BoundingRectangle;
 
             if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
             {
-                var point = new Point(
-                    (int)Math.Round(rect.Left + rect.Width / 2.0),
-                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+                var x = (int)Math.Round(rect.Left + rect.Width / 2.0);
+                var y = (int)Math.Round(rect.Top + rect.Height / 2.0);
+                var point = new Point(x, y);
 
-                return SendInstantLeftClick(point, $"Context Menu Item: {itemName}");
+                _logger.LogInformation(
+                    "Activating context menu item by physical click first. item={Item}, x={X}, y={Y}",
+                    itemName,
+                    x,
+                    y);
+
+                if (SendInstantLeftClick(point, $"Context menu item: {itemName}"))
+                {
+                    Thread.Sleep(MenuActionDelayMs);
+
+                    _logger.LogInformation(
+                        "Context menu item activated by physical click. item={Item}",
+                        itemName);
+
+                    return true;
+                }
             }
-
-            return false;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed activating context menu item {Item}", itemName);
-            return false;
+            _logger.LogWarning(
+                ex,
+                "Physical click failed for context menu item {Item}; trying pattern fallback.",
+                itemName);
         }
+
+        // 2. InvokePattern fallback only.
+        // Do not use Invoke first because it can block if the action opens a new window/modal.
+        try
+        {
+            if (item.Patterns.Invoke.IsSupported)
+            {
+                _logger.LogInformation(
+                    "Activating context menu item by InvokePattern fallback. item={Item}",
+                    itemName);
+
+                item.Patterns.Invoke.Pattern.Invoke();
+                Thread.Sleep(MenuActionDelayMs);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "InvokePattern fallback failed for context menu item {Item}.",
+                itemName);
+        }
+
+        // 3. SelectionItem fallback.
+        try
+        {
+            if (item.Patterns.SelectionItem.IsSupported)
+            {
+                _logger.LogInformation(
+                    "Activating context menu item by SelectionItem fallback. item={Item}",
+                    itemName);
+
+                item.Patterns.SelectionItem.Pattern.Select();
+                Thread.Sleep(MenuActionDelayMs);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "SelectionItem fallback failed for context menu item {Item}.",
+                itemName);
+        }
+
+        return false;
     }
 
     private bool OpenContextSubMenu(
