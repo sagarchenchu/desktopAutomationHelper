@@ -4322,7 +4322,7 @@ public class UiService : IUiService
     }
 
     /// <summary>
-    /// Normalises a raw button string to one of "left", "right", or "middle".
+    /// Normalizes a raw button string to one of "left", "right", or "middle".
     /// Returns "left" when <paramref name="button"/> is null or whitespace.
     /// Throws <see cref="ArgumentException"/> for any other value.
     /// </summary>
@@ -4361,6 +4361,9 @@ public class UiService : IUiService
             case "middle":
                 SendMouseInput(MOUSEEVENTF_MIDDLEDOWN);
                 break;
+
+            default:
+                throw new InvalidOperationException($"Unexpected button value after normalization: '{button}'.");
         }
     }
 
@@ -4382,6 +4385,9 @@ public class UiService : IUiService
             case "middle":
                 SendMouseInput(MOUSEEVENTF_MIDDLEUP);
                 break;
+
+            default:
+                throw new InvalidOperationException($"Unexpected button value after normalization: '{button}'.");
         }
     }
 
