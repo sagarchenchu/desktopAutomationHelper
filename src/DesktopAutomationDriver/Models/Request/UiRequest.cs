@@ -276,6 +276,32 @@ public class UiRequest
     // -------------------------------------------------------------------------
 
     /// <summary>
+    /// Optional scrollable container locator for 'scroll' operations (Case C).
+    /// When set together with <see cref="Locator"/>, the driver scrolls this container
+    /// until the target element identified by <see cref="Locator"/> becomes visible.
+    /// </summary>
+    public UiLocator? ContainerLocator { get; set; }
+
+    /// <summary>
+    /// When true, element search for scroll-into-view operations includes off-screen elements.
+    /// When null or true (the default), the implementation treats it as true so that
+    /// virtualized items can be found before being scrolled into view.
+    /// </summary>
+    public bool? IncludeOffscreen { get; set; }
+
+    /// <summary>
+    /// Maximum number of scroll attempts before giving up in scroll-into-view loops.
+    /// Defaults to 30.
+    /// </summary>
+    public int? MaxAttempts { get; set; }
+
+    /// <summary>
+    /// Delay in milliseconds between scroll attempts in scroll-into-view loops.
+    /// Defaults to 150.
+    /// </summary>
+    public int? DelayMs { get; set; }
+
+    /// <summary>
     /// Scroll direction for the 'scroll', 'mousescroll', 'wheelscroll' operations.
     /// Accepted values: up, down, left, right. Defaults to "down".
     /// </summary>
