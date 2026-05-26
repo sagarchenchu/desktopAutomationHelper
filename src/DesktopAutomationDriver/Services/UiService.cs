@@ -4037,13 +4037,13 @@ public class UiService : IUiService
 
             case "doubleclick":
                 SetCursorPos(x!.Value, y!.Value);
-                SendMouseInput(MOUSEEVENTF_LEFTDOWN);
+                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN);
                 Thread.Sleep(50);
-                SendMouseInput(MOUSEEVENTF_LEFTUP);
+                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP);
                 Thread.Sleep(75);
-                SendMouseInput(MOUSEEVENTF_LEFTDOWN);
+                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN);
                 Thread.Sleep(50);
-                SendMouseInput(MOUSEEVENTF_LEFTUP);
+                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP);
                 break;
 
             case "rightclick":
