@@ -312,6 +312,7 @@ public class UiService : IUiService
                 // Backward-compatible alias – the canonical operation is "select".
                 "selectcomboboxitem" => Select(request),
                 "draganddrop"     => DragAndDrop(request),
+                "dragbyoffset"    => DragByOffset(request),
 
                 // ----- Popup Pipeline -----
                 "topwindow"    => TopWindow(request),
@@ -3850,6 +3851,266 @@ public class UiService : IUiService
         Mouse.Drag(srcPt, dstPt);
 
         return null;
+    }
+
+    private object DragByOffset(UiRequest request)
+    {
+        var element = FindWithRetry(request);
+
+        var offsetX = request.OffsetX ?? 0;
+        var offsetY = request.OffsetY ?? 0;
+
+        if (offsetX == 0 && offsetY == 0)
+        {
+            throw new ArgumentException(
+                "'dragbyoffset' requires at least one non-zero value: offsetX or offsetY.");
+        }
+
+        var dragStart = string.IsNullOrWhiteSpace(request.DragStart)
+            ? "center"
+            : request.DragStart.Trim();
+
+        var durationMs = request.DragDurationMs ?? 250;
+        var steps = request.DragSteps ?? 10;
+
+        if (durationMs < 0)
+            durationMs = 0;
+
+        if (steps < 1)
+            steps = 1;
+
+        var rect = element.BoundingRectangle;
+
+        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+        {
+            throw new InvalidOperationException(
+                $"Cannot drag element because bounding rectangle is empty. element={SafeElementName(element)}");
+        }
+
+        var start = GetDragStartPoint(rect, dragStart);
+        var end = new Point(start.X + offsetX, start.Y + offsetY);
+
+        _logger.LogInformation(
+            "DragByOffset starting. element={Element}, dragStart={DragStart}, start=({StartX},{StartY}), end=({EndX},{EndY}), offset=({OffsetX},{OffsetY}), durationMs={DurationMs}, steps={Steps}",
+            SafeElementName(element),
+            dragStart,
+            start.X,
+            start.Y,
+            end.X,
+            end.Y,
+            offsetX,
+            offsetY,
+            durationMs,
+            steps);
+
+        var success = PerformPhysicalDrag(start, end, durationMs, steps);
+
+        if (!success)
+        {
+            throw new InvalidOperationException(
+                $"dragbyoffset failed. element={SafeElementName(element)}, start=({start.X},{start.Y}), end=({end.X},{end.Y})");
+        }
+
+        Thread.Sleep(150);
+
+        return new
+        {
+            operation = "dragbyoffset",
+            success = true,
+            element = SafeElementName(element),
+            controlType = SafeElementControlType(element),
+            className = SafeElementClassName(element),
+            automationId = SafeElementAutomationId(element),
+            dragStart,
+            offsetX,
+            offsetY,
+            start = new
+            {
+                x = start.X,
+                y = start.Y
+            },
+            end = new
+            {
+                x = end.X,
+                y = end.Y
+            },
+            durationMs,
+            steps
+        };
+    }
+
+    private static Point GetDragStartPoint(
+        Rectangle rect,
+        string dragStart)
+    {
+        var normalized = dragStart.ToLowerInvariant();
+
+        var left    = rect.Left;
+        var right   = rect.Right;
+        var top     = rect.Top;
+        var bottom  = rect.Bottom;
+        var centerX = rect.Left + rect.Width / 2;
+        var centerY = rect.Top  + rect.Height / 2;
+
+        // Keep point slightly inside the element border.
+        const int inset = 3;
+
+        return normalized switch
+        {
+            "center"      => new Point(centerX, centerY),
+
+            "topedge"     => new Point(centerX, top    + inset),
+            "bottomedge"  => new Point(centerX, bottom - inset),
+            "leftedge"    => new Point(left  + inset, centerY),
+            "rightedge"   => new Point(right - inset, centerY),
+
+            "topleft"     => new Point(left  + inset, top    + inset),
+            "topright"    => new Point(right - inset, top    + inset),
+            "bottomleft"  => new Point(left  + inset, bottom - inset),
+            "bottomright" => new Point(right - inset, bottom - inset),
+
+            _ => throw new ArgumentException(
+                $"Unsupported dragStart '{dragStart}'. Supported values (case-insensitive): center, topEdge, bottomEdge, leftEdge, rightEdge, topLeft, topRight, bottomLeft, bottomRight.")
+        };
+    }
+
+    private bool PerformPhysicalDrag(
+        Point start,
+        Point end,
+        int durationMs,
+        int steps)
+    {
+        try
+        {
+            if (steps < 1)
+                steps = 1;
+
+            if (!SetCursorPos(start.X, start.Y))
+            {
+                _logger.LogWarning(
+                    "PerformPhysicalDrag: SetCursorPos to start ({X},{Y}) failed. LastError={Error}",
+                    start.X, start.Y, Marshal.GetLastWin32Error());
+                return false;
+            }
+
+            Thread.Sleep(75);
+
+            // Mouse button down
+            var downInput = new[]
+            {
+                new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    U    = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx          = 0,
+                            dy          = 0,
+                            mouseData   = 0,
+                            dwFlags     = MOUSEEVENTF_LEFTDOWN,
+                            time        = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                }
+            };
+
+            if (SendInput((uint)downInput.Length, downInput, Marshal.SizeOf<INPUT>()) != downInput.Length)
+            {
+                _logger.LogWarning(
+                    "PerformPhysicalDrag: SendInput (LEFTDOWN) failed. LastError={Error}",
+                    Marshal.GetLastWin32Error());
+                return false;
+            }
+
+            Thread.Sleep(75);
+
+            for (var i = 1; i <= steps; i++)
+            {
+                var t = i / (double)steps;
+                var x = (int)Math.Round(start.X + ((end.X - start.X) * t));
+                var y = (int)Math.Round(start.Y + ((end.Y - start.Y) * t));
+
+                SetCursorPos(x, y);
+
+                if (durationMs > 0)
+                    Thread.Sleep(Math.Max(1, durationMs / steps));
+            }
+
+            Thread.Sleep(75);
+
+            // Mouse button up
+            var upInput = new[]
+            {
+                new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    U    = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx          = 0,
+                            dy          = 0,
+                            mouseData   = 0,
+                            dwFlags     = MOUSEEVENTF_LEFTUP,
+                            time        = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                }
+            };
+
+            if (SendInput((uint)upInput.Length, upInput, Marshal.SizeOf<INPUT>()) != upInput.Length)
+            {
+                _logger.LogWarning(
+                    "PerformPhysicalDrag: SendInput (LEFTUP) failed. LastError={Error}",
+                    Marshal.GetLastWin32Error());
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "PerformPhysicalDrag: physical drag failed. start=({StartX},{StartY}), end=({EndX},{EndY})",
+                start.X,
+                start.Y,
+                end.X,
+                end.Y);
+
+            try
+            {
+                // Ensure button is not stuck down.
+                var upInput = new[]
+                {
+                    new INPUT
+                    {
+                        type = INPUT_MOUSE,
+                        U    = new InputUnion
+                        {
+                            mi = new MOUSEINPUT
+                            {
+                                dx          = 0,
+                                dy          = 0,
+                                mouseData   = 0,
+                                dwFlags     = MOUSEEVENTF_LEFTUP,
+                                time        = 0,
+                                dwExtraInfo = IntPtr.Zero
+                            }
+                        }
+                    }
+                };
+                SendInput((uint)upInput.Length, upInput, Marshal.SizeOf<INPUT>());
+            }
+            catch
+            {
+                // ignored
+            }
+
+            return false;
+        }
     }
 
     // =========================================================================

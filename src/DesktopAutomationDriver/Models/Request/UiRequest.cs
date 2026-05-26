@@ -196,4 +196,40 @@ public class UiRequest
     /// is made the session's active window. Set to false to find without switching focus.
     /// </summary>
     public bool? MakeCurrent { get; set; }
+
+    // -------------------------------------------------------------------------
+    // dragbyoffset fields
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Horizontal movement in pixels for the 'dragbyoffset' operation.
+    /// Defaults to 0.
+    /// </summary>
+    public int? OffsetX { get; set; }
+
+    /// <summary>
+    /// Vertical movement in pixels for the 'dragbyoffset' operation.
+    /// Defaults to 0.
+    /// </summary>
+    public int? OffsetY { get; set; }
+
+    /// <summary>
+    /// Where to start the drag inside the element rectangle for 'dragbyoffset'.
+    /// Supported values: center, topEdge, bottomEdge, leftEdge, rightEdge,
+    /// topLeft, topRight, bottomLeft, bottomRight.
+    /// Defaults to "center".
+    /// </summary>
+    public string? DragStart { get; set; }
+
+    /// <summary>
+    /// Total drag duration in milliseconds for the 'dragbyoffset' operation.
+    /// Defaults to 250.
+    /// </summary>
+    public int? DragDurationMs { get; set; }
+
+    /// <summary>
+    /// Number of mouse-move steps for the 'dragbyoffset' operation.
+    /// Defaults to 10.
+    /// </summary>
+    public int? DragSteps { get; set; }
 }
