@@ -293,8 +293,9 @@ public class UiService : IUiService
                 "expandtreepath"   => ExpandTreePath(request),
                 "selecttreepath"   => SelectTreePath(request),
                 "scroll"           => Scroll(request),
-                "mousescroll"      => MouseScroll(request),
-                "wheelscroll"      => MouseScroll(request),
+                "mousescroll"      => Scroll(request),
+                "wheelscroll"      => Scroll(request),
+                "scrollintoview"   => ScrollIntoView(request),
                 "check"            => Check(request),
                 "uncheck"          => Uncheck(request),
                 "select"           => Select(request),
@@ -2861,59 +2862,143 @@ public class UiService : IUiService
         return string.Join(", ", available);
     }
 
-    private object? Scroll(UiRequest req)
-    {
-        var element = FindWithRetry(req);
-        element.Patterns.ScrollItem.PatternOrDefault?.ScrollIntoView();
-        return null;
-    }
-
     /// <summary>
-    /// Scrolls the mouse wheel over an element (or over the current cursor position when
-    /// no locator is provided).
-    ///
-    /// <list type="bullet">
-    ///   <item><b>locator</b> – (optional) The element to scroll over.  When provided the
-    ///     cursor is moved to the element's centre before scrolling.</item>
-    ///   <item><b>value</b> – (optional) Scroll amount as a number of wheel clicks.
-    ///     Positive values scroll up; negative values scroll down.
-    ///     The strings <c>"up"</c> and <c>"down"</c> also work and map to ±3 clicks.
-    ///     Omitting <c>value</c> defaults to 3 clicks down.</item>
-    /// </list>
+    /// Canonical scroll operation. Supports mode=auto|wheel|pattern, direction=up|down|left|right,
+    /// and amount. When mode=auto, tries UIA ScrollPattern first, then falls back to mouse wheel.
+    /// Also handles mousescroll and wheelscroll aliases (forces mode=wheel).
     /// </summary>
-    private object? MouseScroll(UiRequest req)
+    private object Scroll(UiRequest request)
     {
+        var mode      = NormalizeScrollMode(request);
+        var direction = NormalizeScrollDirection(request.Direction);
+        var amount    = request.Amount ?? 1;
+
+        if (amount == 0)
+            throw new ArgumentException("'scroll' requires non-zero amount.");
+
+        if (amount < 0)
+        {
+            amount    = Math.Abs(amount);
+            direction = ReverseScrollDirection(direction);
+        }
+
         AutomationElement? element = null;
 
-        if (req.Locator != null && !IsEmptyLocator(req.Locator))
+        if (request.Locator != null && !IsEmptyLocator(request.Locator))
         {
-            element = FindWithRetry(req);
+            element = FindWithRetry(request);
             BringElementWindowToForeground(element);
             Thread.Sleep(WindowActivationDelayMs);
+        }
 
-            var rect = element.BoundingRectangle;
-            if (!rect.IsEmpty && rect.Width > 0 && rect.Height > 0)
+        var beforeState = request.VerifyScroll == true && element != null
+            ? CaptureScrollState(element)
+            : null;
+
+        var strategy = string.Empty;
+        var success  = false;
+
+        if (mode == "pattern" || mode == "auto")
+        {
+            if (element != null && TryScrollByPattern(element, direction, amount, out strategy))
+                success = true;
+
+            if (mode == "pattern" && !success)
+                throw new InvalidOperationException(
+                    $"ScrollPattern failed or is not supported. direction={direction}, amount={amount}, element={SafeElementName(element!)}");
+        }
+
+        if (!success && (mode == "wheel" || mode == "auto"))
+        {
+            if (element == null)
             {
-                var point = new Point(
-                    (int)Math.Round(rect.Left + rect.Width / 2.0),
-                    (int)Math.Round(rect.Top + rect.Height / 2.0));
+                if (!request.X.HasValue || !request.Y.HasValue)
+                    throw new ArgumentException(
+                        "Wheel scroll requires either a locator or x/y coordinates.");
 
-                SetCursorPos(point.X, point.Y);
-                Thread.Sleep(CursorPositionStabilityDelayMs);
+                success = TryMouseWheelScrollAtPoint(
+                    new Point(request.X.Value, request.Y.Value),
+                    direction,
+                    amount,
+                    out strategy);
+            }
+            else
+            {
+                success = TryMouseWheelScrollOnElement(element, direction, amount, out strategy);
             }
         }
 
-        var wheelClicks = ParseWheelClicks(req.Value);
-        if (!SendMouseWheel(wheelClicks))
-            throw new InvalidOperationException($"Mouse wheel scroll failed. wheelClicks={wheelClicks}");
+        if (!success)
+            throw new InvalidOperationException(
+                $"Unable to scroll. mode={mode}, direction={direction}, amount={amount}");
+
+        Thread.Sleep(request.ScrollDelayMs ?? 100);
+
+        var verified = false;
+
+        if (request.VerifyScroll == true && element != null)
+        {
+            var afterState = CaptureScrollState(element);
+            verified = !string.Equals(beforeState, afterState, StringComparison.Ordinal);
+        }
 
         return new
         {
-            scrolled = true,
-            wheelClicks,
-            direction = wheelClicks >= 0 ? "up" : "down",
-            target = element == null ? null : CreateElementSnapshot(element)
+            operation   = "scroll",
+            success     = true,
+            strategy,
+            mode,
+            direction,
+            amount,
+            verified,
+            element     = element == null ? null : SafeElementName(element),
+            controlType = element == null ? null : SafeElementControlType(element),
+            automationId = element == null ? null : SafeElementAutomationId(element)
         };
+    }
+
+    /// <summary>
+    /// Scrolls an offscreen item into view using UIA ScrollItemPattern.ScrollIntoView.
+    /// </summary>
+    private object ScrollIntoView(UiRequest request)
+    {
+        var element = FindWithRetry(request);
+
+        BringElementWindowToForeground(element);
+        Thread.Sleep(WindowActivationDelayMs);
+
+        const string strategy = "scrollitempattern";
+
+        try
+        {
+            var scrollItem = element.Patterns.ScrollItem.PatternOrDefault;
+
+            if (scrollItem != null)
+            {
+                scrollItem.ScrollIntoView();
+                Thread.Sleep(request.ScrollDelayMs ?? 100);
+
+                return new
+                {
+                    operation    = "scrollintoview",
+                    success      = true,
+                    strategy,
+                    element      = SafeElementName(element),
+                    controlType  = SafeElementControlType(element),
+                    automationId = SafeElementAutomationId(element)
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "ScrollItemPattern.ScrollIntoView failed. element={Element}",
+                SafeElementName(element));
+        }
+
+        throw new InvalidOperationException(
+            $"ScrollItemPattern is not supported or failed. element={SafeElementName(element)}");
     }
 
     private object? Check(UiRequest req)
@@ -4056,9 +4141,43 @@ public class UiService : IUiService
             case "drag":
                 return DragCoordinates(request);
 
+            case "scroll":
+            {
+                if (!x.HasValue || !y.HasValue)
+                    throw new ArgumentException("'mouse' action 'scroll' requires x and y.");
+
+                var wheelDelta = request.WheelDelta;
+
+                if (!wheelDelta.HasValue)
+                {
+                    var direction = NormalizeScrollDirection(request.Direction);
+                    var amount    = request.Amount ?? 1;
+                    wheelDelta    = ToWheelDelta(direction, amount);
+                }
+
+                SetCursorPos(x.Value, y.Value);
+                Thread.Sleep(50);
+
+                var horizontal = IsHorizontalScrollDelta(request.Direction, wheelDelta.Value);
+
+                if (!SendMouseWheelRawDelta(wheelDelta.Value, horizontal))
+                    throw new InvalidOperationException(
+                        $"'mouse' action 'scroll' SendInput failed. x={x.Value}, y={y.Value}, wheelDelta={wheelDelta.Value}");
+
+                return new
+                {
+                    operation  = "mouse",
+                    success    = true,
+                    action     = "scroll",
+                    x          = x.Value,
+                    y          = y.Value,
+                    wheelDelta = wheelDelta.Value
+                };
+            }
+
             default:
                 throw new ArgumentException(
-                    $"Unsupported mouse action '{action}'. Supported: move, down, up, click, doubleclick, rightclick, drag.");
+                    $"Unsupported mouse action '{action}'. Supported: move, down, up, click, doubleclick, rightclick, drag, scroll.");
         }
 
         return new
@@ -13300,6 +13419,317 @@ public class UiService : IUiService
         }
     }
 
+    // =========================================================================
+    // Scroll helpers
+    // =========================================================================
+
+    private static string NormalizeScrollMode(UiRequest request)
+    {
+        var op = request.Operation?.Trim().ToLowerInvariant();
+
+        if (op is "wheelscroll" or "mousescroll")
+            return "wheel";
+
+        var mode = string.IsNullOrWhiteSpace(request.Mode)
+            ? "auto"
+            : request.Mode.Trim().ToLowerInvariant();
+
+        return mode switch
+        {
+            "auto"    => "auto",
+            "wheel"   => "wheel",
+            "mouse"   => "wheel",
+            "pattern" => "pattern",
+            "uia"     => "pattern",
+            _ => throw new ArgumentException(
+                $"Unsupported scroll mode '{request.Mode}'. Supported: auto, wheel, pattern.")
+        };
+    }
+
+    private static string NormalizeScrollDirection(string? direction)
+    {
+        if (string.IsNullOrWhiteSpace(direction))
+            return "down";
+
+        var normalized = direction.Trim().ToLowerInvariant();
+
+        return normalized switch
+        {
+            "up"    => "up",
+            "down"  => "down",
+            "left"  => "left",
+            "right" => "right",
+            _ => throw new ArgumentException(
+                $"Unsupported scroll direction '{direction}'. Supported: up, down, left, right.")
+        };
+    }
+
+    private static string ReverseScrollDirection(string direction) =>
+        direction switch
+        {
+            "up"    => "down",
+            "down"  => "up",
+            "left"  => "right",
+            "right" => "left",
+            _       => direction
+        };
+
+    private bool TryScrollByPattern(
+        AutomationElement element,
+        string direction,
+        int amount,
+        out string strategy)
+    {
+        strategy = "uia-scrollpattern";
+
+        try
+        {
+            var scrollPattern = element.Patterns.Scroll.PatternOrDefault;
+
+            if (scrollPattern == null)
+            {
+                strategy = "uia-scrollpattern-not-supported";
+                return false;
+            }
+
+            for (var i = 0; i < amount; i++)
+            {
+                switch (direction)
+                {
+                    case "up":
+                        if (!scrollPattern.VerticallyScrollable)
+                            return false;
+                        scrollPattern.Scroll(ScrollAmount.NoAmount, ScrollAmount.SmallDecrement);
+                        break;
+
+                    case "down":
+                        if (!scrollPattern.VerticallyScrollable)
+                            return false;
+                        scrollPattern.Scroll(ScrollAmount.NoAmount, ScrollAmount.SmallIncrement);
+                        break;
+
+                    case "left":
+                        if (!scrollPattern.HorizontallyScrollable)
+                            return false;
+                        scrollPattern.Scroll(ScrollAmount.SmallDecrement, ScrollAmount.NoAmount);
+                        break;
+
+                    case "right":
+                        if (!scrollPattern.HorizontallyScrollable)
+                            return false;
+                        scrollPattern.Scroll(ScrollAmount.SmallIncrement, ScrollAmount.NoAmount);
+                        break;
+                }
+
+                Thread.Sleep(50);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(
+                ex,
+                "UIA ScrollPattern failed. element={Element}, direction={Direction}, amount={Amount}",
+                SafeElementName(element),
+                direction,
+                amount);
+
+            strategy = "uia-scrollpattern-failed";
+            return false;
+        }
+    }
+
+    private bool TryMouseWheelScrollOnElement(
+        AutomationElement element,
+        string direction,
+        int amount,
+        out string strategy)
+    {
+        strategy = "mouse-wheel-element";
+
+        try
+        {
+            var rect = element.BoundingRectangle;
+
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+            {
+                strategy = "mouse-wheel-empty-rectangle";
+                return false;
+            }
+
+            var point = new Point(
+                (int)Math.Round(rect.Left + rect.Width / 2.0),
+                (int)Math.Round(rect.Top + rect.Height / 2.0));
+
+            try
+            {
+                element.Focus();
+            }
+            catch
+            {
+                // Some controls cannot focus. Mouse wheel may still work.
+            }
+
+            return TryMouseWheelScrollAtPoint(point, direction, amount, out strategy);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Mouse wheel scroll on element failed. element={Element}, direction={Direction}, amount={Amount}",
+                SafeElementName(element),
+                direction,
+                amount);
+
+            strategy = "mouse-wheel-element-failed";
+            return false;
+        }
+    }
+
+    private bool TryMouseWheelScrollAtPoint(
+        Point point,
+        string direction,
+        int amount,
+        out string strategy)
+    {
+        strategy = "mouse-wheel-coordinates";
+
+        try
+        {
+            SetCursorPos(point.X, point.Y);
+            Thread.Sleep(CursorPositionStabilityDelayMs);
+
+            var rawDelta   = ToWheelDelta(direction, amount);
+            var horizontal = direction is "left" or "right";
+
+            if (!SendMouseWheelRawDelta(rawDelta, horizontal))
+            {
+                strategy = "mouse-wheel-coordinates-failed";
+                return false;
+            }
+
+            _logger.LogInformation(
+                "Mouse wheel scroll sent. point=({X},{Y}), direction={Direction}, amount={Amount}, rawDelta={RawDelta}",
+                point.X,
+                point.Y,
+                direction,
+                amount,
+                rawDelta);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Mouse wheel scroll failed. point=({X},{Y}), direction={Direction}, amount={Amount}",
+                point.X,
+                point.Y,
+                direction,
+                amount);
+
+            strategy = "mouse-wheel-coordinates-failed";
+            return false;
+        }
+    }
+
+    private static int ToWheelDelta(string direction, int amount)
+    {
+        const int WheelDeltaUnit = 120;
+
+        return direction switch
+        {
+            "up"    =>  WheelDeltaUnit * amount,
+            "down"  => -WheelDeltaUnit * amount,
+            "left"  => -WheelDeltaUnit * amount,
+            "right" =>  WheelDeltaUnit * amount,
+            _       => -WheelDeltaUnit * amount
+        };
+    }
+
+    /// <summary>
+    /// Returns true when the mouse action's wheel delta corresponds to a horizontal scroll
+    /// (left or right direction), so that MOUSEEVENTF_HWHEEL is used instead of MOUSEEVENTF_WHEEL.
+    /// </summary>
+    private static bool IsHorizontalScrollDelta(string? direction, int wheelDelta)
+    {
+        if (string.IsNullOrWhiteSpace(direction))
+            return false;
+
+        var normalized = direction.Trim().ToLowerInvariant();
+        return normalized is "left" or "right";
+    }
+
+    /// <summary>
+    /// Sends a raw wheel delta value via SendInput.
+    /// Use <paramref name="horizontal"/> = true for left/right (MOUSEEVENTF_HWHEEL).
+    /// </summary>
+    private bool SendMouseWheelRawDelta(int rawDelta, bool horizontal = false)
+    {
+        try
+        {
+            if (rawDelta == 0)
+                return true;
+
+            var input = new INPUT
+            {
+                type = INPUT_MOUSE,
+                U    = new InputUnion
+                {
+                    mi = new MOUSEINPUT
+                    {
+                        dx          = 0,
+                        dy          = 0,
+                        // Negative deltas are represented as two's-complement unsigned values.
+                        mouseData   = unchecked((uint)rawDelta),
+                        dwFlags     = horizontal ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL,
+                        time        = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
+
+            var sent = SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
+            return sent == 1;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SendMouseWheelRawDelta failed. rawDelta={RawDelta}, horizontal={Horizontal}", rawDelta, horizontal);
+            return false;
+        }
+    }
+
+    private string? CaptureScrollState(AutomationElement element)
+    {
+        try
+        {
+            var sp = element.Patterns.Scroll.PatternOrDefault;
+
+            if (sp != null)
+            {
+                return string.Join("|",
+                    sp.HorizontalScrollPercent,
+                    sp.VerticalScrollPercent,
+                    sp.HorizontallyScrollable,
+                    sp.VerticallyScrollable);
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            return element.BoundingRectangle.ToString();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private bool SendMouseWheel(int wheelClicks)
     {
         try
@@ -13571,7 +14001,8 @@ public class UiService : IUiService
     private const uint MOUSEEVENTF_LEFTUP = 0x0004;
     private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
     private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
-    private const uint MOUSEEVENTF_WHEEL = 0x0800;
+    private const uint MOUSEEVENTF_WHEEL  = 0x0800;
+    private const uint MOUSEEVENTF_HWHEEL = 0x1000;
     private const uint GA_ROOT = 2;
 
     [DllImport("user32.dll", SetLastError = true)]
