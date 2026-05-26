@@ -13532,7 +13532,7 @@ public class UiService : IUiService
                 ex,
                 "UIA ScrollPattern failed. element={Element}, direction={Direction}, amount={Amount}",
                 SafeElementName(element),
-                direction,
+                SanitizeValue(direction),
                 amount);
 
             strategy = "uia-scrollpattern-failed";
@@ -13579,7 +13579,7 @@ public class UiService : IUiService
                 ex,
                 "Mouse wheel scroll on element failed. element={Element}, direction={Direction}, amount={Amount}",
                 SafeElementName(element),
-                direction,
+                SanitizeValue(direction),
                 amount);
 
             strategy = "mouse-wheel-element-failed";
@@ -13613,7 +13613,7 @@ public class UiService : IUiService
                 "Mouse wheel scroll sent. point=({X},{Y}), direction={Direction}, amount={Amount}, rawDelta={RawDelta}",
                 point.X,
                 point.Y,
-                direction,
+                SanitizeValue(direction),
                 amount,
                 rawDelta);
 
@@ -13626,7 +13626,7 @@ public class UiService : IUiService
                 "Mouse wheel scroll failed. point=({X},{Y}), direction={Direction}, amount={Amount}",
                 point.X,
                 point.Y,
-                direction,
+                SanitizeValue(direction),
                 amount);
 
             strategy = "mouse-wheel-coordinates-failed";
