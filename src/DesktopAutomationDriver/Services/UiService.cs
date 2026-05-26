@@ -293,9 +293,9 @@ public class UiService : IUiService
                 "expandtreepath"   => ExpandTreePath(request),
                 "selecttreepath"   => SelectTreePath(request),
                 "scroll"           => Scroll(request),
-                "mousescroll"      => Scroll(request),
-                "wheelscroll"      => Scroll(request),
-                "scrollintoview"   => ScrollIntoView(request),
+                "mousescroll"      => ScrollNormal(request),
+                "wheelscroll"      => ScrollNormal(request),
+                "scrollintoview"   => ScrollTargetIntoView(request),
                 "check"            => Check(request),
                 "uncheck"          => Uncheck(request),
                 "select"           => Select(request),
@@ -2863,11 +2863,47 @@ public class UiService : IUiService
     }
 
     /// <summary>
-    /// Canonical scroll operation. Supports mode=auto|wheel|pattern, direction=up|down|left|right,
-    /// and amount. When mode=auto, tries UIA ScrollPattern first, then falls back to mouse wheel.
-    /// Also handles mousescroll and wheelscroll aliases (forces mode=wheel).
+    /// Smart scroll dispatcher. Infers the right scroll behavior from request shape:
+    /// Case A: locator + direction/amount → normal container scroll.
+    /// Case B: locator only               → scroll target into view.
+    /// Case C: containerLocator + locator → scroll target into view inside container.
+    /// Case D: x/y only                  → coordinate-based wheel scroll.
     /// </summary>
     private object Scroll(UiRequest request)
+    {
+        var hasContainer        = request.ContainerLocator != null && !IsEmptyLocator(request.ContainerLocator);
+        var hasLocator          = request.Locator != null && !IsEmptyLocator(request.Locator);
+        var hasDirectionOrAmount =
+            !string.IsNullOrWhiteSpace(request.Direction) ||
+            request.Amount.HasValue;
+        var hasCoordinates = request.X.HasValue && request.Y.HasValue;
+
+        // Case D: coordinate-based wheel scroll
+        if (!hasLocator && !hasContainer && hasCoordinates)
+            return ScrollCoordinates(request);
+
+        // Case C: containerLocator + locator → target inside container
+        if (hasContainer && hasLocator)
+            return ScrollTargetIntoView(request);
+
+        // Case A: locator + direction/amount → normal container scroll
+        if (hasLocator && hasDirectionOrAmount)
+            return ScrollNormal(request);
+
+        // Case B: locator only → scroll target into view
+        if (hasLocator)
+            return ScrollTargetIntoView(request);
+
+        throw new ArgumentException(
+            "Invalid scroll request. Provide: locator (target), locator+direction/amount (container scroll), containerLocator+locator (target inside container), or x/y (coordinate scroll).");
+    }
+
+    /// <summary>
+    /// Normal container scroll. Supports mode=auto|wheel|pattern, direction, and amount.
+    /// Used directly by mousescroll/wheelscroll aliases (forces mode=wheel) and by
+    /// Case A of the smart Scroll dispatcher.
+    /// </summary>
+    private object ScrollNormal(UiRequest request)
     {
         var mode      = NormalizeScrollMode(request);
         var direction = NormalizeScrollDirection(request.Direction);
@@ -2958,47 +2994,463 @@ public class UiService : IUiService
     }
 
     /// <summary>
-    /// Scrolls an offscreen item into view using UIA ScrollItemPattern.ScrollIntoView.
+    /// Coordinate-based wheel scroll (Case D).
     /// </summary>
-    private object ScrollIntoView(UiRequest request)
+    private object ScrollCoordinates(UiRequest request)
     {
-        var element = FindWithRetry(request);
+        var direction = NormalizeScrollDirection(request.Direction);
+        var amount    = Math.Abs(request.Amount ?? 1);
 
-        BringElementWindowToForeground(element);
-        Thread.Sleep(WindowActivationDelayMs);
+        if (amount == 0)
+            amount = 1;
 
-        const string strategy = "scrollitempattern";
+        var success = TryMouseWheelScrollAtPoint(
+            new Point(request.X!.Value, request.Y!.Value),
+            direction,
+            amount,
+            out var strategy);
+
+        if (!success)
+            throw new InvalidOperationException(
+                $"Coordinate scroll failed. x={request.X}, y={request.Y}, direction={direction}, amount={amount}");
+
+        Thread.Sleep(request.ScrollDelayMs ?? 100);
+
+        return new
+        {
+            operation = "scroll",
+            success   = true,
+            strategy,
+            direction,
+            amount,
+            x         = request.X.Value,
+            y         = request.Y.Value
+        };
+    }
+
+    /// <summary>
+    /// Smart scroll-into-view. Handles Cases B and C (and is also used by the
+    /// scrollintoview alias).  Algorithm:
+    /// 1. Optionally resolve explicit container via ContainerLocator.
+    /// 2. Try to find target (including offscreen by default).
+    /// 3. If target visible → success (strategy=already-visible).
+    /// 4. If target found but offscreen → try ScrollItemPattern.
+    /// 5. If still not visible → rectangle-align loop against nearest/provided container.
+    /// 6. If target not found → scroll likely containers and retry.
+    /// </summary>
+    private object ScrollTargetIntoView(UiRequest request)
+    {
+        var session      = RequireSession();
+        var root         = GetWindowRoot(session, allowDesktopPopupScan: false);
+        var maxAttempts  = request.MaxAttempts ?? 30;
+        var delayMs      = request.DelayMs ?? 150;
+        var scrollAmount = request.Amount ?? 5;
+        var scrollMode   = string.IsNullOrWhiteSpace(request.Mode) ? "auto" : request.Mode.Trim().ToLowerInvariant();
+        var targetLocator = request.Locator != null && !IsEmptyLocator(request.Locator)
+            ? request.Locator
+            : throw new ArgumentException("'scroll' target-into-view requires a Locator.");
+
+        // Resolve explicit container if provided.
+        AutomationElement? container = null;
+        if (request.ContainerLocator != null && !IsEmptyLocator(request.ContainerLocator))
+        {
+            var containerSearchReq = new UiRequest
+            {
+                Operation = request.Operation,
+                Locator   = request.ContainerLocator,
+                TimeoutMs = request.TimeoutMs,
+                Fast      = request.Fast
+            };
+            container = FindWithRetry(containerSearchReq);
+            BringElementWindowToForeground(container);
+            Thread.Sleep(WindowActivationDelayMs);
+        }
+        else if (request.Locator != null && !IsEmptyLocator(request.Locator))
+        {
+            // Window must be foreground before searching; bring it via the session root.
+            BringElementWindowToForeground(root);
+            Thread.Sleep(WindowActivationDelayMs);
+        }
+
+        var searchRoot = container ?? root;
+
+        // Attempt 1: find target including offscreen.
+        var target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator);
+
+        if (target != null)
+        {
+            // Already visible?
+            if (IsTargetVisibleInContainer(target, container))
+            {
+                return new
+                {
+                    operation     = "scroll",
+                    success       = true,
+                    strategy      = "already-visible",
+                    targetFound   = true,
+                    targetVisible = true,
+                    attempts      = 0
+                };
+            }
+
+            // Try ScrollItemPattern.
+            if (TryScrollItemPattern(target, out var sipStrategy))
+            {
+                Thread.Sleep(delayMs);
+                if (IsTargetVisibleInContainer(target, container))
+                {
+                    return new
+                    {
+                        operation     = "scroll",
+                        success       = true,
+                        strategy      = sipStrategy,
+                        targetFound   = true,
+                        targetVisible = true,
+                        attempts      = 1
+                    };
+                }
+            }
+
+            // Determine scroll container for rectangle-align loop.
+            var scrollContainer = container
+                ?? FindNearestScrollableContainer(target)
+                ?? root;
+
+            // Rectangle-align loop.
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                var targetRect    = TrySafeGetBoundingRect(target);
+                var containerRect = TrySafeGetBoundingRect(scrollContainer);
+
+                if (targetRect.HasValue && containerRect.HasValue)
+                {
+                    if (IsTargetVisibleInContainer(target, scrollContainer))
+                    {
+                        return new
+                        {
+                            operation     = "scroll",
+                            success       = true,
+                            strategy      = "container-wheel-rect-align",
+                            targetFound   = true,
+                            targetVisible = true,
+                            attempts      = attempt,
+                            direction     = DecideScrollDirectionToTarget(targetRect.Value, containerRect.Value)
+                        };
+                    }
+
+                    var direction = DecideScrollDirectionToTarget(targetRect.Value, containerRect.Value);
+                    if (direction == "none")
+                        break;
+
+                    TryScrollContainerOneStep(scrollContainer, direction, scrollMode, scrollAmount, out _);
+                }
+                else
+                {
+                    TryScrollContainerOneStep(scrollContainer, "down", scrollMode, scrollAmount, out _);
+                }
+
+                Thread.Sleep(delayMs);
+
+                // Re-find target in case UIA refreshed its position.
+                target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator) ?? target;
+            }
+
+            // Final visibility check.
+            if (IsTargetVisibleInContainer(target, container))
+            {
+                return new
+                {
+                    operation     = "scroll",
+                    success       = true,
+                    strategy      = "container-wheel-rect-align",
+                    targetFound   = true,
+                    targetVisible = true,
+                    attempts      = maxAttempts
+                };
+            }
+
+            return new
+            {
+                operation     = "scroll",
+                success       = false,
+                strategy      = "container-wheel-rect-align",
+                targetFound   = true,
+                targetVisible = false,
+                attempts      = maxAttempts,
+                message       = "Target found but could not be scrolled into view."
+            };
+        }
+
+        // Target not found: scroll likely containers and retry.
+        var scrollContainers = container != null
+            ? new[] { container }
+            : FindLikelyScrollableContainers(session, root);
+
+        foreach (var sc in scrollContainers)
+        {
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                TryScrollContainerOneStep(sc, "down", scrollMode, scrollAmount, out _);
+                Thread.Sleep(delayMs);
+
+                target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator);
+                if (target != null && IsTargetVisibleInContainer(target, container))
+                {
+                    return new
+                    {
+                        operation     = "scroll",
+                        success       = true,
+                        strategy      = "scroll-search-loop",
+                        targetFound   = true,
+                        targetVisible = true,
+                        attempts      = attempt
+                    };
+                }
+            }
+        }
+
+        return new
+        {
+            operation     = "scroll",
+            success       = false,
+            strategy      = "scroll-search-loop",
+            targetFound   = false,
+            attempts      = maxAttempts,
+            message       = request.ContainerLocator != null
+                ? "Target not found after scrolling the specified container."
+                : "Target not found after scrolling. Provide containerLocator for better accuracy."
+        };
+    }
+
+    /// <summary>
+    /// Finds an element including off-screen descendants (does not filter by visibility).
+    /// </summary>
+    private AutomationElement? TryFindElementIncludingOffscreen(
+        AutomationSession session,
+        AutomationElement searchRoot,
+        UiLocator locator)
+    {
+        try
+        {
+            // Use existing fast-attribute strategy which searches all descendants
+            // via FindFirstDescendant (no visibility filter in FlaUI).
+            var result = TryFindElementBySmartStrategy(
+                searchRoot,
+                session,
+                locator,
+                preferAttributes: true,
+                xpathOnly: false);
+
+            return result.Element;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Returns true when the target element is visible within the container's bounds.
+    /// When container is null, returns true if the element is simply not off-screen.
+    /// </summary>
+    private static bool IsTargetVisibleInContainer(
+        AutomationElement target,
+        AutomationElement? container)
+    {
+        try
+        {
+            if (target.IsOffscreen)
+                return false;
+
+            var targetRect = target.BoundingRectangle;
+
+            if (targetRect.IsEmpty || targetRect.Width <= 0 || targetRect.Height <= 0)
+                return false;
+
+            if (container == null)
+                return true;
+
+            var containerRect = container.BoundingRectangle;
+
+            if (containerRect.IsEmpty || containerRect.Width <= 0 || containerRect.Height <= 0)
+                return false;
+
+            return RectanglesIntersect(targetRect, containerRect);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool RectanglesIntersect(Rectangle a, Rectangle b)
+    {
+        return a.Left < b.Right &&
+               a.Right > b.Left &&
+               a.Top < b.Bottom &&
+               a.Bottom > b.Top;
+    }
+
+    private static string DecideScrollDirectionToTarget(Rectangle targetRect, Rectangle containerRect)
+    {
+        if (targetRect.Bottom > containerRect.Bottom)
+            return "down";
+
+        if (targetRect.Top < containerRect.Top)
+            return "up";
+
+        if (targetRect.Right > containerRect.Right)
+            return "right";
+
+        if (targetRect.Left < containerRect.Left)
+            return "left";
+
+        return "none";
+    }
+
+    private static Rectangle? TrySafeGetBoundingRect(AutomationElement element)
+    {
+        try
+        {
+            var r = element.BoundingRectangle;
+            return r.IsEmpty ? (Rectangle?)null : r;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Walks the UIA parent chain to find the nearest element that has a ScrollPattern
+    /// or is a likely scrollable container (DataGrid, Table, List, Pane, Document).
+    /// </summary>
+    private AutomationElement? FindNearestScrollableContainer(AutomationElement target)
+    {
+        var current = target.Parent;
+
+        while (current != null)
+        {
+            try
+            {
+                var scrollPattern = current.Patterns.Scroll.PatternOrDefault;
+
+                if (scrollPattern != null &&
+                    (scrollPattern.VerticallyScrollable || scrollPattern.HorizontallyScrollable))
+                {
+                    return current;
+                }
+
+                var ct = current.ControlType;
+
+                if (ct == ControlType.DataGrid ||
+                    ct == ControlType.Table     ||
+                    ct == ControlType.List      ||
+                    ct == ControlType.Pane      ||
+                    ct == ControlType.Document)
+                {
+                    return current;
+                }
+            }
+            catch
+            {
+                // Ignore and continue parent chain.
+            }
+
+            current = current.Parent;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Finds likely scrollable containers in the current window for target-not-found search.
+    /// </summary>
+    private AutomationElement[] FindLikelyScrollableContainers(
+        AutomationSession session,
+        AutomationElement root)
+    {
+        try
+        {
+            var cf = session.Automation.ConditionFactory;
+            var candidates = new List<AutomationElement>();
+
+            foreach (var ct in new[]
+            {
+                ControlType.DataGrid,
+                ControlType.Table,
+                ControlType.List,
+                ControlType.Tree,
+                ControlType.Document,
+                ControlType.Pane
+            })
+            {
+                try
+                {
+                    var found = root.FindAllDescendants(cf.ByControlType(ct));
+                    candidates.AddRange(found);
+                }
+                catch
+                {
+                    // Ignore per-type failures.
+                }
+            }
+
+            return candidates.ToArray();
+        }
+        catch
+        {
+            return Array.Empty<AutomationElement>();
+        }
+    }
+
+    /// <summary>
+    /// Attempts to use UIA ScrollItemPattern.ScrollIntoView on the target element.
+    /// </summary>
+    private bool TryScrollItemPattern(AutomationElement target, out string strategy)
+    {
+        strategy = "scrollitempattern";
 
         try
         {
-            var scrollItem = element.Patterns.ScrollItem.PatternOrDefault;
+            var scrollItem = target.Patterns.ScrollItem.PatternOrDefault;
 
-            if (scrollItem != null)
+            if (scrollItem == null)
             {
-                scrollItem.ScrollIntoView();
-                Thread.Sleep(request.ScrollDelayMs ?? 100);
-
-                return new
-                {
-                    operation    = "scrollintoview",
-                    success      = true,
-                    strategy,
-                    element      = SafeElementName(element),
-                    controlType  = SafeElementControlType(element),
-                    automationId = SafeElementAutomationId(element)
-                };
+                strategy = "scrollitempattern-not-supported";
+                return false;
             }
+
+            scrollItem.ScrollIntoView();
+            return true;
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogWarning(
-                ex,
-                "ScrollItemPattern.ScrollIntoView failed. element={Element}",
-                SafeElementName(element));
+            strategy = "scrollitempattern-failed";
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Scrolls a container one step using the appropriate mode.
+    /// </summary>
+    private bool TryScrollContainerOneStep(
+        AutomationElement container,
+        string direction,
+        string mode,
+        int amount,
+        out string strategy)
+    {
+        if (mode == "pattern" || mode == "auto")
+        {
+            if (TryScrollByPattern(container, direction, amount, out strategy))
+                return true;
+
+            if (mode == "pattern")
+                return false;
         }
 
-        throw new InvalidOperationException(
-            $"ScrollItemPattern is not supported or failed. element={SafeElementName(element)}");
+        return TryMouseWheelScrollOnElement(container, direction, amount, out strategy);
     }
 
     private object? Check(UiRequest req)
