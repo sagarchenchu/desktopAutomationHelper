@@ -262,12 +262,54 @@ public class UiRequest
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Target X screen coordinate for the 'mouse' operation.
+    /// Target X screen coordinate for the 'mouse' operation and coordinate-based scroll.
     /// </summary>
     public int? X { get; set; }
 
     /// <summary>
-    /// Target Y screen coordinate for the 'mouse' operation.
+    /// Target Y screen coordinate for the 'mouse' operation and coordinate-based scroll.
     /// </summary>
     public int? Y { get; set; }
+
+    // -------------------------------------------------------------------------
+    // scroll fields
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Scroll direction for the 'scroll', 'mousescroll', 'wheelscroll' operations.
+    /// Accepted values: up, down, left, right. Defaults to "down".
+    /// </summary>
+    public string? Direction { get; set; }
+
+    /// <summary>
+    /// Scroll amount (wheel ticks or pattern units) for scroll operations.
+    /// Defaults to 1. Negative values reverse the direction.
+    /// </summary>
+    public int? Amount { get; set; }
+
+    /// <summary>
+    /// Scroll mode for the 'scroll' operation.
+    /// Accepted values: auto (default), wheel, pattern.
+    /// auto = try UIA ScrollPattern first, fall back to mouse wheel.
+    /// wheel = physical mouse wheel only.
+    /// pattern = UIA ScrollPattern only, fail if not supported.
+    /// </summary>
+    public string? Mode { get; set; }
+
+    /// <summary>
+    /// Raw wheel delta for 'mouse' action='scroll'. Negative = down/left, positive = up/right.
+    /// When set, overrides Direction+Amount for the mouse scroll action.
+    /// </summary>
+    public int? WheelDelta { get; set; }
+
+    /// <summary>
+    /// When true, scroll attempts to verify that the scroll position actually changed.
+    /// Defaults to false.
+    /// </summary>
+    public bool? VerifyScroll { get; set; }
+
+    /// <summary>
+    /// Milliseconds to wait after the scroll operation completes. Defaults to 100.
+    /// </summary>
+    public int? ScrollDelayMs { get; set; }
 }
