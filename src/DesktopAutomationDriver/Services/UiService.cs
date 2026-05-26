@@ -4051,6 +4051,8 @@ public class UiService : IUiService
         if (steps < 1)
             steps = 1;
 
+        var button = NormalizeMouseButton(request.Button);
+
         _logger.LogInformation(
             "DragCoordinates starting. start=({StartX},{StartY}), end=({EndX},{EndY}), durationMs={DurationMs}, steps={Steps}",
             start.X,
@@ -4060,7 +4062,7 @@ public class UiService : IUiService
             durationMs,
             steps);
 
-        if (!PerformPhysicalDrag(start, end, durationMs, steps, "left"))
+        if (!PerformPhysicalDrag(start, end, durationMs, steps, button))
         {
             throw new InvalidOperationException(
                 $"dragcoordinates failed. start=({start.X},{start.Y}), end=({end.X},{end.Y})");
@@ -4070,6 +4072,7 @@ public class UiService : IUiService
         {
             operation = "dragcoordinates",
             success   = true,
+            button,
             start     = new { x = start.X, y = start.Y },
             end       = new { x = end.X,   y = end.Y   },
             durationMs,
@@ -4083,9 +4086,7 @@ public class UiService : IUiService
             ? throw new ArgumentException("'mouse' operation requires action.")
             : request.Action.Trim().ToLowerInvariant();
 
-        var button = string.IsNullOrWhiteSpace(request.Button)
-            ? "left"
-            : request.Button.Trim().ToLowerInvariant();
+        var button = NormalizeMouseButton(request.Button);
 
         var x = request.X;
         var y = request.Y;
@@ -4105,37 +4106,37 @@ public class UiService : IUiService
 
             case "down":
                 SetCursorPos(x!.Value, y!.Value);
-                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN);
+                MouseDown(button);
                 break;
 
             case "up":
                 SetCursorPos(x!.Value, y!.Value);
-                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP);
+                MouseUp(button);
                 break;
 
             case "click":
                 SetCursorPos(x!.Value, y!.Value);
-                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN);
+                MouseDown(button);
                 Thread.Sleep(50);
-                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP);
+                MouseUp(button);
                 break;
 
             case "doubleclick":
                 SetCursorPos(x!.Value, y!.Value);
-                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN);
+                MouseDown(button);
                 Thread.Sleep(50);
-                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP);
+                MouseUp(button);
                 Thread.Sleep(75);
-                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN);
+                MouseDown(button);
                 Thread.Sleep(50);
-                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP);
+                MouseUp(button);
                 break;
 
             case "rightclick":
                 SetCursorPos(x!.Value, y!.Value);
-                SendMouseInput(MOUSEEVENTF_RIGHTDOWN);
+                MouseDown("right");
                 Thread.Sleep(50);
-                SendMouseInput(MOUSEEVENTF_RIGHTUP);
+                MouseUp("right");
                 break;
 
             case "drag":
@@ -4233,12 +4234,20 @@ public class UiService : IUiService
         int steps,
         string button = "left")
     {
-        var btnDown = button.Equals("right", StringComparison.OrdinalIgnoreCase)
-            ? MOUSEEVENTF_RIGHTDOWN
-            : MOUSEEVENTF_LEFTDOWN;
-        var btnUp = button.Equals("right", StringComparison.OrdinalIgnoreCase)
-            ? MOUSEEVENTF_RIGHTUP
-            : MOUSEEVENTF_LEFTUP;
+        button = NormalizeMouseButton(button);
+
+        var btnDown = button switch
+        {
+            "right"  => MOUSEEVENTF_RIGHTDOWN,
+            "middle" => MOUSEEVENTF_MIDDLEDOWN,
+            _        => MOUSEEVENTF_LEFTDOWN
+        };
+        var btnUp = button switch
+        {
+            "right"  => MOUSEEVENTF_RIGHTUP,
+            "middle" => MOUSEEVENTF_MIDDLEUP,
+            _        => MOUSEEVENTF_LEFTUP
+        };
 
         try
         {
@@ -4309,6 +4318,70 @@ public class UiService : IUiService
             }
 
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Normalises a raw button string to one of "left", "right", or "middle".
+    /// Returns "left" when <paramref name="button"/> is null or whitespace.
+    /// Throws <see cref="ArgumentException"/> for any other value.
+    /// </summary>
+    private static string NormalizeMouseButton(string? button)
+    {
+        if (string.IsNullOrWhiteSpace(button))
+            return "left";
+
+        var normalized = button.Trim().ToLowerInvariant();
+
+        return normalized switch
+        {
+            "left"   => "left",
+            "right"  => "right",
+            "middle" => "middle",
+            _ => throw new ArgumentException(
+                $"Unsupported mouse button '{button}'. Supported buttons: left, right, middle.")
+        };
+    }
+
+    /// <summary>Sends the mouse-button-down event for <paramref name="button"/>.</summary>
+    private void MouseDown(string button)
+    {
+        button = NormalizeMouseButton(button);
+
+        switch (button)
+        {
+            case "left":
+                SendMouseInput(MOUSEEVENTF_LEFTDOWN);
+                break;
+
+            case "right":
+                SendMouseInput(MOUSEEVENTF_RIGHTDOWN);
+                break;
+
+            case "middle":
+                SendMouseInput(MOUSEEVENTF_MIDDLEDOWN);
+                break;
+        }
+    }
+
+    /// <summary>Sends the mouse-button-up event for <paramref name="button"/>.</summary>
+    private void MouseUp(string button)
+    {
+        button = NormalizeMouseButton(button);
+
+        switch (button)
+        {
+            case "left":
+                SendMouseInput(MOUSEEVENTF_LEFTUP);
+                break;
+
+            case "right":
+                SendMouseInput(MOUSEEVENTF_RIGHTUP);
+                break;
+
+            case "middle":
+                SendMouseInput(MOUSEEVENTF_MIDDLEUP);
+                break;
         }
     }
 
@@ -13997,12 +14070,14 @@ public class UiService : IUiService
     }
 
     private const uint INPUT_MOUSE = 0;
-    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
-    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
-    private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
-    private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
-    private const uint MOUSEEVENTF_WHEEL  = 0x0800;
-    private const uint MOUSEEVENTF_HWHEEL = 0x1000;
+    private const uint MOUSEEVENTF_LEFTDOWN   = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP     = 0x0004;
+    private const uint MOUSEEVENTF_RIGHTDOWN  = 0x0008;
+    private const uint MOUSEEVENTF_RIGHTUP    = 0x0010;
+    private const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
+    private const uint MOUSEEVENTF_MIDDLEUP   = 0x0040;
+    private const uint MOUSEEVENTF_WHEEL      = 0x0800;
+    private const uint MOUSEEVENTF_HWHEEL     = 0x1000;
     private const uint GA_ROOT = 2;
 
     [DllImport("user32.dll", SetLastError = true)]
