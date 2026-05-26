@@ -232,4 +232,42 @@ public class UiRequest
     /// Defaults to 10.
     /// </summary>
     public int? DragSteps { get; set; }
+
+    // -------------------------------------------------------------------------
+    // dragcoordinates fields
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Source X screen coordinate for the 'dragcoordinates' operation.
+    /// </summary>
+    public int? FromX { get; set; }
+
+    /// <summary>
+    /// Source Y screen coordinate for the 'dragcoordinates' operation.
+    /// </summary>
+    public int? FromY { get; set; }
+
+    /// <summary>
+    /// Destination X screen coordinate for the 'dragcoordinates' operation.
+    /// </summary>
+    public int? ToX { get; set; }
+
+    /// <summary>
+    /// Destination Y screen coordinate for the 'dragcoordinates' operation.
+    /// </summary>
+    public int? ToY { get; set; }
+
+    // -------------------------------------------------------------------------
+    // mouse low-level fields
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Target X screen coordinate for the 'mouse' operation.
+    /// </summary>
+    public int? X { get; set; }
+
+    /// <summary>
+    /// Target Y screen coordinate for the 'mouse' operation.
+    /// </summary>
+    public int? Y { get; set; }
 }

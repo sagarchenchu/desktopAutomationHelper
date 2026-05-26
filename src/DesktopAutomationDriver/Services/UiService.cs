@@ -313,6 +313,8 @@ public class UiService : IUiService
                 "selectcomboboxitem" => Select(request),
                 "draganddrop"     => DragAndDrop(request),
                 "dragbyoffset"    => DragByOffset(request),
+                "dragcoordinates" => DragCoordinates(request),
+                "mouse"           => MouseAction(request),
 
                 // ----- Popup Pipeline -----
                 "topwindow"    => TopWindow(request),
@@ -3857,6 +3859,10 @@ public class UiService : IUiService
     {
         var element = FindWithRetry(request);
 
+        // Physical input must target foreground window.
+        BringElementWindowToForeground(element);
+        Thread.Sleep(WindowActivationDelayMs);
+
         var offsetX = request.OffsetX ?? 0;
         var offsetY = request.OffsetY ?? 0;
 
@@ -3903,7 +3909,7 @@ public class UiService : IUiService
             durationMs,
             steps);
 
-        var success = PerformPhysicalDrag(start, end, durationMs, steps);
+        var success = PerformPhysicalDrag(start, end, durationMs, steps, "left");
 
         if (!success)
         {
@@ -3936,6 +3942,133 @@ public class UiService : IUiService
             },
             durationMs,
             steps
+        };
+    }
+
+    private object DragCoordinates(UiRequest request)
+    {
+        if (!request.FromX.HasValue || !request.FromY.HasValue ||
+            !request.ToX.HasValue   || !request.ToY.HasValue)
+        {
+            throw new ArgumentException(
+                "'dragcoordinates' requires fromX, fromY, toX, and toY.");
+        }
+
+        var start = new Point(request.FromX.Value, request.FromY.Value);
+        var end   = new Point(request.ToX.Value,   request.ToY.Value);
+
+        var durationMs = request.DragDurationMs ?? 250;
+        var steps      = request.DragSteps      ?? 10;
+
+        if (durationMs < 0)
+            durationMs = 0;
+
+        if (steps < 1)
+            steps = 1;
+
+        _logger.LogInformation(
+            "DragCoordinates starting. start=({StartX},{StartY}), end=({EndX},{EndY}), durationMs={DurationMs}, steps={Steps}",
+            start.X,
+            start.Y,
+            end.X,
+            end.Y,
+            durationMs,
+            steps);
+
+        if (!PerformPhysicalDrag(start, end, durationMs, steps, "left"))
+        {
+            throw new InvalidOperationException(
+                $"dragcoordinates failed. start=({start.X},{start.Y}), end=({end.X},{end.Y})");
+        }
+
+        return new
+        {
+            operation = "dragcoordinates",
+            success   = true,
+            start     = new { x = start.X, y = start.Y },
+            end       = new { x = end.X,   y = end.Y   },
+            durationMs,
+            steps
+        };
+    }
+
+    private object MouseAction(UiRequest request)
+    {
+        var action = string.IsNullOrWhiteSpace(request.Action)
+            ? throw new ArgumentException("'mouse' operation requires action.")
+            : request.Action.Trim().ToLowerInvariant();
+
+        var button = string.IsNullOrWhiteSpace(request.Button)
+            ? "left"
+            : request.Button.Trim().ToLowerInvariant();
+
+        var x = request.X;
+        var y = request.Y;
+
+        if (action is "move" or "down" or "up" or "click" or "doubleclick" or "rightclick"
+            && (!x.HasValue || !y.HasValue))
+        {
+            throw new ArgumentException(
+                $"'mouse' action '{action}' requires x and y.");
+        }
+
+        switch (action)
+        {
+            case "move":
+                SetCursorPos(x!.Value, y!.Value);
+                break;
+
+            case "down":
+                SetCursorPos(x!.Value, y!.Value);
+                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN);
+                break;
+
+            case "up":
+                SetCursorPos(x!.Value, y!.Value);
+                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP);
+                break;
+
+            case "click":
+                SetCursorPos(x!.Value, y!.Value);
+                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN);
+                Thread.Sleep(50);
+                SendMouseInput(button == "right" ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP);
+                break;
+
+            case "doubleclick":
+                SetCursorPos(x!.Value, y!.Value);
+                SendMouseInput(MOUSEEVENTF_LEFTDOWN);
+                Thread.Sleep(50);
+                SendMouseInput(MOUSEEVENTF_LEFTUP);
+                Thread.Sleep(75);
+                SendMouseInput(MOUSEEVENTF_LEFTDOWN);
+                Thread.Sleep(50);
+                SendMouseInput(MOUSEEVENTF_LEFTUP);
+                break;
+
+            case "rightclick":
+                SetCursorPos(x!.Value, y!.Value);
+                SendMouseInput(MOUSEEVENTF_RIGHTDOWN);
+                Thread.Sleep(50);
+                SendMouseInput(MOUSEEVENTF_RIGHTUP);
+                break;
+
+            case "drag":
+                return DragCoordinates(request);
+
+            default:
+                throw new ArgumentException(
+                    $"Unsupported mouse action '{action}'. Supported: move, down, up, click, doubleclick, rightclick, drag.");
+        }
+
+        return new
+        {
+            operation = "mouse",
+            success   = true,
+            action,
+            button,
+            x,
+            y
         };
     }
 
@@ -3978,8 +4111,16 @@ public class UiService : IUiService
         Point start,
         Point end,
         int durationMs,
-        int steps)
+        int steps,
+        string button = "left")
     {
+        var btnDown = button.Equals("right", StringComparison.OrdinalIgnoreCase)
+            ? MOUSEEVENTF_RIGHTDOWN
+            : MOUSEEVENTF_LEFTDOWN;
+        var btnUp = button.Equals("right", StringComparison.OrdinalIgnoreCase)
+            ? MOUSEEVENTF_RIGHTUP
+            : MOUSEEVENTF_LEFTUP;
+
         try
         {
             if (steps < 1)
@@ -3995,31 +4136,10 @@ public class UiService : IUiService
 
             Thread.Sleep(75);
 
-            // Mouse button down
-            var downInput = new[]
-            {
-                new INPUT
-                {
-                    type = INPUT_MOUSE,
-                    U    = new InputUnion
-                    {
-                        mi = new MOUSEINPUT
-                        {
-                            dx          = 0,
-                            dy          = 0,
-                            mouseData   = 0,
-                            dwFlags     = MOUSEEVENTF_LEFTDOWN,
-                            time        = 0,
-                            dwExtraInfo = IntPtr.Zero
-                        }
-                    }
-                }
-            };
-
-            if (SendInput((uint)downInput.Length, downInput, Marshal.SizeOf<INPUT>()) != downInput.Length)
+            if (!SendMouseInput(btnDown))
             {
                 _logger.LogWarning(
-                    "PerformPhysicalDrag: SendInput (LEFTDOWN) failed. LastError={Error}",
+                    "PerformPhysicalDrag: SendInput (DOWN) failed. LastError={Error}",
                     Marshal.GetLastWin32Error());
                 return false;
             }
@@ -4040,31 +4160,10 @@ public class UiService : IUiService
 
             Thread.Sleep(75);
 
-            // Mouse button up
-            var upInput = new[]
-            {
-                new INPUT
-                {
-                    type = INPUT_MOUSE,
-                    U    = new InputUnion
-                    {
-                        mi = new MOUSEINPUT
-                        {
-                            dx          = 0,
-                            dy          = 0,
-                            mouseData   = 0,
-                            dwFlags     = MOUSEEVENTF_LEFTUP,
-                            time        = 0,
-                            dwExtraInfo = IntPtr.Zero
-                        }
-                    }
-                }
-            };
-
-            if (SendInput((uint)upInput.Length, upInput, Marshal.SizeOf<INPUT>()) != upInput.Length)
+            if (!SendMouseInput(btnUp))
             {
                 _logger.LogWarning(
-                    "PerformPhysicalDrag: SendInput (LEFTUP) failed. LastError={Error}",
+                    "PerformPhysicalDrag: SendInput (UP) failed. LastError={Error}",
                     Marshal.GetLastWin32Error());
             }
 
@@ -4083,26 +4182,7 @@ public class UiService : IUiService
             try
             {
                 // Ensure button is not stuck down.
-                var upInput = new[]
-                {
-                    new INPUT
-                    {
-                        type = INPUT_MOUSE,
-                        U    = new InputUnion
-                        {
-                            mi = new MOUSEINPUT
-                            {
-                                dx          = 0,
-                                dy          = 0,
-                                mouseData   = 0,
-                                dwFlags     = MOUSEEVENTF_LEFTUP,
-                                time        = 0,
-                                dwExtraInfo = IntPtr.Zero
-                            }
-                        }
-                    }
-                };
-                SendInput((uint)upInput.Length, upInput, Marshal.SizeOf<INPUT>());
+                SendMouseInput(btnUp);
             }
             catch
             {
@@ -4111,6 +4191,32 @@ public class UiService : IUiService
 
             return false;
         }
+    }
+
+    /// <summary>Sends a single mouse input event via SendInput.</summary>
+    private bool SendMouseInput(uint dwFlags)
+    {
+        var input = new[]
+        {
+            new INPUT
+            {
+                type = INPUT_MOUSE,
+                U    = new InputUnion
+                {
+                    mi = new MOUSEINPUT
+                    {
+                        dx          = 0,
+                        dy          = 0,
+                        mouseData   = 0,
+                        dwFlags     = dwFlags,
+                        time        = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            }
+        };
+
+        return SendInput((uint)input.Length, input, Marshal.SizeOf<INPUT>()) == input.Length;
     }
 
     // =========================================================================
