@@ -196,4 +196,120 @@ public class UiRequest
     /// is made the session's active window. Set to false to find without switching focus.
     /// </summary>
     public bool? MakeCurrent { get; set; }
+
+    // -------------------------------------------------------------------------
+    // dragbyoffset fields
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Horizontal movement in pixels for the 'dragbyoffset' operation.
+    /// Defaults to 0.
+    /// </summary>
+    public int? OffsetX { get; set; }
+
+    /// <summary>
+    /// Vertical movement in pixels for the 'dragbyoffset' operation.
+    /// Defaults to 0.
+    /// </summary>
+    public int? OffsetY { get; set; }
+
+    /// <summary>
+    /// Where to start the drag inside the element rectangle for 'dragbyoffset'.
+    /// Supported values: center, topEdge, bottomEdge, leftEdge, rightEdge,
+    /// topLeft, topRight, bottomLeft, bottomRight.
+    /// Defaults to "center".
+    /// </summary>
+    public string? DragStart { get; set; }
+
+    /// <summary>
+    /// Total drag duration in milliseconds for the 'dragbyoffset' operation.
+    /// Defaults to 250.
+    /// </summary>
+    public int? DragDurationMs { get; set; }
+
+    /// <summary>
+    /// Number of mouse-move steps for the 'dragbyoffset' operation.
+    /// Defaults to 10.
+    /// </summary>
+    public int? DragSteps { get; set; }
+
+    // -------------------------------------------------------------------------
+    // dragcoordinates fields
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Source X screen coordinate for the 'dragcoordinates' operation.
+    /// </summary>
+    public int? FromX { get; set; }
+
+    /// <summary>
+    /// Source Y screen coordinate for the 'dragcoordinates' operation.
+    /// </summary>
+    public int? FromY { get; set; }
+
+    /// <summary>
+    /// Destination X screen coordinate for the 'dragcoordinates' operation.
+    /// </summary>
+    public int? ToX { get; set; }
+
+    /// <summary>
+    /// Destination Y screen coordinate for the 'dragcoordinates' operation.
+    /// </summary>
+    public int? ToY { get; set; }
+
+    // -------------------------------------------------------------------------
+    // mouse low-level fields
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Target X screen coordinate for the 'mouse' operation and coordinate-based scroll.
+    /// </summary>
+    public int? X { get; set; }
+
+    /// <summary>
+    /// Target Y screen coordinate for the 'mouse' operation and coordinate-based scroll.
+    /// </summary>
+    public int? Y { get; set; }
+
+    // -------------------------------------------------------------------------
+    // scroll fields
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Scroll direction for the 'scroll', 'mousescroll', 'wheelscroll' operations.
+    /// Accepted values: up, down, left, right. Defaults to "down".
+    /// </summary>
+    public string? Direction { get; set; }
+
+    /// <summary>
+    /// Scroll amount (wheel ticks or pattern units) for scroll operations.
+    /// Defaults to 1. Negative values reverse the direction.
+    /// </summary>
+    public int? Amount { get; set; }
+
+    /// <summary>
+    /// Scroll mode for the 'scroll' operation.
+    /// Accepted values: auto (default), wheel, pattern.
+    /// auto = try UIA ScrollPattern first, fall back to mouse wheel.
+    /// wheel = physical mouse wheel only.
+    /// pattern = UIA ScrollPattern only, fail if not supported.
+    /// </summary>
+    public string? Mode { get; set; }
+
+    /// <summary>
+    /// Raw wheel delta for 'mouse' action='scroll'. Negative = down/left, positive = up/right.
+    /// When set, overrides Direction+Amount for the mouse scroll action.
+    /// </summary>
+    public int? WheelDelta { get; set; }
+
+    /// <summary>
+    /// When true, scroll attempts to verify that the scroll position actually changed.
+    /// Defaults to false.
+    /// </summary>
+    public bool? VerifyScroll { get; set; }
+
+    /// <summary>
+    /// Milliseconds to wait after the scroll operation completes. Defaults to 100.
+    /// </summary>
+    public int? ScrollDelayMs { get; set; }
 }
