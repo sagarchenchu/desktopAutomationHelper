@@ -1707,19 +1707,8 @@ public class UiService : IUiService
         var element    = resolved.Element;
         var enabled    = element.IsEnabled;
         var visible    = IsTargetPracticallyVisible(element, null, out var visibilityStrategy);
-
-        var hasClickablePoint = false;
-        double pointX = 0, pointY = 0;
-        try
-        {
-            var cp = element.GetClickablePoint();
-            hasClickablePoint = true;
-            pointX = cp.X;
-            pointY = cp.Y;
-        }
-        catch { /* no clickable point */ }
-
-        var clickable = enabled && visible && hasClickablePoint;
+        var hasClickablePoint = TryGetElementClickablePoint(element, out var pointX, out var pointY);
+        var clickable  = enabled && visible && hasClickablePoint;
 
         return new
         {
@@ -8443,8 +8432,7 @@ public class UiService : IUiService
         var element  = resolved.Element;
         var enabled  = element.IsEnabled;
         var visible  = IsTargetPracticallyVisible(element, null, out _);
-        var hasClickablePoint = false;
-        try { element.GetClickablePoint(); hasClickablePoint = true; } catch { }
+        var hasClickablePoint = TryGetElementClickablePoint(element, out _, out _);
         var clickable = enabled && visible && hasClickablePoint;
         return new StateResult
         {
@@ -9236,6 +9224,29 @@ public class UiService : IUiService
             return !valuePattern.IsReadOnly;
 
         return element.ControlType == ControlType.Edit || element.ControlType == ControlType.Document;
+    }
+
+    /// <summary>
+    /// Tries to obtain the clickable point for <paramref name="element"/>.
+    /// Returns <c>true</c> and populates <paramref name="x"/>/<paramref name="y"/>
+    /// when the element exposes a clickable point; returns <c>false</c> otherwise.
+    /// </summary>
+    private static bool TryGetElementClickablePoint(
+        AutomationElement element, out double x, out double y)
+    {
+        try
+        {
+            var pt = element.GetClickablePoint();
+            x = pt.X;
+            y = pt.Y;
+            return true;
+        }
+        catch
+        {
+            x = 0;
+            y = 0;
+            return false;
+        }
     }
 
     private bool TryPhysicalClick(AutomationElement element, string actionName) =>
