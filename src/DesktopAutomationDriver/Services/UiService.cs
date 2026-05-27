@@ -248,9 +248,14 @@ public class UiService : IUiService
 
                 // ----- Element Query -----
                 "exists"         => Exists(request),
-                "waitfor"        => WaitFor(request),
+                "waitfor"        => WaitFor(request, cancellationToken),
+                "wait"           => Wait(request, cancellationToken),
                 "isenabled"      => IsEnabled(request),
                 "isvisible"      => IsVisible(request),
+                "isfocused"      => IsFocused(request),
+                "hasfocus"       => IsFocused(request),
+                "iswindowactive" => IsWindowActive(request),
+                "isactive"       => IsWindowActive(request),
                 "isclickable"    => IsClickable(request),
                 "iseditable"     => IsEditable(request),
                 "ischecked"      => IsChecked(request),
@@ -1552,68 +1557,211 @@ public class UiService : IUiService
     // Element Query
     // =========================================================================
 
-    private object? Exists(UiRequest req)
+    private object Exists(UiRequest req)
     {
-        var locator = RequireLocator(req);
-        var session = RequireSession();
-        var root = GetWindowRoot(session);
-
-        // Exists checks immediately — no retry — and never throws.
-        var element = TryFindElement(root, session, locator);
-        return new { exists = element != null };
-    }
-
-    private object? WaitFor(UiRequest req)
-    {
-        var locator = RequireLocator(req);
-        var session = RequireSession();
-        var root = GetWindowRoot(session);
-
-        double timeoutSeconds = 10;
-        if (!string.IsNullOrWhiteSpace(req.Value) &&
-            double.TryParse(req.Value, out var parsed))
-            timeoutSeconds = parsed;
-
-        var timeout = TimeSpan.FromSeconds(timeoutSeconds);
-        var deadline = DateTime.UtcNow + timeout;
-
-        while (true)
+        try
         {
-            var element = TryFindElement(root, session, locator);
-            if (element != null && element.IsEnabled && !element.IsOffscreen)
-                return new { found = true };
+            var resolved = ResolveForStateQuery(req);
+            var element  = resolved.Element;
 
-            if (DateTime.UtcNow >= deadline)
-                throw new InvalidOperationException(
-                    $"Element not found or not ready within {timeoutSeconds}s: " +
-                    DescribeLocator(locator));
-
-            Thread.Sleep(RetryInterval);
+            return new
+            {
+                operation        = "exists",
+                exists           = true,
+                strategy         = resolved.Strategy,
+                automationId     = SafeElementAutomationId(element),
+                name             = SafeElementName(element),
+                controlType      = SafeElementControlType(element),
+                className        = SafeElementClassName(element),
+                isOffscreen      = element.Properties.IsOffscreen.ValueOrDefault,
+                boundingRectangle = SafeBoundingRectangleObject(element)
+            };
+        }
+        catch (Exception ex)
+        {
+            return new
+            {
+                operation     = "exists",
+                exists        = false,
+                strategy      = "not-found",
+                lastError     = ex.Message,
+                locator       = DescribeLocatorAsObject(req.Locator),
+                parentLocator = DescribeLocatorAsObject(req.ParentLocator)
+            };
         }
     }
 
-    private object? IsEnabled(UiRequest req)
+    private object WaitFor(UiRequest req, CancellationToken cancellationToken)
     {
-        var element = FindWithRetry(req);
-        return new { enabled = element.IsEnabled };
+        // Backward compatibility: old waitfor commonly checked IsEnabled + !IsOffscreen,
+        // so default to "enabled" when no explicit state is requested.
+        var state = string.IsNullOrWhiteSpace(req.State) ? "enabled" : req.State;
+
+        // Backward compatibility: older callers pass the timeout in milliseconds via
+        // request.Value (e.g. "10000").
+        int? timeoutMs = req.TimeoutMs;
+        if (!timeoutMs.HasValue &&
+            !string.IsNullOrWhiteSpace(req.Value) &&
+            int.TryParse(req.Value, out var parsedTimeoutMs))
+        {
+            timeoutMs = parsedTimeoutMs;
+        }
+
+        var normalized = new UiRequest
+        {
+            Operation          = "wait",
+            Locator            = req.Locator,
+            ParentLocator      = req.ParentLocator,
+            State              = state,
+            TimeoutMs          = timeoutMs,
+            PollIntervalMs     = req.PollIntervalMs ?? 200,
+            Fast               = req.Fast,
+            DisableAutoFollow  = req.DisableAutoFollow,
+            UseCache           = req.UseCache,
+            PreferXPath        = req.PreferXPath,
+            XPathOnly          = req.XPathOnly,
+            PreferAttributes   = req.PreferAttributes,
+            FallbackToWindowRootIfParentChildNotFound = req.FallbackToWindowRootIfParentChildNotFound
+        };
+
+        return Wait(normalized, cancellationToken);
     }
 
-    private object? IsVisible(UiRequest req)
+    private object IsEnabled(UiRequest req)
     {
-        var element = FindWithRetry(req);
-        return new { visible = !element.IsOffscreen };
+        var resolved   = ResolveForStateQuery(req);
+        var element    = resolved.Element;
+        var uiaEnabled = element.IsEnabled;
+
+        bool? win32Enabled = null;
+        var hwnd = SafeWindowHandle(element);
+        if (hwnd != IntPtr.Zero)
+            win32Enabled = IsWindowEnabled(hwnd);
+
+        return new
+        {
+            operation    = "isenabled",
+            exists       = true,
+            enabled      = uiaEnabled,
+            uiaEnabled,
+            win32Enabled,
+            strategy     = resolved.Strategy,
+            automationId = SafeElementAutomationId(element),
+            name         = SafeElementName(element),
+            controlType  = SafeElementControlType(element),
+            className    = SafeElementClassName(element)
+        };
     }
 
-    private object? IsClickable(UiRequest req)
+    private object IsVisible(UiRequest req)
     {
-        var element = FindWithRetry(req);
-        return new { clickable = element.IsEnabled && !element.IsOffscreen };
+        var resolved  = ResolveForStateQuery(req);
+        var element   = resolved.Element;
+        var rect      = element.BoundingRectangle;
+        var isOffscreen = element.Properties.IsOffscreen.ValueOrDefault;
+        var hasRect   = !rect.IsEmpty && rect.Width > 0 && rect.Height > 0;
+        var visible   = hasRect && !isOffscreen;
+
+        return new
+        {
+            operation   = "isvisible",
+            exists      = true,
+            visible,
+            isOffscreen,
+            hasRect,
+            rect = new
+            {
+                left   = rect.Left,
+                top    = rect.Top,
+                right  = rect.Right,
+                bottom = rect.Bottom,
+                width  = rect.Width,
+                height = rect.Height
+            },
+            strategy = resolved.Strategy
+        };
     }
 
-    private object? IsEditable(UiRequest req)
+    private object IsFocused(UiRequest req)
     {
-        var element = FindWithRetry(req);
-        return new { editable = IsElementEditable(element) };
+        var resolved = ResolveForStateQuery(req);
+        var element  = resolved.Element;
+        var focused  = element.Properties.HasKeyboardFocus.ValueOrDefault;
+
+        return new
+        {
+            operation = "isfocused",
+            exists    = true,
+            focused,
+            strategy  = resolved.Strategy
+        };
+    }
+
+    private object IsWindowActive(UiRequest req)
+    {
+        var resolved   = ResolveForStateQuery(req);
+        var element    = resolved.Element;
+        var hwnd       = SafeWindowHandle(element);
+        var rootHwnd   = hwnd != IntPtr.Zero ? GetAncestor(hwnd, GA_ROOT) : IntPtr.Zero;
+        var foreground = GetForegroundWindow();
+        var active     = rootHwnd != IntPtr.Zero && rootHwnd == foreground;
+
+        return new
+        {
+            operation      = "iswindowactive",
+            exists         = true,
+            active,
+            hwnd           = rootHwnd.ToInt64(),
+            foregroundHwnd = foreground.ToInt64(),
+            strategy       = resolved.Strategy
+        };
+    }
+
+    private object IsClickable(UiRequest req)
+    {
+        var resolved   = ResolveForStateQuery(req);
+        var element    = resolved.Element;
+        var enabled    = element.IsEnabled;
+        var visible    = IsTargetPracticallyVisible(element, null, out var visibilityStrategy);
+        var hasClickablePoint = TryGetElementClickablePoint(element, out var pointX, out var pointY);
+        var clickable  = enabled && visible && hasClickablePoint;
+
+        return new
+        {
+            operation         = "isclickable",
+            exists            = true,
+            clickable,
+            enabled,
+            visible,
+            visibilityStrategy,
+            hasClickablePoint,
+            point = hasClickablePoint
+                ? (object)new { x = (int)pointX, y = (int)pointY }
+                : null,
+            strategy = resolved.Strategy
+        };
+    }
+
+    private object IsEditable(UiRequest req)
+    {
+        var resolved     = ResolveForStateQuery(req);
+        var element      = resolved.Element;
+        var enabled      = element.IsEnabled;
+        var valuePattern = element.Patterns.Value.PatternOrDefault;
+        var hasValuePattern = valuePattern != null;
+        var isReadOnly   = valuePattern?.IsReadOnly ?? true;
+        var editable     = enabled && hasValuePattern && !isReadOnly;
+
+        return new
+        {
+            operation       = "iseditable",
+            exists          = true,
+            editable,
+            enabled,
+            hasValuePattern,
+            isReadOnly,
+            strategy        = resolved.Strategy
+        };
     }
 
     private object? IsChecked(UiRequest req)
@@ -8004,6 +8152,349 @@ public class UiService : IUiService
     }
 
     // =========================================================================
+    // Resolved element for state-query pipeline
+    // =========================================================================
+
+    /// <summary>
+    /// Carries the element and resolution strategy name returned by
+    /// <see cref="ResolveForStateQuery"/>.
+    /// </summary>
+    private sealed class ResolvedElement
+    {
+        public AutomationElement Element { get; init; } = null!;
+        public string Strategy { get; init; } = "unknown";
+    }
+
+    /// <summary>
+    /// Resolves the target element for state-query operations (isenabled, isvisible,
+    /// isfocused, iswindowactive, isclickable, iseditable, exists, wait).
+    /// Unlike action-oriented lookup this resolver:
+    /// <list type="bullet">
+    ///   <item>Does not require a clickable point.</item>
+    ///   <item>Allows offscreen elements.</item>
+    ///   <item>Applies ComboBox-relaxed fallback strategies when strict lookup fails.</item>
+    /// </list>
+    /// Throws <see cref="InvalidOperationException"/> when the element cannot be found.
+    /// </summary>
+    private ResolvedElement ResolveForStateQuery(UiRequest request)
+    {
+        var locator = RequireLocator(request);
+        var session = RequireSession();
+        var root    = GetWindowRoot(session, allowDesktopPopupScan: false);
+
+        // Narrow search scope when a parent locator is given.
+        var searchRoot = root;
+        if (request.ParentLocator != null)
+        {
+            var parentResult = TryFindElementBySmartStrategy(
+                root, session, request.ParentLocator,
+                preferAttributes: true, xpathOnly: false);
+
+            if (parentResult.Element != null)
+                searchRoot = parentResult.Element;
+            else if (request.FallbackToWindowRootIfParentChildNotFound != true)
+                throw new InvalidOperationException(
+                    $"Parent locator not found: {DescribeLocator(request.ParentLocator)}");
+        }
+
+        // 1. Standard smart lookup (attributes preferred, allows offscreen).
+        var result = TryFindElementBySmartStrategy(
+            searchRoot, session, locator,
+            preferAttributes: true, xpathOnly: false);
+
+        if (result.Element != null)
+            return new ResolvedElement { Element = result.Element, Strategy = result.Strategy };
+
+        // 2. ComboBox-specific relaxed fallback.
+        if (string.Equals(locator.ControlType, "ComboBox", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(locator.AutomationId))
+        {
+            var cf = session.Automation.ConditionFactory;
+            var candidate = searchRoot.FindFirstDescendant(
+                cf.ByAutomationId(locator.AutomationId));
+
+            if (candidate != null)
+            {
+                // Found exactly a ComboBox.
+                if (candidate.ControlType == ControlType.ComboBox)
+                    return new ResolvedElement
+                    {
+                        Element  = candidate,
+                        Strategy = "combobox-automationid-relaxed"
+                    };
+
+                // Found an Edit or other child — walk ancestors for ComboBox.
+                var ancestor = TryFindComboBoxAncestor(candidate);
+                if (ancestor != null)
+                    return new ResolvedElement
+                    {
+                        Element  = ancestor,
+                        Strategy = "combobox-ancestor-relaxed"
+                    };
+
+                // No ComboBox ancestor found; return the found element under a
+                // relaxed strategy so callers can still read its state.
+                return new ResolvedElement
+                {
+                    Element  = candidate,
+                    Strategy = "combobox-relaxed-found-non-combobox"
+                };
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Element not found for state query: {DescribeLocator(locator)}");
+    }
+
+    /// <summary>
+    /// Walks the UIA parent chain looking for the nearest <see cref="ControlType.ComboBox"/>
+    /// ancestor. Returns <c>null</c> when no ComboBox is found within
+    /// <see cref="MaxMenuParentChainDepth"/> steps.
+    /// </summary>
+    private static AutomationElement? TryFindComboBoxAncestor(AutomationElement element)
+    {
+        var current = element.Parent;
+        for (int i = 0; i < MaxMenuParentChainDepth && current != null; i++)
+        {
+            if (current.ControlType == ControlType.ComboBox)
+                return current;
+            current = current.Parent;
+        }
+        return null;
+    }
+
+    // =========================================================================
+    // Wait operation — live state polling
+    // =========================================================================
+
+    /// <summary>
+    /// Carries the outcome of a single state evaluation: whether the target
+    /// condition is met and the raw payload to return on success.
+    /// </summary>
+    private sealed class StateResult
+    {
+        public bool Matched { get; init; }
+        public object? Payload { get; init; }
+    }
+
+    private object Wait(UiRequest request, CancellationToken cancellationToken)
+    {
+        var state = string.IsNullOrWhiteSpace(request.State)
+            ? "exists"
+            : request.State.Trim().ToLowerInvariant();
+
+        var timeoutMs      = request.TimeoutMs      ?? 10000;
+        var pollIntervalMs = request.PollIntervalMs ?? 200;
+
+        var start           = Stopwatch.StartNew();
+        Exception? lastEx   = null;
+        object? lastPayload = null;
+
+        while (start.ElapsedMilliseconds < timeoutMs)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var stateResult = EvaluateState(request, state);
+                lastPayload = stateResult.Payload;
+
+                if (stateResult.Matched)
+                {
+                    return new
+                    {
+                        operation = "wait",
+                        success   = true,
+                        state,
+                        elapsedMs = start.ElapsedMilliseconds,
+                        result    = stateResult.Payload
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                lastEx = ex;
+            }
+
+            WaitWithCancellation(pollIntervalMs, cancellationToken);
+        }
+
+        return new
+        {
+            operation  = "wait",
+            success    = false,
+            state,
+            elapsedMs  = start.ElapsedMilliseconds,
+            lastError  = lastEx?.Message,
+            lastResult = lastPayload
+        };
+    }
+
+    private StateResult EvaluateState(UiRequest request, string state)
+    {
+        return state switch
+        {
+            "exists"       => EvaluateExists(request),
+            "enabled"      => EvaluateEnabled(request, expected: true),
+            "disabled"     => EvaluateEnabled(request, expected: false),
+            "visible"      => EvaluateVisible(request, expected: true),
+            "hidden"       => EvaluateVisible(request, expected: false),
+            "focused"      => EvaluateFocused(request, expected: true),
+            "windowactive" => EvaluateWindowActive(request, expected: true),
+            "clickable"    => EvaluateClickable(request),
+            "editable"     => EvaluateEditable(request),
+            "gone"         => EvaluateGone(request),
+            _ => throw new ArgumentException(
+                $"Unsupported wait state '{state}'. " +
+                "Supported: exists, enabled, disabled, visible, hidden, focused, " +
+                "windowactive, clickable, editable, gone.")
+        };
+    }
+
+    private StateResult EvaluateExists(UiRequest request)
+    {
+        try
+        {
+            var resolved = ResolveForStateQuery(request);
+            return new StateResult
+            {
+                Matched = true,
+                Payload = new
+                {
+                    exists       = true,
+                    strategy     = resolved.Strategy,
+                    automationId = SafeElementAutomationId(resolved.Element),
+                    name         = SafeElementName(resolved.Element),
+                    controlType  = SafeElementControlType(resolved.Element)
+                }
+            };
+        }
+        catch
+        {
+            return new StateResult { Matched = false };
+        }
+    }
+
+    private StateResult EvaluateGone(UiRequest request)
+    {
+        try
+        {
+            ResolveForStateQuery(request);
+            // Element still exists.
+            return new StateResult { Matched = false };
+        }
+        catch
+        {
+            // Element not found — it is gone.
+            return new StateResult { Matched = true, Payload = new { gone = true } };
+        }
+    }
+
+    private StateResult EvaluateEnabled(UiRequest request, bool expected)
+    {
+        var resolved   = ResolveForStateQuery(request);
+        var uiaEnabled = resolved.Element.IsEnabled;
+        return new StateResult
+        {
+            Matched = uiaEnabled == expected,
+            Payload = new { enabled = uiaEnabled, strategy = resolved.Strategy }
+        };
+    }
+
+    private StateResult EvaluateVisible(UiRequest request, bool expected)
+    {
+        var resolved    = ResolveForStateQuery(request);
+        var rect        = resolved.Element.BoundingRectangle;
+        var isOffscreen = resolved.Element.Properties.IsOffscreen.ValueOrDefault;
+        var hasRect     = !rect.IsEmpty && rect.Width > 0 && rect.Height > 0;
+        var visible     = hasRect && !isOffscreen;
+        return new StateResult
+        {
+            Matched = visible == expected,
+            Payload = new { visible, isOffscreen, strategy = resolved.Strategy }
+        };
+    }
+
+    private StateResult EvaluateFocused(UiRequest request, bool expected)
+    {
+        var resolved = ResolveForStateQuery(request);
+        var focused  = resolved.Element.Properties.HasKeyboardFocus.ValueOrDefault;
+        return new StateResult
+        {
+            Matched = focused == expected,
+            Payload = new { focused, strategy = resolved.Strategy }
+        };
+    }
+
+    private StateResult EvaluateWindowActive(UiRequest request, bool expected)
+    {
+        var resolved   = ResolveForStateQuery(request);
+        var hwnd       = SafeWindowHandle(resolved.Element);
+        var rootHwnd   = hwnd != IntPtr.Zero ? GetAncestor(hwnd, GA_ROOT) : IntPtr.Zero;
+        var foreground = GetForegroundWindow();
+        var active     = rootHwnd != IntPtr.Zero && rootHwnd == foreground;
+        return new StateResult
+        {
+            Matched = active == expected,
+            Payload = new
+            {
+                active,
+                hwnd           = rootHwnd.ToInt64(),
+                foregroundHwnd = foreground.ToInt64(),
+                strategy       = resolved.Strategy
+            }
+        };
+    }
+
+    private StateResult EvaluateClickable(UiRequest request)
+    {
+        var resolved = ResolveForStateQuery(request);
+        var element  = resolved.Element;
+        var enabled  = element.IsEnabled;
+        var visible  = IsTargetPracticallyVisible(element, null, out _);
+        var hasClickablePoint = TryGetElementClickablePoint(element, out _, out _);
+        var clickable = enabled && visible && hasClickablePoint;
+        return new StateResult
+        {
+            Matched = clickable,
+            Payload = new { clickable, enabled, visible, hasClickablePoint, strategy = resolved.Strategy }
+        };
+    }
+
+    private StateResult EvaluateEditable(UiRequest request)
+    {
+        var resolved     = ResolveForStateQuery(request);
+        var element      = resolved.Element;
+        var enabled      = element.IsEnabled;
+        var valuePattern = element.Patterns.Value.PatternOrDefault;
+        var hasValuePattern = valuePattern != null;
+        var isReadOnly   = valuePattern?.IsReadOnly ?? true;
+        var editable     = enabled && hasValuePattern && !isReadOnly;
+        return new StateResult
+        {
+            Matched = editable,
+            Payload = new { editable, enabled, hasValuePattern, isReadOnly, strategy = resolved.Strategy }
+        };
+    }
+
+    /// <summary>
+    /// Sleeps for at most <paramref name="ms"/> milliseconds, honouring
+    /// <paramref name="cancellationToken"/> on each iteration.
+    /// </summary>
+    private static void WaitWithCancellation(int ms, CancellationToken cancellationToken)
+    {
+        const int SliceMs = 50;
+        var elapsed = 0;
+        while (elapsed < ms)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var slice = Math.Min(SliceMs, ms - elapsed);
+            Thread.Sleep(slice);
+            elapsed += slice;
+        }
+    }
+
+    // =========================================================================
     // XPath element finding
     // =========================================================================
 
@@ -8316,6 +8807,21 @@ public class UiService : IUiService
         if (!string.IsNullOrWhiteSpace(l.ClassName))      parts.Add($"className='{l.ClassName}'");
         if (!string.IsNullOrWhiteSpace(l.ControlType))    parts.Add($"controlType='{l.ControlType}'");
         return string.Join(", ", parts);
+    }
+
+    private static object? DescribeLocatorAsObject(UiLocator? locator)
+    {
+        if (locator == null)
+            return null;
+
+        return new
+        {
+            automationId = locator.AutomationId,
+            name         = locator.Name,
+            controlType  = locator.ControlType,
+            className    = locator.ClassName,
+            xpath        = locator.XPath
+        };
     }
 
     private (Rectangle r1, Rectangle r2) GetTwoRects(UiRequest req)
@@ -8753,6 +9259,29 @@ public class UiService : IUiService
             return !valuePattern.IsReadOnly;
 
         return element.ControlType == ControlType.Edit || element.ControlType == ControlType.Document;
+    }
+
+    /// <summary>
+    /// Tries to obtain the clickable point for <paramref name="element"/>.
+    /// Returns <c>true</c> and populates <paramref name="x"/>/<paramref name="y"/>
+    /// when the element exposes a clickable point; returns <c>false</c> otherwise.
+    /// </summary>
+    private static bool TryGetElementClickablePoint(
+        AutomationElement element, out double x, out double y)
+    {
+        try
+        {
+            var pt = element.GetClickablePoint();
+            x = pt.X;
+            y = pt.Y;
+            return true;
+        }
+        catch
+        {
+            x = 0;
+            y = 0;
+            return false;
+        }
     }
 
     private bool TryPhysicalClick(AutomationElement element, string actionName) =>
@@ -14801,6 +15330,28 @@ public class UiService : IUiService
         }
     }
 
+    private static object? SafeBoundingRectangleObject(AutomationElement element)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+            return new
+            {
+                left    = rect.Left,
+                top     = rect.Top,
+                right   = rect.Right,
+                bottom  = rect.Bottom,
+                width   = rect.Width,
+                height  = rect.Height,
+                isEmpty = rect.IsEmpty
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static int SafeMenuItemChildCount(AutomationElement item, ConditionFactory cf)
     {
         try
@@ -14940,6 +15491,9 @@ public class UiService : IUiService
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowEnabled(IntPtr hWnd);
 
     // =========================================================================
     // Win32 window enumeration P/Invoke

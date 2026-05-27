@@ -338,4 +338,22 @@ public class UiRequest
     /// Milliseconds to wait after the scroll operation completes. Defaults to 100.
     /// </summary>
     public int? ScrollDelayMs { get; set; }
+
+    // -------------------------------------------------------------------------
+    // wait operation fields
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Target state for the 'wait' operation.
+    /// Supported values: exists, enabled, disabled, visible, hidden, focused,
+    /// windowactive, clickable, editable, gone.
+    /// Defaults to "exists" when omitted.
+    /// </summary>
+    public string? State { get; set; }
+
+    /// <summary>
+    /// Polling interval in milliseconds for the 'wait' operation.
+    /// Defaults to 200 ms.
+    /// </summary>
+    public int? PollIntervalMs { get; set; }
 }
