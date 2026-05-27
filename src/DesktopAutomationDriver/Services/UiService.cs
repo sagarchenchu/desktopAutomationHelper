@@ -3058,6 +3058,13 @@ public class UiService : IUiService
             ? request.Locator
             : throw new ArgumentException("'scroll' target-into-view requires a Locator.");
 
+        _logger.LogInformation(
+            "ScrollTargetIntoView started. containerLocator={ContainerLocator}, targetLocator={TargetLocator}, mode={Mode}, maxAttempts={MaxAttempts}",
+            request.ContainerLocator,
+            request.Locator,
+            scrollMode,
+            maxAttempts);
+
         // Resolve explicit container if provided.
         AutomationElement? container = null;
         if (request.ContainerLocator != null && !IsEmptyLocator(request.ContainerLocator))
@@ -3085,63 +3092,147 @@ public class UiService : IUiService
         // Attempt 1: find target including offscreen.
         var target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator);
 
+        _logger.LogInformation(
+            "Scroll target lookup result. targetFound={TargetFound}, targetName={TargetName}, automationId={AutomationId}, controlType={ControlType}, isOffscreen={IsOffscreen}, rect={Rect}, hasScrollItemPattern={HasScrollItemPattern}, hasExpandCollapsePattern={HasExpandCollapsePattern}",
+            target != null,
+            target == null ? null : SafeElementName(target),
+            target == null ? null : SafeElementAutomationId(target),
+            target == null ? null : SafeElementControlType(target),
+            target == null ? null : (bool?)target.Properties.IsOffscreen.ValueOrDefault,
+            target == null ? null : target.BoundingRectangle.ToString(),
+            target != null && target.Patterns.ScrollItem.PatternOrDefault != null,
+            target != null && target.Patterns.ExpandCollapse.PatternOrDefault != null);
+
         if (target != null)
         {
+            var scrollItemAvailable = target.Patterns.ScrollItem.PatternOrDefault != null;
+
             // Already visible?
             if (IsTargetPracticallyVisible(target, container, out var alreadyVisibleStrategy))
             {
+                _logger.LogInformation(
+                    "Scroll target already visible. strategy=already-visible, visibilityStrategy={VisibilityStrategy}",
+                    alreadyVisibleStrategy);
+
                 return new
                 {
-                    operation         = "scroll",
-                    success           = true,
-                    strategy          = "already-visible",
-                    visibilityStrategy = alreadyVisibleStrategy,
-                    targetFound       = true,
-                    targetVisible     = true,
-                    attempts          = 0,
-                    fallbackUsed      = false,
-                    stoppedReason     = "target-already-visible"
+                    operation                    = "scroll",
+                    success                      = true,
+                    strategy                     = "already-visible",
+                    visibilityStrategy           = alreadyVisibleStrategy,
+                    targetFound                  = true,
+                    targetVisible                = true,
+                    scrollItemPatternAvailable   = scrollItemAvailable,
+                    scrollItemPatternAttempted   = false,
+                    scrollItemPatternSucceeded   = false,
+                    attempts                     = 0,
+                    fallbackUsed                 = false,
+                    stoppedReason                = "target-already-visible"
                 };
             }
 
             cancellationToken.ThrowIfCancellationRequested();
 
             // Try ScrollItemPattern.
-            if (TryScrollItemPattern(target, out var sipStrategy))
+            var attemptedScrollItem  = false;
+            var scrollItemSuccess    = false;
+            var scrollItemStrategy   = "scrollitempattern-not-attempted";
+
+            var scrollItem = target.Patterns.ScrollItem.PatternOrDefault;
+
+            if (scrollItem != null)
             {
-                Thread.Sleep(delayMs);
+                attemptedScrollItem = true;
 
-                // Re-find after ScrollIntoView so UIA state is refreshed.
-                target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator) ?? target;
+                _logger.LogInformation(
+                    "Attempting ScrollItemPattern.ScrollIntoView for target={Target}, automationId={AutomationId}",
+                    SafeElementName(target),
+                    SafeElementAutomationId(target));
 
-                if (IsTargetPracticallyVisible(target, container, out var sipVisibleStrategy))
+                try
                 {
-                    return new
+                    scrollItem.ScrollIntoView();
+                    scrollItemSuccess  = true;
+                    scrollItemStrategy = "scrollitempattern";
+
+                    Thread.Sleep(delayMs);
+
+                    // Re-find after ScrollIntoView so UIA state is refreshed.
+                    target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator) ?? target;
+
+                    _logger.LogInformation(
+                        "ScrollItemPattern result. attempted={Attempted}, success={Success}, strategy={Strategy}",
+                        attemptedScrollItem,
+                        scrollItemSuccess,
+                        scrollItemStrategy);
+
+                    if (IsTargetPracticallyVisible(target, container, out var sipVisibleStrategy))
                     {
-                        operation         = "scroll",
-                        success           = true,
-                        strategy          = sipStrategy,
-                        visibilityStrategy = sipVisibleStrategy,
-                        targetFound       = true,
-                        targetVisible     = true,
-                        attempts          = 1,
-                        fallbackUsed      = false,
-                        stoppedReason     = "scrollitempattern-success"
-                    };
+                        return new
+                        {
+                            operation                    = "scroll",
+                            success                      = true,
+                            strategy                     = "scrollitempattern",
+                            visibilityStrategy           = sipVisibleStrategy,
+                            targetFound                  = true,
+                            targetVisible                = true,
+                            scrollItemPatternAvailable   = scrollItemAvailable,
+                            scrollItemPatternAttempted   = attemptedScrollItem,
+                            scrollItemPatternSucceeded   = scrollItemSuccess,
+                            attempts                     = 1,
+                            fallbackUsed                 = false,
+                            stoppedReason                = "scrollitempattern-success"
+                        };
+                    }
                 }
+                catch (Exception ex)
+                {
+                    scrollItemStrategy = "scrollitempattern-failed";
+
+                    _logger.LogWarning(
+                        ex,
+                        "ScrollItemPattern.ScrollIntoView failed. target={Target}, automationId={AutomationId}",
+                        SafeElementName(target),
+                        SafeElementAutomationId(target));
+
+                    _logger.LogInformation(
+                        "ScrollItemPattern result. attempted={Attempted}, success={Success}, strategy={Strategy}",
+                        attemptedScrollItem,
+                        scrollItemSuccess,
+                        scrollItemStrategy);
+                }
+            }
+            else
+            {
+                scrollItemStrategy = "scrollitempattern-not-available";
+
+                _logger.LogInformation(
+                    "ScrollItemPattern not available on found target. target={Target}, automationId={AutomationId}, controlType={ControlType}",
+                    SafeElementName(target),
+                    SafeElementAutomationId(target),
+                    SafeElementControlType(target));
+
+                _logger.LogInformation(
+                    "ScrollItemPattern result. attempted={Attempted}, success={Success}, strategy={Strategy}",
+                    attemptedScrollItem,
+                    scrollItemSuccess,
+                    scrollItemStrategy);
             }
 
             // ScrollItemPattern failed or did not make it visible.
-            // Use container rectangle-align fallback.
+            // Use container rectangle-align fallback with limited attempts.
             var scrollContainer = container
                 ?? FindNearestScrollableContainer(target)
                 ?? root;
+
+            // When target was found, limit fallback wheel attempts to avoid over-scrolling.
+            var targetFoundFallbackAttempts = Math.Min(maxAttempts, 5);
 
             Rectangle? previousRect = null;
             var unchangedCount = 0;
 
             // Rectangle-align loop.
-            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            for (var attempt = 1; attempt <= targetFoundFallbackAttempts; attempt++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -3152,15 +3243,18 @@ public class UiService : IUiService
                 {
                     return new
                     {
-                        operation         = "scroll",
-                        success           = true,
-                        strategy          = "container-wheel-rect-align",
-                        visibilityStrategy = loopVisibleStrategy,
-                        targetFound       = true,
-                        targetVisible     = true,
-                        attempts          = attempt,
-                        fallbackUsed      = true,
-                        stoppedReason     = "target-visible"
+                        operation                    = "scroll",
+                        success                      = true,
+                        strategy                     = "container-wheel-rect-align",
+                        visibilityStrategy           = loopVisibleStrategy,
+                        targetFound                  = true,
+                        targetVisible                = true,
+                        scrollItemPatternAvailable   = scrollItemAvailable,
+                        scrollItemPatternAttempted   = attemptedScrollItem,
+                        scrollItemPatternSucceeded   = scrollItemSuccess,
+                        attempts                     = attempt,
+                        fallbackUsed                 = true,
+                        stoppedReason                = "target-visible"
                     };
                 }
 
@@ -3183,15 +3277,18 @@ public class UiService : IUiService
                     {
                         return new
                         {
-                            operation     = "scroll",
-                            success       = false,
-                            strategy      = "container-wheel-rect-align",
-                            targetFound   = true,
-                            targetVisible = false,
-                            attempts      = attempt,
-                            fallbackUsed  = true,
-                            stoppedReason = "no-scroll-progress",
-                            message       = "Target found but scroll is not moving it. Container may not be scrollable."
+                            operation                    = "scroll",
+                            success                      = false,
+                            strategy                     = "container-wheel-rect-align",
+                            targetFound                  = true,
+                            targetVisible                = false,
+                            scrollItemPatternAvailable   = scrollItemAvailable,
+                            scrollItemPatternAttempted   = attemptedScrollItem,
+                            scrollItemPatternSucceeded   = scrollItemSuccess,
+                            attempts                     = attempt,
+                            fallbackUsed                 = true,
+                            stoppedReason                = "no-scroll-progress",
+                            message                      = "Target found but scroll is not moving it. Container may not be scrollable."
                         };
                     }
 
@@ -3210,6 +3307,38 @@ public class UiService : IUiService
                     direction = "down";
                 }
 
+                // Re-check visibility immediately before wheel scroll to avoid unnecessary scrolling.
+                target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator) ?? target;
+                var targetVisibleBeforeWheel = IsTargetPracticallyVisible(target, scrollContainer, out var visibleBeforeWheelStrategy);
+
+                _logger.LogInformation(
+                    "Before wheel fallback scroll. attempt={Attempt}, targetFound={TargetFound}, targetVisible={TargetVisible}, visibilityStrategy={VisibilityStrategy}, direction={Direction}, strategy={Strategy}",
+                    attempt,
+                    target != null,
+                    targetVisibleBeforeWheel,
+                    visibleBeforeWheelStrategy,
+                    direction,
+                    scrollItemStrategy);
+
+                if (targetVisibleBeforeWheel)
+                {
+                    return new
+                    {
+                        operation                    = "scroll",
+                        success                      = true,
+                        strategy                     = "visible-before-wheel-scroll",
+                        visibilityStrategy           = visibleBeforeWheelStrategy,
+                        targetFound                  = true,
+                        targetVisible                = true,
+                        scrollItemPatternAvailable   = scrollItemAvailable,
+                        scrollItemPatternAttempted   = attemptedScrollItem,
+                        scrollItemPatternSucceeded   = scrollItemSuccess,
+                        attempts                     = attempt,
+                        fallbackUsed                 = true,
+                        stoppedReason                = "target-visible-before-wheel"
+                    };
+                }
+
                 cancellationToken.ThrowIfCancellationRequested();
                 TryScrollContainerOneStep(scrollContainer, direction, scrollMode, scrollAmount, cancellationToken, out _);
 
@@ -3222,29 +3351,35 @@ public class UiService : IUiService
             {
                 return new
                 {
-                    operation         = "scroll",
-                    success           = true,
-                    strategy          = "container-wheel-rect-align",
-                    visibilityStrategy = finalVisibleStrategy,
-                    targetFound       = true,
-                    targetVisible     = true,
-                    attempts          = maxAttempts,
-                    fallbackUsed      = true,
-                    stoppedReason     = "target-visible"
+                    operation                    = "scroll",
+                    success                      = true,
+                    strategy                     = "container-wheel-rect-align",
+                    visibilityStrategy           = finalVisibleStrategy,
+                    targetFound                  = true,
+                    targetVisible                = true,
+                    scrollItemPatternAvailable   = scrollItemAvailable,
+                    scrollItemPatternAttempted   = attemptedScrollItem,
+                    scrollItemPatternSucceeded   = scrollItemSuccess,
+                    attempts                     = targetFoundFallbackAttempts,
+                    fallbackUsed                 = true,
+                    stoppedReason                = "target-visible"
                 };
             }
 
             return new
             {
-                operation     = "scroll",
-                success       = false,
-                strategy      = "container-wheel-rect-align",
-                targetFound   = true,
-                targetVisible = false,
-                attempts      = maxAttempts,
-                fallbackUsed  = true,
-                stoppedReason = "target-not-visible-after-scroll",
-                message       = "Target found but could not be scrolled into view."
+                operation                    = "scroll",
+                success                      = false,
+                strategy                     = "target-found-but-not-visible",
+                targetFound                  = true,
+                targetVisible                = false,
+                scrollItemPatternAvailable   = scrollItemAvailable,
+                scrollItemPatternAttempted   = attemptedScrollItem,
+                scrollItemPatternSucceeded   = scrollItemSuccess,
+                attempts                     = targetFoundFallbackAttempts,
+                fallbackUsed                 = true,
+                stoppedReason                = "target-found-scrollitempattern-and-fallback-failed",
+                message                      = "Target was found, but driver could not verify visibility after ScrollItemPattern and fallback scrolling."
             };
         }
 
@@ -3270,15 +3405,18 @@ public class UiService : IUiService
                 {
                     return new
                     {
-                        operation         = "scroll",
-                        success           = true,
-                        strategy          = "scroll-search-loop",
-                        visibilityStrategy = foundVisibleStrategy,
-                        targetFound       = true,
-                        targetVisible     = true,
-                        attempts          = searchAttempts,
-                        fallbackUsed      = true,
-                        stoppedReason     = "target-found-and-visible"
+                        operation                    = "scroll",
+                        success                      = true,
+                        strategy                     = "scroll-search-loop",
+                        visibilityStrategy           = foundVisibleStrategy,
+                        targetFound                  = true,
+                        targetVisible                = true,
+                        scrollItemPatternAvailable   = target.Patterns.ScrollItem.PatternOrDefault != null,
+                        scrollItemPatternAttempted   = false,
+                        scrollItemPatternSucceeded   = false,
+                        attempts                     = searchAttempts,
+                        fallbackUsed                 = true,
+                        stoppedReason                = "target-found-and-visible"
                     };
                 }
             }
@@ -3286,15 +3424,18 @@ public class UiService : IUiService
 
         return new
         {
-            operation     = "scroll",
-            success       = false,
-            strategy      = "scroll-search-loop",
-            targetFound   = false,
-            targetVisible = false,
-            attempts      = searchAttempts,
-            fallbackUsed  = true,
-            stoppedReason = "target-not-found-after-scroll",
-            message       = request.ContainerLocator != null
+            operation                    = "scroll",
+            success                      = false,
+            strategy                     = "scroll-search-loop",
+            targetFound                  = false,
+            targetVisible                = false,
+            scrollItemPatternAvailable   = false,
+            scrollItemPatternAttempted   = false,
+            scrollItemPatternSucceeded   = false,
+            attempts                     = searchAttempts,
+            fallbackUsed                 = true,
+            stoppedReason                = "target-not-found-after-scroll",
+            message                      = request.ContainerLocator != null
                 ? "Target not found after scrolling the specified container."
                 : "Target not found after scrolling. Provide containerLocator for better accuracy."
         };
@@ -3420,6 +3561,12 @@ public class UiService : IUiService
                     visibilityStrategy = "dataitem-visible-child";
                     return true;
                 }
+
+                // Important fallback for owner-drawn/odd grids:
+                // If the DataItem rectangle intersects container, treat as visible
+                // because UIA IsOffscreen is unreliable for virtualised table rows.
+                visibilityStrategy = "dataitem-rect-intersects";
+                return true;
             }
 
             // Last fallback: bounding rect intersects container but IsOffscreen is unreliable
