@@ -211,7 +211,7 @@ public class UiService : IUiService
     // =========================================================================
 
     /// <inheritdoc/>
-    public object? Execute(UiRequest request)
+    public object? Execute(UiRequest request, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(request.Operation))
             throw new ArgumentException("'operation' is required.");
@@ -292,10 +292,10 @@ public class UiService : IUiService
                 "selecttreeitem"   => SelectTreeItem(request),
                 "expandtreepath"   => ExpandTreePath(request),
                 "selecttreepath"   => SelectTreePath(request),
-                "scroll"           => Scroll(request),
-                "mousescroll"      => ScrollNormal(request),
-                "wheelscroll"      => ScrollNormal(request),
-                "scrollintoview"   => ScrollTargetIntoView(request),
+                "scroll"           => Scroll(request, cancellationToken),
+                "mousescroll"      => ScrollNormal(request, cancellationToken),
+                "wheelscroll"      => ScrollNormal(request, cancellationToken),
+                "scrollintoview"   => ScrollTargetIntoView(request, cancellationToken),
                 "check"            => Check(request),
                 "uncheck"          => Uncheck(request),
                 "select"           => Select(request),
@@ -2869,7 +2869,7 @@ public class UiService : IUiService
     /// Case C: containerLocator + locator → scroll target into view inside container.
     /// Case D: x/y only                  → coordinate-based wheel scroll.
     /// </summary>
-    private object Scroll(UiRequest request)
+    private object Scroll(UiRequest request, CancellationToken cancellationToken)
     {
         var hasContainer        = request.ContainerLocator != null && !IsEmptyLocator(request.ContainerLocator);
         var hasLocator          = request.Locator != null && !IsEmptyLocator(request.Locator);
@@ -2880,19 +2880,19 @@ public class UiService : IUiService
 
         // Case D: coordinate-based wheel scroll
         if (!hasLocator && !hasContainer && hasCoordinates)
-            return ScrollCoordinates(request);
+            return ScrollCoordinates(request, cancellationToken);
 
         // Case C: containerLocator + locator → target inside container
         if (hasContainer && hasLocator)
-            return ScrollTargetIntoView(request);
+            return ScrollTargetIntoView(request, cancellationToken);
 
         // Case A: locator + direction/amount → normal container scroll
         if (hasLocator && hasDirectionOrAmount)
-            return ScrollNormal(request);
+            return ScrollNormal(request, cancellationToken);
 
         // Case B: locator only → scroll target into view
         if (hasLocator)
-            return ScrollTargetIntoView(request);
+            return ScrollTargetIntoView(request, cancellationToken);
 
         throw new ArgumentException(
             "Invalid scroll request. Provide: locator (target), locator+direction/amount (container scroll), containerLocator+locator (target inside container), or x/y (coordinate scroll).");
@@ -2903,7 +2903,7 @@ public class UiService : IUiService
     /// Used directly by mousescroll/wheelscroll aliases (forces mode=wheel) and by
     /// Case A of the smart Scroll dispatcher.
     /// </summary>
-    private object ScrollNormal(UiRequest request)
+    private object ScrollNormal(UiRequest request, CancellationToken cancellationToken)
     {
         var mode      = NormalizeScrollMode(request);
         var direction = NormalizeScrollDirection(request.Direction);
@@ -2952,15 +2952,18 @@ public class UiService : IUiService
                     throw new ArgumentException(
                         "Wheel scroll requires either a locator or x/y coordinates.");
 
+                cancellationToken.ThrowIfCancellationRequested();
                 success = TryMouseWheelScrollAtPoint(
                     new Point(request.X.Value, request.Y.Value),
                     direction,
                     amount,
+                    cancellationToken,
                     out strategy);
             }
             else
             {
-                success = TryMouseWheelScrollOnElement(element, direction, amount, out strategy);
+                cancellationToken.ThrowIfCancellationRequested();
+                success = TryMouseWheelScrollOnElement(element, direction, amount, cancellationToken, out strategy);
             }
         }
 
@@ -2996,7 +2999,7 @@ public class UiService : IUiService
     /// <summary>
     /// Coordinate-based wheel scroll (Case D).
     /// </summary>
-    private object ScrollCoordinates(UiRequest request)
+    private object ScrollCoordinates(UiRequest request, CancellationToken cancellationToken)
     {
         var direction = NormalizeScrollDirection(request.Direction);
         var amount    = Math.Abs(request.Amount ?? 1);
@@ -3004,10 +3007,13 @@ public class UiService : IUiService
         if (amount == 0)
             amount = 1;
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         var success = TryMouseWheelScrollAtPoint(
             new Point(request.X!.Value, request.Y!.Value),
             direction,
             amount,
+            cancellationToken,
             out var strategy);
 
         if (!success)
@@ -3038,11 +3044,13 @@ public class UiService : IUiService
     /// 5. If still not visible → rectangle-align loop against nearest/provided container.
     /// 6. If target not found → scroll likely containers and retry.
     /// </summary>
-    private object ScrollTargetIntoView(UiRequest request)
+    private object ScrollTargetIntoView(UiRequest request, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var session      = RequireSession();
         var root         = GetWindowRoot(session, allowDesktopPopupScan: false);
-        var maxAttempts  = request.MaxAttempts ?? 30;
+        var maxAttempts  = request.MaxAttempts ?? 10;
         var delayMs      = request.DelayMs ?? 150;
         var scrollAmount = request.Amount ?? 5;
         var scrollMode   = string.IsNullOrWhiteSpace(request.Mode) ? "auto" : request.Mode.Trim().ToLowerInvariant();
@@ -3080,92 +3088,149 @@ public class UiService : IUiService
         if (target != null)
         {
             // Already visible?
-            if (IsTargetVisibleInContainer(target, container))
+            if (IsTargetPracticallyVisible(target, container, out var alreadyVisibleStrategy))
             {
                 return new
                 {
-                    operation     = "scroll",
-                    success       = true,
-                    strategy      = "already-visible",
-                    targetFound   = true,
-                    targetVisible = true,
-                    attempts      = 0
+                    operation         = "scroll",
+                    success           = true,
+                    strategy          = "already-visible",
+                    visibilityStrategy = alreadyVisibleStrategy,
+                    targetFound       = true,
+                    targetVisible     = true,
+                    attempts          = 0,
+                    fallbackUsed      = false,
+                    stoppedReason     = "target-already-visible"
                 };
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             // Try ScrollItemPattern.
             if (TryScrollItemPattern(target, out var sipStrategy))
             {
                 Thread.Sleep(delayMs);
-                if (IsTargetVisibleInContainer(target, container))
+
+                // Re-find after ScrollIntoView so UIA state is refreshed.
+                target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator) ?? target;
+
+                if (IsTargetPracticallyVisible(target, container, out var sipVisibleStrategy))
                 {
                     return new
                     {
-                        operation     = "scroll",
-                        success       = true,
-                        strategy      = sipStrategy,
-                        targetFound   = true,
-                        targetVisible = true,
-                        attempts      = 1
+                        operation         = "scroll",
+                        success           = true,
+                        strategy          = sipStrategy,
+                        visibilityStrategy = sipVisibleStrategy,
+                        targetFound       = true,
+                        targetVisible     = true,
+                        attempts          = 1,
+                        fallbackUsed      = false,
+                        stoppedReason     = "scrollitempattern-success"
                     };
                 }
             }
 
-            // Determine scroll container for rectangle-align loop.
+            // ScrollItemPattern failed or did not make it visible.
+            // Use container rectangle-align fallback.
             var scrollContainer = container
                 ?? FindNearestScrollableContainer(target)
                 ?? root;
 
+            Rectangle? previousRect = null;
+            var unchangedCount = 0;
+
             // Rectangle-align loop.
             for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // Re-find target to get current UIA state before checking visibility.
+                target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator) ?? target;
+
+                if (IsTargetPracticallyVisible(target, scrollContainer, out var loopVisibleStrategy))
+                {
+                    return new
+                    {
+                        operation         = "scroll",
+                        success           = true,
+                        strategy          = "container-wheel-rect-align",
+                        visibilityStrategy = loopVisibleStrategy,
+                        targetFound       = true,
+                        targetVisible     = true,
+                        attempts          = attempt,
+                        fallbackUsed      = true,
+                        stoppedReason     = "target-visible"
+                    };
+                }
+
                 var targetRect    = TrySafeGetBoundingRect(target);
                 var containerRect = TrySafeGetBoundingRect(scrollContainer);
 
-                if (targetRect.HasValue && containerRect.HasValue)
+                // No-progress guard: if target rectangle has not moved, stop.
+                if (targetRect.HasValue)
                 {
-                    if (IsTargetVisibleInContainer(target, scrollContainer))
+                    if (previousRect.HasValue && RectanglesEqual(previousRect.Value, targetRect.Value))
+                    {
+                        unchangedCount++;
+                    }
+                    else
+                    {
+                        unchangedCount = 0;
+                    }
+
+                    if (unchangedCount >= 2)
                     {
                         return new
                         {
                             operation     = "scroll",
-                            success       = true,
+                            success       = false,
                             strategy      = "container-wheel-rect-align",
                             targetFound   = true,
-                            targetVisible = true,
+                            targetVisible = false,
                             attempts      = attempt,
-                            direction     = DecideScrollDirectionToTarget(targetRect.Value, containerRect.Value)
+                            fallbackUsed  = true,
+                            stoppedReason = "no-scroll-progress",
+                            message       = "Target found but scroll is not moving it. Container may not be scrollable."
                         };
                     }
 
-                    var direction = DecideScrollDirectionToTarget(targetRect.Value, containerRect.Value);
+                    previousRect = targetRect;
+                }
+
+                string direction;
+                if (targetRect.HasValue && containerRect.HasValue)
+                {
+                    direction = DecideScrollDirectionToTarget(targetRect.Value, containerRect.Value);
                     if (direction == "none")
                         break;
-
-                    TryScrollContainerOneStep(scrollContainer, direction, scrollMode, scrollAmount, out _);
                 }
                 else
                 {
-                    TryScrollContainerOneStep(scrollContainer, "down", scrollMode, scrollAmount, out _);
+                    direction = "down";
                 }
 
-                Thread.Sleep(delayMs);
+                cancellationToken.ThrowIfCancellationRequested();
+                TryScrollContainerOneStep(scrollContainer, direction, scrollMode, scrollAmount, cancellationToken, out _);
 
-                // Re-find target in case UIA refreshed its position.
-                target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator) ?? target;
+                Thread.Sleep(delayMs);
             }
 
             // Final visibility check.
-            if (IsTargetVisibleInContainer(target, container))
+            target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator) ?? target;
+            if (IsTargetPracticallyVisible(target, container, out var finalVisibleStrategy))
             {
                 return new
                 {
-                    operation     = "scroll",
-                    success       = true,
-                    strategy      = "container-wheel-rect-align",
-                    targetFound   = true,
-                    targetVisible = true,
-                    attempts      = maxAttempts
+                    operation         = "scroll",
+                    success           = true,
+                    strategy          = "container-wheel-rect-align",
+                    visibilityStrategy = finalVisibleStrategy,
+                    targetFound       = true,
+                    targetVisible     = true,
+                    attempts          = maxAttempts,
+                    fallbackUsed      = true,
+                    stoppedReason     = "target-visible"
                 };
             }
 
@@ -3177,6 +3242,8 @@ public class UiService : IUiService
                 targetFound   = true,
                 targetVisible = false,
                 attempts      = maxAttempts,
+                fallbackUsed  = true,
+                stoppedReason = "target-not-visible-after-scroll",
                 message       = "Target found but could not be scrolled into view."
             };
         }
@@ -3186,24 +3253,32 @@ public class UiService : IUiService
             ? new[] { container }
             : FindLikelyScrollableContainers(session, root);
 
+        var searchAttempts = 0;
+
         foreach (var sc in scrollContainers)
         {
             for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                TryScrollContainerOneStep(sc, "down", scrollMode, scrollAmount, out _);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                searchAttempts++;
+                TryScrollContainerOneStep(sc, "down", scrollMode, scrollAmount, cancellationToken, out _);
                 Thread.Sleep(delayMs);
 
                 target = TryFindElementIncludingOffscreen(session, searchRoot, targetLocator);
-                if (target != null && IsTargetVisibleInContainer(target, container))
+                if (target != null && IsTargetPracticallyVisible(target, container, out var foundVisibleStrategy))
                 {
                     return new
                     {
-                        operation     = "scroll",
-                        success       = true,
-                        strategy      = "scroll-search-loop",
-                        targetFound   = true,
-                        targetVisible = true,
-                        attempts      = attempt
+                        operation         = "scroll",
+                        success           = true,
+                        strategy          = "scroll-search-loop",
+                        visibilityStrategy = foundVisibleStrategy,
+                        targetFound       = true,
+                        targetVisible     = true,
+                        attempts          = searchAttempts,
+                        fallbackUsed      = true,
+                        stoppedReason     = "target-found-and-visible"
                     };
                 }
             }
@@ -3215,7 +3290,10 @@ public class UiService : IUiService
             success       = false,
             strategy      = "scroll-search-loop",
             targetFound   = false,
-            attempts      = maxAttempts,
+            targetVisible = false,
+            attempts      = searchAttempts,
+            fallbackUsed  = true,
+            stoppedReason = "target-not-found-after-scroll",
             message       = request.ContainerLocator != null
                 ? "Target not found after scrolling the specified container."
                 : "Target not found after scrolling. Provide containerLocator for better accuracy."
@@ -3246,6 +3324,118 @@ public class UiService : IUiService
         catch
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Checks whether two rectangles have the same position and size.
+    /// Used to detect no-scroll-progress in the container fallback loop.
+    /// </summary>
+    private static bool RectanglesEqual(Rectangle a, Rectangle b) =>
+        a.Left == b.Left && a.Top == b.Top && a.Right == b.Right && a.Bottom == b.Bottom;
+
+    /// <summary>
+    /// Practical visibility check that handles DataItem rows whose UIA IsOffscreen
+    /// property is unreliable. Returns true when the element is practically visible:
+    /// its bounding rectangle intersects the container (or screen), and either
+    /// UIA confirms it is on-screen, or DataItem-specific heuristics apply.
+    /// </summary>
+    private bool IsTargetPracticallyVisible(
+        AutomationElement target,
+        AutomationElement? container,
+        out string visibilityStrategy)
+    {
+        visibilityStrategy = "none";
+
+        try
+        {
+            var targetRect = target.BoundingRectangle;
+
+            if (targetRect.IsEmpty || targetRect.Width <= 0 || targetRect.Height <= 0)
+                return false;
+
+            var intersectsContainer = true;
+
+            if (container != null)
+            {
+                var containerRect = container.BoundingRectangle;
+
+                if (containerRect.IsEmpty || containerRect.Width <= 0 || containerRect.Height <= 0)
+                    return false;
+
+                intersectsContainer = RectanglesIntersect(targetRect, containerRect);
+            }
+
+            if (!intersectsContainer)
+                return false;
+
+            // Strong signal: UIA says visible and rect intersects container/window.
+            if (SafeIsOffscreen(target) == false)
+            {
+                visibilityStrategy = "isoffscreen-false-rect-intersects";
+                return true;
+            }
+
+            // DataItem-specific fallback:
+            // Some row controls report IsOffscreen=true even though the row is visible.
+            if (target.ControlType == ControlType.DataItem)
+            {
+                // If the element has a non-empty name, treat it as visible.
+                var name = SafeElementName(target);
+
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    visibilityStrategy = "dataitem-rect-intersects-name-present";
+                    return true;
+                }
+
+                // Check if any visible child is within the container bounds.
+                var visibleChild = target.FindAllDescendants()
+                    .FirstOrDefault(child =>
+                    {
+                        try
+                        {
+                            var childRect = child.BoundingRectangle;
+
+                            if (childRect.IsEmpty || childRect.Width <= 0 || childRect.Height <= 0)
+                                return false;
+
+                            if (container != null &&
+                                !RectanglesIntersect(childRect, container.BoundingRectangle))
+                                return false;
+
+                            var childName = SafeElementName(child);
+
+                            return SafeIsOffscreen(child) == false &&
+                                   !string.IsNullOrWhiteSpace(childName);
+                        }
+                        catch
+                        {
+                            return false;
+                        }
+                    });
+
+                if (visibleChild != null)
+                {
+                    visibilityStrategy = "dataitem-visible-child";
+                    return true;
+                }
+            }
+
+            // Last fallback: bounding rect intersects container but IsOffscreen is unreliable
+            // (e.g. virtualised rows that UIA has not yet refreshed). We treat intersection as
+            // sufficient evidence of visibility; callers should verify with a re-check loop.
+            visibilityStrategy = "rect-intersects";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(
+                ex,
+                "Practical visibility check failed. target={Target}",
+                SafeElementName(target));
+
+            return false;
         }
     }
 
@@ -3424,8 +3614,13 @@ public class UiService : IUiService
             scrollItem.ScrollIntoView();
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogDebug(
+                ex,
+                "ScrollItemPattern.ScrollIntoView failed. target={Target}",
+                SafeElementName(target));
+
             strategy = "scrollitempattern-failed";
             return false;
         }
@@ -3439,8 +3634,11 @@ public class UiService : IUiService
         string direction,
         string mode,
         int amount,
+        CancellationToken cancellationToken,
         out string strategy)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (mode == "pattern" || mode == "auto")
         {
             if (TryScrollByPattern(container, direction, amount, out strategy))
@@ -3450,7 +3648,8 @@ public class UiService : IUiService
                 return false;
         }
 
-        return TryMouseWheelScrollOnElement(container, direction, amount, out strategy);
+        cancellationToken.ThrowIfCancellationRequested();
+        return TryMouseWheelScrollOnElement(container, direction, amount, cancellationToken, out strategy);
     }
 
     private object? Check(UiRequest req)
@@ -14075,6 +14274,7 @@ public class UiService : IUiService
         AutomationElement element,
         string direction,
         int amount,
+        CancellationToken cancellationToken,
         out string strategy)
     {
         strategy = "mouse-wheel-element";
@@ -14102,7 +14302,7 @@ public class UiService : IUiService
                 // Some controls cannot focus. Mouse wheel may still work.
             }
 
-            return TryMouseWheelScrollAtPoint(point, direction, amount, out strategy);
+            return TryMouseWheelScrollAtPoint(point, direction, amount, cancellationToken, out strategy);
         }
         catch (Exception ex)
         {
@@ -14122,18 +14322,21 @@ public class UiService : IUiService
         Point point,
         string direction,
         int amount,
+        CancellationToken cancellationToken,
         out string strategy)
     {
         strategy = "mouse-wheel-coordinates";
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             SetCursorPos(point.X, point.Y);
             Thread.Sleep(CursorPositionStabilityDelayMs);
 
             var rawDelta   = ToWheelDelta(direction, amount);
             var horizontal = direction is "left" or "right";
 
+            cancellationToken.ThrowIfCancellationRequested();
             if (!SendMouseWheelRawDelta(rawDelta, horizontal))
             {
                 strategy = "mouse-wheel-coordinates-failed";
@@ -14149,6 +14352,11 @@ public class UiService : IUiService
                 rawDelta);
 
             return true;
+        }
+        catch (OperationCanceledException)
+        {
+            strategy = "mouse-wheel-cancelled";
+            throw;
         }
         catch (Exception ex)
         {
