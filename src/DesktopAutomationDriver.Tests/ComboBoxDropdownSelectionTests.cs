@@ -103,7 +103,7 @@ public class ComboBoxDropdownSelectionTests
             .Setup(s => s.Execute(It.Is<UiRequest>(r =>
                 r.Operation == "selectcomboboxitem" &&
                 r.AllowKeyboardFallback == true &&
-                r.Value == "Item 999")))
+                r.Value == "Item 999"), It.IsAny<CancellationToken>()))
             .Returns(expected);
 
         var result = _controller.Execute(new UiRequest
@@ -310,7 +310,7 @@ public class ComboBoxDropdownSelectionTests
         _uiMock
             .Setup(s => s.Execute(It.Is<UiRequest>(r =>
                 r.Operation == "selectcomboboxitem" &&
-                r.AllowKeyboardFallback == true)))
+                r.AllowKeyboardFallback == true), It.IsAny<CancellationToken>()))
             .Returns((object?)null);
 
         var result = _controller.Execute(new UiRequest
@@ -326,7 +326,7 @@ public class ComboBoxDropdownSelectionTests
         Assert.True(response.Success);
 
         _uiMock.Verify(
-            s => s.Execute(It.Is<UiRequest>(r => r.AllowKeyboardFallback == true)),
+            s => s.Execute(It.Is<UiRequest>(r => r.AllowKeyboardFallback == true), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -336,7 +336,7 @@ public class ComboBoxDropdownSelectionTests
         _uiMock
             .Setup(s => s.Execute(It.Is<UiRequest>(r =>
                 r.Operation == "selectcomboboxitem" &&
-                r.AllowKeyboardFallback == false)))
+                r.AllowKeyboardFallback == false), It.IsAny<CancellationToken>()))
             .Returns((object?)null);
 
         var result = _controller.Execute(new UiRequest
@@ -352,7 +352,7 @@ public class ComboBoxDropdownSelectionTests
         Assert.True(response.Success);
 
         _uiMock.Verify(
-            s => s.Execute(It.Is<UiRequest>(r => r.AllowKeyboardFallback == false)),
+            s => s.Execute(It.Is<UiRequest>(r => r.AllowKeyboardFallback == false), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -362,7 +362,7 @@ public class ComboBoxDropdownSelectionTests
         _uiMock
             .Setup(s => s.Execute(It.Is<UiRequest>(r =>
                 r.Operation == "selectcomboboxitem" &&
-                r.AllowKeyboardFallback == null)))
+                r.AllowKeyboardFallback == null), It.IsAny<CancellationToken>()))
             .Returns((object?)null);
 
         var result = _controller.Execute(new UiRequest
@@ -377,7 +377,7 @@ public class ComboBoxDropdownSelectionTests
         Assert.True(response.Success);
 
         _uiMock.Verify(
-            s => s.Execute(It.Is<UiRequest>(r => r.AllowKeyboardFallback == null)),
+            s => s.Execute(It.Is<UiRequest>(r => r.AllowKeyboardFallback == null), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -432,13 +432,13 @@ public class ComboBoxDropdownSelectionTests
 
     private void SetupExecute(object? returnValue)
         => _uiMock
-            .Setup(s => s.Execute(It.IsAny<UiRequest>()))
+            .Setup(s => s.Execute(It.IsAny<UiRequest>(), It.IsAny<CancellationToken>()))
             .Returns(returnValue);
 
     private void SetupExecuteThrows(Exception ex)
     {
         _uiMock
-            .Setup(s => s.Execute(It.IsAny<UiRequest>()))
+            .Setup(s => s.Execute(It.IsAny<UiRequest>(), It.IsAny<CancellationToken>()))
             .Throws(ex);
         _uiMock
             .Setup(s => s.TakeFailureScreenshot(It.IsAny<string>()))

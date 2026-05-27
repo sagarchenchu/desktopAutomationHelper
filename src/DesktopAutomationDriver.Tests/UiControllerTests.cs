@@ -53,7 +53,7 @@ public class UiControllerTests
     public void Execute_SelectOperation_Returns200WithSuccess()
     {
         _uiServiceMock
-            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "select")))
+            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "select"), It.IsAny<CancellationToken>()))
             .Returns((object?)null);
 
         var result = _controller.Execute(new UiRequest
@@ -72,7 +72,7 @@ public class UiControllerTests
     public void Execute_SelectAidOperation_Returns200WithSuccess()
     {
         _uiServiceMock
-            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "selectaid")))
+            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "selectaid"), It.IsAny<CancellationToken>()))
             .Returns((object?)null);
 
         var result = _controller.Execute(new UiRequest
@@ -91,7 +91,7 @@ public class UiControllerTests
     public void Execute_SelectComboBoxItemOperation_Returns200WithSuccess()
     {
         _uiServiceMock
-            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "selectcomboboxitem")))
+            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "selectcomboboxitem"), It.IsAny<CancellationToken>()))
             .Returns((object?)null);
 
         var result = _controller.Execute(new UiRequest
@@ -110,7 +110,7 @@ public class UiControllerTests
     public void Execute_TypeAndSelectOperation_Returns200WithSuccess()
     {
         _uiServiceMock
-            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "typeandselect")))
+            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "typeandselect"), It.IsAny<CancellationToken>()))
             .Returns((object?)null);
 
         var result = _controller.Execute(new UiRequest
@@ -130,7 +130,7 @@ public class UiControllerTests
     {
         var expectedResult = new { selected = "Option B" };
         _uiServiceMock
-            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "getselected")))
+            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "getselected"), It.IsAny<CancellationToken>()))
             .Returns(expectedResult);
 
         var result = _controller.Execute(new UiRequest
@@ -149,7 +149,7 @@ public class UiControllerTests
     public void Execute_SelectByIndexOperation_Returns200WithSuccess()
     {
         _uiServiceMock
-            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "select" && r.Index == 2)))
+            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "select" && r.Index == 2), It.IsAny<CancellationToken>()))
             .Returns((object?)null);
 
         var result = _controller.Execute(new UiRequest
@@ -169,7 +169,7 @@ public class UiControllerTests
     {
         _uiServiceMock
             .Setup(s => s.Execute(It.Is<UiRequest>(r =>
-                r.Operation == "select" && r.AllowKeyboardFallback == true)))
+                r.Operation == "select" && r.AllowKeyboardFallback == true), It.IsAny<CancellationToken>()))
             .Returns((object?)null);
 
         var result = _controller.Execute(new UiRequest
@@ -193,7 +193,7 @@ public class UiControllerTests
     public void Execute_WhenInvalidOperationExceptionThrown_Returns404()
     {
         _uiServiceMock
-            .Setup(s => s.Execute(It.IsAny<UiRequest>()))
+            .Setup(s => s.Execute(It.IsAny<UiRequest>(), It.IsAny<CancellationToken>()))
             .Throws(new InvalidOperationException("ComboBox item not found."));
         _uiServiceMock
             .Setup(s => s.TakeFailureScreenshot(It.IsAny<string>()))
@@ -216,7 +216,7 @@ public class UiControllerTests
     public void Execute_WhenArgumentExceptionThrown_Returns400()
     {
         _uiServiceMock
-            .Setup(s => s.Execute(It.IsAny<UiRequest>()))
+            .Setup(s => s.Execute(It.IsAny<UiRequest>(), It.IsAny<CancellationToken>()))
             .Throws(new ArgumentException("Locator is required for 'select'."));
         _uiServiceMock
             .Setup(s => s.TakeFailureScreenshot(It.IsAny<string>()))
@@ -234,7 +234,7 @@ public class UiControllerTests
     public void Execute_WhenUnexpectedExceptionThrown_Returns500()
     {
         _uiServiceMock
-            .Setup(s => s.Execute(It.IsAny<UiRequest>()))
+            .Setup(s => s.Execute(It.IsAny<UiRequest>(), It.IsAny<CancellationToken>()))
             .Throws(new Exception("Unexpected failure"));
         _uiServiceMock
             .Setup(s => s.TakeFailureScreenshot(It.IsAny<string>()))
@@ -252,7 +252,7 @@ public class UiControllerTests
     public void Execute_WhenExceptionThrownAndScreenshotAvailable_ResponseIncludesScreenshotPath()
     {
         _uiServiceMock
-            .Setup(s => s.Execute(It.IsAny<UiRequest>()))
+            .Setup(s => s.Execute(It.IsAny<UiRequest>(), It.IsAny<CancellationToken>()))
             .Throws(new InvalidOperationException("Not found."));
         _uiServiceMock
             .Setup(s => s.TakeFailureScreenshot(It.IsAny<string>()))
