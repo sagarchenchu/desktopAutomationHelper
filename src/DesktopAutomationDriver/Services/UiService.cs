@@ -56,6 +56,9 @@ public class UiService : IUiService
     private const int SmallComboBoxMaxScrollAttempts = 1;
     private const bool ComboBoxAllowTabBlurCommitFallback = false;
     private const int ComboBoxRefetchRectangleTolerancePx = 3;
+    // When the scroll target is found, we cap fallback wheel attempts to prevent over-scrolling.
+    // 5 attempts is sufficient for the target to settle into view across typical virtual lists.
+    private const int ScrollTargetFoundMaxFallbackAttempts = 5;
     // Menu parent chains in supported desktop apps are shallow; 20 gives ample room for deeply
     // nested menus while preventing unbounded traversal of unstable UIA ancestors. If exceeded,
     // strict full-path matching fails safely instead of selecting a wrong duplicate leaf.
@@ -3060,8 +3063,8 @@ public class UiService : IUiService
 
         _logger.LogInformation(
             "ScrollTargetIntoView started. containerLocator={ContainerLocator}, targetLocator={TargetLocator}, mode={Mode}, maxAttempts={MaxAttempts}",
-            request.ContainerLocator,
-            request.Locator,
+            SafeDescribeLocator(request.ContainerLocator),
+            SafeDescribeLocator(request.Locator),
             scrollMode,
             maxAttempts);
 
@@ -3226,7 +3229,7 @@ public class UiService : IUiService
                 ?? root;
 
             // When target was found, limit fallback wheel attempts to avoid over-scrolling.
-            var targetFoundFallbackAttempts = Math.Min(maxAttempts, 5);
+            var targetFoundFallbackAttempts = Math.Min(maxAttempts, ScrollTargetFoundMaxFallbackAttempts);
 
             Rectangle? previousRect = null;
             var unchangedCount = 0;
@@ -3378,7 +3381,7 @@ public class UiService : IUiService
                 scrollItemPatternSucceeded   = scrollItemSuccess,
                 attempts                     = targetFoundFallbackAttempts,
                 fallbackUsed                 = true,
-                stoppedReason                = "target-found-scrollitempattern-and-fallback-failed",
+                stoppedReason                = "target-found-scroll-item-pattern-and-fallback-failed",
                 message                      = "Target was found, but driver could not verify visibility after ScrollItemPattern and fallback scrolling."
             };
         }
@@ -3562,9 +3565,10 @@ public class UiService : IUiService
                     return true;
                 }
 
-                // Important fallback for owner-drawn/odd grids:
-                // If the DataItem rectangle intersects container, treat as visible
-                // because UIA IsOffscreen is unreliable for virtualised table rows.
+                // Fallback for owner-drawn/odd grids: the rectangle already intersects
+                // the container (verified by the intersectsContainer check above), so treat
+                // the DataItem as visible even if UIA IsOffscreen is unreliable for
+                // virtualised table rows.
                 visibilityStrategy = "dataitem-rect-intersects";
                 return true;
             }
@@ -14856,6 +14860,35 @@ public class UiService : IUiService
     private static string SanitizeValue(string? value) =>
         System.Text.RegularExpressions.Regex.Replace(
             value ?? string.Empty, @"[\r\n\t]", "_");
+
+    /// <summary>
+    /// Returns a sanitized, human-readable description of a <see cref="UiLocator"/>
+    /// safe for use in log messages (control characters stripped to prevent log injection).
+    /// </summary>
+    private static string SafeDescribeLocator(UiLocator? locator)
+    {
+        if (locator == null)
+            return "(none)";
+
+        var parts = new System.Text.StringBuilder();
+
+        if (!string.IsNullOrWhiteSpace(locator.AutomationId))
+            parts.Append("automationId=").Append(SanitizeValue(locator.AutomationId)).Append(' ');
+
+        if (!string.IsNullOrWhiteSpace(locator.ControlType))
+            parts.Append("controlType=").Append(SanitizeValue(locator.ControlType)).Append(' ');
+
+        if (!string.IsNullOrWhiteSpace(locator.Name))
+            parts.Append("name=").Append(SanitizeValue(locator.Name)).Append(' ');
+
+        if (!string.IsNullOrWhiteSpace(locator.ClassName))
+            parts.Append("className=").Append(SanitizeValue(locator.ClassName)).Append(' ');
+
+        if (!string.IsNullOrWhiteSpace(locator.XPath))
+            parts.Append("xpath=").Append(SanitizeValue(locator.XPath)).Append(' ');
+
+        return parts.Length > 0 ? parts.ToString().TrimEnd() : "(empty)";
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct INPUT
