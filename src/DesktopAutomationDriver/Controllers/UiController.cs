@@ -58,7 +58,7 @@ public class UiController : ControllerBase
 
         try
         {
-            var result = _uiService.Execute(request);
+            var result = _uiService.Execute(request, HttpContext.RequestAborted);
             return Ok(UiResponse.Ok(result));
         }
         catch (ArgumentException ex)
