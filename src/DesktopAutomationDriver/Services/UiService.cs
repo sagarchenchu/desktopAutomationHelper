@@ -248,7 +248,7 @@ public class UiService : IUiService
 
                 // ----- Element Query -----
                 "exists"         => Exists(request),
-                "waitfor"        => WaitFor(request),
+                "waitfor"        => WaitFor(request, cancellationToken),
                 "wait"           => Wait(request, cancellationToken),
                 "isenabled"      => IsEnabled(request),
                 "isvisible"      => IsVisible(request),
@@ -1562,53 +1562,69 @@ public class UiService : IUiService
         try
         {
             var resolved = ResolveForStateQuery(req);
+            var element  = resolved.Element;
+
             return new
             {
-                operation    = "exists",
-                exists       = true,
-                strategy     = resolved.Strategy,
-                automationId = SafeElementAutomationId(resolved.Element),
-                name         = SafeElementName(resolved.Element),
-                controlType  = SafeElementControlType(resolved.Element)
+                operation        = "exists",
+                exists           = true,
+                strategy         = resolved.Strategy,
+                automationId     = SafeElementAutomationId(element),
+                name             = SafeElementName(element),
+                controlType      = SafeElementControlType(element),
+                className        = SafeElementClassName(element),
+                isOffscreen      = element.Properties.IsOffscreen.ValueOrDefault,
+                boundingRectangle = SafeBoundingRectangleObject(element)
             };
         }
-        catch
+        catch (Exception ex)
         {
             return new
             {
-                operation = "exists",
-                exists    = false
+                operation     = "exists",
+                exists        = false,
+                strategy      = "not-found",
+                lastError     = ex.Message,
+                locator       = DescribeLocatorAsObject(req.Locator),
+                parentLocator = DescribeLocatorAsObject(req.ParentLocator)
             };
         }
     }
 
-    private object? WaitFor(UiRequest req)
+    private object WaitFor(UiRequest req, CancellationToken cancellationToken)
     {
-        var locator = RequireLocator(req);
-        var session = RequireSession();
-        var root = GetWindowRoot(session);
+        // Backward compatibility: old waitfor commonly checked IsEnabled + !IsOffscreen,
+        // so default to "enabled" when no explicit state is requested.
+        var state = string.IsNullOrWhiteSpace(req.State) ? "enabled" : req.State;
 
-        double timeoutSeconds = 10;
-        if (!string.IsNullOrWhiteSpace(req.Value) &&
-            double.TryParse(req.Value, out var parsed))
-            timeoutSeconds = parsed;
-
-        var timeout = TimeSpan.FromSeconds(timeoutSeconds);
-        var deadline = DateTime.UtcNow + timeout;
-
-        while (true)
+        // Backward compatibility: older callers pass the timeout in milliseconds via
+        // request.Value (e.g. "10000").
+        int? timeoutMs = req.TimeoutMs;
+        if (!timeoutMs.HasValue &&
+            !string.IsNullOrWhiteSpace(req.Value) &&
+            int.TryParse(req.Value, out var parsedTimeoutMs))
         {
-            var element = TryFindElement(root, session, locator);
-            if (element != null && element.IsEnabled && !element.IsOffscreen)
-                return new { found = true };
-
-            if (DateTime.UtcNow >= deadline)
-                throw new InvalidOperationException(
-                    $"Element not found or not ready within {timeoutSeconds}s: " +
-                    DescribeLocator(locator));
-
-            Thread.Sleep(RetryInterval);
+            timeoutMs = parsedTimeoutMs;
         }
+
+        var normalized = new UiRequest
+        {
+            Operation          = "wait",
+            Locator            = req.Locator,
+            ParentLocator      = req.ParentLocator,
+            State              = state,
+            TimeoutMs          = timeoutMs,
+            PollIntervalMs     = req.PollIntervalMs ?? 200,
+            Fast               = req.Fast,
+            DisableAutoFollow  = req.DisableAutoFollow,
+            UseCache           = req.UseCache,
+            PreferXPath        = req.PreferXPath,
+            XPathOnly          = req.XPathOnly,
+            PreferAttributes   = req.PreferAttributes,
+            FallbackToWindowRootIfParentChildNotFound = req.FallbackToWindowRootIfParentChildNotFound
+        };
+
+        return Wait(normalized, cancellationToken);
     }
 
     private object IsEnabled(UiRequest req)
@@ -8270,8 +8286,9 @@ public class UiService : IUiService
         var timeoutMs      = request.TimeoutMs      ?? 10000;
         var pollIntervalMs = request.PollIntervalMs ?? 200;
 
-        var start         = Stopwatch.StartNew();
-        Exception? lastEx = null;
+        var start           = Stopwatch.StartNew();
+        Exception? lastEx   = null;
+        object? lastPayload = null;
 
         while (start.ElapsedMilliseconds < timeoutMs)
         {
@@ -8280,6 +8297,8 @@ public class UiService : IUiService
             try
             {
                 var stateResult = EvaluateState(request, state);
+                lastPayload = stateResult.Payload;
+
                 if (stateResult.Matched)
                 {
                     return new
@@ -8302,11 +8321,12 @@ public class UiService : IUiService
 
         return new
         {
-            operation = "wait",
-            success   = false,
+            operation  = "wait",
+            success    = false,
             state,
-            elapsedMs = start.ElapsedMilliseconds,
-            lastError = lastEx?.Message
+            elapsedMs  = start.ElapsedMilliseconds,
+            lastError  = lastEx?.Message,
+            lastResult = lastPayload
         };
     }
 
@@ -8787,6 +8807,21 @@ public class UiService : IUiService
         if (!string.IsNullOrWhiteSpace(l.ClassName))      parts.Add($"className='{l.ClassName}'");
         if (!string.IsNullOrWhiteSpace(l.ControlType))    parts.Add($"controlType='{l.ControlType}'");
         return string.Join(", ", parts);
+    }
+
+    private static object? DescribeLocatorAsObject(UiLocator? locator)
+    {
+        if (locator == null)
+            return null;
+
+        return new
+        {
+            automationId = locator.AutomationId,
+            name         = locator.Name,
+            controlType  = locator.ControlType,
+            className    = locator.ClassName,
+            xpath        = locator.XPath
+        };
     }
 
     private (Rectangle r1, Rectangle r2) GetTwoRects(UiRequest req)
@@ -15292,6 +15327,28 @@ public class UiService : IUiService
         catch
         {
             return string.Empty;
+        }
+    }
+
+    private static object? SafeBoundingRectangleObject(AutomationElement element)
+    {
+        try
+        {
+            var rect = element.BoundingRectangle;
+            return new
+            {
+                left    = rect.Left,
+                top     = rect.Top,
+                right   = rect.Right,
+                bottom  = rect.Bottom,
+                width   = rect.Width,
+                height  = rect.Height,
+                isEmpty = rect.IsEmpty
+            };
+        }
+        catch
+        {
+            return null;
         }
     }
 
