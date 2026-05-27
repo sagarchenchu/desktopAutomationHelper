@@ -13,13 +13,16 @@ public interface IUiService
     /// Throws <see cref="InvalidOperationException"/> when the operation cannot be
     /// completed (e.g. element not found, no active session) and
     /// <see cref="ArgumentException"/> for invalid request arguments.
+    /// Pass <paramref name="cancellationToken"/> to abort long-running scroll loops
+    /// when the HTTP client disconnects or times out.
     /// </summary>
     /// <param name="request">The unified UI request.</param>
+    /// <param name="cancellationToken">Token used to cancel scroll loops and mouse input.</param>
     /// <returns>
     /// The result value – type depends on the operation.
     /// Returns null for void operations (click, type, etc.).
     /// </returns>
-    object? Execute(UiRequest request);
+    object? Execute(UiRequest request, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Captures a screenshot of the active application window (if a session is open)
