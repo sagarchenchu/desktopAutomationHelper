@@ -3422,7 +3422,9 @@ public class UiService : IUiService
                 }
             }
 
-            // Last fallback: if rectangle intersects container, consider practically visible.
+            // Last fallback: bounding rect intersects container but IsOffscreen is unreliable
+            // (e.g. virtualised rows that UIA has not yet refreshed). We treat intersection as
+            // sufficient evidence of visibility; callers should verify with a re-check loop.
             visibilityStrategy = "rect-intersects";
             return true;
         }
@@ -3440,7 +3442,6 @@ public class UiService : IUiService
     /// <summary>
     /// Returns true when the target element is visible within the container's bounds.
     /// When container is null, returns true if the element is simply not off-screen.
-    /// </summary>
     /// </summary>
     private static bool IsTargetVisibleInContainer(
         AutomationElement target,
