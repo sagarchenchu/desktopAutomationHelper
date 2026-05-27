@@ -2,6 +2,7 @@ using DesktopAutomationDriver.Controllers;
 using DesktopAutomationDriver.Models.Request;
 using DesktopAutomationDriver.Models.Response;
 using DesktopAutomationDriver.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -40,6 +41,10 @@ public class ComboBoxDropdownSelectionTests
             _uiMock.Object,
             NullLogger<UiController>.Instance,
             configMock.Object);
+        _controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext()
+        };
     }
 
     // -----------------------------------------------------------------------
