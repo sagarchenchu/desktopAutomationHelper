@@ -1862,39 +1862,130 @@ public class UiService : IUiService
 
     private object? IsRightOf(UiRequest req)
     {
-        var (r1, r2) = GetTwoRects(req);
-        return new { isRightOf = r1.Left >= r2.Right };
+        var (r1, r2, e1, e2) = GetTwoRectsLive(req);
+
+        var strict      = r1.Left >= r2.Right;
+        var centerBased = CenterX(r1) > CenterX(r2);
+        var sameRow     = RectanglesOverlapVertically(r1, r2);
+
+        return new
+        {
+            operation        = "isrightof",
+            isRightOf        = strict,
+            strict,
+            centerBased,
+            sameRow,
+            element1         = RectObj(r1),
+            element2         = RectObj(r2),
+            element1Strategy = e1.Strategy,
+            element2Strategy = e2.Strategy,
+            element1Info     = ElementInfoObj(e1.Element),
+            element2Info     = ElementInfoObj(e2.Element)
+        };
     }
 
     private object? IsLeftOf(UiRequest req)
     {
-        var (r1, r2) = GetTwoRects(req);
-        return new { isLeftOf = r1.Right <= r2.Left };
+        var (r1, r2, e1, e2) = GetTwoRectsLive(req);
+
+        var strict      = r1.Right <= r2.Left;
+        var centerBased = CenterX(r1) < CenterX(r2);
+        var sameRow     = RectanglesOverlapVertically(r1, r2);
+
+        return new
+        {
+            operation        = "isleftof",
+            isLeftOf         = strict,
+            strict,
+            centerBased,
+            sameRow,
+            element1         = RectObj(r1),
+            element2         = RectObj(r2),
+            element1Strategy = e1.Strategy,
+            element2Strategy = e2.Strategy,
+            element1Info     = ElementInfoObj(e1.Element),
+            element2Info     = ElementInfoObj(e2.Element)
+        };
     }
 
     private object? IsAbove(UiRequest req)
     {
-        var (r1, r2) = GetTwoRects(req);
-        return new { isAbove = r1.Bottom <= r2.Top };
+        var (r1, r2, e1, e2) = GetTwoRectsLive(req);
+
+        var strict      = r1.Bottom <= r2.Top;
+        var centerBased = CenterY(r1) < CenterY(r2);
+        var sameColumn  = RectanglesOverlapHorizontally(r1, r2);
+
+        return new
+        {
+            operation        = "isabove",
+            isAbove          = strict,
+            strict,
+            centerBased,
+            sameColumn,
+            element1         = RectObj(r1),
+            element2         = RectObj(r2),
+            element1Strategy = e1.Strategy,
+            element2Strategy = e2.Strategy,
+            element1Info     = ElementInfoObj(e1.Element),
+            element2Info     = ElementInfoObj(e2.Element)
+        };
     }
 
     private object? IsBelow(UiRequest req)
     {
-        var (r1, r2) = GetTwoRects(req);
-        return new { isBelow = r1.Top >= r2.Bottom };
+        var (r1, r2, e1, e2) = GetTwoRectsLive(req);
+
+        var strict      = r1.Top >= r2.Bottom;
+        var centerBased = CenterY(r1) > CenterY(r2);
+        var sameColumn  = RectanglesOverlapHorizontally(r1, r2);
+
+        return new
+        {
+            operation        = "isbelow",
+            isBelow          = strict,
+            strict,
+            centerBased,
+            sameColumn,
+            element1         = RectObj(r1),
+            element2         = RectObj(r2),
+            element1Strategy = e1.Strategy,
+            element2Strategy = e2.Strategy,
+            element1Info     = ElementInfoObj(e1.Element),
+            element2Info     = ElementInfoObj(e2.Element)
+        };
     }
 
     private object? GetPosition(UiRequest req)
     {
-        var (r1, r2) = GetTwoRects(req);
+        var (r1, r2, e1, e2) = GetTwoRectsLive(req);
+
+        var cx1 = CenterX(r1);
+        var cy1 = CenterY(r1);
+        var cx2 = CenterX(r2);
+        var cy2 = CenterY(r2);
+
         return new
         {
-            element1  = RectObj(r1),
-            element2  = RectObj(r2),
-            isRightOf = r1.Left  >= r2.Right,
-            isLeftOf  = r1.Right <= r2.Left,
-            isAbove   = r1.Bottom <= r2.Top,
-            isBelow   = r1.Top   >= r2.Bottom
+            operation             = "getposition",
+            element1              = RectObj(r1),
+            element2              = RectObj(r2),
+            isRightOf             = r1.Left   >= r2.Right,
+            isLeftOf              = r1.Right  <= r2.Left,
+            isAbove               = r1.Bottom <= r2.Top,
+            isBelow               = r1.Top    >= r2.Bottom,
+            center1               = new { x = cx1, y = cy1 },
+            center2               = new { x = cx2, y = cy2 },
+            center1RightOfCenter2 = cx1 > cx2,
+            center1LeftOfCenter2  = cx1 < cx2,
+            center1AboveCenter2   = cy1 < cy2,
+            center1BelowCenter2   = cy1 > cy2,
+            sameRow               = RectanglesOverlapVertically(r1, r2),
+            sameColumn            = RectanglesOverlapHorizontally(r1, r2),
+            element1Strategy      = e1.Strategy,
+            element2Strategy      = e2.Strategy,
+            element1Info          = ElementInfoObj(e1.Element),
+            element2Info          = ElementInfoObj(e2.Element)
         };
     }
 
@@ -8824,31 +8915,99 @@ public class UiService : IUiService
         };
     }
 
-    private (Rectangle r1, Rectangle r2) GetTwoRects(UiRequest req)
+    private (ResolvedElement first, ResolvedElement second) ResolveTwoElementsForPosition(
+        UiRequest request)
     {
-        if (req.Locator == null)
+        if (request.Locator == null)
             throw new ArgumentException("'locator' is required for position operations.");
-        if (req.Locator2 == null)
+        if (request.Locator2 == null)
             throw new ArgumentException("'locator2' is required for position operations.");
 
-        var session = RequireSession();
-        var root = GetWindowRoot(session);
+        var firstRequest = new UiRequest
+        {
+            Operation                                 = request.Operation,
+            Locator                                   = request.Locator,
+            ParentLocator                             = request.ParentLocator,
+            TimeoutMs                                 = request.TimeoutMs,
+            Fast                                      = request.Fast,
+            DisableAutoFollow                         = request.DisableAutoFollow,
+            UseCache                                  = request.UseCache,
+            PreferXPath                               = request.PreferXPath,
+            XPathOnly                                 = request.XPathOnly,
+            PreferAttributes                          = request.PreferAttributes,
+            FallbackToWindowRootIfParentChildNotFound = request.FallbackToWindowRootIfParentChildNotFound
+        };
 
-        var e1 = FindWithRetry(req);
-        // Find the second element directly by its locator (no UiRequest wrapper needed).
-        var e2 = FindLocatorWithRetry(session, root, req.Locator2);
+        var secondRequest = new UiRequest
+        {
+            Operation                                 = request.Operation,
+            Locator                                   = request.Locator2,
+            ParentLocator                             = request.ParentLocator,
+            TimeoutMs                                 = request.TimeoutMs,
+            Fast                                      = request.Fast,
+            DisableAutoFollow                         = request.DisableAutoFollow,
+            UseCache                                  = request.UseCache,
+            PreferXPath                               = request.PreferXPath,
+            XPathOnly                                 = request.XPathOnly,
+            PreferAttributes                          = request.PreferAttributes,
+            FallbackToWindowRootIfParentChildNotFound = request.FallbackToWindowRootIfParentChildNotFound
+        };
 
-        return (e1.BoundingRectangle, e2.BoundingRectangle);
+        var first  = ResolveForStateQuery(firstRequest);
+        var second = ResolveForStateQuery(secondRequest);
+
+        return (first, second);
     }
+
+    private (Rectangle r1, Rectangle r2, ResolvedElement e1, ResolvedElement e2) GetTwoRectsLive(
+        UiRequest request)
+    {
+        var (e1, e2) = ResolveTwoElementsForPosition(request);
+
+        var r1 = e1.Element.BoundingRectangle;
+        var r2 = e2.Element.BoundingRectangle;
+
+        if (r1.IsEmpty || r1.Width <= 0 || r1.Height <= 0)
+            throw new InvalidOperationException(
+                $"First element has empty bounding rectangle. locator={DescribeLocator(request.Locator!)}");
+
+        if (r2.IsEmpty || r2.Width <= 0 || r2.Height <= 0)
+            throw new InvalidOperationException(
+                $"Second element has empty bounding rectangle. locator2={DescribeLocator(request.Locator2!)}");
+
+        return (r1, r2, e1, e2);
+    }
+
+    private static double CenterX(Rectangle r) => r.Left + (r.Width / 2.0);
+    private static double CenterY(Rectangle r) => r.Top  + (r.Height / 2.0);
+
+    private static bool RectanglesOverlapVertically(Rectangle a, Rectangle b)
+        => a.Top < b.Bottom && a.Bottom > b.Top;
+
+    private static bool RectanglesOverlapHorizontally(Rectangle a, Rectangle b)
+        => a.Left < b.Right && a.Right > b.Left;
 
     private static object RectObj(Rectangle r) => new
     {
-        left   = r.Left,
-        top    = r.Top,
-        right  = r.Right,
-        bottom = r.Bottom,
-        width  = r.Width,
-        height = r.Height
+        left    = r.Left,
+        top     = r.Top,
+        right   = r.Right,
+        bottom  = r.Bottom,
+        width   = r.Width,
+        height  = r.Height,
+        centerX = CenterX(r),
+        centerY = CenterY(r),
+        isEmpty = r.IsEmpty
+    };
+
+    private static object ElementInfoObj(AutomationElement element) => new
+    {
+        automationId = SafeElementAutomationId(element),
+        name         = SafeElementName(element),
+        controlType  = SafeElementControlType(element),
+        className    = SafeElementClassName(element),
+        isEnabled    = SafeIsEnabled(element),
+        isOffscreen  = SafeIsOffscreen(element)
     };
 
     private void SetToggle(UiRequest req, bool wantChecked)
