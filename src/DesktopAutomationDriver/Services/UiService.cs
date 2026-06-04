@@ -39,6 +39,10 @@ public class UiService : IUiService
     /// the left-button input events are sent.
     /// </summary>
     private const int CursorPositionStabilityDelayMs = 30;
+    private const int DragMoveToStartDelayMs = 120;
+    private const int DragMouseDownHoldDelayMs = 200;
+    private const int DragMouseUpSettleDelayMs = 120;
+    private const int DragMinimumStepDelayMs = 15;
     private const string ClearSelectAllBackspaceKeys = "^a{BACKSPACE}";
     private const string ClearSelectAllDeleteKeys = "^a{DELETE}";
     private const int MenuExpandDelayMs = 250;
@@ -5257,7 +5261,11 @@ public class UiService : IUiService
         switch (action)
         {
             case "move":
-                SetCursorPos(x!.Value, y!.Value);
+                if (!SendMouseMoveTo(x!.Value, y!.Value))
+                {
+                    throw new InvalidOperationException(
+                        $"'mouse' action 'move' failed. x={x.Value}, y={y.Value}");
+                }
                 break;
 
             case "down":
@@ -5405,51 +5413,93 @@ public class UiService : IUiService
             _        => MOUSEEVENTF_LEFTUP
         };
 
+        var buttonIsDown = false;
+
         try
         {
-            if (steps < 1)
-                steps = 1;
+            steps = Math.Max(steps, 1);
+            durationMs = Math.Max(durationMs, 0);
+
+            _logger.LogInformation(
+                "PerformPhysicalDrag starting. start=({StartX},{StartY}), end=({EndX},{EndY}), button={Button}, durationMs={DurationMs}, steps={Steps}",
+                start.X,
+                start.Y,
+                end.X,
+                end.Y,
+                button,
+                durationMs,
+                steps);
 
             if (!SetCursorPos(start.X, start.Y))
             {
                 _logger.LogWarning(
-                    "PerformPhysicalDrag: SetCursorPos to start ({X},{Y}) failed. LastError={Error}",
-                    start.X, start.Y, Marshal.GetLastWin32Error());
-                return false;
-            }
-
-            Thread.Sleep(75);
-
-            if (!SendMouseInput(btnDown))
-            {
-                _logger.LogWarning(
-                    "PerformPhysicalDrag: SendInput (DOWN) failed. LastError={Error}",
+                    "PerformPhysicalDrag: SetCursorPos start failed. start=({StartX},{StartY}), lastError={LastError}",
+                    start.X,
+                    start.Y,
                     Marshal.GetLastWin32Error());
+
                 return false;
             }
 
-            Thread.Sleep(75);
+            Thread.Sleep(DragMoveToStartDelayMs);
+
+            if (!SendMouseInputChecked(btnDown, $"drag-{button}-down"))
+            {
+                return false;
+            }
+
+            buttonIsDown = true;
+
+            // Important for splitter resize: app needs time to enter capture/resize mode.
+            Thread.Sleep(DragMouseDownHoldDelayMs);
+
+            var stepDelay = steps <= 0
+                ? DragMinimumStepDelayMs
+                : Math.Max(DragMinimumStepDelayMs, durationMs / steps);
 
             for (var i = 1; i <= steps; i++)
             {
                 var t = i / (double)steps;
+
                 var x = (int)Math.Round(start.X + ((end.X - start.X) * t));
                 var y = (int)Math.Round(start.Y + ((end.Y - start.Y) * t));
 
-                SetCursorPos(x, y);
+                // Use SendInput mouse move instead of only SetCursorPos.
+                if (!SendMouseMoveTo(x, y))
+                {
+                    _logger.LogWarning(
+                        "PerformPhysicalDrag: SendMouseMoveTo failed at step {Step}/{Steps}. point=({X},{Y}), lastError={LastError}",
+                        i,
+                        steps,
+                        x,
+                        y,
+                        Marshal.GetLastWin32Error());
 
-                if (durationMs > 0)
-                    Thread.Sleep(Math.Max(1, durationMs / steps));
+                    // fallback to SetCursorPos, but still keep button down
+                    SetCursorPos(x, y);
+                }
+
+                Thread.Sleep(stepDelay);
             }
 
-            Thread.Sleep(75);
+            Thread.Sleep(DragMouseUpSettleDelayMs);
 
-            if (!SendMouseInput(btnUp))
+            if (!SendMouseInputChecked(btnUp, $"drag-{button}-up"))
             {
-                _logger.LogWarning(
-                    "PerformPhysicalDrag: SendInput (UP) failed. LastError={Error}",
-                    Marshal.GetLastWin32Error());
+                return false;
             }
+
+            buttonIsDown = false;
+
+            Thread.Sleep(DragMouseUpSettleDelayMs);
+
+            _logger.LogInformation(
+                "PerformPhysicalDrag completed. start=({StartX},{StartY}), end=({EndX},{EndY}), button={Button}",
+                start.X,
+                start.Y,
+                end.X,
+                end.Y,
+                button);
 
             return true;
         }
@@ -5457,23 +5507,29 @@ public class UiService : IUiService
         {
             _logger.LogWarning(
                 ex,
-                "PerformPhysicalDrag: physical drag failed. start=({StartX},{StartY}), end=({EndX},{EndY})",
+                "PerformPhysicalDrag failed. start=({StartX},{StartY}), end=({EndX},{EndY}), button={Button}",
                 start.X,
                 start.Y,
                 end.X,
-                end.Y);
-
-            try
-            {
-                // Ensure button is not stuck down.
-                SendMouseInput(btnUp);
-            }
-            catch
-            {
-                // ignored
-            }
+                end.Y,
+                button);
 
             return false;
+        }
+        finally
+        {
+            if (buttonIsDown)
+            {
+                try
+                {
+                    _logger.LogWarning("PerformPhysicalDrag cleanup: mouse button still down, sending button up. button={Button}", button);
+                    SendMouseInput(btnUp);
+                }
+                catch
+                {
+                    // ignored
+                }
+            }
         }
     }
 
@@ -5571,6 +5627,113 @@ public class UiService : IUiService
         };
 
         return SendInput((uint)input.Length, input, Marshal.SizeOf<INPUT>()) == input.Length;
+    }
+
+    /// <summary>
+    /// Sends a single mouse input event via SendInput and logs success or failure.
+    /// </summary>
+    private bool SendMouseInputChecked(uint dwFlags, string actionName)
+    {
+        var input = new[]
+        {
+            new INPUT
+            {
+                type = INPUT_MOUSE,
+                U    = new InputUnion
+                {
+                    mi = new MOUSEINPUT
+                    {
+                        dx          = 0,
+                        dy          = 0,
+                        mouseData   = 0,
+                        dwFlags     = dwFlags,
+                        time        = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            }
+        };
+
+        var sent = SendInput((uint)input.Length, input, Marshal.SizeOf<INPUT>());
+
+        if (sent != input.Length)
+        {
+            var error = Marshal.GetLastWin32Error();
+
+            _logger.LogWarning(
+                "SendMouseInput failed. action={ActionName}, flags={Flags}, sent={Sent}, expected={Expected}, lastError={LastError}",
+                actionName,
+                dwFlags,
+                sent,
+                input.Length,
+                error);
+
+            return false;
+        }
+
+        _logger.LogDebug(
+            "SendMouseInput succeeded. action={ActionName}, flags={Flags}, sent={Sent}",
+            actionName,
+            dwFlags,
+            sent);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Moves the cursor to the given screen coordinates via <see cref="SetCursorPos"/> and then
+    /// delivers a <c>MOUSEEVENTF_MOVE</c> event via <see cref="SendInput"/> so that the target
+    /// application receives a genuine WM_MOUSEMOVE while any button is held down.
+    /// </summary>
+    private bool SendMouseMoveTo(int x, int y)
+    {
+        if (!SetCursorPos(x, y))
+        {
+            _logger.LogWarning(
+                "SendMouseMoveTo: SetCursorPos failed. x={X}, y={Y}, lastError={LastError}",
+                x,
+                y,
+                Marshal.GetLastWin32Error());
+
+            return false;
+        }
+
+        var input = new[]
+        {
+            new INPUT
+            {
+                type = INPUT_MOUSE,
+                U    = new InputUnion
+                {
+                    mi = new MOUSEINPUT
+                    {
+                        dx          = 0,
+                        dy          = 0,
+                        mouseData   = 0,
+                        dwFlags     = MOUSEEVENTF_MOVE,
+                        time        = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            }
+        };
+
+        var sent = SendInput((uint)input.Length, input, Marshal.SizeOf<INPUT>());
+
+        if (sent != input.Length)
+        {
+            _logger.LogWarning(
+                "SendMouseMoveTo: SendInput MOVE failed. x={X}, y={Y}, sent={Sent}, expected={Expected}, lastError={LastError}",
+                x,
+                y,
+                sent,
+                input.Length,
+                Marshal.GetLastWin32Error());
+
+            return false;
+        }
+
+        return true;
     }
 
     // =========================================================================
@@ -15981,6 +16144,7 @@ public class UiService : IUiService
     private const uint MOUSEEVENTF_RIGHTUP    = 0x0010;
     private const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
     private const uint MOUSEEVENTF_MIDDLEUP   = 0x0040;
+    private const uint MOUSEEVENTF_MOVE       = 0x0001;
     private const uint MOUSEEVENTF_WHEEL      = 0x0800;
     private const uint MOUSEEVENTF_HWHEEL     = 0x1000;
     private const uint GA_ROOT = 2;
