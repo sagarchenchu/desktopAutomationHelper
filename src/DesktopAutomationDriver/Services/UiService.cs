@@ -5127,20 +5127,8 @@ public class UiService : IUiService
 
     private object DragByCoordinateOffset(UiRequest request)
     {
-        if (!request.X.HasValue || !request.Y.HasValue)
-        {
-            throw new ArgumentException(
-                "'dragbyoffset' coordinate offset mode requires both x and y.");
-        }
-
         var offsetX = request.OffsetX ?? 0;
         var offsetY = request.OffsetY ?? 0;
-
-        if (offsetX == 0 && offsetY == 0)
-        {
-            throw new ArgumentException(
-                "'dragbyoffset' coordinate offset mode requires non-zero offsetX or offsetY.");
-        }
 
         var durationMs = request.DragDurationMs ?? 250;
         var steps = request.DragSteps ?? 10;
@@ -5152,7 +5140,7 @@ public class UiService : IUiService
         if (steps < 1)
             steps = 1;
 
-        var start = new Point(request.X.Value, request.Y.Value);
+        var start = new Point(request.X!.Value, request.Y!.Value);
         var end = new Point(start.X + offsetX, start.Y + offsetY);
 
         _logger.LogInformation(
