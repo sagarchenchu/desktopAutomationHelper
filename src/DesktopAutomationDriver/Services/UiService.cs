@@ -4983,6 +4983,72 @@ public class UiService : IUiService
 
     private object DragByOffset(UiRequest request)
     {
+        var offsetX = request.OffsetX ?? 0;
+        var offsetY = request.OffsetY ?? 0;
+
+        var hasFromTo =
+            request.FromX.HasValue ||
+            request.FromY.HasValue ||
+            request.ToX.HasValue ||
+            request.ToY.HasValue;
+
+        var hasStartPoint =
+            request.X.HasValue ||
+            request.Y.HasValue;
+
+        var hasLocator = !IsEmptyLocator(request.Locator);
+
+        // Mode 1: from/to coordinate drag — delegate to DragCoordinates.
+        if (hasFromTo)
+        {
+            if (!request.FromX.HasValue ||
+                !request.FromY.HasValue ||
+                !request.ToX.HasValue ||
+                !request.ToY.HasValue)
+            {
+                throw new ArgumentException(
+                    "'dragbyoffset' coordinate start/end mode requires fromX, fromY, toX, and toY.");
+            }
+
+            return DragCoordinates(request);
+        }
+
+        // Mode 2: x/y + offset coordinate drag.
+        if (hasStartPoint)
+        {
+            if (!request.X.HasValue || !request.Y.HasValue)
+            {
+                throw new ArgumentException(
+                    "'dragbyoffset' coordinate offset mode requires both x and y.");
+            }
+
+            if (offsetX == 0 && offsetY == 0)
+            {
+                throw new ArgumentException(
+                    "'dragbyoffset' coordinate offset mode requires non-zero offsetX or offsetY.");
+            }
+
+            return DragByCoordinateOffset(request);
+        }
+
+        // Mode 3: locator-based drag.
+        if (!hasLocator)
+        {
+            throw new ArgumentException(
+                "'dragbyoffset' requires either locator, x/y + offsetX/offsetY, or fromX/fromY/toX/toY.");
+        }
+
+        if (offsetX == 0 && offsetY == 0)
+        {
+            throw new ArgumentException(
+                "'dragbyoffset' locator mode requires non-zero offsetX or offsetY.");
+        }
+
+        return DragElementByOffset(request);
+    }
+
+    private object DragElementByOffset(UiRequest request)
+    {
         var element = FindWithRetry(request);
 
         // Physical input must target foreground window.
@@ -4992,18 +5058,13 @@ public class UiService : IUiService
         var offsetX = request.OffsetX ?? 0;
         var offsetY = request.OffsetY ?? 0;
 
-        if (offsetX == 0 && offsetY == 0)
-        {
-            throw new ArgumentException(
-                "'dragbyoffset' requires at least one non-zero value: offsetX or offsetY.");
-        }
-
         var dragStart = string.IsNullOrWhiteSpace(request.DragStart)
             ? "center"
             : request.DragStart.Trim();
 
         var durationMs = request.DragDurationMs ?? 250;
         var steps = request.DragSteps ?? 10;
+        var button = NormalizeMouseButton(request.Button);
 
         if (durationMs < 0)
             durationMs = 0;
@@ -5023,7 +5084,7 @@ public class UiService : IUiService
         var end = new Point(start.X + offsetX, start.Y + offsetY);
 
         _logger.LogInformation(
-            "DragByOffset starting. element={Element}, dragStart={DragStart}, start=({StartX},{StartY}), end=({EndX},{EndY}), offset=({OffsetX},{OffsetY}), durationMs={DurationMs}, steps={Steps}",
+            "DragByOffset element mode. element={Element}, dragStart={DragStart}, start=({StartX},{StartY}), end=({EndX},{EndY}), offset=({OffsetX},{OffsetY}), button={Button}, durationMs={DurationMs}, steps={Steps}",
             SafeElementName(element),
             dragStart,
             start.X,
@@ -5032,15 +5093,14 @@ public class UiService : IUiService
             end.Y,
             offsetX,
             offsetY,
+            button,
             durationMs,
             steps);
 
-        var success = PerformPhysicalDrag(start, end, durationMs, steps, "left");
-
-        if (!success)
+        if (!PerformPhysicalDrag(start, end, durationMs, steps, button))
         {
             throw new InvalidOperationException(
-                $"dragbyoffset failed. element={SafeElementName(element)}, start=({start.X},{start.Y}), end=({end.X},{end.Y})");
+                $"dragbyoffset element mode failed. element={SafeElementName(element)}, start=({start.X},{start.Y}), end=({end.X},{end.Y})");
         }
 
         Thread.Sleep(150);
@@ -5049,6 +5109,7 @@ public class UiService : IUiService
         {
             operation = "dragbyoffset",
             success = true,
+            strategy = "element-offset",
             element = SafeElementName(element),
             controlType = SafeElementControlType(element),
             className = SafeElementClassName(element),
@@ -5056,16 +5117,74 @@ public class UiService : IUiService
             dragStart,
             offsetX,
             offsetY,
-            start = new
-            {
-                x = start.X,
-                y = start.Y
-            },
-            end = new
-            {
-                x = end.X,
-                y = end.Y
-            },
+            start = new { x = start.X, y = start.Y },
+            end = new { x = end.X, y = end.Y },
+            button,
+            durationMs,
+            steps
+        };
+    }
+
+    private object DragByCoordinateOffset(UiRequest request)
+    {
+        if (!request.X.HasValue || !request.Y.HasValue)
+        {
+            throw new ArgumentException(
+                "'dragbyoffset' coordinate offset mode requires both x and y.");
+        }
+
+        var offsetX = request.OffsetX ?? 0;
+        var offsetY = request.OffsetY ?? 0;
+
+        if (offsetX == 0 && offsetY == 0)
+        {
+            throw new ArgumentException(
+                "'dragbyoffset' coordinate offset mode requires non-zero offsetX or offsetY.");
+        }
+
+        var durationMs = request.DragDurationMs ?? 250;
+        var steps = request.DragSteps ?? 10;
+        var button = NormalizeMouseButton(request.Button);
+
+        if (durationMs < 0)
+            durationMs = 0;
+
+        if (steps < 1)
+            steps = 1;
+
+        var start = new Point(request.X.Value, request.Y.Value);
+        var end = new Point(start.X + offsetX, start.Y + offsetY);
+
+        _logger.LogInformation(
+            "DragByOffset coordinate mode. start=({StartX},{StartY}), end=({EndX},{EndY}), offset=({OffsetX},{OffsetY}), button={Button}, durationMs={DurationMs}, steps={Steps}",
+            start.X,
+            start.Y,
+            end.X,
+            end.Y,
+            offsetX,
+            offsetY,
+            button,
+            durationMs,
+            steps);
+
+        if (!PerformPhysicalDrag(start, end, durationMs, steps, button))
+        {
+            throw new InvalidOperationException(
+                $"dragbyoffset coordinate mode failed. start=({start.X},{start.Y}), end=({end.X},{end.Y})");
+        }
+
+        Thread.Sleep(150);
+
+        return new
+        {
+            operation = "dragbyoffset",
+            success = true,
+            strategy = "coordinate-offset",
+            offsetX,
+            offsetY,
+            start = new { x = start.X, y = start.Y },
+            end = new { x = end.X, y = end.Y },
+            button,
             durationMs,
             steps
         };
@@ -5113,6 +5232,7 @@ public class UiService : IUiService
         {
             operation = "dragcoordinates",
             success   = true,
+            strategy  = "coordinate-drag",
             button,
             start     = new { x = start.X, y = start.Y },
             end       = new { x = end.X,   y = end.Y   },
