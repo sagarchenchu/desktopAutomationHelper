@@ -5453,9 +5453,7 @@ public class UiService : IUiService
             // Important for splitter resize: app needs time to enter capture/resize mode.
             Thread.Sleep(DragMouseDownHoldDelayMs);
 
-            var stepDelay = steps <= 0
-                ? DragMinimumStepDelayMs
-                : Math.Max(DragMinimumStepDelayMs, durationMs / steps);
+            var stepDelay = Math.Max(DragMinimumStepDelayMs, durationMs / steps);
 
             for (var i = 1; i <= steps; i++)
             {
