@@ -5001,6 +5001,7 @@ public class UiService : IUiService
         // Mode 1: from/to coordinate drag — delegate to DragCoordinates.
         if (hasFromTo)
         {
+            // hasFromTo is true when *any* of the four fields is present; require all four.
             if (!request.FromX.HasValue ||
                 !request.FromY.HasValue ||
                 !request.ToX.HasValue ||
@@ -5016,6 +5017,7 @@ public class UiService : IUiService
         // Mode 2: x/y + offset coordinate drag.
         if (hasStartPoint)
         {
+            // hasStartPoint is true when *either* x or y is present; require both.
             if (!request.X.HasValue || !request.Y.HasValue)
             {
                 throw new ArgumentException(
