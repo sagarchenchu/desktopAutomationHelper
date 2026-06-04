@@ -331,6 +331,11 @@ public class UiService : IUiService
                 "popupexists"  => PopupExists(request),
                 "popupaction"  => PopupAction(request),
 
+                // ----- Popup Text Reading -----
+                "popuptext"  => PopupText(request),
+                "alerttext"  => PopupText(request),
+                "readpopup"  => PopupText(request),
+
                 // ----- Alert / Dialog Handling (backward-compatible aliases) -----
                 "alertok"     => PopupAction(request, defaultAction: "button", defaultButton: "OK|Yes|&OK|&Yes|Save"),
                 "alertcancel" => PopupAction(request, defaultAction: "button", defaultButton: "Cancel|No|&Cancel|&No"),
@@ -6337,6 +6342,52 @@ public class UiService : IUiService
         return null;
     }
 
+    private object PopupText(UiRequest request)
+    {
+        var session = TryGetSessionOrNull();
+
+        var popup = WaitForPopupInternal(request, session);
+
+        if (popup == null)
+        {
+            return new
+            {
+                found        = false,
+                operation    = "popuptext",
+                timeoutMs    = request.TimeoutMs ?? 5000,
+                value        = request.Value,
+                className    = request.ClassName,
+                hwnd         = request.Hwnd,
+                message      = string.Empty,
+                texts        = Array.Empty<string>(),
+                messageTexts = Array.Empty<string>(),
+                buttons      = Array.Empty<string>()
+            };
+        }
+
+        if (request.MakeCurrent != false)
+        {
+            MakePopupCurrent(session, popup);
+            Thread.Sleep(WindowActivationDelayMs);
+        }
+
+        var snapshot = ReadPopupTextSnapshot(popup.Element);
+
+        return new
+        {
+            found        = true,
+            operation    = "popuptext",
+            message      = snapshot.Message,
+            texts        = snapshot.Texts,
+            messageTexts = snapshot.MessageTexts,
+            buttons      = snapshot.Buttons,
+            edits        = snapshot.Edits,
+            documents    = snapshot.Documents,
+            children     = snapshot.Children,
+            window       = ToPopupDto(popup)
+        };
+    }
+
     private void MakePopupCurrent(AutomationSession? session, PopupWindowInfo popup)
     {
         try
@@ -6516,6 +6567,191 @@ public class UiService : IUiService
             .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .ToList();
+    }
+
+    // -------------------------------------------------------------------------
+    // Popup text snapshot
+    // -------------------------------------------------------------------------
+
+    private sealed class PopupTextSnapshot
+    {
+        public string Message { get; init; } = string.Empty;
+        public List<string> Texts { get; init; } = new();
+        public List<string> MessageTexts { get; init; } = new();
+        public List<string> Buttons { get; init; } = new();
+        public List<string> Edits { get; init; } = new();
+        public List<string> Documents { get; init; } = new();
+        public List<object> Children { get; init; } = new();
+    }
+
+    private static PopupTextSnapshot ReadPopupTextSnapshot(AutomationElement popupRoot)
+    {
+        var allTextFragments = new List<string>();
+        var messageTexts     = new List<string>();
+        var buttons          = new List<string>();
+        var edits            = new List<string>();
+        var documents        = new List<string>();
+        var children         = new List<object>();
+
+        AutomationElement[] descendants;
+        try
+        {
+            descendants = popupRoot.FindAllDescendants();
+        }
+        catch
+        {
+            descendants = [];
+        }
+
+        foreach (var child in descendants)
+        {
+            var name        = SafeElementName(child);
+            var automationId = SafeElementAutomationId(child);
+            var className   = SafeElementClassName(child);
+            var controlType = SafeElementControlType(child);
+            var value       = SafeElementValue(child);
+
+            var displayText = FirstNonEmpty(value, name);
+
+            if (!string.IsNullOrWhiteSpace(displayText))
+                allTextFragments.Add(displayText);
+
+            if (IsPopupMessageCandidate(controlType, name, value))
+            {
+                var messageText = FirstNonEmpty(value, name);
+                if (!string.IsNullOrWhiteSpace(messageText))
+                    messageTexts.Add(messageText);
+            }
+
+            if (string.Equals(controlType, "Button", StringComparison.OrdinalIgnoreCase))
+            {
+                var buttonText = FirstNonEmpty(name, value);
+                if (!string.IsNullOrWhiteSpace(buttonText))
+                    buttons.Add(buttonText);
+            }
+
+            if (string.Equals(controlType, "Edit", StringComparison.OrdinalIgnoreCase))
+            {
+                var editText = FirstNonEmpty(value, name);
+                if (!string.IsNullOrWhiteSpace(editText))
+                    edits.Add(editText);
+            }
+
+            if (string.Equals(controlType, "Document", StringComparison.OrdinalIgnoreCase))
+            {
+                var docText = FirstNonEmpty(value, name);
+                if (!string.IsNullOrWhiteSpace(docText))
+                    documents.Add(docText);
+            }
+
+            children.Add(new
+            {
+                name,
+                value,
+                automationId,
+                className,
+                controlType,
+                rectangle  = SafeBoundingRectangleObject(child),
+                isOffscreen = SafeIsOffscreen(child),
+                isEnabled  = SafeIsEnabled(child)
+            });
+        }
+
+        var cleanTexts      = DistinctCleanText(allTextFragments);
+        var cleanButtons    = DistinctCleanText(buttons);
+
+        bool IsNotButton(string x) => !cleanButtons.Contains(x, StringComparer.OrdinalIgnoreCase);
+
+        var cleanMessageTexts = DistinctCleanText(messageTexts).Where(IsNotButton).ToList();
+
+        if (cleanMessageTexts.Count == 0)
+            cleanMessageTexts = cleanTexts.Where(IsNotButton).ToList();
+
+        var message = string.Join(" ", cleanMessageTexts);
+
+        return new PopupTextSnapshot
+        {
+            Message      = message,
+            Texts        = cleanTexts,
+            MessageTexts = cleanMessageTexts,
+            Buttons      = cleanButtons,
+            Edits        = DistinctCleanText(edits),
+            Documents    = DistinctCleanText(documents),
+            Children     = children
+        };
+    }
+
+    private static string SafeElementValue(AutomationElement element)
+    {
+        try
+        {
+            var valuePattern = element.Patterns.Value.PatternOrDefault;
+            if (valuePattern != null)
+            {
+                var val = valuePattern.Value.ValueOrDefault;
+                if (!string.IsNullOrWhiteSpace(val))
+                    return val.Trim();
+            }
+        }
+        catch { /* ignore */ }
+
+        try
+        {
+            var textPattern = element.Patterns.Text.PatternOrDefault;
+            if (textPattern != null)
+            {
+                var text = textPattern.DocumentRange.GetText(-1);
+                if (!string.IsNullOrWhiteSpace(text))
+                    return text.Trim();
+            }
+        }
+        catch { /* ignore */ }
+
+        return string.Empty;
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        foreach (var v in values)
+        {
+            if (!string.IsNullOrWhiteSpace(v))
+                return v.Trim();
+        }
+        return string.Empty;
+    }
+
+    private static List<string> DistinctCleanText(IEnumerable<string> values)
+    {
+        return values
+            .Select(NormalizePopupText)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string NormalizePopupText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        return Regex.Replace(
+            value.Replace("\r", " ").Replace("\n", " "),
+            @"\s+",
+            " ").Trim();
+    }
+
+    private static bool IsPopupMessageCandidate(string controlType, string name, string value)
+    {
+        if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(value))
+            return false;
+
+        if (string.Equals(controlType, "Button", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return string.Equals(controlType, "Text",     StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(controlType, "Edit",     StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(controlType, "Document", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(controlType, "Custom",   StringComparison.OrdinalIgnoreCase);
     }
 
     private object? ClickGridCell(UiRequest req)
@@ -7264,6 +7500,9 @@ public class UiService : IUiService
             "alertcancel" or
             "alertclose" or
             "popupok" or
+            "popuptext" or
+            "alerttext" or
+            "readpopup" or
             "contextmenupath" or
             "openheaderdropdown" or
             "selectheaderdropdownitem" or
