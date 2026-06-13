@@ -408,4 +408,43 @@ public class UiRequest
     /// </summary>
     public bool? SoftVerification { get; set; }
 
+    // -------------------------------------------------------------------------
+    // pywinauto-style central element resolver fields (Phase 2)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Path of locators to traverse deeply nested controls.
+    /// </summary>
+    public List<UiLocator>? LocatorPath { get; set; }
+
+    /// <summary>
+    /// Root to start the element search from: currentWindow, desktop, foreground, activePopup, or parent.
+    /// </summary>
+    public string? SearchRoot { get; set; }
+
+    /// <summary>
+    /// UIA tree view to use: control, content, or raw.
+    /// </summary>
+    public string? TreeView { get; set; }
+
+    /// <summary>
+    /// Backend technology to use: uia, win32, or hybrid.
+    /// </summary>
+    public string? Backend { get; set; }
+
+    /// <summary>
+    /// When true, returns candidate summaries on ambiguity or search failure.
+    /// </summary>
+    public bool? ReturnCandidates { get; set; }
+
+    /// <summary>
+    /// Enable verbose pywinauto-style logging and diagnostic outputs.
+    /// </summary>
+    public bool? Debug { get; set; }
+
+    /// <summary>
+    /// How to handle multiple matches: error, first, or all.
+    /// </summary>
+    public string? Ambiguity { get; set; }
+
 }
