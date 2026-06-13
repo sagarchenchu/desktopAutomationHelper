@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using DesktopAutomationDriver.Models.Request;
+using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
 using FlaUI.Core.Input;
@@ -18,6 +19,129 @@ public partial class UiService
     // Central resolver entry points
     // =========================================================================
 
+    private ITreeWalker GetTreeWalker(FlaUI.Core.AutomationBase automation, string? treeView)
+    {
+        var view = treeView?.ToLowerInvariant() ?? "control";
+        return view switch
+        {
+            "content" => automation.TreeWalkerFactory.GetContentViewWalker(),
+            "raw" => automation.TreeWalkerFactory.GetRawViewWalker(),
+            _ => automation.TreeWalkerFactory.GetControlViewWalker()
+        };
+    }
+
+    private List<AutomationElement> FindDescendantsWithWalker(
+        AutomationElement root, int maxDepth, ITreeWalker walker)
+    {
+        var result = new List<AutomationElement>();
+        if (maxDepth < 0) return result;
+
+        var queue = new Queue<(AutomationElement Element, int Depth)>();
+        queue.Enqueue((root, 0));
+
+        while (queue.Count > 0)
+        {
+            var (current, currentDepth) = queue.Dequeue();
+            if (currentDepth > maxDepth) continue;
+
+            var children = new List<AutomationElement>();
+            try
+            {
+                var child = walker.GetFirstChild(current);
+                while (child != null)
+                {
+                    children.Add(child);
+                    child = walker.GetNextSibling(child);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to walk child branch in FindDescendantsWithWalker.");
+                continue;
+            }
+
+            foreach (var child in children)
+            {
+                result.Add(child);
+                if (currentDepth < maxDepth)
+                    queue.Enqueue((child, currentDepth + 1));
+            }
+        }
+
+        return result;
+    }
+
+    private AutomationElement GetForegroundWindowElement(FlaUI.Core.AutomationBase automation)
+    {
+        var hwnd = GetForegroundWindow();
+        if (hwnd != IntPtr.Zero)
+        {
+            try
+            {
+                var el = automation.FromHandle(hwnd);
+                if (el != null) return el;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to resolve element from foreground HWND.");
+            }
+        }
+        return automation.GetDesktop();
+    }
+
+    private AutomationElement GetActivePopupRoot(AutomationSession session)
+    {
+        var desktop = session.Automation.GetDesktop();
+        try
+        {
+            var children = desktop.FindAllChildren();
+            foreach (var child in children)
+            {
+                var ct = child.ControlType;
+                if ((ct == ControlType.Window || ct == ControlType.Menu || ct == ControlType.List) &&
+                    SafeIsOffscreen(child) == false)
+                {
+                    var cn = SafeElementClassName(child);
+                    var aid = SafeElementAutomationId(child);
+                    if (cn == "#32768" || cn == "ComboLBox" || cn.Contains("Popup", StringComparison.OrdinalIgnoreCase) || aid.Contains("Popup", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return child;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to walk desktop children for active popup discovery.");
+        }
+
+        return GetForegroundWindowElement(session.Automation);
+    }
+
+    private static int CalculateBestMatchScore(string input, string pattern)
+    {
+        if (string.IsNullOrWhiteSpace(input) || string.IsNullOrWhiteSpace(pattern))
+            return 0;
+        if (string.Equals(input, pattern, StringComparison.OrdinalIgnoreCase))
+            return 100;
+        if (input.StartsWith(pattern, StringComparison.OrdinalIgnoreCase))
+            return 80;
+        if (input.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+            return 60;
+        
+        var inputWords = input.Split(' ', '_', '-');
+        var patternWords = pattern.Split(' ', '_', '-');
+        int matches = 0;
+        foreach (var pw in patternWords)
+        {
+            if (inputWords.Any(iw => string.Equals(iw, pw, StringComparison.OrdinalIgnoreCase)))
+                matches++;
+        }
+        if (matches > 0)
+            return 50 + (matches * 10);
+        return 0;
+    }
+
     /// <summary>
     /// Single-shot element resolution. Validates the locator, determines the search
     /// root, gathers candidates, filters and scores them, applies indexing, and returns
@@ -33,11 +157,11 @@ public partial class UiService
         bool allowOffscreen = true,
         bool returnAllCandidates = false)
     {
-        if (locator == null)
+        if (locator == null && (request.LocatorPath == null || request.LocatorPath.Count == 0))
             return new ElementResolveResult
             {
                 Strategy = "null-locator",
-                Errors   = ["Locator is null."]
+                Errors   = ["Locator is null and locatorPath is empty."]
             };
 
         var session = RequireSession();
@@ -46,10 +170,46 @@ public partial class UiService
         string rootStrategy;
         AutomationElement root;
 
+        var searchRootName = request.SearchRoot;
         if (explicitRoot != null)
         {
             root         = explicitRoot;
             rootStrategy = "explicit-root";
+        }
+        else if (!string.IsNullOrWhiteSpace(searchRootName))
+        {
+            rootStrategy = searchRootName.ToLowerInvariant();
+            if (string.Equals(searchRootName, "desktop", StringComparison.OrdinalIgnoreCase) || allowDesktopSearch)
+            {
+                root = session.Automation.GetDesktop();
+            }
+            else if (string.Equals(searchRootName, "foreground", StringComparison.OrdinalIgnoreCase))
+            {
+                root = GetForegroundWindowElement(session.Automation);
+            }
+            else if (string.Equals(searchRootName, "activepopup", StringComparison.OrdinalIgnoreCase))
+            {
+                root = GetActivePopupRoot(session);
+            }
+            else if (string.Equals(searchRootName, "parent", StringComparison.OrdinalIgnoreCase))
+            {
+                if (request.ParentLocator != null)
+                {
+                    var windowRoot = GetWindowRoot(session, allowDesktopPopupScan: false);
+                    var parentSearch = TryFindElementBySmartStrategy(
+                        windowRoot, session, request.ParentLocator,
+                        preferAttributes: true, xpathOnly: false);
+                    root = parentSearch.Element ?? windowRoot;
+                }
+                else
+                {
+                    root = GetWindowRoot(session, allowDesktopPopupScan: false);
+                }
+            }
+            else
+            {
+                root = GetWindowRoot(session, allowDesktopPopupScan: false);
+            }
         }
         else if (request.ParentLocator != null)
         {
@@ -70,7 +230,7 @@ public partial class UiService
             root         = parentSearch.Element;
             rootStrategy = "parent-locator";
         }
-        else if (request.UseDesktopRoot == true || allowDesktopSearch)
+        else if (request.UseDesktopRoot == true)
         {
             root         = session.Automation.GetDesktop();
             rootStrategy = "desktop";
@@ -86,8 +246,16 @@ public partial class UiService
             rootStrategy = session.ActiveWindow != null ? "active-window" : "app-main-window";
         }
 
-        // ── 2. Fast path for simple locators (no new-style fields) ─────────
-        if (!NeedsNewStyleSearch(locator))
+        // ── 2. Fast path for simple locators (no new-style fields or request options) ─────────
+        bool isNewStyleRequest = (request.LocatorPath != null && request.LocatorPath.Count > 0) ||
+                                 !string.IsNullOrWhiteSpace(request.SearchRoot) ||
+                                 !string.IsNullOrWhiteSpace(request.TreeView) ||
+                                 !string.IsNullOrWhiteSpace(request.Backend) ||
+                                 request.ReturnCandidates == true ||
+                                 request.Debug == true ||
+                                 !string.IsNullOrWhiteSpace(request.Ambiguity);
+
+        if (locator != null && !isNewStyleRequest && !NeedsNewStyleSearch(locator))
         {
             var xpathOnly        = request.XPathOnly == true;
             var preferAttributes = ShouldPreferAttributeSearch(request);
@@ -140,119 +308,449 @@ public partial class UiService
                 RootStrategy = rootStrategy,
                 Strategy     = result.Strategy,
                 Locator      = locator,
-                Errors       = [$"Element not found. strategy={result.Strategy}, locator={DescribeLocator(locator)}"]
+                Errors       = [$"ElementNotFound: Element not found. strategy={result.Strategy}, locator={DescribeLocator(locator)}"]
             };
         }
 
-        // ── 3. New-style: gather candidates ────────────────────────────────
-        var topLevelOnly = locator.TopLevelOnly == true;
-        var depth        = locator.Depth;
-
-        List<AutomationElement> candidates;
-        try
+        // ── 3. New-style: resolve elements or path ────────────────────────
+        List<AutomationElement> finalCandidates;
+        if (request.LocatorPath != null && request.LocatorPath.Count > 0)
         {
-            candidates = CollectCandidates(root, locator, session, depth, topLevelOnly);
+            finalCandidates = ResolveLocatorPath(request, request.LocatorPath, root);
         }
-        catch (Exception ex)
+        else
         {
-            return new ElementResolveResult
-            {
-                RootStrategy = rootStrategy,
-                Strategy     = "collect-exception",
-                Locator      = locator,
-                Errors       = [$"Candidate collection failed: {ex.Message}"]
-            };
+            finalCandidates = ResolveElements(request, locator ?? new UiLocator(), root);
         }
 
-        // CtrlIndex: raw positional pick before filtering
-        if (locator.CtrlIndex.HasValue)
+        int rawCollectedCount = finalCandidates.Count;
+        bool includeCandidates = returnAllCandidates || request.ReturnCandidates == true || request.Debug == true || request.IncludeDiagnostics == true;
+
+        if (rawCollectedCount == 0)
         {
-            var ctrlIdx = locator.CtrlIndex.Value;
-            if (ctrlIdx >= 0 && ctrlIdx < candidates.Count)
-                return new ElementResolveResult
-                {
-                    Element        = candidates[ctrlIdx],
-                    Strategy       = "ctrl-index",
-                    RootStrategy   = rootStrategy,
-                    Locator        = locator,
-                    CandidateCount = candidates.Count
-                };
+            var emptyLoc = locator ?? (request.LocatorPath != null && request.LocatorPath.Count > 0 ? request.LocatorPath[^1] : new UiLocator());
+            var rawCandidates = BuildCandidateList(root, emptyLoc, session, request);
+            var diagnostics = BuildNearMatchDiagnostics(rawCandidates, emptyLoc);
 
-            return new ElementResolveResult
-            {
-                RootStrategy   = rootStrategy,
-                Strategy       = "ctrl-index-out-of-range",
-                Locator        = locator,
-                CandidateCount = candidates.Count,
-                Candidates     = BuildCandidateDtos(candidates.Take(10).ToList(), locator),
-                Errors         = [$"ctrlIndex {ctrlIdx} out of range (collected {candidates.Count})"]
-            };
-        }
-
-        // ── 4. Filter candidates ────────────────────────────────────────────
-        var filtered = new List<AutomationElement>();
-        foreach (var candidate in candidates)
-        {
-            if (MatchesLocator(candidate, locator, out _))
-                filtered.Add(candidate);
-        }
-
-        if (filtered.Count == 0)
             return new ElementResolveResult
             {
                 RootStrategy   = rootStrategy,
                 Strategy       = "filtered-not-found",
                 Locator        = locator,
-                CandidateCount = candidates.Count,
-                Candidates     = BuildCandidateDtos(candidates.Take(10).ToList(), locator),
-                Errors         = [$"No candidates matched filters. collected={candidates.Count}, locator={DescribeLocator(locator)}"]
-            };
-
-        // ── 5. Score candidates ─────────────────────────────────────────────
-        var scored = ScoreAndSortCandidates(filtered, locator);
-
-        // ── 6. FoundIndex: pick by position after scoring ────────────────────
-        if (locator.FoundIndex.HasValue)
-        {
-            var foundIdx = locator.FoundIndex.Value;
-            if (foundIdx >= 0 && foundIdx < scored.Count)
-                return new ElementResolveResult
-                {
-                    Element        = scored[foundIdx].Element,
-                    Strategy       = "found-index",
-                    RootStrategy   = rootStrategy,
-                    Locator        = locator,
-                    CandidateCount = scored.Count,
-                    Ambiguous      = scored.Count > 1,
-                    Candidates     = returnAllCandidates
-                        ? scored.Select((s, i) => BuildCandidateDto(s.Element, i, s.Score, s.Reason)).ToList()
-                        : []
-                };
-
-            return new ElementResolveResult
-            {
-                RootStrategy   = rootStrategy,
-                Strategy       = "found-index-out-of-range",
-                Locator        = locator,
-                CandidateCount = scored.Count,
-                Candidates     = scored.Select((s, i) => BuildCandidateDto(s.Element, i, s.Score, s.Reason)).ToList(),
-                Errors         = [$"foundIndex {foundIdx} out of range (found {scored.Count} matching candidates)"]
+                CandidateCount = rawCandidates.Count,
+                Candidates     = diagnostics,
+                Errors         = [$"ElementNotFound: No matching elements found. collected={rawCandidates.Count}, locator={DescribeLocator(emptyLoc)}"]
             };
         }
 
-        // ── 7. Return best match ─────────────────────────────────────────────
+        // Check for ambiguity
+        var ambiguityMode = request.Ambiguity ?? "error";
+        if (rawCollectedCount > 1)
+        {
+            if (string.Equals(ambiguityMode, "error", StringComparison.OrdinalIgnoreCase))
+            {
+                var emptyLoc = locator ?? (request.LocatorPath != null && request.LocatorPath.Count > 0 ? request.LocatorPath[^1] : new UiLocator());
+                var diagnostics = BuildNearMatchDiagnostics(finalCandidates, emptyLoc);
+                return new ElementResolveResult
+                {
+                    RootStrategy   = rootStrategy,
+                    Strategy       = "ambiguity-error",
+                    Locator        = locator,
+                    CandidateCount = rawCollectedCount,
+                    Ambiguous      = true,
+                    Candidates     = diagnostics,
+                    Errors         = [$"ElementAmbiguous: Multiple matching elements found ({rawCollectedCount})."]
+                };
+            }
+        }
+
+        var picked = finalCandidates[0];
+        var scored = ScoreAndSortCandidates(finalCandidates, locator ?? new UiLocator());
+
         return new ElementResolveResult
         {
-            Element        = scored[0].Element,
-            Strategy       = scored.Count > 1 ? "scored-ambiguous" : "scored-unique",
+            Element        = picked,
+            Strategy       = rawCollectedCount > 1 ? "scored-ambiguous" : "scored-unique",
             RootStrategy   = rootStrategy,
             Locator        = locator,
-            CandidateCount = filtered.Count,
-            Ambiguous      = scored.Count > 1,
-            Candidates     = returnAllCandidates
+            CandidateCount = rawCollectedCount,
+            Ambiguous      = rawCollectedCount > 1,
+            Candidates     = includeCandidates
                 ? scored.Select((s, i) => BuildCandidateDto(s.Element, i, s.Score, s.Reason)).ToList()
                 : []
         };
+    }
+
+    private List<AutomationElement> ResolveElements(
+        UiRequest request,
+        UiLocator locator,
+        AutomationElement startRoot)
+    {
+        var session = RequireSession();
+
+        // 1. BuildCandidateList
+        var candidates = BuildCandidateList(startRoot, locator, session, request);
+
+        // 2. CtrlIndex raw pre-filter
+        if (locator.CtrlIndex.HasValue)
+        {
+            candidates = ApplyIndexFilters(candidates, locator, isRawPreFilter: true);
+            return candidates;
+        }
+
+        // 3. Apply filters
+        candidates = ApplyLocatorFilters(candidates, locator);
+        candidates = ApplyRegexFilters(candidates, locator);
+        candidates = ApplyValueFilters(candidates, locator);
+        candidates = ApplyStateFilters(candidates, locator);
+
+        // 4. Score and Sort
+        var scored = ScoreAndSortCandidates(candidates, locator);
+        var sortedCandidates = scored.Select(s => s.Element).ToList();
+
+        // 5. BestMatch scoring & picking highest above threshold
+        var bestMatchPattern = locator.BestMatch ?? request.BestMatch;
+        if (!string.IsNullOrWhiteSpace(bestMatchPattern) && sortedCandidates.Count > 0)
+        {
+            var bestScored = sortedCandidates
+                .Select(c => new { Element = c, Score = CalculateBestMatchScore(SafeElementName(c), bestMatchPattern) })
+                .Where(x => x.Score >= BestMatchMinimumThreshold) // threshold = 50
+                .OrderByDescending(x => x.Score)
+                .ToList();
+
+            if (bestScored.Count > 0)
+            {
+                sortedCandidates = bestScored.Select(x => x.Element).ToList();
+            }
+        }
+
+        // 6. FoundIndex post-filter
+        if (locator.FoundIndex.HasValue)
+        {
+            sortedCandidates = ApplyIndexFilters(sortedCandidates, locator, isRawPreFilter: false);
+        }
+
+        return sortedCandidates;
+    }
+
+    private List<AutomationElement> ResolveLocatorPath(
+        UiRequest request,
+        List<UiLocator> path,
+        AutomationElement startRoot)
+    {
+        var currentRoots = new List<AutomationElement> { startRoot };
+
+        for (int i = 0; i < path.Count; i++)
+        {
+            var locator = path[i];
+            var nextRoots = new List<AutomationElement>();
+
+            foreach (var root in currentRoots)
+            {
+                var resolved = ResolveElements(request, locator, root);
+                nextRoots.AddRange(resolved);
+            }
+
+            currentRoots = nextRoots.Distinct().ToList();
+
+            if (currentRoots.Count == 0)
+                break;
+        }
+
+        return currentRoots;
+    }
+
+    private List<AutomationElement> BuildCandidateList(
+        AutomationElement root,
+        UiLocator locator,
+        AutomationSession session,
+        UiRequest request)
+    {
+        var depth = locator.Depth ?? request.Locator?.Depth ?? DefaultCandidateSearchDepth;
+        var topLevelOnly = locator.TopLevelOnly == true;
+
+        // ── HWND direct lookup ───────────────────────────────────────────────
+        if (locator.Hwnd.HasValue)
+        {
+            try
+            {
+                var hwndPtr = new IntPtr(locator.Hwnd.Value);
+                var element = session.Automation.FromHandle(hwndPtr);
+                return element == null ? [] : [element];
+            }
+            catch
+            {
+                return [];
+            }
+        }
+
+        // ── XPath ────────────────────────────────────────────────────────────
+        if (!string.IsNullOrWhiteSpace(locator.XPath))
+        {
+            var byXPath = FindByXPath(root, session, locator.XPath);
+            return byXPath == null ? [] : [byXPath];
+        }
+
+        // If request has treeView set (e.g. content or raw), use TreeWalker to fetch candidates
+        if (!string.IsNullOrWhiteSpace(request.TreeView) && 
+            !string.Equals(request.TreeView, "control", StringComparison.OrdinalIgnoreCase))
+        {
+            var walker = GetTreeWalker(session.Automation, request.TreeView);
+            if (topLevelOnly)
+            {
+                var children = new List<AutomationElement>();
+                try
+                {
+                    var child = walker.GetFirstChild(root);
+                    while (child != null)
+                    {
+                        children.Add(child);
+                        child = walker.GetNextSibling(child);
+                    }
+                }
+                catch { }
+                return children;
+            }
+            return FindDescendantsWithWalker(root, depth, walker);
+        }
+
+        // ── TopLevelOnly ─────────────────────────────────────────────────────
+        if (topLevelOnly)
+            return root.FindAllChildren().ToList();
+
+        // ── ControlType-scoped descendants ──────────────────────────────────
+        if (!string.IsNullOrWhiteSpace(locator.ControlType))
+        {
+            try
+            {
+                var ct = ParseControlType(locator.ControlType);
+                return root.FindAllDescendants(
+                    session.Automation.ConditionFactory.ByControlType(ct)).ToList();
+            }
+            catch
+            {
+                return [];
+            }
+        }
+
+        // ── All descendants with optional depth cap ──────────────────────────
+        return FindDescendantsUpToDepth(root, depth);
+    }
+
+    private List<AutomationElement> ApplyLocatorFilters(
+        List<AutomationElement> candidates,
+        UiLocator locator)
+    {
+        var filtered = new List<AutomationElement>();
+        foreach (var c in candidates)
+        {
+            // controlType
+            if (!string.IsNullOrWhiteSpace(locator.ControlType))
+            {
+                var ct = SafeElementControlType(c);
+                if (!string.Equals(ct, locator.ControlType, StringComparison.OrdinalIgnoreCase))
+                    continue;
+            }
+
+            // className (non-regex)
+            if (!string.IsNullOrWhiteSpace(locator.ClassName))
+            {
+                var cn = SafeElementClassName(c);
+                var mode = locator.ClassNameMatchMode ?? locator.MatchMode;
+                if (!StringMatchesByMode(cn, locator.ClassName, mode, caseSensitive: false))
+                    continue;
+            }
+
+            // processId
+            if (locator.ProcessId.HasValue)
+            {
+                var pid = SafeProcessId(c);
+                if (pid != locator.ProcessId.Value)
+                    continue;
+            }
+
+            // frameworkId
+            if (!string.IsNullOrWhiteSpace(locator.FrameworkId))
+            {
+                var fwId = SafeFrameworkId(c);
+                if (!string.Equals(fwId, locator.FrameworkId, StringComparison.OrdinalIgnoreCase))
+                    continue;
+            }
+
+            // runtimeId
+            if (!string.IsNullOrWhiteSpace(locator.RuntimeId))
+            {
+                var rtId = SafeRuntimeIdString(c);
+                if (!string.Equals(rtId, locator.RuntimeId, StringComparison.Ordinal))
+                    continue;
+            }
+
+            // name (non-regex)
+            if (!string.IsNullOrWhiteSpace(locator.Name))
+            {
+                var name = SafeElementName(c);
+                var mode = locator.NameMatchMode ?? locator.MatchMode;
+                if (!StringMatchesByMode(name, locator.Name, mode, caseSensitive: true))
+                    continue;
+            }
+
+            // automationId (non-regex)
+            if (!string.IsNullOrWhiteSpace(locator.AutomationId))
+            {
+                var aid = SafeElementAutomationId(c);
+                var mode = locator.AutomationIdMatchMode ?? locator.MatchMode;
+                if (!StringMatchesByMode(aid, locator.AutomationId, mode, caseSensitive: true))
+                    continue;
+            }
+
+            filtered.Add(c);
+        }
+        return filtered;
+    }
+
+    private List<AutomationElement> ApplyRegexFilters(
+        List<AutomationElement> candidates,
+        UiLocator locator)
+    {
+        var filtered = new List<AutomationElement>();
+        foreach (var c in candidates)
+        {
+            // nameRegex
+            if (!string.IsNullOrWhiteSpace(locator.NameRegex))
+            {
+                var name = SafeElementName(c);
+                if (!SafeRegexIsMatch(name, locator.NameRegex))
+                    continue;
+            }
+
+            // automationIdRegex
+            if (!string.IsNullOrWhiteSpace(locator.AutomationIdRegex))
+            {
+                var aid = SafeElementAutomationId(c);
+                if (!SafeRegexIsMatch(aid, locator.AutomationIdRegex))
+                    continue;
+            }
+
+            // classNameRegex
+            if (!string.IsNullOrWhiteSpace(locator.ClassNameRegex))
+            {
+                var cn = SafeElementClassName(c);
+                if (!SafeRegexIsMatch(cn, locator.ClassNameRegex))
+                    continue;
+            }
+
+            filtered.Add(c);
+        }
+        return filtered;
+    }
+
+    private List<AutomationElement> ApplyValueFilters(
+        List<AutomationElement> candidates,
+        UiLocator locator)
+    {
+        var filtered = new List<AutomationElement>();
+        foreach (var c in candidates)
+        {
+            // value (non-regex)
+            if (!string.IsNullOrWhiteSpace(locator.Value))
+            {
+                var val = SafeElementValue(c);
+                var mode = locator.ValueMatchMode ?? locator.MatchMode;
+                if (!StringMatchesByMode(val, locator.Value, mode, caseSensitive: false))
+                    continue;
+            }
+
+            // valueRegex
+            if (!string.IsNullOrWhiteSpace(locator.ValueRegex))
+            {
+                var val = SafeElementValue(c);
+                if (!SafeRegexIsMatch(val, locator.ValueRegex))
+                    continue;
+            }
+
+            // text
+            if (!string.IsNullOrWhiteSpace(locator.Text))
+            {
+                var text = SafeElementText(c);
+                var mode = locator.TextMatchMode ?? locator.MatchMode;
+                if (!StringMatchesByMode(text, locator.Text, mode, caseSensitive: false))
+                    continue;
+            }
+
+            filtered.Add(c);
+        }
+        return filtered;
+    }
+
+    private List<AutomationElement> ApplyStateFilters(
+        List<AutomationElement> candidates,
+        UiLocator locator)
+    {
+        var filtered = new List<AutomationElement>();
+        foreach (var c in candidates)
+        {
+            // visible / offscreen
+            if (locator.Visible.HasValue)
+            {
+                var offscreen = SafeIsOffscreen(c) ?? false;
+                var visible = !offscreen;
+                if (visible != locator.Visible.Value)
+                    continue;
+            }
+
+            if (locator.Offscreen.HasValue)
+            {
+                var offscreen = SafeIsOffscreen(c) ?? false;
+                if (offscreen != locator.Offscreen.Value)
+                    continue;
+            }
+
+            // enabled
+            if (locator.Enabled.HasValue)
+            {
+                var enabled = SafeIsEnabled(c) ?? false;
+                if (enabled != locator.Enabled.Value)
+                    continue;
+            }
+
+            filtered.Add(c);
+        }
+        return filtered;
+    }
+
+    private List<AutomationElement> ApplyIndexFilters(
+        List<AutomationElement> candidates,
+        UiLocator locator,
+        bool isRawPreFilter)
+    {
+        if (isRawPreFilter)
+        {
+            if (locator.CtrlIndex.HasValue)
+            {
+                var ctrlIdx = locator.CtrlIndex.Value;
+                if (ctrlIdx >= 0 && ctrlIdx < candidates.Count)
+                    return [candidates[ctrlIdx]];
+                return [];
+            }
+        }
+        else
+        {
+            if (locator.FoundIndex.HasValue)
+            {
+                var foundIdx = locator.FoundIndex.Value;
+                if (foundIdx >= 0 && foundIdx < candidates.Count)
+                    return [candidates[foundIdx]];
+                return [];
+            }
+        }
+        return candidates;
+    }
+
+    private List<ElementCandidateDto> BuildNearMatchDiagnostics(
+        List<AutomationElement> candidates,
+        UiLocator locator)
+    {
+        return BuildCandidateDtos(candidates.Take(10).ToList(), locator);
     }
 
     /// <summary>
@@ -268,8 +766,8 @@ public partial class UiService
         bool allowDesktopSearch = false,
         bool allowOffscreen     = true)
     {
-        if (locator == null)
-            throw new ArgumentException("'locator' is required for this operation.");
+        if (locator == null && (request.LocatorPath == null || request.LocatorPath.Count == 0))
+            throw new ArgumentException("'locator' or 'locatorPath' is required for this operation.");
 
         var session  = RequireSession();
         var policy   = GetOperationPolicy(request);
@@ -282,7 +780,7 @@ public partial class UiService
         var xpathOnly        = request.XPathOnly == true;
 
         string? cacheKey = null;
-        if (policy.UseElementCache && !policy.RefreshRootEveryRetry && !NeedsNewStyleSearch(locator))
+        if (locator != null && policy.UseElementCache && !policy.RefreshRootEveryRetry && !NeedsNewStyleSearch(locator))
         {
             var root = GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan);
             cacheKey = BuildElementCacheKey(
@@ -293,13 +791,13 @@ public partial class UiService
         }
 
         if (cacheKey != null &&
-            TryGetCachedElement(cacheKey, locator, out var cached) &&
+            TryGetCachedElement(cacheKey, locator!, out var cached) &&
             cached != null)
         {
             _logger.LogInformation(
                 "UI locator resolved (engine). operation={Operation}, strategy=cache, locator={Locator}",
                 SanitizeValue(request.Operation),
-                DescribeLocator(locator));
+                DescribeLocator(locator!));
             return cached;
         }
 
@@ -327,9 +825,14 @@ public partial class UiService
                     lastResult.Strategy,
                     lastResult.RootStrategy,
                     sw.ElapsedMilliseconds,
-                    DescribeLocator(locator));
+                    DescribeLocator(locator ?? new UiLocator()));
 
                 return lastResult.Element;
+            }
+
+            if (lastResult.Strategy == "ambiguity-error")
+            {
+                throw new InvalidOperationException(lastResult.Errors.FirstOrDefault() ?? "ElementAmbiguous: Multiple matching elements found.");
             }
 
             if (DateTime.UtcNow >= deadline)
@@ -342,7 +845,13 @@ public partial class UiService
                     lastResult.Strategy,
                     lastResult.RootStrategy,
                     sw.ElapsedMilliseconds,
-                    DescribeLocator(locator));
+                    DescribeLocator(locator ?? new UiLocator()));
+
+                var specialErr = lastResult.Errors.FirstOrDefault(e => e.StartsWith("ElementNotFound") || e.StartsWith("ElementAmbiguous"));
+                if (specialErr != null)
+                {
+                    throw new InvalidOperationException(specialErr);
+                }
 
                 throw new InvalidOperationException(BuildElementNotFoundMessage(lastResult, policy));
             }
@@ -374,6 +883,7 @@ public partial class UiService
         if (locator.FrameworkId != null)      return true;
         if (locator.RuntimeId != null)        return true;
         if (locator.Value != null)            return true;
+        if (locator.ValueRegex != null)       return true;
         if (locator.Text != null)             return true;
         if (locator.Visible.HasValue)         return true;
         if (locator.Enabled.HasValue)         return true;
@@ -384,6 +894,10 @@ public partial class UiService
         if (locator.TopLevelOnly == true)     return true;
         if (locator.ActiveOnly.HasValue)      return true;
         if (locator.IncludeOffscreen.HasValue) return true;
+        if (locator.NameRegex != null)         return true;
+        if (locator.AutomationIdRegex != null) return true;
+        if (locator.ClassNameRegex != null)    return true;
+        if (locator.BestMatch != null)         return true;
 
         // Non-exact match modes
         static bool IsNonExact(string? mode) =>
@@ -463,6 +977,7 @@ public partial class UiService
 
     // Default cap to avoid traversing the entire desktop tree unboundedly.
     private const int DefaultCandidateSearchDepth = 20;
+    private const int BestMatchMinimumThreshold = 50;
 
     /// <summary>
     /// BFS traversal of the UIA tree up to <paramref name="maxDepth"/> levels.

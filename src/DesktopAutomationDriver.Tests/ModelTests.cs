@@ -133,4 +133,46 @@ public class ModelTests
             new[] { "Tag1", "Level 17" },
             requestedPath));
     }
+
+    [Fact]
+    public void UiLocator_NewPywinautoFields_CanBeSet()
+    {
+        var locator = new UiLocator
+        {
+            NameRegex = "^[A-Z]+$",
+            AutomationIdRegex = "btn_.*",
+            ClassNameRegex = "Windows.*",
+            ValueRegex = "val_.*",
+            BestMatch = "ClickMe"
+        };
+        Assert.Equal("^[A-Z]+$", locator.NameRegex);
+        Assert.Equal("btn_.*", locator.AutomationIdRegex);
+        Assert.Equal("Windows.*", locator.ClassNameRegex);
+        Assert.Equal("val_.*", locator.ValueRegex);
+        Assert.Equal("ClickMe", locator.BestMatch);
+    }
+
+    [Fact]
+    public void UiRequest_NewPywinautoFields_CanBeSet()
+    {
+        var request = new UiRequest
+        {
+            LocatorPath = new List<UiLocator> { new UiLocator { Name = "Parent" } },
+            SearchRoot = "desktop",
+            TreeView = "raw",
+            Backend = "uia",
+            ReturnCandidates = true,
+            Debug = true,
+            Ambiguity = "error"
+        };
+        Assert.NotNull(request.LocatorPath);
+        Assert.Single(request.LocatorPath);
+        Assert.Equal("Parent", request.LocatorPath[0].Name);
+        Assert.Equal("desktop", request.SearchRoot);
+        Assert.Equal("raw", request.TreeView);
+        Assert.Equal("uia", request.Backend);
+        Assert.True(request.ReturnCandidates);
+        Assert.True(request.Debug);
+        Assert.Equal("error", request.Ambiguity);
+    }
 }
