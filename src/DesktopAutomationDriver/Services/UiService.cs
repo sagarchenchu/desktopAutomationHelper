@@ -21,7 +21,7 @@ namespace DesktopAutomationDriver.Services;
 /// All element-locating operations include a built-in retry of up to 5 seconds
 /// (500 ms polling interval) so that callers do not need to add their own waits.
 /// </summary>
-public class UiService : IUiService
+public partial class UiService : IUiService
 {
     private readonly IUiSessionContext _ctx;
     private readonly ILogger<UiService> _logger;
@@ -39,6 +39,10 @@ public class UiService : IUiService
     /// the left-button input events are sent.
     /// </summary>
     private const int CursorPositionStabilityDelayMs = 30;
+    private const int DragMoveToStartDelayMs = 120;
+    private const int DragMouseDownHoldDelayMs = 200;
+    private const int DragMouseUpSettleDelayMs = 120;
+    private const int DragMinimumStepDelayMs = 15;
     private const string ClearSelectAllBackspaceKeys = "^a{BACKSPACE}";
     private const string ClearSelectAllDeleteKeys = "^a{DELETE}";
     private const int MenuExpandDelayMs = 250;
@@ -245,6 +249,13 @@ public class UiService : IUiService
                 "listtrackedwindows" => ListTrackedWindows(),
                 "getcurrentroot" => GetCurrentRoot(request),
                 "findlocator"    => FindLocatorDebug(request),
+                "inspectlocator" => FindLocatorDebug(request),
+                "findall"        => FindAll(request),
+
+                // ----- Open dropdown item operations -----
+                "listopendropdownitems"   => ListOpenDropdownItems(request),
+                "selectopendropdownitem"  => SelectOpenDropdownItem(request),
+                "clickopendropdownitem"   => SelectOpenDropdownItem(request),
 
                 // ----- Element Query -----
                 "exists"         => Exists(request),
@@ -1784,7 +1795,7 @@ public class UiService : IUiService
 
     private object? GetValue(UiRequest req)
     {
-        var element = FindWithRetry(req);
+        var element = ResolveElementOrThrow(req, req.Locator, purpose: "getvalue");
 
         if (element.Patterns.Value.IsSupported)
             return new { value = element.Patterns.Value.Pattern.Value ?? string.Empty };
@@ -1797,7 +1808,7 @@ public class UiService : IUiService
 
     private object? GetText(UiRequest req)
     {
-        var element = FindWithRetry(req);
+        var element = ResolveElementOrThrow(req, req.Locator, purpose: "gettext");
         const int MaxText = 1_048_576;
 
         try
@@ -2000,7 +2011,7 @@ public class UiService : IUiService
 
     private object? Click(UiRequest req)
     {
-        var element = FindWithRetry(req);
+        var element = ResolveElementOrThrow(req, req.Locator, purpose: "click");
 
         if (element.ControlType == ControlType.MenuItem)
             return ClickMenuItem(element, req);
@@ -2227,15 +2238,59 @@ public class UiService : IUiService
 
     private object? FindLocatorDebug(UiRequest req)
     {
+        var locator = req.Locator;
+        if (locator == null)
+            throw new ArgumentException("'locator' is required for findlocator/inspectlocator.");
+
         var session = RequireSession();
-        var root = GetWindowRoot(session);
-        var element = FindLocatorWithRetry(session, root, RequireLocator(req));
+
+        // Use the central resolver with diagnostics
+        var result = ResolveElement(
+            req, locator,
+            purpose:            "findlocator",
+            allowDesktopSearch: req.UseDesktopRoot == true,
+            allowOffscreen:     true,
+            returnAllCandidates: true);
+
+        if (result.Element != null)
+            return new
+            {
+                found        = true,
+                strategy     = result.Strategy,
+                rootStrategy = result.RootStrategy,
+                element      = CreateElementSnapshot(result.Element),
+                candidates   = result.Candidates,
+                ambiguous    = result.Ambiguous
+            };
+
+        // Legacy fallback: try the old path for backward compatibility
+        try
+        {
+            var root    = GetWindowRoot(session);
+            var element = FindLocatorWithRetry(session, root, locator);
+            return new
+            {
+                found        = true,
+                strategy     = "legacy-fallback",
+                rootStrategy = "app-main-window",
+                element      = CreateElementSnapshot(element),
+                candidates   = Array.Empty<object>(),
+                ambiguous    = false
+            };
+        }
+        catch
+        {
+            // Not found even via legacy path
+        }
 
         return new
         {
-            found = true,
-            root = CreateElementSnapshot(root),
-            element = CreateElementSnapshot(element)
+            found        = false,
+            strategy     = result.Strategy,
+            rootStrategy = result.RootStrategy,
+            errors       = result.Errors,
+            candidates   = result.Candidates,
+            locator      = DescribeLocatorAsObject(locator)
         };
     }
 
@@ -2388,13 +2443,13 @@ public class UiService : IUiService
 
     private object? DoubleClick(UiRequest req)
     {
-        FindWithRetry(req).DoubleClick();
+        ResolveElementOrThrow(req, req.Locator, purpose: "doubleclick").DoubleClick();
         return null;
     }
 
     private object? RightClick(UiRequest req)
     {
-        var element = FindWithRetry(req);
+        var element = ResolveElementOrThrow(req, req.Locator, purpose: "rightclick");
 
         BringElementWindowToForeground(element);
         Thread.Sleep(WindowActivationDelayMs);
@@ -5257,7 +5312,11 @@ public class UiService : IUiService
         switch (action)
         {
             case "move":
-                SetCursorPos(x!.Value, y!.Value);
+                if (!SendMouseMoveTo(x!.Value, y!.Value))
+                {
+                    throw new InvalidOperationException(
+                        $"'mouse' action 'move' failed. x={x.Value}, y={y.Value}");
+                }
                 break;
 
             case "down":
@@ -5405,51 +5464,91 @@ public class UiService : IUiService
             _        => MOUSEEVENTF_LEFTUP
         };
 
+        var buttonIsDown = false;
+
         try
         {
-            if (steps < 1)
-                steps = 1;
+            steps = Math.Max(steps, 1);
+            durationMs = Math.Max(durationMs, 0);
+
+            _logger.LogInformation(
+                "PerformPhysicalDrag starting. start=({StartX},{StartY}), end=({EndX},{EndY}), button={Button}, durationMs={DurationMs}, steps={Steps}",
+                start.X,
+                start.Y,
+                end.X,
+                end.Y,
+                button,
+                durationMs,
+                steps);
 
             if (!SetCursorPos(start.X, start.Y))
             {
                 _logger.LogWarning(
-                    "PerformPhysicalDrag: SetCursorPos to start ({X},{Y}) failed. LastError={Error}",
-                    start.X, start.Y, Marshal.GetLastWin32Error());
-                return false;
-            }
-
-            Thread.Sleep(75);
-
-            if (!SendMouseInput(btnDown))
-            {
-                _logger.LogWarning(
-                    "PerformPhysicalDrag: SendInput (DOWN) failed. LastError={Error}",
+                    "PerformPhysicalDrag: SetCursorPos start failed. start=({StartX},{StartY}), lastError={LastError}",
+                    start.X,
+                    start.Y,
                     Marshal.GetLastWin32Error());
+
                 return false;
             }
 
-            Thread.Sleep(75);
+            Thread.Sleep(DragMoveToStartDelayMs);
+
+            if (!SendMouseInputChecked(btnDown, $"drag-{button}-down"))
+            {
+                return false;
+            }
+
+            buttonIsDown = true;
+
+            // Important for splitter resize: app needs time to enter capture/resize mode.
+            Thread.Sleep(DragMouseDownHoldDelayMs);
+
+            var stepDelay = Math.Max(DragMinimumStepDelayMs, durationMs / steps);
 
             for (var i = 1; i <= steps; i++)
             {
                 var t = i / (double)steps;
+
                 var x = (int)Math.Round(start.X + ((end.X - start.X) * t));
                 var y = (int)Math.Round(start.Y + ((end.Y - start.Y) * t));
 
-                SetCursorPos(x, y);
+                // Use SendInput mouse move instead of only SetCursorPos.
+                if (!SendMouseMoveTo(x, y))
+                {
+                    _logger.LogWarning(
+                        "PerformPhysicalDrag: SendMouseMoveTo failed at step {Step}/{Steps}. point=({X},{Y}), lastError={LastError}",
+                        i,
+                        steps,
+                        x,
+                        y,
+                        Marshal.GetLastWin32Error());
 
-                if (durationMs > 0)
-                    Thread.Sleep(Math.Max(1, durationMs / steps));
+                    // fallback to SetCursorPos, but still keep button down
+                    SetCursorPos(x, y);
+                }
+
+                Thread.Sleep(stepDelay);
             }
 
-            Thread.Sleep(75);
+            Thread.Sleep(DragMouseUpSettleDelayMs);
 
-            if (!SendMouseInput(btnUp))
+            if (!SendMouseInputChecked(btnUp, $"drag-{button}-up"))
             {
-                _logger.LogWarning(
-                    "PerformPhysicalDrag: SendInput (UP) failed. LastError={Error}",
-                    Marshal.GetLastWin32Error());
+                return false;
             }
+
+            buttonIsDown = false;
+
+            Thread.Sleep(DragMouseUpSettleDelayMs);
+
+            _logger.LogInformation(
+                "PerformPhysicalDrag completed. start=({StartX},{StartY}), end=({EndX},{EndY}), button={Button}",
+                start.X,
+                start.Y,
+                end.X,
+                end.Y,
+                button);
 
             return true;
         }
@@ -5457,23 +5556,29 @@ public class UiService : IUiService
         {
             _logger.LogWarning(
                 ex,
-                "PerformPhysicalDrag: physical drag failed. start=({StartX},{StartY}), end=({EndX},{EndY})",
+                "PerformPhysicalDrag failed. start=({StartX},{StartY}), end=({EndX},{EndY}), button={Button}",
                 start.X,
                 start.Y,
                 end.X,
-                end.Y);
-
-            try
-            {
-                // Ensure button is not stuck down.
-                SendMouseInput(btnUp);
-            }
-            catch
-            {
-                // ignored
-            }
+                end.Y,
+                button);
 
             return false;
+        }
+        finally
+        {
+            if (buttonIsDown)
+            {
+                try
+                {
+                    _logger.LogWarning("PerformPhysicalDrag cleanup: mouse button still down, sending button up. button={Button}", button);
+                    SendMouseInput(btnUp);
+                }
+                catch
+                {
+                    // ignored
+                }
+            }
         }
     }
 
@@ -5571,6 +5676,113 @@ public class UiService : IUiService
         };
 
         return SendInput((uint)input.Length, input, Marshal.SizeOf<INPUT>()) == input.Length;
+    }
+
+    /// <summary>
+    /// Sends a single mouse input event via SendInput and logs success or failure.
+    /// </summary>
+    private bool SendMouseInputChecked(uint dwFlags, string actionName)
+    {
+        var input = new[]
+        {
+            new INPUT
+            {
+                type = INPUT_MOUSE,
+                U    = new InputUnion
+                {
+                    mi = new MOUSEINPUT
+                    {
+                        dx          = 0,
+                        dy          = 0,
+                        mouseData   = 0,
+                        dwFlags     = dwFlags,
+                        time        = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            }
+        };
+
+        var sent = SendInput((uint)input.Length, input, Marshal.SizeOf<INPUT>());
+
+        if (sent != input.Length)
+        {
+            var error = Marshal.GetLastWin32Error();
+
+            _logger.LogWarning(
+                "SendMouseInput failed. action={ActionName}, flags={Flags}, sent={Sent}, expected={Expected}, lastError={LastError}",
+                actionName,
+                dwFlags,
+                sent,
+                input.Length,
+                error);
+
+            return false;
+        }
+
+        _logger.LogDebug(
+            "SendMouseInput succeeded. action={ActionName}, flags={Flags}, sent={Sent}",
+            actionName,
+            dwFlags,
+            sent);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Moves the cursor to the given screen coordinates via <see cref="SetCursorPos"/> and then
+    /// delivers a <c>MOUSEEVENTF_MOVE</c> event via <see cref="SendInput"/> so that the target
+    /// application receives a genuine WM_MOUSEMOVE while any button is held down.
+    /// </summary>
+    private bool SendMouseMoveTo(int x, int y)
+    {
+        if (!SetCursorPos(x, y))
+        {
+            _logger.LogWarning(
+                "SendMouseMoveTo: SetCursorPos failed. x={X}, y={Y}, lastError={LastError}",
+                x,
+                y,
+                Marshal.GetLastWin32Error());
+
+            return false;
+        }
+
+        var input = new[]
+        {
+            new INPUT
+            {
+                type = INPUT_MOUSE,
+                U    = new InputUnion
+                {
+                    mi = new MOUSEINPUT
+                    {
+                        dx          = 0,
+                        dy          = 0,
+                        mouseData   = 0,
+                        dwFlags     = MOUSEEVENTF_MOVE,
+                        time        = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            }
+        };
+
+        var sent = SendInput((uint)input.Length, input, Marshal.SizeOf<INPUT>());
+
+        if (sent != input.Length)
+        {
+            _logger.LogWarning(
+                "SendMouseMoveTo: SendInput MOVE failed. x={X}, y={Y}, sent={Sent}, expected={Expected}, lastError={LastError}",
+                x,
+                y,
+                sent,
+                input.Length,
+                Marshal.GetLastWin32Error());
+
+            return false;
+        }
+
+        return true;
     }
 
     // =========================================================================
@@ -6815,7 +7027,7 @@ public class UiService : IUiService
         if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("value is required for selectheaderdropdownitem.");
 
-        var header = FindWithRetry(req);
+        var header = ResolveElementOrThrow(req, req.Locator, purpose: "selectheaderdropdownitem");
 
         if (!GridHeaderDropdownHelper.IsGridHeaderElement(header))
         {
@@ -7485,7 +7697,11 @@ public class UiService : IUiService
             "uncheck" or
             "select" or
             "typedate" or
-            "rightclick";
+            "rightclick" or
+            "doubleclick" or
+            "findall" or
+            "findlocator" or
+            "inspectlocator";
     }
 
     private static bool IsSlowWindowOperation(string op)
@@ -7506,6 +7722,8 @@ public class UiService : IUiService
             "contextmenupath" or
             "openheaderdropdown" or
             "selectheaderdropdownitem" or
+            "selectopendropdownitem" or
+            "clickopendropdownitem" or
             "gettable" or
             "gettableheaders" or
             "selectdynamicmenuitem" or
@@ -8612,78 +8830,16 @@ public class UiService : IUiService
     /// <list type="bullet">
     ///   <item>Does not require a clickable point.</item>
     ///   <item>Allows offscreen elements.</item>
-    ///   <item>Applies ComboBox-relaxed fallback strategies when strict lookup fails.</item>
+    ///   <item>Delegates to the central engine resolver so that all new locator
+    ///         fields (value, text, matchMode, foundIndex, etc.) are supported.</item>
     /// </list>
     /// Throws <see cref="InvalidOperationException"/> when the element cannot be found.
     /// </summary>
     private ResolvedElement ResolveForStateQuery(UiRequest request)
     {
-        var locator = RequireLocator(request);
-        var session = RequireSession();
-        var root    = GetWindowRoot(session, allowDesktopPopupScan: false);
-
-        // Narrow search scope when a parent locator is given.
-        var searchRoot = root;
-        if (request.ParentLocator != null)
-        {
-            var parentResult = TryFindElementBySmartStrategy(
-                root, session, request.ParentLocator,
-                preferAttributes: true, xpathOnly: false);
-
-            if (parentResult.Element != null)
-                searchRoot = parentResult.Element;
-            else if (request.FallbackToWindowRootIfParentChildNotFound != true)
-                throw new InvalidOperationException(
-                    $"Parent locator not found: {DescribeLocator(request.ParentLocator)}");
-        }
-
-        // 1. Standard smart lookup (attributes preferred, allows offscreen).
-        var result = TryFindElementBySmartStrategy(
-            searchRoot, session, locator,
-            preferAttributes: true, xpathOnly: false);
-
-        if (result.Element != null)
-            return new ResolvedElement { Element = result.Element, Strategy = result.Strategy };
-
-        // 2. ComboBox-specific relaxed fallback.
-        if (string.Equals(locator.ControlType, "ComboBox", StringComparison.OrdinalIgnoreCase) &&
-            !string.IsNullOrWhiteSpace(locator.AutomationId))
-        {
-            var cf = session.Automation.ConditionFactory;
-            var candidate = searchRoot.FindFirstDescendant(
-                cf.ByAutomationId(locator.AutomationId));
-
-            if (candidate != null)
-            {
-                // Found exactly a ComboBox.
-                if (candidate.ControlType == ControlType.ComboBox)
-                    return new ResolvedElement
-                    {
-                        Element  = candidate,
-                        Strategy = "combobox-automationid-relaxed"
-                    };
-
-                // Found an Edit or other child — walk ancestors for ComboBox.
-                var ancestor = TryFindComboBoxAncestor(candidate);
-                if (ancestor != null)
-                    return new ResolvedElement
-                    {
-                        Element  = ancestor,
-                        Strategy = "combobox-ancestor-relaxed"
-                    };
-
-                // No ComboBox ancestor found; return the found element under a
-                // relaxed strategy so callers can still read its state.
-                return new ResolvedElement
-                {
-                    Element  = candidate,
-                    Strategy = "combobox-relaxed-found-non-combobox"
-                };
-            }
-        }
-
-        throw new InvalidOperationException(
-            $"Element not found for state query: {DescribeLocator(locator)}");
+        // Delegate to the central resolver; it handles ParentLocator, ComboBox fallback,
+        // and all new pywinauto-style locator fields.
+        return ResolveForStateQueryViaEngine(request);
     }
 
     /// <summary>
@@ -9246,6 +9402,15 @@ public class UiService : IUiService
         if (!string.IsNullOrWhiteSpace(l.AutomationId))   parts.Add($"automationId='{l.AutomationId}'");
         if (!string.IsNullOrWhiteSpace(l.ClassName))      parts.Add($"className='{l.ClassName}'");
         if (!string.IsNullOrWhiteSpace(l.ControlType))    parts.Add($"controlType='{l.ControlType}'");
+        if (l.Hwnd.HasValue)                               parts.Add($"hwnd={l.Hwnd.Value}");
+        if (l.ProcessId.HasValue)                          parts.Add($"processId={l.ProcessId.Value}");
+        if (!string.IsNullOrWhiteSpace(l.Value))           parts.Add($"value='{l.Value}'");
+        if (!string.IsNullOrWhiteSpace(l.Text))            parts.Add($"text='{l.Text}'");
+        if (!string.IsNullOrWhiteSpace(l.MatchMode))       parts.Add($"matchMode='{l.MatchMode}'");
+        if (l.FoundIndex.HasValue)                         parts.Add($"foundIndex={l.FoundIndex.Value}");
+        if (l.CtrlIndex.HasValue)                          parts.Add($"ctrlIndex={l.CtrlIndex.Value}");
+        if (l.Depth.HasValue)                              parts.Add($"depth={l.Depth.Value}");
+        if (l.TopLevelOnly == true)                        parts.Add("topLevelOnly=true");
         return string.Join(", ", parts);
     }
 
@@ -9260,7 +9425,17 @@ public class UiService : IUiService
             name         = locator.Name,
             controlType  = locator.ControlType,
             className    = locator.ClassName,
-            xpath        = locator.XPath
+            xpath        = locator.XPath,
+            hwnd         = locator.Hwnd,
+            processId    = locator.ProcessId,
+            value        = locator.Value,
+            text         = locator.Text,
+            matchMode    = locator.MatchMode,
+            foundIndex   = locator.FoundIndex,
+            ctrlIndex    = locator.CtrlIndex,
+            depth        = locator.Depth,
+            topLevelOnly = locator.TopLevelOnly,
+            frameworkId  = locator.FrameworkId
         };
     }
 
@@ -15946,6 +16121,18 @@ public class UiService : IUiService
         if (!string.IsNullOrWhiteSpace(locator.XPath))
             parts.Append("xpath=").Append(SanitizeValue(locator.XPath)).Append(' ');
 
+        if (locator.Hwnd.HasValue)
+            parts.Append("hwnd=").Append(locator.Hwnd.Value).Append(' ');
+
+        if (!string.IsNullOrWhiteSpace(locator.Value))
+            parts.Append("value=").Append(SanitizeValue(locator.Value)).Append(' ');
+
+        if (!string.IsNullOrWhiteSpace(locator.Text))
+            parts.Append("text=").Append(SanitizeValue(locator.Text)).Append(' ');
+
+        if (!string.IsNullOrWhiteSpace(locator.MatchMode))
+            parts.Append("matchMode=").Append(SanitizeValue(locator.MatchMode)).Append(' ');
+
         return parts.Length > 0 ? parts.ToString().TrimEnd() : "(empty)";
     }
 
@@ -15981,6 +16168,7 @@ public class UiService : IUiService
     private const uint MOUSEEVENTF_RIGHTUP    = 0x0010;
     private const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
     private const uint MOUSEEVENTF_MIDDLEUP   = 0x0040;
+    private const uint MOUSEEVENTF_MOVE       = 0x0001;
     private const uint MOUSEEVENTF_WHEEL      = 0x0800;
     private const uint MOUSEEVENTF_HWHEEL     = 0x1000;
     private const uint GA_ROOT = 2;
