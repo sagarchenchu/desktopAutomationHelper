@@ -16,11 +16,20 @@ public class UiLocator
     /// <summary>UIA Name property (element label).</summary>
     public string? Name { get; set; }
 
+    /// <summary>Regex pattern to match on Name.</summary>
+    public string? NameRegex { get; set; }
+
     /// <summary>UIA AutomationId property.</summary>
     public string? AutomationId { get; set; }
 
+    /// <summary>Regex pattern to match on AutomationId.</summary>
+    public string? AutomationIdRegex { get; set; }
+
     /// <summary>UIA ClassName property.</summary>
     public string? ClassName { get; set; }
+
+    /// <summary>Regex pattern to match on ClassName.</summary>
+    public string? ClassNameRegex { get; set; }
 
     /// <summary>
     /// UIA control type string, e.g. "Button", "Edit", "ComboBox", "CheckBox", "Text".
@@ -66,6 +75,9 @@ public class UiLocator
     /// Matched using <see cref="ValueMatchMode"/> (default: exact).
     /// </summary>
     public string? Value { get; set; }
+
+    /// <summary>Regex pattern to match on ValuePattern.Value.</summary>
+    public string? ValueRegex { get; set; }
 
     /// <summary>
     /// Match on TextPattern content or element Name when TextPattern is not available.
@@ -149,4 +161,7 @@ public class UiLocator
 
     /// <summary>ARIA role or UIA LocalizedControlType hint. Reserved for future matching.</summary>
     public string? Role { get; set; }
+
+    /// <summary>Name hint used for best-match scoring.</summary>
+    public string? BestMatch { get; set; }
 }
