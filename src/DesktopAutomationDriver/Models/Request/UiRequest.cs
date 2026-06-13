@@ -356,4 +356,56 @@ public class UiRequest
     /// Defaults to 200 ms.
     /// </summary>
     public int? PollIntervalMs { get; set; }
+
+    // -------------------------------------------------------------------------
+    // Central resolver search options (Phase 1.2)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// When true, the resolver returns all matching candidates instead of just the first.
+    /// Used by the 'findall' operation and diagnostic queries.
+    /// </summary>
+    public bool? ReturnAllMatches { get; set; }
+
+    /// <summary>
+    /// Maximum number of candidates to return when <see cref="ReturnAllMatches"/> is true.
+    /// Defaults to 500.
+    /// </summary>
+    public int? MaxMatches { get; set; }
+
+    /// <summary>
+    /// When true, the response includes a diagnostics block with candidate summaries,
+    /// root strategy, errors, and candidate count even on success.
+    /// </summary>
+    public bool? IncludeDiagnostics { get; set; }
+
+    /// <summary>
+    /// When true, the resolver may return the best-scoring partial match when no exact match exists.
+    /// Requires <see cref="BestMatch"/> to be set or the locator to supply enough hints for scoring.
+    /// </summary>
+    public bool? AllowBestMatch { get; set; }
+
+    /// <summary>
+    /// Name hint used for best-match scoring when <see cref="AllowBestMatch"/> is true.
+    /// </summary>
+    public string? BestMatch { get; set; }
+
+    /// <summary>
+    /// When true, the resolver uses the UIA desktop root as the search root,
+    /// enabling cross-process and cross-window element lookup.
+    /// </summary>
+    public bool? UseDesktopRoot { get; set; }
+
+    /// <summary>
+    /// When true, the resolver uses the current active (foreground) window root
+    /// regardless of the session's tracked active window.
+    /// </summary>
+    public bool? UseActiveWindowRoot { get; set; }
+
+    /// <summary>
+    /// When true, post-action verification failures do not throw; a warning is logged instead.
+    /// Useful for dropdowns and custom controls where state transitions are unreliable.
+    /// </summary>
+    public bool? SoftVerification { get; set; }
+
 }
