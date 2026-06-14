@@ -208,14 +208,12 @@ public partial class UiService : IUiService
             ["APPS"] = VirtualKeyShort.APPS,
         };
 
-    private readonly ElementResolver _elementResolver;
     private readonly UiElementResolver _uiElementResolver;
 
     public UiService(IUiSessionContext ctx, ILogger<UiService> logger, ILogger<ElementResolver> resolverLogger, ILogger<UiElementResolver> uiResolverLogger)
     {
         _ctx = ctx;
         _logger = logger;
-        _elementResolver = new ElementResolver(ctx, resolverLogger, GetWindowRoot);
         _uiElementResolver = new UiElementResolver(ctx, uiResolverLogger, GetWindowRoot);
     }
 
@@ -1797,7 +1795,7 @@ public partial class UiService : IUiService
 
     private object? IsChecked(UiRequest req)
     {
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(req, "ischecked");
 
         if (element.Patterns.Toggle.IsSupported)
             return new { @checked = element.Patterns.Toggle.Pattern.ToggleState == ToggleState.On };
@@ -1845,19 +1843,19 @@ public partial class UiService : IUiService
 
     private object? GetName(UiRequest req)
     {
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(req, "getname");
         return new { name = element.Name ?? string.Empty };
     }
 
     private object? GetControlType(UiRequest req)
     {
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(req, "getcontroltype");
         return new { controlType = element.ControlType.ToString() };
     }
 
     private object? GetSelected(UiRequest req)
     {
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(req, "getselected");
 
         if (element.Patterns.Selection.IsSupported)
         {
@@ -7284,7 +7282,7 @@ public partial class UiService : IUiService
         if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("value is required for selectdynamicmenupath.");
 
-        var parentMenuItem = FindWithRetry(req);
+        var parentMenuItem = ResolveElementForOperation(req, "selectdynamicmenupath");
         if (parentMenuItem.ControlType != ControlType.MenuItem)
         {
             _logger.LogWarning(
@@ -8562,12 +8560,19 @@ public partial class UiService : IUiService
         AutomationSession session, AutomationElement root, UiLocator locator)
     {
         var deadline = DateTime.UtcNow + DefaultRetry;
-        var options = new ResolveOptions();
+        var request = new UiRequest { Locator = locator };
         while (true)
         {
-            var resolved = _elementResolver.ResolveOne(locator, root, options);
-            if (resolved.Element != null)
-                return resolved.Element;
+            try
+            {
+                var resolved = _uiElementResolver.ResolveOne(request, locator, root, "findlocatorwithretry");
+                if (resolved.Element != null)
+                    return resolved.Element;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException || ex is DesktopAutomationDriver.Models.Resolver.UiResolutionException)
+            {
+                // Continue retrying
+            }
 
             if (DateTime.UtcNow >= deadline)
                 throw new InvalidOperationException(

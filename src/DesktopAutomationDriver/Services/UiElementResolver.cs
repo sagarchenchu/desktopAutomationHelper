@@ -69,7 +69,29 @@ public sealed class UiElementResolver
 
         if (candidates.Count == 0)
         {
+            var session = RequireSession();
+            var targetLocator = locator ?? request.Locator ?? new UiLocator();
+            var root = explicitRoot ?? ResolveSearchRoot(request, session);
             var diag = BuildNotFoundDiagnostics(request, locator, explicitRoot, purpose);
+            var rawCandidates = CollectCandidates(root, targetLocator, request, diag);
+            diag.CandidateCount = rawCandidates.Count;
+
+            var returnCandidates = request.ReturnCandidates == true || request.Debug == true || request.IncludeDiagnostics == true;
+            if (returnCandidates)
+            {
+                for (int i = 0; i < Math.Min(20, rawCandidates.Count); i++)
+                {
+                    var c = rawCandidates[i];
+                    diag.Candidates.Add(new ResolvedElement
+                    {
+                        Element = c,
+                        Strategy = "candidate",
+                        Score = 0,
+                        Index = i
+                    });
+                }
+            }
+
             var errMessage = FormatNotFoundError(diag, request, locator);
             throw new InvalidOperationException(errMessage);
         }
@@ -154,7 +176,7 @@ public sealed class UiElementResolver
         for (int i = 0; i < filteredCandidates.Count; i++)
         {
             var c = filteredCandidates[i];
-            var score = useBestMatch ? CalculateScore(c, targetPattern) : 100;
+            var score = useBestMatch ? CalculateScore(c, targetPattern, targetLocator) : 100;
 
             resolvedList.Add(new ResolvedElement
             {
@@ -819,63 +841,121 @@ public sealed class UiElementResolver
         }
     }
 
-    private static int CalculateScore(AutomationElement element, string targetPattern)
+    private static int CalculateScore(AutomationElement element, string targetPattern, UiLocator locator)
     {
-        if (string.IsNullOrWhiteSpace(targetPattern)) return 0;
-
-        var name = UiService.SafeElementName(element);
-        var aid = UiService.SafeElementAutomationId(element);
-        var className = UiService.SafeElementClassName(element);
-        var controlType = UiService.SafeElementControlType(element);
-        var value = UiService.SafeElementValue(element);
-        var text = UiService.SafeElementText(element);
-
-        var candidateFields = new[] { name, aid, className, controlType, value, text };
-
-        int maxScore = 0;
-        foreach (var field in candidateFields)
+        int score = 0;
+        if (!string.IsNullOrWhiteSpace(targetPattern))
         {
-            if (string.IsNullOrWhiteSpace(field)) continue;
+            var name = UiService.SafeElementName(element) ?? string.Empty;
+            var aid = UiService.SafeElementAutomationId(element) ?? string.Empty;
+            var className = UiService.SafeElementClassName(element) ?? string.Empty;
+            var controlType = UiService.SafeElementControlType(element) ?? string.Empty;
+            var value = UiService.SafeElementValue(element) ?? string.Empty;
+            var text = UiService.SafeElementText(element) ?? string.Empty;
 
-            int fieldScore = 0;
-            if (string.Equals(field, targetPattern, StringComparison.Ordinal))
+            // 1. Exact matches with specific weights (ordered descending):
+            // AutomationId exact: 100
+            int exactScore = 0;
+            if (string.Equals(aid, targetPattern, StringComparison.OrdinalIgnoreCase))
             {
-                fieldScore = 100;
+                exactScore = 100;
             }
-            else if (string.Equals(field, targetPattern, StringComparison.OrdinalIgnoreCase))
+            // name exact: 95
+            else if (string.Equals(name, targetPattern, StringComparison.OrdinalIgnoreCase))
             {
-                fieldScore = 90;
+                exactScore = 95;
             }
-            else if (field.StartsWith(targetPattern, StringComparison.OrdinalIgnoreCase))
+            // value exact: 90
+            else if (string.Equals(value, targetPattern, StringComparison.OrdinalIgnoreCase))
             {
-                fieldScore = 75;
+                exactScore = 90;
             }
-            else if (field.Contains(targetPattern, StringComparison.OrdinalIgnoreCase))
+            // text exact: 85
+            else if (string.Equals(text, targetPattern, StringComparison.OrdinalIgnoreCase))
             {
-                fieldScore = 60;
+                exactScore = 85;
+            }
+
+            // 2. Contains match fallback scoring (ordered descending):
+            int containsScore = 0;
+            if (aid.Contains(targetPattern, StringComparison.OrdinalIgnoreCase))
+            {
+                containsScore = 50;
+            }
+            else if (name.Contains(targetPattern, StringComparison.OrdinalIgnoreCase))
+            {
+                containsScore = 45;
+            }
+            else if (value.Contains(targetPattern, StringComparison.OrdinalIgnoreCase))
+            {
+                containsScore = 40;
+            }
+            else if (text.Contains(targetPattern, StringComparison.OrdinalIgnoreCase))
+            {
+                containsScore = 35;
+            }
+
+            // 3. Token overlap fallback scoring
+            int tokenScore = 0;
+            var targetTokens = targetPattern.Split(new[] { ' ', '_', '-', '.', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var field in new[] { aid, name, value, text })
+            {
+                if (string.IsNullOrWhiteSpace(field)) continue;
+                var fieldTokens = field.Split(new[] { ' ', '_', '-', '.', '/' }, StringSplitOptions.RemoveEmptyEntries);
+                int overlapCount = targetTokens.Count(tToken => fieldTokens.Any(fToken => string.Equals(fToken, tToken, StringComparison.OrdinalIgnoreCase)));
+                if (overlapCount > 0)
+                {
+                    tokenScore = Math.Max(tokenScore, 10 + overlapCount * 5);
+                }
+            }
+
+            // Select the highest score from the active matching tier: exact match has priority over contains, which has priority over token overlap.
+            if (exactScore > 0)
+            {
+                score = exactScore;
+            }
+            else if (containsScore > 0)
+            {
+                score = containsScore;
             }
             else
             {
-                var fieldTokens = field.Split(new[] { ' ', '_', '-', '.', '/' }, StringSplitOptions.RemoveEmptyEntries);
-                var targetTokens = targetPattern.Split(new[] { ' ', '_', '-', '.', '/' }, StringSplitOptions.RemoveEmptyEntries);
-                int overlapCount = 0;
-                foreach (var tToken in targetTokens)
-                {
-                    if (fieldTokens.Any(fToken => string.Equals(fToken, tToken, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        overlapCount++;
-                    }
-                }
-                fieldScore = overlapCount * 10;
+                score = tokenScore;
             }
+        }
+        else
+        {
+            score = 50;
+        }
 
-            if (fieldScore > maxScore)
+        // Modifiers:
+        // controlType match: +20
+        if (!string.IsNullOrWhiteSpace(locator.ControlType))
+        {
+            var elCt = UiService.SafeElementControlType(element);
+            if (string.Equals(elCt, locator.ControlType, StringComparison.OrdinalIgnoreCase))
             {
-                maxScore = fieldScore;
+                score += 20;
             }
         }
 
-        return maxScore;
+        // className match: +15
+        if (!string.IsNullOrWhiteSpace(locator.ClassName))
+        {
+            var elCn = UiService.SafeElementClassName(element);
+            if (string.Equals(elCn, locator.ClassName, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 15;
+            }
+        }
+
+        // same row / near point match: +10
+        if (locator.NearX.HasValue || locator.NearY.HasValue || locator.Left.HasValue || locator.Top.HasValue)
+        {
+            score += 10;
+        }
+
+        return score;
     }
 
     private UiRequest CloneRequestForStep(UiRequest request, UiLocator stepLocator)
@@ -913,14 +993,30 @@ public sealed class UiElementResolver
 
     private string FormatNotFoundError(ResolveDiagnostics diag, UiRequest request, UiLocator? locator)
     {
-        return $"ElementNotFound: No matching elements found.\n" +
-               $"Operation: {request.Operation}\n" +
-               $"Locator: {UiService.DescribeLocator(locator ?? request.Locator)}\n" +
-               $"SearchRoot: {diag.SearchRoot}\n" +
-               $"TreeView: {diag.TreeView}\n" +
-               $"Backend: {diag.Backend}\n" +
-               $"CandidateCount: 0\n" +
-               $"FiltersApplied: hwnd, controlType, className, processId, controlId, visible, enabled, name, automationId, frameworkId, runtimeId, value, text, bestMatch, foundIndex";
+        var targetLoc = locator ?? request.Locator;
+        var summary = UiService.DescribeLocator(targetLoc ?? new UiLocator());
+        var msg = $"ElementNotFound: No matching elements found.\n" +
+                  $"Operation: {request.Operation}\n" +
+                  $"Locator: {summary}\n" +
+                  $"SearchRoot: {diag.SearchRoot}\n" +
+                  $"TreeView: {diag.TreeView}\n" +
+                  $"Backend: {diag.Backend}\n" +
+                  $"CandidateCount: {diag.CandidateCount}\n";
+
+        if (diag.Candidates != null && diag.Candidates.Count > 0)
+        {
+            msg += "Candidates:\n";
+            foreach (var c in diag.Candidates)
+            {
+                msg += $"  - Name: {UiService.SafeElementName(c.Element)}, ControlType: {UiService.SafeElementControlType(c.Element)}, AutomationId: {UiService.SafeElementAutomationId(c.Element)}, ClassName: {UiService.SafeElementClassName(c.Element)}\n";
+            }
+        }
+        else
+        {
+            msg += "FiltersApplied: hwnd, controlType, className, processId, controlId, visible, enabled, name, automationId, frameworkId, runtimeId, value, text, bestMatch, foundIndex";
+        }
+
+        return msg;
     }
 
     private ResolveDiagnostics BuildAmbiguityDiagnostics(
@@ -982,12 +1078,23 @@ public sealed class UiElementResolver
                 suggestions.Add("add controlType filter");
         }
 
-        return $"ElementAmbiguous: Multiple matching elements found ({diag.CandidateCount}).\n" +
-               $"Operation: {request.Operation}\n" +
-               $"Locator: {UiService.DescribeLocator(targetLoc)}\n" +
-               $"MatchCount: {diag.CandidateCount}\n" +
-               $"Ambiguity: {request.Ambiguity ?? "error"}\n" +
-               $"Suggestions:\n  " + string.Join("\n  ", suggestions);
+        var msg = $"ElementAmbiguous: Multiple matching elements found ({diag.CandidateCount}).\n" +
+                  $"Operation: {request.Operation}\n" +
+                  $"Locator: {UiService.DescribeLocator(targetLoc ?? new UiLocator())}\n" +
+                  $"MatchCount: {diag.CandidateCount}\n" +
+                  $"Ambiguity: {request.Ambiguity ?? "error"}\n" +
+                  $"Suggestions:\n  " + string.Join("\n  ", suggestions);
+
+        if (diag.Candidates != null && diag.Candidates.Count > 0)
+        {
+            msg += "\nMatching Candidates:\n";
+            foreach (var c in diag.Candidates)
+            {
+                msg += $"  - Name: {UiService.SafeElementName(c.Element)}, ControlType: {UiService.SafeElementControlType(c.Element)}, AutomationId: {UiService.SafeElementAutomationId(c.Element)}, ClassName: {UiService.SafeElementClassName(c.Element)}\n";
+            }
+        }
+
+        return msg;
     }
 
     internal AutomationElement ResolveSearchRoot(UiRequest request)
@@ -1004,7 +1111,7 @@ public sealed class UiElementResolver
     private UiResolutionException BuildNotFoundException(UiRequest request, IReadOnlyList<ResolvedElement> candidates)
     {
         var locator = request.Locator;
-        var message = $"ElementNotFound: No matching elements found for locator={UiService.DescribeLocator(locator)}";
+        var message = $"ElementNotFound: No matching elements found for locator={UiService.DescribeLocator(locator ?? new UiLocator())}";
         var suggestions = new List<string>
         {
             "try automationId only",
