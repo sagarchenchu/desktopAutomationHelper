@@ -418,6 +418,11 @@ public class UiRequest
     public List<UiLocator>? LocatorPath { get; set; }
 
     /// <summary>
+    /// Optional criteria chain for nested traversal.
+    /// </summary>
+    public List<UiLocator>? Criteria { get; set; }
+
+    /// <summary>
     /// Root to start the element search from: currentWindow, desktop, foreground, activePopup, or parent.
     /// </summary>
     public string? SearchRoot { get; set; }
