@@ -164,4 +164,21 @@ public class UiLocator
 
     /// <summary>Name hint used for best-match scoring.</summary>
     public string? BestMatch { get; set; }
+
+    // -------------------------------------------------------------------------
+    // Rectangle locator filters
+    // -------------------------------------------------------------------------
+    public int? Left { get; set; }
+    public int? Top { get; set; }
+    public int? Right { get; set; }
+    public int? Bottom { get; set; }
+    public int? Width { get; set; }
+    public int? Height { get; set; }
+
+    public int? NearX { get; set; }
+    public int? NearY { get; set; }
+    public int? Tolerance { get; set; }
+
+    public bool? ContainsPoint { get; set; }
+    public bool? IntersectsRectangle { get; set; }
 }

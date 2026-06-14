@@ -26,6 +26,14 @@ public class UiResponse
     /// </summary>
     public string? ScreenshotPath { get; set; }
 
+    public string? Reason { get; set; }
+    public object? Locator { get; set; }
+    public object? Candidates { get; set; }
+    public object? Suggestions { get; set; }
+
+    public static UiResponse Fail(object value) =>
+        new() { Success = false, Error = "UI resolution failed.", Value = value };
+
     /// <summary>Creates a successful response with an optional value payload.</summary>
     public static UiResponse Ok(object? value = null) =>
         new() { Success = true, Value = value };

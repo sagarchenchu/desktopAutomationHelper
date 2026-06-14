@@ -1873,14 +1873,24 @@ public partial class UiService : IUiService
     private object? GetTable(UiRequest req)
     {
         var session = RequireSession();
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(
+            req,
+            purpose: "gettable",
+            action: false,
+            allowOffscreen: true,
+            requireClickable: false);
         return ReadTableData(element, headersOnly: false, session);
     }
 
     private object? GetTableHeaders(UiRequest req)
     {
         var session = RequireSession();
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(
+            req,
+            purpose: "gettableheaders",
+            action: false,
+            allowOffscreen: true,
+            requireClickable: false);
         return ReadTableData(element, headersOnly: true, session);
     }
 
@@ -2023,23 +2033,39 @@ public partial class UiService : IUiService
 
     private object? Click(UiRequest req)
     {
-        var element = ResolveElementOrThrow(req, req.Locator, purpose: "click");
+        var resolved = ResolveElementResultForOperation(
+            req,
+            purpose: "click",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: true);
+
+        var element = resolved.Element;
 
         if (element.ControlType == ControlType.MenuItem)
-            return ClickMenuItem(element, req);
+        {
+            ClickMenuItem(element, req);
+        }
+        else
+        {
+            var success = TryPhysicalClick(element, "Click") ||
+                          TryElementClick(element, "Click") ||
+                          TryInvokePattern(element, "Click");
 
-        if (TryPhysicalClick(element, "Click"))
-            return null;
+            if (!success)
+            {
+                throw new InvalidOperationException(
+                    $"Click failed after trying physical click, FlaUI click, and InvokePattern for " +
+                    $"name='{SafeElementName(element)}' controlType={element.ControlType}");
+            }
+        }
 
-        if (TryElementClick(element, "Click"))
-            return null;
-
-        if (TryInvokePattern(element, "Click"))
-            return null;
-
-        throw new InvalidOperationException(
-            $"Click failed after trying physical click, FlaUI click, and InvokePattern for " +
-            $"name='{SafeElementName(element)}' controlType={element.ControlType}");
+        return new
+        {
+            clicked = true,
+            strategy = resolved.Strategy,
+            target = CreateElementSnapshot(element)
+        };
     }
 
     private object? ClickMenuItem(AutomationElement menuItem, UiRequest _)
@@ -2443,13 +2469,34 @@ public partial class UiService : IUiService
 
     private object? DoubleClick(UiRequest req)
     {
-        ResolveElementOrThrow(req, req.Locator, purpose: "doubleclick").DoubleClick();
-        return null;
+        var resolved = ResolveElementResultForOperation(
+            req,
+            purpose: "doubleclick",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: true);
+
+        var element = resolved.Element;
+        element.DoubleClick();
+
+        return new
+        {
+            doubleclicked = true,
+            strategy = resolved.Strategy,
+            target = CreateElementSnapshot(element)
+        };
     }
 
     private object? RightClick(UiRequest req)
     {
-        var element = ResolveElementOrThrow(req, req.Locator, purpose: "rightclick");
+        var resolved = ResolveElementResultForOperation(
+            req,
+            purpose: "rightclick",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: true);
+
+        var element = resolved.Element;
 
         BringElementWindowToForeground(element);
         Thread.Sleep(WindowActivationDelayMs);
@@ -2460,9 +2507,9 @@ public partial class UiService : IUiService
 
             return new
             {
-                rightClicked = true,
-                strategy = "FlaUI.RightClick",
-                element = CreateElementSnapshot(element)
+                rightclicked = true,
+                strategy = resolved.Strategy,
+                target = CreateElementSnapshot(element)
             };
         }
         catch (Exception ex)
@@ -2477,9 +2524,9 @@ public partial class UiService : IUiService
         {
             return new
             {
-                rightClicked = true,
+                rightclicked = true,
                 strategy = "physical-right-click",
-                element = CreateElementSnapshot(element)
+                target = CreateElementSnapshot(element)
             };
         }
 
@@ -2491,7 +2538,12 @@ public partial class UiService : IUiService
         if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("value is required for contextmenupath.");
 
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(
+            req,
+            purpose: "contextmenupath",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
         var rawValue = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
         var pathParts = rawValue
             .Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -2584,16 +2636,43 @@ public partial class UiService : IUiService
 
     private object? Hover(UiRequest req)
     {
-        var element = FindWithRetry(req);
+        var resolved = ResolveElementResultForOperation(
+            req,
+            purpose: "hover",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: true);
+
+        var element = resolved.Element;
         var pt = element.GetClickablePoint();
         Mouse.MoveTo(pt);
-        return null;
+
+        return new
+        {
+            hovered = true,
+            strategy = resolved.Strategy,
+            target = CreateElementSnapshot(element)
+        };
     }
 
     private object? Focus(UiRequest req)
     {
-        FindWithRetry(req).Focus();
-        return null;
+        var resolved = ResolveElementResultForOperation(
+            req,
+            purpose: "focus",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
+
+        var element = resolved.Element;
+        element.Focus();
+
+        return new
+        {
+            focused = true,
+            strategy = resolved.Strategy,
+            target = CreateElementSnapshot(element)
+        };
     }
 
     private object? TypeText(UiRequest req)
@@ -2601,7 +2680,15 @@ public partial class UiService : IUiService
         if (req.Value == null)
             throw new ArgumentException("'value' is required for 'type'.");
 
-        var element = FindWithRetry(req);
+        var resolved = ResolveElementResultForOperation(
+            req,
+            purpose: "type",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
+
+        var element = resolved.Element;
+
         if (WinFormsDateTimePickerHelper.IsDateTimePicker(element))
             return TypeDate(element, req.Value);
 
@@ -2614,7 +2701,13 @@ public partial class UiService : IUiService
         Thread.Sleep(KeyboardInputReadyDelayMs);
 
         Keyboard.Type(req.Value);
-        return null;
+
+        return new
+        {
+            typed = true,
+            strategy = resolved.Strategy,
+            target = CreateElementSnapshot(element)
+        };
     }
 
     private object? TypeDate(UiRequest req)
@@ -2622,7 +2715,14 @@ public partial class UiService : IUiService
         if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("Date value is required.");
 
-        var element = FindWithRetry(req);
+        var resolved = ResolveElementResultForOperation(
+            req,
+            purpose: "typedate",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
+
+        var element = resolved.Element;
 
         if (!WinFormsDateTimePickerHelper.IsDateTimePicker(element))
         {
@@ -2633,7 +2733,14 @@ public partial class UiService : IUiService
                 element.ControlType);
         }
 
-        return TypeDate(element, req.Value);
+        var result = TypeDate(element, req.Value);
+
+        return new
+        {
+            typed = true,
+            strategy = resolved.Strategy,
+            target = CreateElementSnapshot(element)
+        };
     }
 
     private object? TypeDate(AutomationElement element, string? value)
@@ -2690,7 +2797,14 @@ public partial class UiService : IUiService
 
     private object? Clear(UiRequest req)
     {
-        var element = FindWithRetry(req);
+        var resolved = ResolveElementResultForOperation(
+            req,
+            purpose: "clear",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
+
+        var element = resolved.Element;
 
         BringElementWindowToForeground(element);
         Thread.Sleep(WindowActivationDelayMs);
@@ -2706,7 +2820,7 @@ public partial class UiService : IUiService
                     return new
                     {
                         cleared = true,
-                        strategy = "ValuePattern.SetValue",
+                        strategy = resolved.Strategy,
                         element = CreateElementSnapshot(element)
                     };
                 }
@@ -2775,10 +2889,20 @@ public partial class UiService : IUiService
             throw new ArgumentException("Parameter 'value' is required for 'sendkeys' operation.");
 
         AutomationElement? element = null;
+        string strategy = "active-window";
 
         if (req.Locator != null && !IsEmptyLocator(req.Locator))
         {
-            element = FindWithRetry(req);
+            var resolved = ResolveElementResultForOperation(
+                req,
+                purpose: "sendkeys",
+                action: true,
+                allowOffscreen: false,
+                requireClickable: false);
+
+            element = resolved.Element;
+            strategy = resolved.Strategy;
+
             if (!FocusElementForKeyboardInput(element, "SendKeys"))
             {
                 throw new InvalidOperationException(
@@ -2801,13 +2925,19 @@ public partial class UiService : IUiService
             sent = true,
             original = req.Value,
             normalized = normalizedKeys,
+            strategy = strategy,
             target = element == null ? null : CreateElementSnapshot(element)
         };
     }
 
     private object? ExpandTreeItem(UiRequest req)
     {
-        var item = FindWithRetry(req);
+        var item = ResolveElementForOperation(
+            req,
+            purpose: "expandtreeitem",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
 
         if (item.ControlType != ControlType.TreeItem)
         {
@@ -2829,7 +2959,12 @@ public partial class UiService : IUiService
 
     private object? CollapseTreeItem(UiRequest req)
     {
-        var item = FindWithRetry(req);
+        var item = ResolveElementForOperation(
+            req,
+            purpose: "collapsetreeitem",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
 
         if (item.ControlType != ControlType.TreeItem)
         {
@@ -2851,7 +2986,12 @@ public partial class UiService : IUiService
 
     private object? SelectTreeItem(UiRequest req)
     {
-        var item = FindWithRetry(req);
+        var item = ResolveElementForOperation(
+            req,
+            purpose: "selecttreeitem",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
 
         if (item.ControlType != ControlType.TreeItem)
         {
@@ -2876,7 +3016,12 @@ public partial class UiService : IUiService
         if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("value is required for selecttreepath.");
 
-        var root = FindWithRetry(req);
+        var root = ResolveElementForOperation(
+            req,
+            purpose: "selecttreepath",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
 
         var parts = req.Value
             .Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -2918,7 +3063,12 @@ public partial class UiService : IUiService
         if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("value is required for expandtreepath.");
 
-        var root = FindWithRetry(req);
+        var root = ResolveElementForOperation(
+            req,
+            purpose: "expandtreepath",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
 
         var parts = req.Value
             .Split('>', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -3224,7 +3374,13 @@ public partial class UiService : IUiService
 
         if (request.Locator != null && !IsEmptyLocator(request.Locator))
         {
-            element = FindWithRetry(request);
+            var resolved = ResolveElementResultForOperation(
+                request,
+                purpose: "scroll",
+                action: true,
+                allowOffscreen: false,
+                requireClickable: false);
+            element = resolved.Element;
             BringElementWindowToForeground(element);
             Thread.Sleep(WindowActivationDelayMs);
         }
@@ -3378,7 +3534,12 @@ public partial class UiService : IUiService
                 TimeoutMs = request.TimeoutMs,
                 Fast      = request.Fast
             };
-            container = FindWithRetry(containerSearchReq);
+            container = ResolveElementForOperation(
+                containerSearchReq,
+                purpose: "scroll",
+                action: true,
+                allowOffscreen: false,
+                requireClickable: false);
             BringElementWindowToForeground(container);
             Thread.Sleep(WindowActivationDelayMs);
         }
@@ -4127,7 +4288,12 @@ public partial class UiService : IUiService
         }
 
         var session = RequireSession();
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(
+            req,
+            purpose: "select",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
 
         if (IsComboBoxElement(element))
         {
@@ -4261,7 +4427,12 @@ public partial class UiService : IUiService
         if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("'value' (item AutomationId) is required for 'selectaid'.");
 
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(
+            req,
+            purpose: "selectaid",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
         var cf = RequireSession().Automation.ConditionFactory;
 
         // Expand the combo/list so that items become available.
@@ -4306,7 +4477,12 @@ public partial class UiService : IUiService
         if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("'value' is required for 'typeandselect'.");
 
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(
+            req,
+            purpose: "typeandselect",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
         var session = RequireSession();
         var cf = session.Automation.ConditionFactory;
 
@@ -5111,7 +5287,12 @@ public partial class UiService : IUiService
 
     private object DragElementByOffset(UiRequest request)
     {
-        var element = FindWithRetry(request);
+        var element = ResolveElementForOperation(
+            request,
+            purpose: "dragbyoffset",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
 
         // Physical input must target foreground window.
         BringElementWindowToForeground(element);
@@ -6980,7 +7161,12 @@ public partial class UiService : IUiService
 
     private object? OpenHeaderDropdown(UiRequest req)
     {
-        var header = FindWithRetry(req);
+        var header = ResolveElementForOperation(
+            req,
+            purpose: "openheaderdropdown",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: true);
         var region = GridHeaderDropdownHelper.ParseRegion(req.Value ?? req.ClickRegion);
 
         if (!GridHeaderDropdownHelper.IsGridHeaderElement(header))
@@ -7027,7 +7213,13 @@ public partial class UiService : IUiService
         if (string.IsNullOrWhiteSpace(req.Value))
             throw new ArgumentException("value is required for selectheaderdropdownitem.");
 
-        var header = ResolveElementOrThrow(req, req.Locator, purpose: "selectheaderdropdownitem");
+        var resolved = ResolveElementResultForOperation(
+            req,
+            purpose: "selectheaderdropdownitem",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: true);
+        var header = resolved.Element;
 
         if (!GridHeaderDropdownHelper.IsGridHeaderElement(header))
         {
@@ -7486,7 +7678,12 @@ public partial class UiService : IUiService
         if (req.ColumnIndex == null)
             throw new ArgumentException("'columnIndex' is required for this operation.");
 
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(
+            req,
+            purpose: doubleClick ? "doubleclickgridcell" : "clickgridcell",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: false);
 
         int row = req.Index.Value;
         int col = req.ColumnIndex.Value;
@@ -8263,90 +8460,94 @@ public partial class UiService : IUiService
     /// to allow a full-window retry when the child is not found inside the parent.
     /// </para>
     /// </summary>
+    private AutomationElement ResolveElementForOperation(
+        UiRequest request,
+        string purpose,
+        bool action = false,
+        bool allowOffscreen = true,
+        bool requireClickable = false)
+    {
+        var resolved = ResolveElementResultForOperation(
+            request,
+            purpose,
+            action,
+            allowOffscreen,
+            requireClickable);
+
+        return resolved.Element;
+    }
+
+    private DesktopAutomationDriver.Models.Resolver.ResolvedElement ResolveElementResultForOperation(
+        UiRequest request,
+        string purpose,
+        bool action = false,
+        bool allowOffscreen = true,
+        bool requireClickable = false)
+    {
+        DesktopAutomationDriver.Models.Resolver.ResolvedElement resolved;
+
+        if (request.LocatorPath != null || request.Criteria != null)
+        {
+            resolved = _uiElementResolver.ResolveLocatorPath(request);
+        }
+        else
+        {
+            resolved = _uiElementResolver.ResolveOne(request);
+        }
+
+        if (action && requireClickable)
+        {
+            ValidateActionTarget(resolved.Element, purpose);
+        }
+
+        return resolved;
+    }
+
+    private void ValidateActionTarget(AutomationElement element, string purpose)
+    {
+        if (element == null)
+        {
+            throw new InvalidOperationException($"Action target element is null for operation: {purpose}");
+        }
+        if (SafeIsOffscreen(element) == true)
+        {
+            throw new InvalidOperationException($"Target element is offscreen and cannot receive action: {purpose}");
+        }
+    }
+
+    private ResolveOptions BuildResolveOptionsForOperation(
+        UiRequest request,
+        string purpose,
+        bool action,
+        bool allowOffscreen,
+        bool requireClickable)
+    {
+        return new ResolveOptions
+        {
+            Purpose = purpose,
+            Action = action,
+            AllowOffscreen = allowOffscreen,
+            RequireClickable = requireClickable,
+            TimeoutMs = request.TimeoutMs ?? 5000,
+            ReturnCandidates = request.ReturnCandidates == true,
+            IncludeDiagnostics = request.IncludeDiagnostics == true || request.Debug == true,
+            Ambiguity = request.Ambiguity ?? "error",
+            SearchRoot = request.SearchRoot ?? "currentWindow",
+            TreeView = request.TreeView ?? "control",
+            Backend = request.Backend ?? "uia",
+            MaxCandidates = request.MaxMatches ?? 100
+        };
+    }
+
+    [Obsolete("Use ResolveElementForOperation or _uiElementResolver directly.")]
     private AutomationElement FindWithRetry(UiRequest req)
     {
-        var locator = RequireLocator(req);
-        var session = RequireSession();
-        var policy = GetOperationPolicy(req);
-        var deadline = DateTime.UtcNow + policy.Timeout;
-
-        var parentDescription = req.ParentLocator != null ? DescribeLocator(req.ParentLocator) : null;
-        var cacheKey = policy.UseElementCache && !policy.RefreshRootEveryRetry
-            ? BuildElementCacheKey(
-                session, GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan), locator, req.ParentLocator,
-                preferAttributes: ShouldPreferAttributeSearch(req),
-                xpathOnly: req.XPathOnly == true,
-                preferXPath: req.PreferXPath == true)
-            : null;
-
-        if (cacheKey != null &&
-            TryGetCachedElement(cacheKey, locator, out var cached) &&
-            cached != null)
-        {
-            _logger.LogInformation(
-                "UI locator resolved. operation={Operation}, policy={Policy}, strategy=cache, locator={Locator}, parent={Parent}",
-                SanitizeValue(req.Operation),
-                policy.PolicyName,
-                DescribeLocator(locator),
-                parentDescription ?? "");
-
-            return cached;
-        }
-
-        var findSw = Stopwatch.StartNew();
-        ResolvedElement? lastResult = null;
-
-        while (true)
-        {
-            lastResult = _elementResolver.ResolveOne(req);
-
-            if (lastResult.Element != null)
-            {
-                findSw.Stop();
-
-                if (cacheKey != null)
-                    StoreCachedElement(cacheKey, lastResult.Element);
-
-                _logger.LogInformation(
-                    "UI locator resolved. operation={Operation}, policy={Policy}, strategy={Strategy}, elapsedMs={ElapsedMs}, locator={Locator}, parent={Parent}",
-                    SanitizeValue(req.Operation),
-                    policy.PolicyName,
-                    lastResult.Strategy,
-                    findSw.ElapsedMilliseconds,
-                    DescribeLocator(locator),
-                    parentDescription ?? "");
-
-                return lastResult.Element;
-            }
-
-            if (DateTime.UtcNow >= deadline)
-            {
-                _logger.LogWarning(
-                    "UI locator not found. operation={Operation}, policy={Policy}, lastStrategy={Strategy}, locator={Locator}, parent={Parent}",
-                    SanitizeValue(req.Operation),
-                    policy.PolicyName,
-                    lastResult?.Strategy ?? "unknown",
-                    DescribeLocator(locator),
-                    parentDescription ?? "");
-
-                var timeoutDesc = policy.Timeout.TotalMilliseconds >= 1000
-                    ? $"{(int)policy.Timeout.TotalSeconds}s"
-                    : $"{(int)policy.Timeout.TotalMilliseconds}ms";
-
-                if (lastResult?.Diagnostics != null && lastResult.Diagnostics.Status == "ElementAmbiguous")
-                {
-                    throw new InvalidOperationException(
-                        $"ElementAmbiguous: Multiple matching elements found ({lastResult.Diagnostics.Candidates.Count}). Message: {lastResult.Diagnostics.Message}");
-                }
-
-                throw new InvalidOperationException(
-                    $"Element not found within {timeoutDesc} using policy={policy.PolicyName}, " +
-                    $"lastStrategy={lastResult?.Strategy ?? "unknown"}, locator={DescribeLocator(locator)}, " +
-                    $"parent={parentDescription ?? ""}");
-            }
-
-            Thread.Sleep(policy.RetryInterval);
-        }
+        return ResolveElementForOperation(
+            req,
+            purpose: req.Operation,
+            action: false,
+            allowOffscreen: true,
+            requireClickable: false);
     }
 
     /// <summary>
@@ -9442,7 +9643,12 @@ public partial class UiService : IUiService
 
     private void SetToggle(UiRequest req, bool wantChecked)
     {
-        var element = FindWithRetry(req);
+        var element = ResolveElementForOperation(
+            req,
+            purpose: wantChecked ? "check" : "uncheck",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: true);
 
         if (element.Patterns.Toggle.IsSupported)
         {
