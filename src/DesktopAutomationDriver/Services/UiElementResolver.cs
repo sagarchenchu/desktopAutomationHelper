@@ -243,38 +243,63 @@ public sealed class UiElementResolver
         }).ToList();
     }
 
+    public ResolvedElement ResolveOne(UiRequest request)
+    {
+        var candidates = ResolveMany(request);
+
+        if (candidates.Count == 0)
+            throw BuildNotFoundException(request, candidates);
+
+        if (candidates.Count > 1)
+        {
+            var ambiguity = request.Ambiguity ?? "error";
+
+            if (ambiguity.Equals("first", StringComparison.OrdinalIgnoreCase))
+                return candidates[0];
+
+            if (ambiguity.Equals("all", StringComparison.OrdinalIgnoreCase))
+                throw BuildAmbiguousException(request, candidates);
+
+            throw BuildAmbiguousException(request, candidates);
+        }
+
+        return candidates[0];
+    }
+
+    public IReadOnlyList<ResolvedElement> ResolveMany(UiRequest request)
+    {
+        return ResolveMany(request, request.Locator, null, null);
+    }
+
     public ResolvedElement ResolveLocatorPath(UiRequest request)
     {
         var path = request.LocatorPath ?? request.Criteria;
 
         if (path == null || path.Count == 0)
         {
-            return ResolveOne(request, request.Locator);
+            return ResolveOne(request);
         }
 
-        var session = RequireSession();
-        AutomationElement? root = ResolveSearchRoot(request, session);
-        ResolvedElement? current = null;
+        var root = ResolveSearchRoot(request);
 
-        for (var i = 0; i < path.Count; i++)
+        foreach (var step in path)
         {
-            var stepLocator = path[i];
+            var stepCandidates = ResolveManyWithinRoot(root, step);
 
-            var stepRequest = CloneRequestForStep(request, stepLocator);
-            var stepRoot = current?.Element ?? root;
+            if (stepCandidates.Count == 0)
+                throw BuildPathNotFoundException(request, step);
 
-            current = ResolveOne(
-                stepRequest,
-                stepLocator,
-                explicitRoot: stepRoot,
-                purpose: $"locatorPath[{i}]");
+            if (stepCandidates.Count > 1 && step.FoundIndex == null && step.CtrlIndex == null)
+                throw BuildPathAmbiguousException(request, step, stepCandidates);
+
+            root = stepCandidates.First().Element;
         }
 
-        if (current == null)
+        return new ResolvedElement
         {
-            throw new InvalidOperationException("Locator path resolution failed to yield an element.");
-        }
-        return current;
+            Element = root,
+            Strategy = "locatorPath"
+        };
     }
 
     private AutomationElement ResolveSearchRoot(UiRequest request, AutomationSession session)
@@ -746,6 +771,9 @@ public sealed class UiElementResolver
             }).ToList();
         }
 
+        // 14. Rectangle filters
+        filtered = filtered.Where(c => MatchesRectangleFilters(c, locator)).ToList();
+
         return filtered;
     }
 
@@ -963,5 +991,108 @@ public sealed class UiElementResolver
                $"MatchCount: {diag.CandidateCount}\n" +
                $"Ambiguity: {request.Ambiguity ?? "error"}\n" +
                $"Suggestions:\n  " + string.Join("\n  ", suggestions);
+    }
+
+    private AutomationElement ResolveSearchRoot(UiRequest request)
+    {
+        return ResolveSearchRoot(request, RequireSession());
+    }
+
+    private IReadOnlyList<ResolvedElement> ResolveManyWithinRoot(AutomationElement root, UiLocator step)
+    {
+        var stepRequest = new UiRequest { Locator = step };
+        return ResolveMany(stepRequest, step, root);
+    }
+
+    private UiResolutionException BuildNotFoundException(UiRequest request, IReadOnlyList<ResolvedElement> candidates)
+    {
+        var locator = request.Locator;
+        var message = $"ElementNotFound: No matching elements found for locator={UiService.DescribeLocator(locator)}";
+        var suggestions = new List<string>
+        {
+            "try automationId only",
+            "try matchMode contains",
+            "try useActiveWindowRoot true",
+            "try dumptree"
+        };
+        return new UiResolutionException("not-found", message, locator, candidates, suggestions);
+    }
+
+    private UiResolutionException BuildAmbiguousException(UiRequest request, IReadOnlyList<ResolvedElement> candidates)
+    {
+        var locator = request.Locator;
+        var message = "ElementAmbiguous: Multiple matching elements found.";
+        var suggestions = new List<string>
+        {
+            "add foundIndex",
+            "add parentLocator",
+            "add locatorPath",
+            "add rectangle filters",
+            "use dumptree to inspect stable identifiers"
+        };
+        return new UiResolutionException("ambiguous", message, locator, candidates, suggestions);
+    }
+
+    private UiResolutionException BuildPathNotFoundException(UiRequest request, UiLocator step)
+    {
+        var message = $"ElementNotFound: No matching elements found for step={UiService.DescribeLocator(step)} in locatorPath.";
+        var suggestions = new List<string>
+        {
+            "check step locator attributes",
+            "try matchMode contains on step"
+        };
+        return new UiResolutionException("not-found", message, step, new List<ResolvedElement>(), suggestions);
+    }
+
+    private UiResolutionException BuildPathAmbiguousException(UiRequest request, UiLocator step, IReadOnlyList<ResolvedElement> candidates)
+    {
+        var message = $"ElementAmbiguous: Multiple matching elements found for step={UiService.DescribeLocator(step)} in locatorPath.";
+        var suggestions = new List<string>
+        {
+            "add foundIndex to step locator",
+            "add parentLocator",
+            "use dumptree"
+        };
+        return new UiResolutionException("ambiguous", message, step, candidates, suggestions);
+    }
+
+    private bool MatchesRectangleFilters(AutomationElement element, UiLocator locator)
+    {
+        var r = element.BoundingRectangle;
+        var tolerance = locator.Tolerance ?? 0;
+
+        if (locator.Left.HasValue && Math.Abs(r.Left - locator.Left.Value) > tolerance)
+            return false;
+
+        if (locator.Top.HasValue && Math.Abs(r.Top - locator.Top.Value) > tolerance)
+            return false;
+
+        if (locator.Right.HasValue && Math.Abs(r.Right - locator.Right.Value) > tolerance)
+            return false;
+
+        if (locator.Bottom.HasValue && Math.Abs(r.Bottom - locator.Bottom.Value) > tolerance)
+            return false;
+
+        if (locator.Width.HasValue && Math.Abs(r.Width - locator.Width.Value) > tolerance)
+            return false;
+
+        if (locator.Height.HasValue && Math.Abs(r.Height - locator.Height.Value) > tolerance)
+            return false;
+
+        if (locator.NearX.HasValue && locator.NearY.HasValue)
+        {
+            var nearTolerance = locator.Tolerance ?? 5;
+
+            var containsNearPoint =
+                locator.NearX.Value >= r.Left - nearTolerance &&
+                locator.NearX.Value <= r.Right + nearTolerance &&
+                locator.NearY.Value >= r.Top - nearTolerance &&
+                locator.NearY.Value <= r.Bottom + nearTolerance;
+
+            if (!containsNearPoint)
+                return false;
+        }
+
+        return true;
     }
 }
