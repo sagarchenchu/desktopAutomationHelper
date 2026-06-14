@@ -452,4 +452,9 @@ public class UiRequest
     /// </summary>
     public string? Ambiguity { get; set; }
 
+    // -------------------------------------------------------------------------
+    // Dumptree fields
+    // -------------------------------------------------------------------------
+    public int? Depth { get; set; }
+    public bool? IncludeIdentifiers { get; set; }
 }

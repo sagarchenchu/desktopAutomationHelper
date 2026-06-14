@@ -18,4 +18,11 @@ public class ResolveOptions
     public bool? ReturnCandidates { get; set; }
     public bool? Debug { get; set; }
     public string? Ambiguity { get; set; }
+    public string? Purpose { get; set; }
+    public bool? Action { get; set; }
+    public bool? AllowOffscreen { get; set; }
+    public bool? RequireClickable { get; set; }
+    public int? TimeoutMs { get; set; }
+    public string? SearchRoot { get; set; }
+    public int? MaxCandidates { get; set; }
 }
