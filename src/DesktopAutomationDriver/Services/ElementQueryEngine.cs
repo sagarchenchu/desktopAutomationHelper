@@ -1486,11 +1486,6 @@ public partial class UiService
     /// using broad control types: ListItem, CheckBox, RadioButton, MenuItem, Text, DataItem,
     /// TreeItem, Custom, Button.
     /// </summary>
-    /// <summary>
-    /// Searches the desktop for a visible popup/dropdown item matching the request value,
-    /// using broad control types: ListItem, CheckBox, RadioButton, MenuItem, Text, DataItem,
-    /// TreeItem, Custom, Button.
-    /// </summary>
     private object? SelectOpenDropdownItem(UiRequest req)
     {
         var matchValue = req.Value ?? string.Empty;

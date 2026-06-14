@@ -29,6 +29,11 @@ public sealed class UiElementResolver
         _getWindowRoot = getWindowRoot;
     }
 
+    private static string GetSearchRootName(UiRequest request)
+    {
+        return request.SearchRoot ?? (request.UseDesktopRoot == true ? "desktop" : (request.UseActiveWindowRoot == true ? "foreground" : "currentWindow"));
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern int GetDlgCtrlID(IntPtr hwnd);
 
@@ -115,7 +120,7 @@ public sealed class UiElementResolver
 
         var diagnostics = new ResolveDiagnostics
         {
-            SearchRoot = request.SearchRoot ?? (request.UseDesktopRoot == true ? "desktop" : (request.UseActiveWindowRoot == true ? "foreground" : "currentWindow")),
+            SearchRoot = GetSearchRootName(request),
             TreeView = request.TreeView ?? "control",
             Backend = request.Backend ?? "uia",
             Strategy = purpose ?? "resolve-many"
@@ -265,7 +270,11 @@ public sealed class UiElementResolver
                 purpose: $"locatorPath[{i}]");
         }
 
-        return current!;
+        if (current == null)
+        {
+            throw new InvalidOperationException("Locator path resolution failed to yield an element.");
+        }
+        return current;
     }
 
     private AutomationElement ResolveSearchRoot(UiRequest request, AutomationSession session)
@@ -401,7 +410,7 @@ public sealed class UiElementResolver
         var depth = locator.Depth ?? request.Locator?.Depth ?? 20;
         var topLevelOnly = locator.TopLevelOnly == true;
 
-        List<AutomationElement> rawCandidates = null!;
+        List<AutomationElement> rawCandidates = new List<AutomationElement>();
 
         var treeView = request.TreeView?.ToLowerInvariant() ?? "control";
         diagnostics.TreeView = treeView;
@@ -766,6 +775,7 @@ public sealed class UiElementResolver
         switch (mode)
         {
             case "exact":
+            case "ignorecase":
                 return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
             case "contains":
                 return actual.Contains(expected, StringComparison.OrdinalIgnoreCase);
@@ -779,8 +789,6 @@ public sealed class UiElementResolver
                     return Regex.IsMatch(actual, expected, RegexOptions.IgnoreCase);
                 }
                 catch { return false; }
-            case "ignorecase":
-                return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
             default:
                 return string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
         }
@@ -871,7 +879,7 @@ public sealed class UiElementResolver
     {
         return new ResolveDiagnostics
         {
-            SearchRoot = request.SearchRoot ?? (request.UseDesktopRoot == true ? "desktop" : (request.UseActiveWindowRoot == true ? "foreground" : "currentWindow")),
+            SearchRoot = GetSearchRootName(request),
             TreeView = request.TreeView ?? "control",
             Backend = request.Backend ?? "uia",
             Strategy = purpose ?? "element-not-found"
@@ -897,7 +905,7 @@ public sealed class UiElementResolver
     {
         var diag = new ResolveDiagnostics
         {
-            SearchRoot = request.SearchRoot ?? (request.UseDesktopRoot == true ? "desktop" : (request.UseActiveWindowRoot == true ? "foreground" : "currentWindow")),
+            SearchRoot = GetSearchRootName(request),
             TreeView = request.TreeView ?? "control",
             Backend = request.Backend ?? "uia",
             Strategy = "element-ambiguous",
@@ -918,7 +926,7 @@ public sealed class UiElementResolver
     {
         var diag = new ResolveDiagnostics
         {
-            SearchRoot = request.SearchRoot ?? (request.UseDesktopRoot == true ? "desktop" : (request.UseActiveWindowRoot == true ? "foreground" : "currentWindow")),
+            SearchRoot = GetSearchRootName(request),
             TreeView = request.TreeView ?? "control",
             Backend = request.Backend ?? "uia",
             Strategy = strategy,
