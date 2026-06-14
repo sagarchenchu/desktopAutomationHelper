@@ -179,7 +179,7 @@ public sealed class ElementResolver : IElementResolver
     public ElementResolveResult ResolveOne(UiLocator locator, UiRequest request, string operation)
     {
         var session = RequireSession();
-        int timeoutMs = request.TimeoutMs ?? locator.Depth ?? 5000;
+        int timeoutMs = request.TimeoutMs ?? 5000;
         int pollIntervalMs = request.PollIntervalMs ?? 250;
 
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
