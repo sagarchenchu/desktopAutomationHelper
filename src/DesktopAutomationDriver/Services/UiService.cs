@@ -214,7 +214,7 @@ public partial class UiService : IUiService
     {
         _ctx = ctx;
         _logger = logger;
-        _elementResolver = new ElementResolver(ctx, resolverLogger, (session, allowScan) => this.GetWindowRoot(session, allowScan));
+        _elementResolver = new ElementResolver(ctx, resolverLogger, GetWindowRoot);
     }
 
     // =========================================================================

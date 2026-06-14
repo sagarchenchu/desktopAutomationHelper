@@ -1457,7 +1457,7 @@ public partial class UiService
             isEnabled = SafeIsEnabled(r.Element!),
             isOffscreen = SafeIsOffscreen(r.Element!),
             score = 100,
-            reason = "Exact match"
+            reason = "Resolved by ElementResolver"
         }).ToList();
 
         return new
