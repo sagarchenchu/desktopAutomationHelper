@@ -259,6 +259,9 @@ public partial class UiService : IUiService
                 "findall"        => FindAll(request),
                 "findmany"       => FindAll(request),
                 "resolvemany"    => FindAll(request),
+                "dumptree"       => DumpTree(request),
+                "dump_tree"      => DumpTree(request),
+                "inspecttree"    => DumpTree(request),
 
                 // ----- Open dropdown item operations -----
                 "listopendropdownitems"   => ListOpenDropdownItems(request),
@@ -2821,7 +2824,7 @@ public partial class UiService : IUiService
                     {
                         cleared = true,
                         strategy = resolved.Strategy,
-                        element = CreateElementSnapshot(element)
+                        target = CreateElementSnapshot(element)
                     };
                 }
             }
@@ -2838,7 +2841,7 @@ public partial class UiService : IUiService
             {
                 cleared = true,
                 strategy = "TextBox.Text",
-                element = CreateElementSnapshot(element)
+                target = CreateElementSnapshot(element)
             };
         }
         catch (Exception ex)
@@ -2855,7 +2858,7 @@ public partial class UiService : IUiService
             {
                 cleared = true,
                 strategy = "CtrlA_Backspace",
-                element = CreateElementSnapshot(element)
+                target = CreateElementSnapshot(element)
             };
         }
         catch (Exception ex)
@@ -2872,7 +2875,7 @@ public partial class UiService : IUiService
             {
                 cleared = true,
                 strategy = "CtrlA_Delete",
-                element = CreateElementSnapshot(element)
+                target = CreateElementSnapshot(element)
             };
         }
         catch (Exception ex)
@@ -8503,7 +8506,7 @@ public partial class UiService : IUiService
         return resolved;
     }
 
-    private void ValidateActionTarget(AutomationElement element, string purpose)
+    private void ValidateActionTarget(AutomationElement? element, string purpose)
     {
         if (element == null)
         {
@@ -8515,6 +8518,7 @@ public partial class UiService : IUiService
         }
     }
 
+    // Helper required by specification for central resolver options.
     private ResolveOptions BuildResolveOptionsForOperation(
         UiRequest request,
         string purpose,
@@ -8539,7 +8543,7 @@ public partial class UiService : IUiService
         };
     }
 
-    [Obsolete("Use ResolveElementForOperation or _uiElementResolver directly.")]
+    [Obsolete("Use ResolveElementForOperation or _uiElementResolver directly. This method will be removed in a future version.")]
     private AutomationElement FindWithRetry(UiRequest req)
     {
         return ResolveElementForOperation(
@@ -16340,4 +16344,169 @@ public partial class UiService : IUiService
     private static extern bool IsWindow(IntPtr hWnd);
 
     private const int SW_RESTORE = 9;
+
+    private object DumpTree(UiRequest request)
+    {
+        var session = RequireSession();
+        var root = _uiElementResolver.ResolveSearchRoot(request);
+        
+        var depthLimit = request.Depth ?? 20;
+        var limit = request.Limit ?? 1000;
+        var includeOffscreen = request.IncludeOffscreen != false; // default true for dumptree
+
+        var itemsList = new List<object>();
+        var flatList = new List<(AutomationElement Element, int Depth, int CtrlIndex)>();
+
+        void Traverse(AutomationElement current, int currentDepth, ref int ctrlIndex)
+        {
+            if (currentDepth > depthLimit) return;
+            if (flatList.Count >= limit) return;
+
+            flatList.Add((current, currentDepth, ctrlIndex++));
+
+            try
+            {
+                var children = current.FindAllChildren();
+                foreach (var child in children)
+                {
+                    if (!includeOffscreen && SafeIsOffscreen(child) == true)
+                        continue;
+                    Traverse(child, currentDepth + 1, ref ctrlIndex);
+                }
+            }
+            catch { }
+        }
+
+        int startCtrlIndex = 0;
+        Traverse(root, 0, ref startCtrlIndex);
+
+        var baseCounts = new Dictionary<string, int>();
+        var identifierMap = new Dictionary<AutomationElement, string>();
+        var foundIndexMap = new Dictionary<AutomationElement, int>();
+
+        foreach (var (el, d, ctrlIdx) in flatList)
+        {
+            var baseId = GetBaseIdentifier(el);
+            if (!baseCounts.ContainsKey(baseId))
+            {
+                baseCounts[baseId] = 0;
+            }
+            var idx = baseCounts[baseId];
+            baseCounts[baseId]++;
+
+            foundIndexMap[el] = idx;
+
+            if (idx == 0)
+            {
+                identifierMap[el] = baseId;
+            }
+            else
+            {
+                // When idx is 1 (the first duplicate), we want it numbered 0 to produce the requested sequence: Edit, Edit0, Edit1, Edit2
+                identifierMap[el] = $"{baseId}{idx - 1}";
+            }
+        }
+
+        var includeIdentifiers = request.IncludeIdentifiers != false;
+
+        foreach (var (el, d, ctrlIdx) in flatList)
+        {
+            var id = identifierMap[el];
+            var fIdx = foundIndexMap[el];
+            var baseId = GetBaseIdentifier(el);
+            var controlTypeStr = SafeElementControlType(el);
+            var name = SafeElementName(el);
+            var aid = SafeElementAutomationId(el);
+            var className = SafeElementClassName(el);
+            var rect = el.BoundingRectangle;
+
+            var betterSuggestions = new List<object>();
+            if (!string.IsNullOrEmpty(aid))
+            {
+                betterSuggestions.Add(new { automationId = aid, controlType = controlTypeStr });
+            }
+            if (!string.IsNullOrEmpty(name))
+            {
+                betterSuggestions.Add(new { name = name, controlType = controlTypeStr });
+            }
+            if (!string.IsNullOrEmpty(className))
+            {
+                betterSuggestions.Add(new { className = className, controlType = controlTypeStr, foundIndex = fIdx });
+            }
+            betterSuggestions.Add(new { controlType = controlTypeStr, foundIndex = fIdx });
+            betterSuggestions.Add(new { rectangle = new { left = (int)rect.Left, top = (int)rect.Top, width = (int)rect.Width, height = (int)rect.Height }, controlType = controlTypeStr });
+
+            itemsList.Add(new
+            {
+                identifier = includeIdentifiers ? id : null,
+                name = name,
+                automationId = aid,
+                controlType = controlTypeStr,
+                className = className,
+                foundIndex = fIdx,
+                ctrlIndex = ctrlIdx,
+                depth = d,
+                rectangle = new
+                {
+                    left = (int)rect.Left,
+                    top = (int)rect.Top,
+                    right = (int)rect.Right,
+                    bottom = (int)rect.Bottom,
+                    width = (int)rect.Width,
+                    height = (int)rect.Height
+                },
+                patterns = new
+                {
+                    value = el.Patterns.Value.IsSupported,
+                    text = el.Patterns.Text.IsSupported,
+                    invoke = el.Patterns.Invoke.IsSupported,
+                    selectionItem = el.Patterns.SelectionItem.IsSupported,
+                    toggle = el.Patterns.Toggle.IsSupported
+                },
+                locatorSuggestion = new
+                {
+                    controlType = controlTypeStr,
+                    foundIndex = fIdx
+                },
+                betterLocatorSuggestions = betterSuggestions
+            });
+        }
+
+        return new
+        {
+            operation = request.Operation,
+            searchRoot = request.SearchRoot ?? "currentWindow",
+            treeView = request.TreeView ?? "control",
+            depth = depthLimit,
+            count = flatList.Count,
+            items = itemsList
+        };
+    }
+
+    private string GetBaseIdentifier(AutomationElement element)
+    {
+        var name = SafeElementName(element);
+        if (!string.IsNullOrWhiteSpace(name))
+            return CleanIdentifier(name);
+
+        var aid = SafeElementAutomationId(element);
+        if (!string.IsNullOrWhiteSpace(aid))
+            return CleanIdentifier(aid);
+
+        var ct = SafeElementControlType(element);
+        if (!string.IsNullOrWhiteSpace(ct))
+            return CleanIdentifier(ct);
+
+        var cn = SafeElementClassName(element);
+        if (!string.IsNullOrWhiteSpace(cn))
+            return CleanIdentifier(cn);
+
+        return "Control";
+    }
+
+    private string CleanIdentifier(string raw)
+    {
+        var cleaned = new string(raw.Where(c => char.IsLetterOrDigit(c) || c == '_').ToArray());
+        return string.IsNullOrEmpty(cleaned) ? "Control" : cleaned;
+    }
 }

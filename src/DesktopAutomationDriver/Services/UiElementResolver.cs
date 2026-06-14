@@ -257,9 +257,6 @@ public sealed class UiElementResolver
             if (ambiguity.Equals("first", StringComparison.OrdinalIgnoreCase))
                 return candidates[0];
 
-            if (ambiguity.Equals("all", StringComparison.OrdinalIgnoreCase))
-                throw BuildAmbiguousException(request, candidates);
-
             throw BuildAmbiguousException(request, candidates);
         }
 
@@ -302,7 +299,7 @@ public sealed class UiElementResolver
         };
     }
 
-    private AutomationElement ResolveSearchRoot(UiRequest request, AutomationSession session)
+    internal AutomationElement ResolveSearchRoot(UiRequest request, AutomationSession session)
     {
         var searchRoot = request.SearchRoot;
         if (request.UseDesktopRoot == true)
@@ -993,7 +990,7 @@ public sealed class UiElementResolver
                $"Suggestions:\n  " + string.Join("\n  ", suggestions);
     }
 
-    private AutomationElement ResolveSearchRoot(UiRequest request)
+    internal AutomationElement ResolveSearchRoot(UiRequest request)
     {
         return ResolveSearchRoot(request, RequireSession());
     }
@@ -1090,6 +1087,30 @@ public sealed class UiElementResolver
                 locator.NearY.Value <= r.Bottom + nearTolerance;
 
             if (!containsNearPoint)
+                return false;
+        }
+
+        if (locator.ContainsPoint == true && locator.NearX.HasValue && locator.NearY.HasValue)
+        {
+            var containsPoint =
+                locator.NearX.Value >= r.Left &&
+                locator.NearX.Value <= r.Right &&
+                locator.NearY.Value >= r.Top &&
+                locator.NearY.Value <= r.Bottom;
+
+            if (!containsPoint)
+                return false;
+        }
+
+        if (locator.IntersectsRectangle == true && locator.Left.HasValue && locator.Top.HasValue && locator.Right.HasValue && locator.Bottom.HasValue)
+        {
+            var intersects =
+                !(r.Left > locator.Right.Value ||
+                  r.Right < locator.Left.Value ||
+                  r.Top > locator.Bottom.Value ||
+                  r.Bottom < locator.Top.Value);
+
+            if (!intersects)
                 return false;
         }
 
