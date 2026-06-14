@@ -187,6 +187,11 @@ public class UiLocator
     /// <summary>Name hint used for best-match scoring.</summary>
     public string? BestMatch { get; set; }
 
+    /// <summary>
+    /// Optional search scope for element resolution.
+    /// </summary>
+    public string? SearchScope { get; set; }
+
     // -------------------------------------------------------------------------
     // Rectangle locator filters
     // -------------------------------------------------------------------------
