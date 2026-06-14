@@ -18,6 +18,7 @@ public class ElementResolver
     private readonly IUiSessionContext _sessionCtx;
     private readonly ILogger<ElementResolver> _logger;
     private readonly Func<AutomationSession, bool, AutomationElement> _getWindowRoot;
+    private const int MinimumBestMatchScore = 50;
 
     public ElementResolver(
         IUiSessionContext sessionCtx,
@@ -331,6 +332,7 @@ public class ElementResolver
                 {
                     var cn = UiService.SafeElementClassName(child);
                     var aid = UiService.SafeElementAutomationId(child);
+                    // #32768 is the standard Win32 class name for popup menus
                     if (cn == "#32768" || cn == "ComboLBox" || cn.Contains("Popup", StringComparison.OrdinalIgnoreCase) || aid.Contains("Popup", StringComparison.OrdinalIgnoreCase))
                     {
                         return child;
@@ -401,7 +403,7 @@ public class ElementResolver
         {
             var bestScored = candidates
                 .Select(c => new { Element = c, Score = UiService.CalculateBestMatchScore(UiService.SafeElementName(c), bestMatchPattern) })
-                .Where(x => x.Score >= 50)
+                .Where(x => x.Score >= MinimumBestMatchScore)
                 .OrderByDescending(x => x.Score)
                 .ToList();
 
