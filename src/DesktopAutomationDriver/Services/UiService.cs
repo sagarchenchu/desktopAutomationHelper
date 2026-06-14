@@ -208,13 +208,13 @@ public partial class UiService : IUiService
             ["APPS"] = VirtualKeyShort.APPS,
         };
 
-    private readonly UiElementResolver _uiElementResolver;
+    private readonly DesktopAutomationDriver.Services.Resolution.ElementResolver _newResolver;
 
-    public UiService(IUiSessionContext ctx, ILogger<UiService> logger, ILogger<ElementResolver> resolverLogger, ILogger<UiElementResolver> uiResolverLogger)
+    public UiService(IUiSessionContext ctx, ILogger<UiService> logger)
     {
         _ctx = ctx;
         _logger = logger;
-        _uiElementResolver = new UiElementResolver(ctx, uiResolverLogger, GetWindowRoot);
+        _newResolver = new DesktopAutomationDriver.Services.Resolution.ElementResolver(ctx, logger, GetWindowRoot);
     }
 
     // =========================================================================
@@ -254,9 +254,9 @@ public partial class UiService : IUiService
                 "getcurrentroot" => GetCurrentRoot(request),
                 "findlocator"    => FindLocatorDebug(request),
                 "inspectlocator" => FindLocatorDebug(request),
-                "findall"        => FindAll(request),
-                "findmany"       => FindAll(request),
-                "resolvemany"    => FindAll(request),
+                "findall"        => FindElements(request),
+                "findmany"       => FindElements(request),
+                "resolvemany"    => FindElements(request),
                 "dumptree"       => DumpTree(request),
                 "dump_tree"      => DumpTree(request),
                 "inspecttree"    => DumpTree(request),
@@ -265,6 +265,8 @@ public partial class UiService : IUiService
                 "listopendropdownitems"   => ListOpenDropdownItems(request),
                 "selectopendropdownitem"  => SelectOpenDropdownItem(request),
                 "clickopendropdownitem"   => SelectOpenDropdownItem(request),
+                "listheaderdropdownitems"  => ListHeaderDropdownItems(request),
+                "clickheaderdropdownitem"  => SelectHeaderDropdownItem(request),
 
                 // ----- Element Query -----
                 "exists"         => Exists(request),
@@ -361,6 +363,14 @@ public partial class UiService : IUiService
                 "alertcancel" => PopupAction(request, defaultAction: "button", defaultButton: "Cancel|No|&Cancel|&No"),
                 "alertclose"  => PopupAction(request, defaultAction: "close"),
                 "popupok"     => PopupAction(request, defaultAction: "enter", requireTarget: true),
+
+                // ----- Pywinauto-style Debug / List Operations -----
+                "findelement"             => FindElement(request),
+                "findelements"            => FindElements(request),
+                "inspectelement"          => InspectElement(request),
+                "printcontrolidentifiers" => PrintControlIdentifiers(request),
+                "dumpcontrols"            => PrintControlIdentifiers(request),
+                "resolve"                 => ResolveDebug(request),
 
                 _ => throw new ArgumentException(
                     $"Unknown operation '{request.Operation}'. " +
@@ -2043,29 +2053,50 @@ public partial class UiService : IUiService
 
         var element = resolved.Element;
 
-        if (element.ControlType == ControlType.MenuItem)
-        {
-            ClickMenuItem(element, req);
-        }
-        else
-        {
-            var success = TryPhysicalClick(element, "Click") ||
-                          TryElementClick(element, "Click") ||
-                          TryInvokePattern(element, "Click");
+        BringElementWindowToForeground(element);
 
-            if (!success)
+        string clickStrategy = "physical-click";
+        bool clicked = false;
+
+        if (string.Equals(req.Mode, "invoke", StringComparison.OrdinalIgnoreCase) && 
+            (element.ControlType == ControlType.Button || element.ControlType == ControlType.MenuItem))
+        {
+            if (TryInvokePattern(element, "Click"))
             {
-                throw new InvalidOperationException(
-                    $"Click failed after trying physical click, FlaUI click, and InvokePattern for " +
-                    $"name='{SafeElementName(element)}' controlType={element.ControlType}");
+                clicked = true;
+                clickStrategy = "uia-invoke";
             }
+        }
+
+        if (!clicked)
+        {
+            var point = element.GetClickablePoint();
+            if (point.IsEmpty)
+            {
+                clickStrategy = "physical-click-center";
+            }
+            else
+            {
+                clickStrategy = "physical-click-clickable-point";
+            }
+
+            clicked = TryPhysicalClick(element, "Click") ||
+                      TryElementClick(element, "Click") ||
+                      TryInvokePattern(element, "Click");
+        }
+
+        if (!clicked)
+        {
+            throw new InvalidOperationException(
+                $"Click failed after trying physical click, FlaUI click, and InvokePattern for " +
+                $"name='{SafeElementName(element)}' controlType={element.ControlType}");
         }
 
         return new
         {
             clicked = true,
-            strategy = resolved.Strategy,
-            target = CreateElementSnapshot(element)
+            strategy = clickStrategy,
+            element = CreateElementSnapshot(element)
         };
     }
 
@@ -2285,15 +2316,7 @@ public partial class UiService : IUiService
 
         try
         {
-            DesktopAutomationDriver.Models.Resolver.ResolvedElement result;
-            if (req.LocatorPath != null || req.Criteria != null)
-            {
-                result = _uiElementResolver.ResolveLocatorPath(req);
-            }
-            else
-            {
-                result = _uiElementResolver.ResolveOne(req);
-            }
+            var result = _newResolver.ResolveOne(req, "inspectlocator");
 
             return new
             {
@@ -8485,16 +8508,20 @@ public partial class UiService : IUiService
         bool allowOffscreen = true,
         bool requireClickable = false)
     {
-        DesktopAutomationDriver.Models.Resolver.ResolvedElement resolved;
+        var locator = request.Locator ?? new UiLocator();
+        if (!allowOffscreen)
+        {
+            locator.IncludeOffscreen = false;
+        }
 
-        if (request.LocatorPath != null || request.Criteria != null)
+        var matchResult = _newResolver.ResolveOne(locator, request, purpose);
+        var resolved = new DesktopAutomationDriver.Models.Resolver.ResolvedElement
         {
-            resolved = _uiElementResolver.ResolveLocatorPath(request);
-        }
-        else
-        {
-            resolved = _uiElementResolver.ResolveOne(request);
-        }
+            Element = matchResult.Element,
+            Strategy = matchResult.Strategy,
+            Score = matchResult.Candidates.FirstOrDefault()?.Score ?? 100,
+            Index = 0
+        };
 
         if (action && requireClickable)
         {
@@ -8559,28 +8586,9 @@ public partial class UiService : IUiService
     private AutomationElement FindLocatorWithRetry(
         AutomationSession session, AutomationElement root, UiLocator locator)
     {
-        var deadline = DateTime.UtcNow + DefaultRetry;
         var request = new UiRequest { Locator = locator };
-        while (true)
-        {
-            try
-            {
-                var resolved = _uiElementResolver.ResolveOne(request, locator, root, "findlocatorwithretry");
-                if (resolved.Element != null)
-                    return resolved.Element;
-            }
-            catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException || ex is DesktopAutomationDriver.Models.Resolver.UiResolutionException)
-            {
-                // Continue retrying
-            }
-
-            if (DateTime.UtcNow >= deadline)
-                throw new InvalidOperationException(
-                    $"Element not found within {DefaultRetry.TotalSeconds}s: " +
-                    DescribeLocator(locator));
-
-            Thread.Sleep(RetryInterval);
-        }
+        var resolved = _newResolver.ResolveOne(locator, request, "findlocatorwithretry");
+        return resolved.Element;
     }
 
     /// <summary>
@@ -8940,20 +8948,12 @@ public partial class UiService : IUiService
     /// </summary>
     private ResolvedElement ResolveForStateQuery(UiRequest request)
     {
-        DesktopAutomationDriver.Models.Resolver.ResolvedElement resolved;
-        if (request.LocatorPath != null || request.Criteria != null)
-        {
-            resolved = _uiElementResolver.ResolveLocatorPath(request);
-        }
-        else
-        {
-            resolved = _uiElementResolver.ResolveOne(request);
-        }
-
+        var locator = request.Locator ?? new UiLocator();
+        var matchResult = _newResolver.ResolveOne(locator, request, "state-query");
         return new ResolvedElement
         {
-            Element = resolved.Element,
-            Strategy = resolved.Strategy,
+            Element = matchResult.Element,
+            Strategy = matchResult.Strategy,
             RootStrategy = request.SearchRoot ?? "currentWindow"
         };
     }
@@ -9056,10 +9056,52 @@ public partial class UiService : IUiService
             "clickable"    => EvaluateClickable(request),
             "editable"     => EvaluateEditable(request),
             "gone"         => EvaluateGone(request),
+            "selected"     => EvaluateSelected(request, expected: true),
+            "checked"      => EvaluateChecked(request, expected: true),
+            "unchecked"    => EvaluateChecked(request, expected: false),
             _ => throw new ArgumentException(
                 $"Unsupported wait state '{state}'. " +
                 "Supported: exists, enabled, disabled, visible, hidden, focused, " +
-                "windowactive, clickable, editable, gone.")
+                "windowactive, clickable, editable, gone, selected, checked, unchecked.")
+        };
+    }
+
+    private StateResult EvaluateSelected(UiRequest request, bool expected)
+    {
+        var resolved = ResolveForStateQuery(request);
+        bool isSelected = false;
+        try
+        {
+            if (resolved.Element.Patterns.SelectionItem.IsSupported)
+            {
+                isSelected = resolved.Element.Patterns.SelectionItem.Pattern.IsSelected;
+            }
+        }
+        catch { }
+        return new StateResult
+        {
+            Matched = isSelected == expected,
+            Payload = new { selected = isSelected, strategy = resolved.Strategy }
+        };
+    }
+
+    private StateResult EvaluateChecked(UiRequest request, bool expected)
+    {
+        var resolved = ResolveForStateQuery(request);
+        bool isChecked = false;
+        try
+        {
+            if (resolved.Element.Patterns.Toggle.IsSupported)
+            {
+                var toggleState = resolved.Element.Patterns.Toggle.Pattern.ToggleState;
+                isChecked = toggleState == FlaUI.Core.Definitions.ToggleState.On;
+            }
+        }
+        catch { }
+        return new StateResult
+        {
+            Matched = isChecked == expected,
+            Payload = new { @checked = isChecked, strategy = resolved.Strategy }
         };
     }
 
@@ -16353,7 +16395,7 @@ public partial class UiService : IUiService
     private object DumpTree(UiRequest request)
     {
         var session = RequireSession();
-        var root = _uiElementResolver.ResolveSearchRoot(request);
+        var root = _newResolver.ResolveSearchRoot(request);
         
         var depthLimit = request.Depth ?? 20;
         var limit = request.Limit ?? 1000;
@@ -16513,5 +16555,165 @@ public partial class UiService : IUiService
     {
         var cleaned = new string(raw.Where(c => char.IsLetterOrDigit(c) || c == '_').ToArray());
         return string.IsNullOrEmpty(cleaned) ? "Control" : cleaned;
+    }
+
+    private string GetSearchRootName(UiRequest request)
+    {
+        return request.SearchRoot ?? (request.UseDesktopRoot == true ? "desktop" : (request.UseActiveWindowRoot == true ? "foreground" : "current"));
+    }
+
+    private object FindElement(UiRequest request)
+    {
+        var locator = request.Locator ?? new UiLocator();
+        var matchResult = _newResolver.ResolveOne(locator, request, "findelement");
+        var firstCand = matchResult.Candidates.FirstOrDefault();
+        var snapshot = DesktopAutomationDriver.Services.Resolution.ElementResolver.CreateSnapshot(matchResult.Element);
+        return new
+        {
+            found = true,
+            index = 0,
+            score = firstCand?.Score ?? 100,
+            strategy = matchResult.Strategy,
+            reason = firstCand?.MatchReasons.FirstOrDefault() ?? "Matched",
+            element = new
+            {
+                name = snapshot.Name,
+                automationId = snapshot.AutomationId,
+                controlType = snapshot.ControlType,
+                className = snapshot.ClassName,
+                rectangle = snapshot.Rectangle,
+                isEnabled = snapshot.IsEnabled,
+                isOffscreen = snapshot.IsOffscreen
+            }
+        };
+    }
+
+    private object FindElements(UiRequest request)
+    {
+        var candidates = _newResolver.ResolveAll(request, "findall");
+        var matchesList = candidates.Select((c, idx) => new
+        {
+            index = idx,
+            score = c.Score,
+            strategy = "unified-resolver-findall",
+            reason = c.MatchReasons.FirstOrDefault() ?? "Matched",
+            element = new
+            {
+                name = c.Snapshot.Name,
+                automationId = c.Snapshot.AutomationId,
+                controlType = c.Snapshot.ControlType,
+                className = c.Snapshot.ClassName,
+                rectangle = c.Snapshot.Rectangle,
+                isEnabled = c.Snapshot.IsEnabled,
+                isOffscreen = c.Snapshot.IsOffscreen
+            }
+        }).ToList();
+
+        return new
+        {
+            count = candidates.Count,
+            matches = matchesList
+        };
+    }
+
+    private object InspectElement(UiRequest request)
+    {
+        var locator = request.Locator ?? new UiLocator();
+        var matchResult = _newResolver.ResolveOne(locator, request, "inspectelement");
+        var snapshot = DesktopAutomationDriver.Services.Resolution.ElementResolver.CreateSnapshot(matchResult.Element);
+        return new
+        {
+            found = true,
+            snapshot = snapshot
+        };
+    }
+
+    private object ResolveDebug(UiRequest request)
+    {
+        return FindElements(request);
+    }
+
+    private object PrintControlIdentifiers(UiRequest request)
+    {
+        var session = TryGetSessionOrNull();
+        if (session == null)
+            throw new InvalidOperationException("No active automation session.");
+
+        AutomationElement rootEl;
+        if (request.Locator != null)
+        {
+            var locator = request.Locator;
+            var matchResult = _newResolver.ResolveOne(locator, request, "printcontrolidentifiers");
+            rootEl = matchResult.Element;
+        }
+        else
+        {
+            rootEl = GetWindowRoot(session, false);
+        }
+
+        var tree = new List<object>();
+        WalkTreeForIdentifiers(rootEl, 0, request.Depth ?? 5, tree);
+
+        return new
+        {
+            root = new
+            {
+                name = SafeElementName(rootEl),
+                controlType = SafeElementControlType(rootEl),
+                automationId = SafeElementAutomationId(rootEl),
+                className = SafeElementClassName(rootEl),
+                rectangle = SafeBoundingRectangleObject(rootEl)
+            },
+            tree = tree
+        };
+    }
+
+    private void WalkTreeForIdentifiers(AutomationElement element, int depth, int maxDepth, List<object> tree)
+    {
+        if (depth > maxDepth) return;
+
+        tree.Add(new
+        {
+            depth = depth,
+            name = SafeElementName(element) ?? string.Empty,
+            controlType = SafeElementControlType(element) ?? string.Empty,
+            automationId = SafeElementAutomationId(element) ?? string.Empty,
+            className = SafeElementClassName(element) ?? string.Empty,
+            rectangle = SafeBoundingRectangleObject(element)
+        });
+
+        try
+        {
+            var children = element.FindAllChildren();
+            foreach (var child in children)
+            {
+                WalkTreeForIdentifiers(child, depth + 1, maxDepth, tree);
+            }
+        }
+        catch { }
+    }
+
+    private object? ListHeaderDropdownItems(UiRequest req)
+    {
+        var header = ResolveElementForOperation(
+            req,
+            purpose: "listheaderdropdownitems",
+            action: true,
+            allowOffscreen: false,
+            requireClickable: true);
+        var region = GridHeaderDropdownHelper.ParseRegion(req.Value ?? req.ClickRegion);
+
+        var list = OpenHeaderDropdownAndFindList(header, region);
+        if (list == null)
+        {
+            throw new InvalidOperationException("Failed to open header dropdown or find dropdown list.");
+        }
+
+        var items = GetListItems(list).Select(i => SafeElementName(i)).ToList();
+        return new
+        {
+            opened = true,
+            items = items
+        };
     }
 }
