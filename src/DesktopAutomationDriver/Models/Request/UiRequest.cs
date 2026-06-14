@@ -127,6 +127,11 @@ public class UiRequest
     /// </summary>
     public bool? FallbackToWindowRootIfParentChildNotFound { get; set; }
 
+    /// <summary>
+    /// Optional search scope for element resolution.
+    /// </summary>
+    public string? SearchScope { get; set; }
+
     // -------------------------------------------------------------------------
     // switchwindow extended matching
     // -------------------------------------------------------------------------

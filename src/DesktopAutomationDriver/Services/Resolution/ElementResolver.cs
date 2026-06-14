@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using DesktopAutomationDriver.Models.Request;
+using DesktopAutomationDriver.Services;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
@@ -11,11 +13,27 @@ using Microsoft.Extensions.Logging;
 
 namespace DesktopAutomationDriver.Services.Resolution;
 
-public sealed class ElementResolver
+public interface IElementResolver
+{
+    ElementResolveResult ResolveOne(UiRequest request, string operation);
+    ElementResolveResult ResolveOne(UiLocator locator, UiRequest request, string operation);
+    IReadOnlyList<ElementCandidate> ResolveAll(UiRequest request, string operation);
+    IReadOnlyList<ElementCandidate> ResolveAll(UiLocator locator, UiRequest request, string operation);
+    AutomationElement ResolveSearchRoot(UiRequest request);
+}
+
+public sealed class ElementResolver : IElementResolver
 {
     private readonly IUiSessionContext _ctx;
     private readonly ILogger _logger;
     private readonly Func<AutomationSession, bool, AutomationElement>? _getWindowRoot;
+
+    public AutomationElement ResolveSearchRoot(UiRequest request)
+    {
+        var session = RequireSession();
+        var locator = request.Locator ?? new UiLocator();
+        return DetermineSearchRoot(locator, request, session);
+    }
 
     public ElementResolver(IUiSessionContext ctx, ILogger logger)
     {
@@ -30,15 +48,13 @@ public sealed class ElementResolver
         _getWindowRoot = getWindowRoot;
     }
 
-    private const int DefaultNearPointTolerancePixels = 5;
-
     [DllImport("user32.dll", SetLastError = true)]
     private static extern int GetDlgCtrlID(IntPtr hwnd);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
-    internal static int? SafeControlId(AutomationElement element)
+    public static int? SafeControlId(AutomationElement element)
     {
         try
         {
@@ -55,266 +71,6 @@ public sealed class ElementResolver
     private AutomationSession RequireSession()
     {
         return _ctx.ActiveSession ?? throw new InvalidOperationException("No active automation session.");
-    }
-
-    public ElementMatchResult ResolveOne(
-        UiRequest request,
-        UiLocator locator,
-        ElementSearchOptions options)
-    {
-        var matches = ResolveAll(request, locator, options);
-
-        if (matches.Count == 0)
-        {
-            throw new InvalidOperationException(BuildNotFoundMessage(locator, options));
-        }
-
-        if (options.CtrlIndex.HasValue)
-        {
-            var index = options.CtrlIndex.Value;
-            if (index < 0 || index >= matches.Count)
-                throw new InvalidOperationException($"ctrlIndex {index} out of range. matches={matches.Count}");
-
-            return matches[index];
-        }
-
-        if (options.FoundIndex.HasValue)
-        {
-            var index = options.FoundIndex.Value;
-            if (index < 0 || index >= matches.Count)
-                throw new InvalidOperationException($"foundIndex {index} out of range. matches={matches.Count}");
-
-            return matches[index];
-        }
-
-        var best = matches.OrderByDescending(x => x.Score).First();
-
-        if (options.ThrowIfAmbiguous)
-        {
-            var sameScore = matches.Where(x => x.Score == best.Score).Take(2).ToList();
-            if (sameScore.Count > 1)
-            {
-                throw new InvalidOperationException(BuildAmbiguousMessage(locator, matches));
-            }
-        }
-
-        return best;
-    }
-
-    public IReadOnlyList<ElementMatchResult> ResolveAll(
-        UiRequest request,
-        UiLocator locator,
-        ElementSearchOptions options)
-    {
-        var session = RequireSession();
-        var deadline = DateTime.UtcNow + options.Timeout;
-
-        while (true)
-        {
-            var rawResults = ExecuteResolveAll(request, locator, options, session);
-            if (rawResults.Count > 0)
-            {
-                return rawResults;
-            }
-
-            if (DateTime.UtcNow >= deadline)
-            {
-                return rawResults;
-            }
-
-            System.Threading.Thread.Sleep(options.PollInterval);
-        }
-    }
-
-    private IReadOnlyList<ElementMatchResult> ExecuteResolveAll(
-        UiRequest request,
-        UiLocator locator,
-        ElementSearchOptions options,
-        AutomationSession session)
-    {
-        // 1. Parent-scoped lookup first
-        AutomationElement? parentEl = null;
-        if (request.ParentLocator != null)
-        {
-            var parentOptions = new ElementSearchOptions
-            {
-                SearchRoot = options.SearchRoot,
-                Timeout = TimeSpan.Zero,
-                PollInterval = TimeSpan.FromMilliseconds(100),
-                ThrowIfAmbiguous = true
-            };
-            try
-            {
-                var parentMatch = ResolveOne(request, request.ParentLocator, parentOptions);
-                parentEl = parentMatch.Element;
-            }
-            catch (Exception)
-            {
-                if (request.FallbackToWindowRootIfParentChildNotFound != true)
-                {
-                    return Array.Empty<ElementMatchResult>();
-                }
-            }
-        }
-
-        // 2. Determine root
-        AutomationElement rootEl;
-        if (parentEl != null)
-        {
-            rootEl = parentEl;
-        }
-        else
-        {
-            rootEl = DetermineSearchRoot(options.SearchRoot, session);
-        }
-
-        // 3. HWND direct
-        if (locator.Hwnd.HasValue)
-        {
-            var element = session.Automation.FromHandle(new IntPtr(locator.Hwnd.Value));
-            if (element != null)
-            {
-                return new List<ElementMatchResult> { CreateMatchResult(element, "direct-hwnd", 100, 0, "hwnd direct", session) };
-            }
-        }
-
-        // 4. RuntimeId
-        if (!string.IsNullOrEmpty(locator.RuntimeId))
-        {
-            var candidates = CollectCandidates(rootEl, locator, options, session);
-            var matched = candidates.Where(c => string.Equals(UiService.SafeRuntimeIdString(c), locator.RuntimeId, StringComparison.Ordinal)).ToList();
-            if (matched.Count > 0)
-            {
-                return matched.Select((el, idx) => CreateMatchResult(el, "runtimeid-search", 90, idx, "runtimeid match", session)).ToList();
-            }
-        }
-
-        // 5. XPath only
-        if (!string.IsNullOrEmpty(locator.XPath) && options.XPathOnly)
-        {
-            var element = UiService.FindByXPath(rootEl, session, locator.XPath);
-            if (element != null)
-            {
-                return new List<ElementMatchResult> { CreateMatchResult(element, "xpath-only", 100, 0, "xpath only match", session) };
-            }
-            return Array.Empty<ElementMatchResult>();
-        }
-
-        // 6. Prefer XPath
-        if (!string.IsNullOrEmpty(locator.XPath) && options.PreferXPath)
-        {
-            var element = UiService.FindByXPath(rootEl, session, locator.XPath);
-            if (element != null)
-            {
-                return new List<ElementMatchResult> { CreateMatchResult(element, "xpath-preferred", 100, 0, "xpath preferred match", session) };
-            }
-        }
-
-        // 7. Attribute search
-        var rawCandidates = CollectCandidates(rootEl, locator, options, session);
-
-        // Pre-filter with ctrlIndex
-        if (locator.CtrlIndex.HasValue || options.CtrlIndex.HasValue)
-        {
-            var idx = locator.CtrlIndex ?? options.CtrlIndex!.Value;
-            if (idx >= 0 && idx < rawCandidates.Count)
-            {
-                rawCandidates = new List<AutomationElement> { rawCandidates[idx] };
-            }
-            else
-            {
-                rawCandidates = new List<AutomationElement>();
-            }
-        }
-
-        var matchedList = new List<AutomationElement>();
-        foreach (var c in rawCandidates)
-        {
-            if (IsMatch(c, locator, options))
-            {
-                matchedList.Add(c);
-            }
-        }
-
-        // Deduplicate
-        matchedList = Deduplicate(matchedList);
-
-        // Score them
-        var results = new List<ElementMatchResult>();
-        var globalMode = locator.MatchMode ?? options.MatchMode ?? "exact";
-        bool isBestMode = string.Equals(globalMode, "best", StringComparison.OrdinalIgnoreCase);
-
-        for (int i = 0; i < matchedList.Count; i++)
-        {
-            var el = matchedList[i];
-            var (score, reason) = ElementScoring.Score(el, locator, options, session.Application.ProcessId);
-            results.Add(CreateMatchResult(el, isBestMode ? "best-match" : "attribute-search", score, i, reason, session));
-        }
-
-        if (isBestMode)
-        {
-            results = results.OrderByDescending(r => r.Score).ToList();
-        }
-
-        // Post-filter with foundIndex
-        if (locator.FoundIndex.HasValue || options.FoundIndex.HasValue)
-        {
-            var idx = locator.FoundIndex ?? options.FoundIndex!.Value;
-            if (idx >= 0 && idx < results.Count)
-            {
-                return new List<ElementMatchResult> { results[idx] };
-            }
-            return Array.Empty<ElementMatchResult>();
-        }
-
-        // Fallback to Window Root if parent child not found
-        if (results.Count == 0 && request.FallbackToWindowRootIfParentChildNotFound == true && parentEl != null)
-        {
-            var windowRoot = GetWindowRoot(session, false);
-            var fallbackOptions = new ElementSearchOptions
-            {
-                SearchRoot = options.SearchRoot,
-                Timeout = TimeSpan.Zero,
-                PollInterval = options.PollInterval,
-                ThrowIfAmbiguous = options.ThrowIfAmbiguous
-            };
-            var fallbackRequest = new UiRequest
-            {
-                Locator = locator,
-                SearchRoot = options.SearchRoot
-            };
-            return ExecuteResolveAll(fallbackRequest, locator, fallbackOptions, session);
-        }
-
-        // Try XPath fallback if preferAttributes is true
-        if (results.Count == 0 && !string.IsNullOrEmpty(locator.XPath) && options.PreferAttributes)
-        {
-            var element = UiService.FindByXPath(rootEl, session, locator.XPath);
-            if (element != null)
-            {
-                return new List<ElementMatchResult> { CreateMatchResult(element, "xpath-fallback", 100, 0, "xpath fallback match", session) };
-            }
-        }
-
-        return results;
-    }
-
-    private AutomationElement DetermineSearchRoot(string searchRoot, AutomationSession session)
-    {
-        switch (searchRoot.ToLowerInvariant())
-        {
-            case "active":
-                return session.ActiveWindow ?? GetWindowRoot(session, false);
-            case "foreground":
-                return GetForegroundWindowElement(session.Automation);
-            case "desktop":
-                return session.Automation.GetDesktop();
-            case "popup":
-                return GetActivePopupRoot(session);
-            case "current":
-            default:
-                return GetWindowRoot(session, false);
-        }
     }
 
     private AutomationElement GetWindowRoot(AutomationSession session, bool allowDesktopPopupScan = true)
@@ -367,82 +123,345 @@ public sealed class ElementResolver
         return GetForegroundWindowElement(session.Automation);
     }
 
-    private List<AutomationElement> CollectCandidates(
-        AutomationElement root,
+    private AutomationElement DetermineSearchRoot(
         UiLocator locator,
-        ElementSearchOptions options,
+        UiRequest request,
         AutomationSession session)
     {
-        var depth = locator.Depth ?? options.Depth ?? 20;
-        var topLevelOnly = locator.TopLevelOnly == true || options.TopLevelOnly;
-        var treeView = options.TreeView;
+        // 1. SearchScope priority
+        var scope = request.SearchScope ?? locator.SearchScope;
+        if (!string.IsNullOrWhiteSpace(scope))
+        {
+            switch (scope.ToLowerInvariant())
+            {
+                case "desktop":
+                    return session.Automation.GetDesktop();
+                case "activewindow":
+                    return GetForegroundWindowElement(session.Automation);
+                case "desktoppopup":
+                    return GetActivePopupRoot(session);
+                case "currentroot":
+                    return GetWindowRoot(session, false);
+                case "app":
+                    return session.Application.GetMainWindow(session.Automation);
+                case "parent":
+                    if (request.ParentLocator != null)
+                    {
+                        var resolvedParent = ResolveOne(request.ParentLocator, request, request.Operation);
+                        if (resolvedParent.Element != null) return resolvedParent.Element;
+                    }
+                    return GetWindowRoot(session, false);
+            }
+        }
 
-        List<AutomationElement> candidates = new List<AutomationElement>();
+        // 2. ActiveOnly / Active window
+        if (locator.ActiveOnly == true || request.ActiveOnly == true)
+        {
+            return GetForegroundWindowElement(session.Automation);
+        }
 
-        if (string.Equals(treeView, "raw", StringComparison.OrdinalIgnoreCase) || locator.RawView == true)
+        // 3. DesktopSearch priority
+        if (request.DesktopSearch == true)
+        {
+            return session.Automation.GetDesktop();
+        }
+
+        // 4. Default to window root
+        return GetWindowRoot(session, false);
+    }
+
+    public ElementResolveResult ResolveOne(UiRequest request, string operation)
+    {
+        var locator = request.Locator ?? new UiLocator();
+        return ResolveOne(locator, request, operation);
+    }
+
+    public ElementResolveResult ResolveOne(UiLocator locator, UiRequest request, string operation)
+    {
+        var session = RequireSession();
+        int timeoutMs = request.TimeoutMs ?? locator.Depth ?? 5000;
+        int pollIntervalMs = request.PollIntervalMs ?? 250;
+
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        while (true)
+        {
+            var candidates = ExecutePipeline(locator, request, operation, session, out int scannedCount, out var allCandidates);
+
+            if (candidates.Count == 1)
+            {
+                return new ElementResolveResult
+                {
+                    Element = candidates[0].Element,
+                    Candidates = candidates,
+                    Strategy = candidates[0].IsAccepted ? "unified-resolver-unique" : "unified-resolver-failed",
+                    Diagnostics = new ElementDiagnostics
+                    {
+                        CandidatesScanned = scannedCount,
+                        Candidates = allCandidates,
+                        Message = "Found unique element.",
+                        Status = "Success"
+                    }
+                };
+            }
+
+            if (candidates.Count > 1)
+            {
+                // Ambiguity check
+                if (request.ThrowIfAmbiguous == true)
+                {
+                    throw new ElementResolutionException(
+                        "Multiple elements matched. Provide foundIndex, ctrlIndex, parentLocator, automationId, or stronger locator.",
+                        locator,
+                        request.ParentLocator,
+                        request.SearchRoot ?? "",
+                        operation,
+                        scannedCount,
+                        candidates);
+                }
+
+                // If not throw, pick best scored candidate
+                var bestCandidate = candidates.OrderByDescending(c => c.Score).First();
+                return new ElementResolveResult
+                {
+                    Element = bestCandidate.Element,
+                    Candidates = candidates,
+                    Strategy = "unified-resolver-scored-best",
+                    Diagnostics = new ElementDiagnostics
+                    {
+                        CandidatesScanned = scannedCount,
+                        Candidates = allCandidates,
+                        Message = "Multiple elements matched; selected highest score.",
+                        Status = "Ambiguous"
+                    }
+                };
+            }
+
+            if (DateTime.UtcNow >= deadline)
+            {
+                var topRejected = allCandidates.OrderByDescending(c => c.Score).Take(5).ToList();
+                throw new ElementResolutionException(
+                    $"Element not found for locator={UiService.DescribeLocator(locator)} under operation={operation}.",
+                    locator,
+                    request.ParentLocator,
+                    request.SearchRoot ?? "",
+                    operation,
+                    scannedCount,
+                    topRejected);
+            }
+
+            Thread.Sleep(pollIntervalMs);
+        }
+    }
+
+    public IReadOnlyList<ElementCandidate> ResolveAll(UiRequest request, string operation)
+    {
+        var locator = request.Locator ?? new UiLocator();
+        return ResolveAll(locator, request, operation);
+    }
+
+    public IReadOnlyList<ElementCandidate> ResolveAll(UiLocator locator, UiRequest request, string operation)
+    {
+        var session = RequireSession();
+        ExecutePipeline(locator, request, operation, session, out _, out var allCandidates);
+        return allCandidates.Where(c => c.IsAccepted).ToList();
+    }
+
+    private List<ElementCandidate> ExecutePipeline(
+        UiLocator locator,
+        UiRequest request,
+        string operation,
+        AutomationSession session,
+        out int scannedCount,
+        out List<ElementCandidate> allCandidates)
+    {
+        allCandidates = new List<ElementCandidate>();
+        scannedCount = 0;
+
+        // 1. Resolve parent first if present
+        AutomationElement? parentEl = null;
+        bool isParentScoped = false;
+        if (request.ParentLocator != null)
+        {
+            try
+            {
+                var parentRequest = new UiRequest { Locator = request.ParentLocator };
+                var resolvedParent = ResolveOne(request.ParentLocator, parentRequest, "resolve-parent");
+                parentEl = resolvedParent.Element;
+                isParentScoped = parentEl != null;
+            }
+            catch
+            {
+                if (request.FallbackToWindowRootIfParentChildNotFound != true)
+                {
+                    return new List<ElementCandidate>();
+                }
+            }
+        }
+
+        // 2. Build search root
+        AutomationElement rootEl = parentEl ?? DetermineSearchRoot(locator, request, session);
+
+        // 3. HWND direct
+        if (locator.Hwnd.HasValue)
+        {
+            try
+            {
+                var element = session.Automation.FromHandle(new IntPtr(locator.Hwnd.Value));
+                if (element != null)
+                {
+                    var candidate = CreateCandidate(element);
+                    candidate.Score = 100;
+                    candidate.MatchReasons.Add("HWND exact match (+100)");
+                    allCandidates.Add(candidate);
+                    scannedCount = 1;
+                    return new List<ElementCandidate> { candidate };
+                }
+            }
+            catch { }
+        }
+
+        // 4. Collect raw candidates
+        var rawElements = CollectCandidates(rootEl, locator, request, session);
+        scannedCount = rawElements.Count;
+
+        // 5. Apply ctrlIndex if present
+        var ctrlIndex = locator.CtrlIndex ?? request.CtrlIndex;
+        if (ctrlIndex.HasValue)
+        {
+            var idx = ctrlIndex.Value;
+            if (idx >= 0 && idx < rawElements.Count)
+            {
+                rawElements = new List<AutomationElement> { rawElements[idx] };
+            }
+            else
+            {
+                rawElements = new List<AutomationElement>();
+            }
+        }
+
+        // 6. Snapshot candidates
+        foreach (var el in rawElements)
+        {
+            allCandidates.Add(CreateCandidate(el));
+        }
+
+        // 7. Match & Score candidates
+        var globalMatchMode = request.MatchMode ?? locator.MatchMode ?? "exact";
+        var acceptedCandidates = new List<ElementCandidate>();
+
+        foreach (var candidate in allCandidates)
+        {
+            ElementMatcher.Match(candidate, locator, globalMatchMode);
+            if (candidate.IsAccepted)
+            {
+                ElementScorer.Score(candidate, locator, new ElementSearchRequest { Locator = locator }, session.Application.ProcessId, isParentScoped);
+                acceptedCandidates.Add(candidate);
+            }
+        }
+
+        // 8. Apply foundIndex
+        var foundIndex = locator.FoundIndex ?? request.FoundIndex;
+        if (foundIndex.HasValue && acceptedCandidates.Count > 0)
+        {
+            var idx = foundIndex.Value;
+            if (idx >= 0 && idx < acceptedCandidates.Count)
+            {
+                return new List<ElementCandidate> { acceptedCandidates[idx] };
+            }
+            return new List<ElementCandidate>();
+        }
+
+        return acceptedCandidates;
+    }
+
+    internal List<AutomationElement> CollectCandidates(
+        AutomationElement root,
+        UiLocator locator,
+        UiRequest request,
+        AutomationSession session)
+    {
+        var depth = locator.Depth ?? request.Depth ?? 20;
+        var topLevelOnly = locator.TopLevelOnly == true || request.TopLevelOnly == true;
+
+        // XPath handling
+        if (!string.IsNullOrWhiteSpace(locator.XPath))
+        {
+            var xpathResult = UiService.FindByXPath(root, session, locator.XPath);
+            return xpathResult == null ? new List<AutomationElement>() : new List<AutomationElement> { xpathResult };
+        }
+
+        List<AutomationElement> rawCandidates;
+
+        var treeView = request.TreeView?.ToLowerInvariant() ?? "control";
+        if (string.Equals(treeView, "raw", StringComparison.OrdinalIgnoreCase))
         {
             var walker = session.Automation.TreeWalkerFactory.GetRawViewWalker();
             if (topLevelOnly)
             {
+                var children = new List<AutomationElement>();
                 var child = walker.GetFirstChild(root);
                 while (child != null)
                 {
-                    candidates.Add(child);
+                    children.Add(child);
                     child = walker.GetNextSibling(child);
                 }
+                rawCandidates = children;
             }
             else
             {
-                candidates = UiService.FindDescendantsWithWalker(root, depth, walker);
+                rawCandidates = UiService.FindDescendantsWithWalker(root, depth, walker);
             }
         }
-        else if (string.Equals(treeView, "content", StringComparison.OrdinalIgnoreCase) || locator.ContentOnly == true || options.ContentOnly)
+        else if (string.Equals(treeView, "content", StringComparison.OrdinalIgnoreCase))
         {
             var walker = session.Automation.TreeWalkerFactory.GetContentViewWalker();
             if (topLevelOnly)
             {
+                var children = new List<AutomationElement>();
                 var child = walker.GetFirstChild(root);
                 while (child != null)
                 {
-                    candidates.Add(child);
+                    children.Add(child);
                     child = walker.GetNextSibling(child);
                 }
+                rawCandidates = children;
             }
             else
             {
-                candidates = UiService.FindDescendantsWithWalker(root, depth, walker);
+                rawCandidates = UiService.FindDescendantsWithWalker(root, depth, walker);
             }
         }
-        else
+        else // default to control tree
         {
             if (topLevelOnly)
             {
-                candidates = root.FindAllChildren().ToList();
+                rawCandidates = root.FindAllChildren().ToList();
             }
             else if (!string.IsNullOrWhiteSpace(locator.ControlType))
             {
                 try
                 {
-                    var normCt = NormalizeControlTypeAlias(locator.ControlType);
+                    var normCt = locator.ControlType;
                     var ct = UiService.ParseControlType(normCt);
-                    candidates = root.FindAllDescendants(session.Automation.ConditionFactory.ByControlType(ct)).ToList();
+                    rawCandidates = root.FindAllDescendants(session.Automation.ConditionFactory.ByControlType(ct)).ToList();
                 }
                 catch
                 {
-                    candidates = UiService.FindDescendantsUpToDepth(root, depth);
+                    rawCandidates = UiService.FindDescendantsUpToDepth(root, depth);
                 }
             }
             else
             {
-                candidates = UiService.FindDescendantsUpToDepth(root, depth);
+                rawCandidates = UiService.FindDescendantsUpToDepth(root, depth);
             }
         }
 
-        // Active only filter
-        if (locator.ActiveOnly == true || options.ActiveOnly)
+        // Active only filter at collection time
+        if (locator.ActiveOnly == true || request.ActiveOnly == true)
         {
             var fgHwnd = GetForegroundWindow();
-            candidates = candidates.Where(c =>
+            rawCandidates = rawCandidates.Where(c =>
             {
                 try
                 {
@@ -454,436 +473,105 @@ public sealed class ElementResolver
         }
 
         // Include offscreen
-        bool allowedOffscreen = options.IncludeOffscreen || (locator.IncludeOffscreen == true);
-        if (!allowedOffscreen)
+        bool includeOffscreen = locator.IncludeOffscreen ?? request.IncludeOffscreen ?? true;
+        if (!includeOffscreen)
         {
-            candidates = candidates.Where(c => UiService.SafeIsOffscreen(c) != true).ToList();
+            rawCandidates = rawCandidates.Where(c => UiService.SafeIsOffscreen(c) != true).ToList();
         }
 
-        return candidates;
+        return rawCandidates;
     }
 
-    private bool IsMatch(AutomationElement element, UiLocator locator, ElementSearchOptions options)
+    private ElementCandidate CreateCandidate(AutomationElement element)
     {
-        var globalMode = locator.MatchMode ?? options.MatchMode ?? "exact";
-
-        // 1. ControlType
-        if (!string.IsNullOrWhiteSpace(locator.ControlType))
-        {
-            var actualCt = UiService.SafeElementControlType(element);
-            var normCt = NormalizeControlTypeAlias(locator.ControlType);
-            if (!string.Equals(actualCt, normCt, StringComparison.OrdinalIgnoreCase))
-            {
-                var localizedCt = element.Properties.LocalizedControlType.ValueOrDefault;
-                if (string.IsNullOrWhiteSpace(localizedCt) || !string.Equals(localizedCt, locator.ControlType, StringComparison.OrdinalIgnoreCase))
-                {
-                    return false;
-                }
-            }
-        }
-
-        // 2. ClassName / ClassNameRegex
-        if (!string.IsNullOrWhiteSpace(locator.ClassName))
-        {
-            var actualCn = UiService.SafeElementClassName(element);
-            if (!MatchesValue(actualCn, locator.ClassName, globalMode)) return false;
-        }
-        if (!string.IsNullOrWhiteSpace(locator.ClassNameRegex))
-        {
-            var actualCn = UiService.SafeElementClassName(element);
-            if (!MatchesRegex(actualCn, locator.ClassNameRegex)) return false;
-        }
-
-        // 3. Name / Title / NameRegex
-        var targetName = locator.Name ?? locator.Title;
-        if (!string.IsNullOrWhiteSpace(targetName))
-        {
-            var actualName = UiService.SafeElementName(element);
-            if (!MatchesValue(actualName, targetName, globalMode)) return false;
-        }
-        if (!string.IsNullOrWhiteSpace(locator.NameRegex))
-        {
-            var actualName = UiService.SafeElementName(element);
-            if (!MatchesRegex(actualName, locator.NameRegex)) return false;
-        }
-
-        // 4. AutomationId / AutoId / AutomationIdRegex / AutoIdRegex
-        var targetAid = locator.AutomationId ?? locator.AutoId;
-        if (!string.IsNullOrWhiteSpace(targetAid))
-        {
-            var actualAid = UiService.SafeElementAutomationId(element);
-            if (!MatchesValue(actualAid, targetAid, "exact")) return false;
-        }
-        var targetAidRegex = locator.AutomationIdRegex ?? locator.AutoIdRegex;
-        if (!string.IsNullOrWhiteSpace(targetAidRegex))
-        {
-            var actualAid = UiService.SafeElementAutomationId(element);
-            if (!MatchesRegex(actualAid, targetAidRegex)) return false;
-        }
-
-        // 5. Value / ValueRegex
-        if (!string.IsNullOrWhiteSpace(locator.Value))
-        {
-            var actualValue = UiService.SafeElementValue(element);
-            if (!MatchesValue(actualValue, locator.Value, globalMode)) return false;
-        }
-        if (!string.IsNullOrWhiteSpace(locator.ValueRegex))
-        {
-            var actualValue = UiService.SafeElementValue(element);
-            if (!MatchesRegex(actualValue, locator.ValueRegex)) return false;
-        }
-
-        // 6. Extra UIA fields
-        if (!string.IsNullOrWhiteSpace(locator.LocalizedControlType))
-        {
-            var actualLct = element.Properties.LocalizedControlType.ValueOrDefault;
-            if (!MatchesValue(actualLct, locator.LocalizedControlType, globalMode)) return false;
-        }
-        if (!string.IsNullOrWhiteSpace(locator.HelpText))
-        {
-            var actualHt = element.Properties.HelpText.ValueOrDefault;
-            if (!MatchesValue(actualHt, locator.HelpText, globalMode)) return false;
-        }
-        if (!string.IsNullOrWhiteSpace(locator.AccessKey))
-        {
-            var actualAk = element.Properties.AccessKey.ValueOrDefault;
-            if (!MatchesValue(actualAk, locator.AccessKey, globalMode)) return false;
-        }
-        if (!string.IsNullOrWhiteSpace(locator.AcceleratorKey))
-        {
-            var actualAck = element.Properties.AcceleratorKey.ValueOrDefault;
-            if (!MatchesValue(actualAck, locator.AcceleratorKey, globalMode)) return false;
-        }
-
-        // 7. Native / Identity fields
-        if (locator.ProcessId.HasValue)
-        {
-            var actualPid = UiService.SafeProcessId(element);
-            if (actualPid != locator.ProcessId.Value) return false;
-        }
-        if (locator.ControlId.HasValue)
-        {
-            var actualCid = SafeControlId(element);
-            if (actualCid != locator.ControlId.Value) return false;
-        }
-
-        // 8. State filters
-        if (!MatchesStateFilters(element, locator, options)) return false;
-
-        // 9. Rectangle filters
-        if (!MatchesRectangleFilters(element, locator)) return false;
-
-        return true;
-    }
-
-    private static string NormalizeControlTypeAlias(string controlType)
-    {
-        if (string.IsNullOrWhiteSpace(controlType)) return string.Empty;
-        var norm = controlType.Trim().ToLowerInvariant();
-        switch (norm)
-        {
-            case "dialog":
-                return "Window";
-            case "button":
-                return "Button";
-            case "text":
-                return "Text";
-            case "pane":
-                return "Pane";
-            case "list item":
-            case "listitem":
-                return "ListItem";
-            default:
-                if (norm.Length > 0)
-                {
-                    return char.ToUpperInvariant(norm[0]) + norm.Substring(1);
-                }
-                return controlType;
-        }
-    }
-
-    private static string NormalizeText(string? text)
-    {
-        if (text == null) return string.Empty;
-        var result = text.Replace("&", "");
-        result = System.Text.RegularExpressions.Regex.Replace(result, @"\s+", " ").Trim();
-        return result;
-    }
-
-    private static bool MatchesValue(string? actual, string? expected, string matchMode)
-    {
-        if (expected == null) return true;
-        if (actual == null) return false;
-
-        var normActual = NormalizeText(actual);
-        var normExpected = NormalizeText(expected);
-
-        switch (matchMode.ToLowerInvariant())
-        {
-            case "contains":
-                return normActual.Contains(normExpected, StringComparison.OrdinalIgnoreCase);
-            case "startswith":
-                return normActual.StartsWith(normExpected, StringComparison.OrdinalIgnoreCase);
-            case "endswith":
-                return normActual.EndsWith(normExpected, StringComparison.OrdinalIgnoreCase);
-            case "regex":
-                try
-                {
-                    return System.Text.RegularExpressions.Regex.IsMatch(actual, expected, System.Text.RegularExpressions.RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(250));
-                }
-                catch { return false; }
-            case "exact":
-            default:
-                return string.Equals(normActual, normExpected, StringComparison.OrdinalIgnoreCase);
-        }
-    }
-
-    private static bool MatchesRegex(string? actual, string? pattern)
-    {
-        if (string.IsNullOrEmpty(pattern)) return true;
-        if (actual == null) return false;
-        try
-        {
-            return System.Text.RegularExpressions.Regex.IsMatch(actual, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(250));
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static bool MatchesStateFilters(AutomationElement element, UiLocator locator, ElementSearchOptions options)
-    {
-        if (locator.Visible.HasValue)
-        {
-            var offscreen = UiService.SafeIsOffscreen(element) ?? false;
-            var rect = element.BoundingRectangle;
-            var visible = !offscreen && !rect.IsEmpty && rect.Width > 0 && rect.Height > 0;
-            if (visible != locator.Visible.Value) return false;
-        }
-
-        if (locator.Enabled.HasValue)
-        {
-            var enabled = UiService.SafeIsEnabled(element) ?? false;
-            if (enabled != locator.Enabled.Value) return false;
-        }
-
-        if (locator.Offscreen.HasValue)
-        {
-            var offscreen = UiService.SafeIsOffscreen(element) ?? false;
-            if (offscreen != locator.Offscreen.Value) return false;
-        }
-
-        if (locator.ContentOnly.HasValue || options.ContentOnly)
-        {
-            var contentOnlyVal = locator.ContentOnly ?? options.ContentOnly;
-            try
-            {
-                var isContent = element.Properties.IsContentElement.ValueOrDefault;
-                if (contentOnlyVal && !isContent) return false;
-            }
-            catch { return false; }
-        }
-
-        return true;
-    }
-
-    private bool MatchesRectangleFilters(AutomationElement element, UiLocator locator)
-    {
-        var r = element.BoundingRectangle;
-        var tolerance = locator.Tolerance ?? 0;
-
-        if (locator.Left.HasValue && Math.Abs(r.Left - locator.Left.Value) > tolerance)
-            return false;
-
-        if (locator.Top.HasValue && Math.Abs(r.Top - locator.Top.Value) > tolerance)
-            return false;
-
-        if (locator.Right.HasValue && Math.Abs(r.Right - locator.Right.Value) > tolerance)
-            return false;
-
-        if (locator.Bottom.HasValue && Math.Abs(r.Bottom - locator.Bottom.Value) > tolerance)
-            return false;
-
-        if (locator.Width.HasValue && Math.Abs(r.Width - locator.Width.Value) > tolerance)
-            return false;
-
-        if (locator.Height.HasValue && Math.Abs(r.Height - locator.Height.Value) > tolerance)
-            return false;
-
-        if (locator.NearX.HasValue && locator.NearY.HasValue)
-        {
-            var nearTolerance = locator.Tolerance ?? DefaultNearPointTolerancePixels;
-
-            var containsNearPoint =
-                locator.NearX.Value >= r.Left - nearTolerance &&
-                locator.NearX.Value <= r.Right + nearTolerance &&
-                locator.NearY.Value >= r.Top - nearTolerance &&
-                locator.NearY.Value <= r.Bottom + nearTolerance;
-
-            if (!containsNearPoint)
-                return false;
-        }
-
-        if (locator.ContainsPoint == true && locator.NearX.HasValue && locator.NearY.HasValue)
-        {
-            var containsPoint =
-                locator.NearX.Value >= r.Left &&
-                locator.NearX.Value <= r.Right &&
-                locator.NearY.Value >= r.Top &&
-                locator.NearY.Value <= r.Bottom;
-
-            if (!containsPoint)
-                return false;
-        }
-
-        if (locator.IntersectsRectangle == true && locator.Left.HasValue && locator.Top.HasValue && locator.Right.HasValue && locator.Bottom.HasValue)
-        {
-            var intersects =
-                !(r.Left > locator.Right.Value ||
-                  r.Right < locator.Left.Value ||
-                  r.Top > locator.Bottom.Value ||
-                  r.Bottom < locator.Top.Value);
-
-            if (!intersects)
-                return false;
-        }
-
-        return true;
-    }
-
-    private List<AutomationElement> Deduplicate(List<AutomationElement> list)
-    {
-        var deduped = new List<AutomationElement>();
-        var seenRuntimeIds = new HashSet<string>();
-        var seenHwnds = new HashSet<IntPtr>();
-        var seenKeys = new HashSet<string>();
-
-        foreach (var el in list)
-        {
-            try
-            {
-                var rtId = UiService.SafeRuntimeIdString(el);
-                if (!string.IsNullOrEmpty(rtId))
-                {
-                    if (seenRuntimeIds.Contains(rtId)) continue;
-                    seenRuntimeIds.Add(rtId);
-                }
-
-                var hwnd = el.Properties.NativeWindowHandle.ValueOrDefault;
-                if (hwnd != IntPtr.Zero)
-                {
-                    if (seenHwnds.Contains(hwnd)) continue;
-                    seenHwnds.Add(hwnd);
-                }
-
-                var aid = UiService.SafeElementAutomationId(el) ?? string.Empty;
-                var ct = UiService.SafeElementControlType(el) ?? string.Empty;
-                var rect = el.BoundingRectangle;
-                var rectKey = rect.IsEmpty ? "empty" : $"{rect.Left},{rect.Top},{rect.Width},{rect.Height}";
-                var key = $"{aid}|{ct}|{rectKey}";
-                if (seenKeys.Contains(key)) continue;
-                seenKeys.Add(key);
-
-                deduped.Add(el);
-            }
-            catch
-            {
-                deduped.Add(el);
-            }
-        }
-        return deduped;
-    }
-
-    private ElementSnapshot CreateSnapshot(AutomationElement element)
-    {
-        if (element == null) return new ElementSnapshot();
-
-        bool supportsInvoke = false;
-        bool supportsValue = false;
-        bool supportsSelectionItem = false;
-        bool supportsToggle = false;
-        bool supportsExpandCollapse = false;
-        bool supportsScrollItem = false;
-
-        try { supportsInvoke = element.Patterns.Invoke.IsSupported; } catch {}
-        try { supportsValue = element.Patterns.Value.IsSupported; } catch {}
-        try { supportsSelectionItem = element.Patterns.SelectionItem.IsSupported; } catch {}
-        try { supportsToggle = element.Patterns.Toggle.IsSupported; } catch {}
-        try { supportsExpandCollapse = element.Patterns.ExpandCollapse.IsSupported; } catch {}
-        try { supportsScrollItem = element.Patterns.ScrollItem.IsSupported; } catch {}
-
-        long? hwnd = null;
-        try
-        {
-            var h = element.Properties.NativeWindowHandle.ValueOrDefault;
-            if (h != IntPtr.Zero) hwnd = h.ToInt64();
-        }
-        catch {}
-
-        int? pid = null;
-        try { pid = UiService.SafeProcessId(element); } catch {}
-
-        object? rectObj = null;
-        try { rectObj = UiService.SafeBoundingRectangleObject(element); } catch {}
-
-        return new ElementSnapshot
-        {
-            Name = UiService.SafeElementName(element) ?? string.Empty,
-            AutomationId = UiService.SafeElementAutomationId(element) ?? string.Empty,
-            ClassName = UiService.SafeElementClassName(element) ?? string.Empty,
-            ControlType = UiService.SafeElementControlType(element) ?? string.Empty,
-            LocalizedControlType = element.Properties.LocalizedControlType.ValueOrDefault ?? string.Empty,
-            FrameworkId = UiService.SafeFrameworkId(element) ?? string.Empty,
-            Value = UiService.SafeElementValue(element) ?? string.Empty,
-            Hwnd = hwnd,
-            ProcessId = pid,
-            RuntimeId = UiService.SafeRuntimeIdString(element) ?? string.Empty,
-            IsEnabled = UiService.SafeIsEnabled(element),
-            IsOffscreen = UiService.SafeIsOffscreen(element),
-            HasKeyboardFocus = element.Properties.HasKeyboardFocus.ValueOrDefault,
-            Rectangle = rectObj,
-            SupportsInvoke = supportsInvoke,
-            SupportsValue = supportsValue,
-            SupportsSelectionItem = supportsSelectionItem,
-            SupportsToggle = supportsToggle,
-            SupportsExpandCollapse = supportsExpandCollapse,
-            SupportsScrollItem = supportsScrollItem
-        };
-    }
-
-    private ElementMatchResult CreateMatchResult(
-        AutomationElement element,
-        string strategy,
-        int score,
-        int index,
-        string reason,
-        AutomationSession session)
-    {
-        return new ElementMatchResult
+        return new ElementCandidate
         {
             Element = element,
-            Strategy = strategy,
-            Score = score,
-            Index = index,
-            Reason = reason,
             Snapshot = CreateSnapshot(element)
         };
     }
 
-    private string BuildNotFoundMessage(UiLocator locator, ElementSearchOptions options)
+    public static ElementSnapshot CreateSnapshot(AutomationElement element)
     {
-        return $"ElementNotFound: No matching elements found for locator={UiService.DescribeLocator(locator)} under search root: {options.SearchRoot}.";
-    }
+        var name = UiService.SafeElementName(element);
+        var automationId = UiService.SafeElementAutomationId(element);
+        var className = UiService.SafeElementClassName(element);
+        var controlType = UiService.SafeElementControlType(element);
+        var frameworkId = UiService.SafeFrameworkId(element);
+        var value = UiService.SafeElementValue(element);
+        var text = UiService.SafeElementText(element);
+        var legacyName = ElementTextExtractor.GetLegacyName(element);
+        var legacyValue = ElementTextExtractor.GetLegacyValue(element);
 
-    private string BuildAmbiguousMessage(UiLocator locator, IReadOnlyList<ElementMatchResult> matches)
-    {
-        var msg = $"ElementAmbiguous: Multiple matching elements found ({matches.Count}) for locator={UiService.DescribeLocator(locator)}.\n";
-        msg += "Matches:\n";
-        foreach (var m in matches)
+        int? hwnd = null;
+        try
         {
-            msg += $"  - Name: {m.Snapshot.Name}, ControlType: {m.Snapshot.ControlType}, AutomationId: {m.Snapshot.AutomationId}, ClassName: {m.Snapshot.ClassName}, Score: {m.Score}, Reason: {m.Reason}\n";
+            var h = element.Properties.NativeWindowHandle.ValueOrDefault;
+            if (h != IntPtr.Zero) hwnd = (int)h.ToInt64();
         }
-        return msg;
+        catch { }
+
+        int? pid = null;
+        try { pid = UiService.SafeProcessId(element); } catch { }
+
+        int? cid = null;
+        try { cid = SafeControlId(element); } catch { }
+
+        bool? isEnabled = null;
+        try { isEnabled = UiService.SafeIsEnabled(element); } catch { }
+
+        bool? isOffscreen = null;
+        try { isOffscreen = UiService.SafeIsOffscreen(element); } catch { }
+
+        bool? isVisible = null;
+        try
+        {
+            var offscreen = isOffscreen ?? false;
+            var rect = element.BoundingRectangle;
+            isVisible = !offscreen && !rect.IsEmpty && rect.Width > 0 && rect.Height > 0;
+        }
+        catch { }
+
+        object? rectObj = null;
+        try { rectObj = UiService.SafeBoundingRectangleObject(element); } catch { }
+
+        bool hasInvoke = false;
+        try { hasInvoke = element.Patterns.Invoke.IsSupported; } catch { }
+        bool hasValue = false;
+        try { hasValue = element.Patterns.Value.IsSupported; } catch { }
+        bool hasSelectionItem = false;
+        try { hasSelectionItem = element.Patterns.SelectionItem.IsSupported; } catch { }
+        bool hasToggle = false;
+        try { hasToggle = element.Patterns.Toggle.IsSupported; } catch { }
+        bool hasScrollItem = false;
+        try { hasScrollItem = element.Patterns.ScrollItem.IsSupported; } catch { }
+        bool hasExpandCollapse = false;
+        try { hasExpandCollapse = element.Patterns.ExpandCollapse.IsSupported; } catch { }
+
+        return new ElementSnapshot
+        {
+            Name = name,
+            AutomationId = automationId,
+            ClassName = className,
+            ControlType = controlType,
+            FrameworkId = frameworkId,
+            Value = value,
+            Text = text,
+            LegacyName = legacyName,
+            LegacyValue = legacyValue,
+            Hwnd = hwnd,
+            ProcessId = pid,
+            ControlId = cid,
+            IsEnabled = isEnabled,
+            IsOffscreen = isOffscreen,
+            IsVisible = isVisible,
+            Rectangle = rectObj,
+            HasInvoke = hasInvoke,
+            HasValue = hasValue,
+            HasSelectionItem = hasSelectionItem,
+            HasToggle = hasToggle,
+            HasScrollItem = hasScrollItem,
+            HasExpandCollapse = hasExpandCollapse
+        };
     }
 }

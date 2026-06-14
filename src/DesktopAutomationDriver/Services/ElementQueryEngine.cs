@@ -769,107 +769,14 @@ public partial class UiService
         if (locator == null && (request.LocatorPath == null || request.LocatorPath.Count == 0))
             throw new ArgumentException("'locator' or 'locatorPath' is required for this operation.");
 
-        var session  = RequireSession();
-        var policy   = GetOperationPolicy(request);
-        var deadline = DateTime.UtcNow + policy.Timeout;
-
-        var effectiveAllowDesktop = allowDesktopSearch || policy.AllowDesktopPopupScan;
-
-        // Build cache key for fast operations (only when new-style fields are absent).
-        var preferAttributes = ShouldPreferAttributeSearch(request);
-        var xpathOnly        = request.XPathOnly == true;
-
-        string? cacheKey = null;
-        if (locator != null && policy.UseElementCache && !policy.RefreshRootEveryRetry && !NeedsNewStyleSearch(locator))
+        var targetLoc = locator ?? request.Locator ?? new UiLocator();
+        if (!allowOffscreen)
         {
-            var root = GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan);
-            cacheKey = BuildElementCacheKey(
-                session, root, locator, request.ParentLocator,
-                preferAttributes: preferAttributes,
-                xpathOnly: xpathOnly,
-                preferXPath: request.PreferXPath == true);
+            targetLoc.IncludeOffscreen = false;
         }
 
-        if (cacheKey != null &&
-            TryGetCachedElement(cacheKey, locator!, out var cached) &&
-            cached != null)
-        {
-            _logger.LogInformation(
-                "UI locator resolved (engine). operation={Operation}, strategy=cache, locator={Locator}",
-                SanitizeValue(request.Operation),
-                DescribeLocator(locator!));
-            return cached;
-        }
-
-        var sw         = Stopwatch.StartNew();
-        Exception? lastException = null;
-
-        while (true)
-        {
-            try
-            {
-                DesktopAutomationDriver.Models.Resolver.ResolvedElement resolved;
-                if (request.LocatorPath != null || request.Criteria != null)
-                {
-                    resolved = _uiElementResolver.ResolveLocatorPath(request);
-                }
-                else
-                {
-                    resolved = _uiElementResolver.ResolveOne(request, locator);
-                }
-
-                if (resolved?.Element != null)
-                {
-                    sw.Stop();
-
-                    if (cacheKey != null)
-                        StoreCachedElement(cacheKey, resolved.Element);
-
-                    _logger.LogInformation(
-                        "UI locator resolved (engine). operation={Operation}, strategy={Strategy}, elapsedMs={ElapsedMs}, locator={Locator}",
-                        SanitizeValue(request.Operation),
-                        resolved.Strategy,
-                        sw.ElapsedMilliseconds,
-                        DescribeLocator(locator ?? new UiLocator()));
-
-                    return resolved.Element;
-                }
-            }
-            catch (Exception ex)
-            {
-                lastException = ex;
-                if (ex.Message.StartsWith("ElementAmbiguous") && (request.Ambiguity ?? "error") == "error")
-                {
-                    throw;
-                }
-            }
-
-            if (DateTime.UtcNow >= deadline)
-            {
-                sw.Stop();
-
-                _logger.LogWarning(
-                    "UI locator not found (engine). operation={Operation}, elapsedMs={ElapsedMs}, locator={Locator}",
-                    SanitizeValue(request.Operation),
-                    sw.ElapsedMilliseconds,
-                    DescribeLocator(locator ?? new UiLocator()));
-
-                if (lastException != null)
-                {
-                    throw lastException;
-                }
-
-                throw new InvalidOperationException($"Element not found for operation {purpose}.");
-            }
-
-            Thread.Sleep(policy.RetryInterval);
-
-            if (policy.RefreshRootEveryRetry)
-            {
-                // Re-invalidate cache key after root refresh
-                cacheKey = null;
-            }
-        }
+        var resolved = _newResolver.ResolveOne(targetLoc, request, purpose);
+        return resolved.Element;
     }
 
     // =========================================================================
@@ -1438,15 +1345,20 @@ public partial class UiService
 
     private object? FindAll(UiRequest req)
     {
-        var matches = _uiElementResolver.ResolveMany(req, req.Locator, purpose: "findall");
-
-        var items = matches.Select((r, i) => ToResolvedElementDto(r, i)).ToList();
+        var candidates = _newResolver.ResolveAll(req, "findall");
+        var items = candidates.Select((c, i) => ToResolvedElementDto(new DesktopAutomationDriver.Models.Resolver.ResolvedElement
+        {
+            Element = c.Element,
+            Strategy = "unified-resolver",
+            Score = c.Score,
+            Index = i
+        }, i)).ToList();
 
         return new
         {
             operation = req.Operation,
-            count = matches.Count,
-            returned = matches.Count,
+            count = candidates.Count,
+            returned = candidates.Count,
             searchRoot = req.SearchRoot ?? (req.UseDesktopRoot == true ? "desktop" : (req.UseActiveWindowRoot == true ? "foreground" : "currentWindow")),
             treeView = req.TreeView ?? "control",
             backend = req.Backend ?? "uia",
@@ -1540,8 +1452,7 @@ public partial class UiService
                 foreach (var tv in treeViews)
                 {
                     var stepRequest = new UiRequest { Operation = req.Operation, TreeView = tv };
-                    var diag = new DesktopAutomationDriver.Models.Resolver.ResolveDiagnostics();
-                    var collected = _uiElementResolver.CollectCandidates(root, new UiLocator(), stepRequest, diag);
+                    var collected = _newResolver.CollectCandidates(root, new UiLocator(), stepRequest, session);
 
                     foreach (var c in collected)
                     {
@@ -1670,8 +1581,7 @@ public partial class UiService
             foreach (var tv in treeViews)
             {
                 var stepRequest = new UiRequest { Operation = req.Operation, TreeView = tv };
-                var diag = new DesktopAutomationDriver.Models.Resolver.ResolveDiagnostics();
-                var collected = _uiElementResolver.CollectCandidates(root, new UiLocator(), stepRequest, diag);
+                var collected = _newResolver.CollectCandidates(root, new UiLocator(), stepRequest, session);
 
                 foreach (var c in collected)
                     {

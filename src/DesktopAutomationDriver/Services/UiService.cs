@@ -208,14 +208,12 @@ public partial class UiService : IUiService
             ["APPS"] = VirtualKeyShort.APPS,
         };
 
-    private readonly UiElementResolver _uiElementResolver;
     private readonly DesktopAutomationDriver.Services.Resolution.ElementResolver _newResolver;
 
-    public UiService(IUiSessionContext ctx, ILogger<UiService> logger, ILogger<ElementResolver> resolverLogger, ILogger<UiElementResolver> uiResolverLogger)
+    public UiService(IUiSessionContext ctx, ILogger<UiService> logger)
     {
         _ctx = ctx;
         _logger = logger;
-        _uiElementResolver = new UiElementResolver(ctx, uiResolverLogger, GetWindowRoot);
         _newResolver = new DesktopAutomationDriver.Services.Resolution.ElementResolver(ctx, logger, GetWindowRoot);
     }
 
@@ -2318,15 +2316,7 @@ public partial class UiService : IUiService
 
         try
         {
-            DesktopAutomationDriver.Models.Resolver.ResolvedElement result;
-            if (req.LocatorPath != null || req.Criteria != null)
-            {
-                result = _uiElementResolver.ResolveLocatorPath(req);
-            }
-            else
-            {
-                result = _uiElementResolver.ResolveOne(req);
-            }
+            var result = _newResolver.ResolveOne(req, "inspectlocator");
 
             return new
             {
@@ -8519,35 +8509,18 @@ public partial class UiService : IUiService
         bool requireClickable = false)
     {
         var locator = request.Locator ?? new UiLocator();
-        var searchRoot = GetSearchRootName(request);
-
-        var options = new DesktopAutomationDriver.Services.Resolution.ElementSearchOptions
+        if (!allowOffscreen)
         {
-            SearchRoot = searchRoot,
-            TopLevelOnly = request.TopLevelOnly == true || (locator.TopLevelOnly == true),
-            Depth = locator.Depth ?? request.Depth,
-            FoundIndex = locator.FoundIndex ?? request.FoundIndex,
-            CtrlIndex = locator.CtrlIndex ?? request.CtrlIndex,
-            ActiveOnly = request.ActiveOnly == true || (locator.ActiveOnly == true),
-            IncludeOffscreen = allowOffscreen || (request.IncludeOffscreen == true) || (locator.IncludeOffscreen == true),
-            ContentOnly = locator.ContentOnly == true,
-            PreferAttributes = request.PreferAttributes != false,
-            PreferXPath = request.PreferXPath == true,
-            XPathOnly = request.XPathOnly == true,
-            ThrowIfAmbiguous = request.ThrowIfAmbiguous != false,
-            IncludeDiagnostics = request.IncludeDiagnostics == true || request.Debug == true,
-            Timeout = request.TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(request.TimeoutMs.Value) : TimeSpan.FromSeconds(5),
-            MatchMode = locator.MatchMode ?? request.MatchMode,
-            TreeView = request.TreeView ?? "control"
-        };
+            locator.IncludeOffscreen = false;
+        }
 
-        var matchResult = _newResolver.ResolveOne(request, locator, options);
+        var matchResult = _newResolver.ResolveOne(locator, request, purpose);
         var resolved = new DesktopAutomationDriver.Models.Resolver.ResolvedElement
         {
             Element = matchResult.Element,
             Strategy = matchResult.Strategy,
-            Score = matchResult.Score,
-            Index = matchResult.Index
+            Score = matchResult.Candidates.FirstOrDefault()?.Score ?? 100,
+            Index = 0
         };
 
         if (action && requireClickable)
@@ -8613,28 +8586,9 @@ public partial class UiService : IUiService
     private AutomationElement FindLocatorWithRetry(
         AutomationSession session, AutomationElement root, UiLocator locator)
     {
-        var deadline = DateTime.UtcNow + DefaultRetry;
         var request = new UiRequest { Locator = locator };
-        while (true)
-        {
-            try
-            {
-                var resolved = _uiElementResolver.ResolveOne(request, locator, root, "findlocatorwithretry");
-                if (resolved.Element != null)
-                    return resolved.Element;
-            }
-            catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException || ex is DesktopAutomationDriver.Models.Resolver.UiResolutionException)
-            {
-                // Continue retrying
-            }
-
-            if (DateTime.UtcNow >= deadline)
-                throw new InvalidOperationException(
-                    $"Element not found within {DefaultRetry.TotalSeconds}s: " +
-                    DescribeLocator(locator));
-
-            Thread.Sleep(RetryInterval);
-        }
+        var resolved = _newResolver.ResolveOne(locator, request, "findlocatorwithretry");
+        return resolved.Element;
     }
 
     /// <summary>
@@ -8994,20 +8948,12 @@ public partial class UiService : IUiService
     /// </summary>
     private ResolvedElement ResolveForStateQuery(UiRequest request)
     {
-        DesktopAutomationDriver.Models.Resolver.ResolvedElement resolved;
-        if (request.LocatorPath != null || request.Criteria != null)
-        {
-            resolved = _uiElementResolver.ResolveLocatorPath(request);
-        }
-        else
-        {
-            resolved = _uiElementResolver.ResolveOne(request);
-        }
-
+        var locator = request.Locator ?? new UiLocator();
+        var matchResult = _newResolver.ResolveOne(locator, request, "state-query");
         return new ResolvedElement
         {
-            Element = resolved.Element,
-            Strategy = resolved.Strategy,
+            Element = matchResult.Element,
+            Strategy = matchResult.Strategy,
             RootStrategy = request.SearchRoot ?? "currentWindow"
         };
     }
@@ -9110,10 +9056,52 @@ public partial class UiService : IUiService
             "clickable"    => EvaluateClickable(request),
             "editable"     => EvaluateEditable(request),
             "gone"         => EvaluateGone(request),
+            "selected"     => EvaluateSelected(request, expected: true),
+            "checked"      => EvaluateChecked(request, expected: true),
+            "unchecked"    => EvaluateChecked(request, expected: false),
             _ => throw new ArgumentException(
                 $"Unsupported wait state '{state}'. " +
                 "Supported: exists, enabled, disabled, visible, hidden, focused, " +
-                "windowactive, clickable, editable, gone.")
+                "windowactive, clickable, editable, gone, selected, checked, unchecked.")
+        };
+    }
+
+    private StateResult EvaluateSelected(UiRequest request, bool expected)
+    {
+        var resolved = ResolveForStateQuery(request);
+        bool isSelected = false;
+        try
+        {
+            if (resolved.Element.Patterns.SelectionItem.IsSupported)
+            {
+                isSelected = resolved.Element.Patterns.SelectionItem.Pattern.IsSelected;
+            }
+        }
+        catch { }
+        return new StateResult
+        {
+            Matched = isSelected == expected,
+            Payload = new { selected = isSelected, strategy = resolved.Strategy }
+        };
+    }
+
+    private StateResult EvaluateChecked(UiRequest request, bool expected)
+    {
+        var resolved = ResolveForStateQuery(request);
+        bool isChecked = false;
+        try
+        {
+            if (resolved.Element.Patterns.Toggle.IsSupported)
+            {
+                var toggleState = resolved.Element.Patterns.Toggle.Pattern.ToggleState;
+                isChecked = toggleState == FlaUI.Core.Definitions.ToggleState.On;
+            }
+        }
+        catch { }
+        return new StateResult
+        {
+            Matched = isChecked == expected,
+            Payload = new { @checked = isChecked, strategy = resolved.Strategy }
         };
     }
 
@@ -16407,7 +16395,7 @@ public partial class UiService : IUiService
     private object DumpTree(UiRequest request)
     {
         var session = RequireSession();
-        var root = _uiElementResolver.ResolveSearchRoot(request);
+        var root = _newResolver.ResolveSearchRoot(request);
         
         var depthLimit = request.Depth ?? 20;
         var limit = request.Limit ?? 1000;
@@ -16577,96 +16565,53 @@ public partial class UiService : IUiService
     private object FindElement(UiRequest request)
     {
         var locator = request.Locator ?? new UiLocator();
-        var searchRoot = GetSearchRootName(request);
-
-        var options = new DesktopAutomationDriver.Services.Resolution.ElementSearchOptions
-        {
-            SearchRoot = searchRoot,
-            TopLevelOnly = request.TopLevelOnly ?? locator.TopLevelOnly ?? false,
-            Depth = locator.Depth ?? request.Depth,
-            FoundIndex = locator.FoundIndex ?? request.FoundIndex,
-            CtrlIndex = locator.CtrlIndex ?? request.CtrlIndex,
-            ActiveOnly = request.ActiveOnly ?? locator.ActiveOnly ?? false,
-            IncludeOffscreen = request.IncludeOffscreen ?? locator.IncludeOffscreen ?? false,
-            ContentOnly = locator.ContentOnly ?? false,
-            PreferAttributes = request.PreferAttributes != false,
-            PreferXPath = request.PreferXPath ?? false,
-            XPathOnly = request.XPathOnly ?? false,
-            ThrowIfAmbiguous = request.ThrowIfAmbiguous != false,
-            IncludeDiagnostics = request.IncludeDiagnostics ?? request.Debug ?? false,
-            Timeout = request.TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(request.TimeoutMs.Value) : TimeSpan.FromSeconds(5),
-            MatchMode = locator.MatchMode ?? request.MatchMode,
-            TreeView = request.TreeView ?? "control"
-        };
-
-        var matchResult = _newResolver.ResolveOne(request, locator, options);
+        var matchResult = _newResolver.ResolveOne(locator, request, "findelement");
+        var firstCand = matchResult.Candidates.FirstOrDefault();
+        var snapshot = DesktopAutomationDriver.Services.Resolution.ElementResolver.CreateSnapshot(matchResult.Element);
         return new
         {
             found = true,
-            index = matchResult.Index,
-            score = matchResult.Score,
+            index = 0,
+            score = firstCand?.Score ?? 100,
             strategy = matchResult.Strategy,
-            reason = matchResult.Reason,
+            reason = firstCand?.MatchReasons.FirstOrDefault() ?? "Matched",
             element = new
             {
-                name = matchResult.Snapshot.Name,
-                automationId = matchResult.Snapshot.AutomationId,
-                controlType = matchResult.Snapshot.ControlType,
-                className = matchResult.Snapshot.ClassName,
-                rectangle = matchResult.Snapshot.Rectangle,
-                isEnabled = matchResult.Snapshot.IsEnabled,
-                isOffscreen = matchResult.Snapshot.IsOffscreen
+                name = snapshot.Name,
+                automationId = snapshot.AutomationId,
+                controlType = snapshot.ControlType,
+                className = snapshot.ClassName,
+                rectangle = snapshot.Rectangle,
+                isEnabled = snapshot.IsEnabled,
+                isOffscreen = snapshot.IsOffscreen
             }
         };
     }
 
     private object FindElements(UiRequest request)
     {
-        var locator = request.Locator ?? new UiLocator();
-        var searchRoot = GetSearchRootName(request);
-
-        var options = new DesktopAutomationDriver.Services.Resolution.ElementSearchOptions
+        var candidates = _newResolver.ResolveAll(request, "findall");
+        var matchesList = candidates.Select((c, idx) => new
         {
-            SearchRoot = searchRoot,
-            TopLevelOnly = request.TopLevelOnly ?? locator.TopLevelOnly ?? false,
-            Depth = locator.Depth ?? request.Depth,
-            FoundIndex = locator.FoundIndex ?? request.FoundIndex,
-            CtrlIndex = locator.CtrlIndex ?? request.CtrlIndex,
-            ActiveOnly = request.ActiveOnly ?? locator.ActiveOnly ?? false,
-            IncludeOffscreen = request.IncludeOffscreen ?? locator.IncludeOffscreen ?? false,
-            ContentOnly = locator.ContentOnly ?? false,
-            PreferAttributes = request.PreferAttributes != false,
-            PreferXPath = request.PreferXPath ?? false,
-            XPathOnly = request.XPathOnly ?? false,
-            ThrowIfAmbiguous = request.ThrowIfAmbiguous != false,
-            IncludeDiagnostics = request.IncludeDiagnostics ?? request.Debug ?? false,
-            Timeout = request.TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(request.TimeoutMs.Value) : TimeSpan.FromSeconds(5),
-            MatchMode = locator.MatchMode ?? request.MatchMode,
-            TreeView = request.TreeView ?? "control"
-        };
-
-        var matches = _newResolver.ResolveAll(request, locator, options);
-        var matchesList = matches.Select(m => new
-        {
-            index = m.Index,
-            score = m.Score,
-            strategy = m.Strategy,
-            reason = m.Reason,
+            index = idx,
+            score = c.Score,
+            strategy = "unified-resolver-findall",
+            reason = c.MatchReasons.FirstOrDefault() ?? "Matched",
             element = new
             {
-                name = m.Snapshot.Name,
-                automationId = m.Snapshot.AutomationId,
-                controlType = m.Snapshot.ControlType,
-                className = m.Snapshot.ClassName,
-                rectangle = m.Snapshot.Rectangle,
-                isEnabled = m.Snapshot.IsEnabled,
-                isOffscreen = m.Snapshot.IsOffscreen
+                name = c.Snapshot.Name,
+                automationId = c.Snapshot.AutomationId,
+                controlType = c.Snapshot.ControlType,
+                className = c.Snapshot.ClassName,
+                rectangle = c.Snapshot.Rectangle,
+                isEnabled = c.Snapshot.IsEnabled,
+                isOffscreen = c.Snapshot.IsOffscreen
             }
         }).ToList();
 
         return new
         {
-            count = matches.Count,
+            count = candidates.Count,
             matches = matchesList
         };
     }
@@ -16674,33 +16619,12 @@ public partial class UiService : IUiService
     private object InspectElement(UiRequest request)
     {
         var locator = request.Locator ?? new UiLocator();
-        var searchRoot = GetSearchRootName(request);
-
-        var options = new DesktopAutomationDriver.Services.Resolution.ElementSearchOptions
-        {
-            SearchRoot = searchRoot,
-            TopLevelOnly = request.TopLevelOnly ?? locator.TopLevelOnly ?? false,
-            Depth = locator.Depth ?? request.Depth,
-            FoundIndex = locator.FoundIndex ?? request.FoundIndex,
-            CtrlIndex = locator.CtrlIndex ?? request.CtrlIndex,
-            ActiveOnly = request.ActiveOnly ?? locator.ActiveOnly ?? false,
-            IncludeOffscreen = request.IncludeOffscreen ?? locator.IncludeOffscreen ?? false,
-            ContentOnly = locator.ContentOnly ?? false,
-            PreferAttributes = request.PreferAttributes != false,
-            PreferXPath = request.PreferXPath ?? false,
-            XPathOnly = request.XPathOnly ?? false,
-            ThrowIfAmbiguous = request.ThrowIfAmbiguous != false,
-            IncludeDiagnostics = request.IncludeDiagnostics ?? request.Debug ?? false,
-            Timeout = request.TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(request.TimeoutMs.Value) : TimeSpan.FromSeconds(5),
-            MatchMode = locator.MatchMode ?? request.MatchMode,
-            TreeView = request.TreeView ?? "control"
-        };
-
-        var matchResult = _newResolver.ResolveOne(request, locator, options);
+        var matchResult = _newResolver.ResolveOne(locator, request, "inspectelement");
+        var snapshot = DesktopAutomationDriver.Services.Resolution.ElementResolver.CreateSnapshot(matchResult.Element);
         return new
         {
             found = true,
-            snapshot = matchResult.Snapshot
+            snapshot = snapshot
         };
     }
 
@@ -16719,14 +16643,7 @@ public partial class UiService : IUiService
         if (request.Locator != null)
         {
             var locator = request.Locator;
-            var searchRoot = GetSearchRootName(request);
-            var options = new DesktopAutomationDriver.Services.Resolution.ElementSearchOptions
-            {
-                SearchRoot = searchRoot,
-                Timeout = request.TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(request.TimeoutMs.Value) : TimeSpan.FromSeconds(5),
-                MatchMode = locator.MatchMode ?? request.MatchMode
-            };
-            var matchResult = _newResolver.ResolveOne(request, locator, options);
+            var matchResult = _newResolver.ResolveOne(locator, request, "printcontrolidentifiers");
             rootEl = matchResult.Element;
         }
         else
