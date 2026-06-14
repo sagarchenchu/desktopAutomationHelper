@@ -30,6 +30,8 @@ public sealed class ElementResolver
         _getWindowRoot = getWindowRoot;
     }
 
+    private const int DefaultNearPointTolerancePixels = 5;
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern int GetDlgCtrlID(IntPtr hwnd);
 
@@ -594,7 +596,7 @@ public sealed class ElementResolver
             default:
                 if (norm.Length > 0)
                 {
-                    return char.ToUpper(norm[0]) + norm.Substring(1);
+                    return char.ToUpperInvariant(norm[0]) + norm.Substring(1);
                 }
                 return controlType;
         }
@@ -627,7 +629,7 @@ public sealed class ElementResolver
             case "regex":
                 try
                 {
-                    return System.Text.RegularExpressions.Regex.IsMatch(actual, expected, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    return System.Text.RegularExpressions.Regex.IsMatch(actual, expected, System.Text.RegularExpressions.RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(250));
                 }
                 catch { return false; }
             case "exact":
@@ -642,7 +644,7 @@ public sealed class ElementResolver
         if (actual == null) return false;
         try
         {
-            return System.Text.RegularExpressions.Regex.IsMatch(actual, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return System.Text.RegularExpressions.Regex.IsMatch(actual, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(250));
         }
         catch
         {
@@ -711,7 +713,7 @@ public sealed class ElementResolver
 
         if (locator.NearX.HasValue && locator.NearY.HasValue)
         {
-            var nearTolerance = locator.Tolerance ?? 5;
+            var nearTolerance = locator.Tolerance ?? DefaultNearPointTolerancePixels;
 
             var containsNearPoint =
                 locator.NearX.Value >= r.Left - nearTolerance &&
@@ -778,7 +780,7 @@ public sealed class ElementResolver
                 var aid = UiService.SafeElementAutomationId(el) ?? string.Empty;
                 var ct = UiService.SafeElementControlType(el) ?? string.Empty;
                 var rect = el.BoundingRectangle;
-                var rectKey = rect.IsEmpty ? Guid.NewGuid().ToString() : $"{rect.Left},{rect.Top},{rect.Width},{rect.Height}";
+                var rectKey = rect.IsEmpty ? "empty" : $"{rect.Left},{rect.Top},{rect.Width},{rect.Height}";
                 var key = $"{aid}|{ct}|{rectKey}";
                 if (seenKeys.Contains(key)) continue;
                 seenKeys.Add(key);
@@ -795,7 +797,7 @@ public sealed class ElementResolver
 
     private ElementSnapshot CreateSnapshot(AutomationElement element)
     {
-        if (element == null) return null!;
+        if (element == null) return new ElementSnapshot();
 
         bool supportsInvoke = false;
         bool supportsValue = false;
