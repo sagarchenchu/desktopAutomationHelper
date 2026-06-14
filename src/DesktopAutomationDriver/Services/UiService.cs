@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using DesktopAutomationDriver.Models;
 using DesktopAutomationDriver.Models.Request;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
@@ -207,10 +208,13 @@ public partial class UiService : IUiService
             ["APPS"] = VirtualKeyShort.APPS,
         };
 
-    public UiService(IUiSessionContext ctx, ILogger<UiService> logger)
+    private readonly ElementResolver _elementResolver;
+
+    public UiService(IUiSessionContext ctx, ILogger<UiService> logger, ILogger<ElementResolver> resolverLogger)
     {
         _ctx = ctx;
         _logger = logger;
+        _elementResolver = new ElementResolver(ctx, resolverLogger, GetWindowRoot);
     }
 
     // =========================================================================
@@ -1464,7 +1468,11 @@ public partial class UiService : IUiService
             className = SafeElementClassName(e),
             controlType = SafeElementControlType(e),
             enabled = SafeIsEnabled(e),
-            visible = SafeIsOffscreen(e) is false
+            visible = SafeIsOffscreen(e) is false,
+            runtimeId = SafeRuntimeIdString(e),
+            frameworkId = SafeFrameworkId(e),
+            value = SafeElementValue(e),
+            text = SafeElementText(e)
         }).ToList();
 
         return new
@@ -2245,23 +2253,35 @@ public partial class UiService : IUiService
         var session = RequireSession();
 
         // Use the central resolver with diagnostics
-        var result = ResolveElement(
-            req, locator,
-            purpose:            "findlocator",
-            allowDesktopSearch: req.UseDesktopRoot == true,
-            allowOffscreen:     true,
-            returnAllCandidates: true);
+        var result = _elementResolver.ResolveOne(req);
 
         if (result.Element != null)
+        {
             return new
             {
                 found        = true,
                 strategy     = result.Strategy,
                 rootStrategy = result.RootStrategy,
                 element      = CreateElementSnapshot(result.Element),
-                candidates   = result.Candidates,
-                ambiguous    = result.Ambiguous
+                candidates   = result.Diagnostics?.Candidates ?? new List<ElementCandidate>(),
+                ambiguous    = false
             };
+        }
+
+        if (result.Diagnostics?.Status == "ElementAmbiguous")
+        {
+            return new
+            {
+                found               = false,
+                strategy            = result.Strategy,
+                rootStrategy        = result.RootStrategy,
+                element             = (object?)null,
+                candidates          = result.Diagnostics.Candidates,
+                ambiguous           = true,
+                suggestedFoundIndex = 0,
+                message             = "Multiple matching elements found. Suggest adding foundIndex (e.g., 0, 1, etc.) to your locator to select the correct element."
+            };
+        }
 
         // Legacy fallback: try the old path for backward compatibility
         try
@@ -2288,8 +2308,8 @@ public partial class UiService : IUiService
             found        = false,
             strategy     = result.Strategy,
             rootStrategy = result.RootStrategy,
-            errors       = result.Errors,
-            candidates   = result.Candidates,
+            errors       = result.Diagnostics?.Errors ?? new List<string>(),
+            candidates   = result.Diagnostics?.Candidates ?? new List<ElementCandidate>(),
             locator      = DescribeLocatorAsObject(locator)
         };
     }
@@ -6893,7 +6913,7 @@ public partial class UiService : IUiService
         };
     }
 
-    private static string SafeElementValue(AutomationElement element)
+    internal static string SafeElementValue(AutomationElement element)
     {
         try
         {
@@ -8051,7 +8071,7 @@ public partial class UiService : IUiService
     /// NativeWindowHandle is tried first; cross-process window elements may not
     /// expose that property, so ProcessId is used as a reliable fallback.
     /// </summary>
-    private static bool IsElementAlive(AutomationElement element)
+    internal static bool IsElementAlive(AutomationElement element)
     {
         try
         {
@@ -8268,56 +8288,17 @@ public partial class UiService : IUiService
         var locator = RequireLocator(req);
         var session = RequireSession();
         var policy = GetOperationPolicy(req);
-        var preferAttributes = ShouldPreferAttributeSearch(req);
-        var xpathOnly = req.XPathOnly == true;
-
         var deadline = DateTime.UtcNow + policy.Timeout;
 
-        var root = GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan);
-
-        // Resolve optional parent container to narrow the search scope.
-        var searchRoot = root;
-        string? parentDescription = null;
-
-        if (req.ParentLocator != null)
-        {
-            var parentResult = TryFindElementBySmartStrategy(
-                root,
-                session,
-                req.ParentLocator,
-                preferAttributes: preferAttributes,
-                xpathOnly: xpathOnly);
-
-            if (parentResult.Element == null)
-            {
-                throw new InvalidOperationException(
-                    $"Parent locator not found using strategy={parentResult.Strategy}: " +
-                    DescribeLocator(req.ParentLocator));
-            }
-
-            searchRoot = parentResult.Element;
-            parentDescription = DescribeLocator(req.ParentLocator);
-
-            _logger.LogInformation(
-                "UI parent locator resolved. operation={Operation}, policy={Policy}, strategy={Strategy}, parent={Parent}, child={Child}",
-                SanitizeValue(req.Operation),
-                policy.PolicyName,
-                parentResult.Strategy,
-                parentDescription,
-                DescribeLocator(locator));
-        }
-
+        var parentDescription = req.ParentLocator != null ? DescribeLocator(req.ParentLocator) : null;
         var cacheKey = policy.UseElementCache && !policy.RefreshRootEveryRetry
             ? BuildElementCacheKey(
-                session, root, locator, req.ParentLocator,
-                preferAttributes: preferAttributes,
-                xpathOnly: xpathOnly,
+                session, GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan), locator, req.ParentLocator,
+                preferAttributes: ShouldPreferAttributeSearch(req),
+                xpathOnly: req.XPathOnly == true,
                 preferXPath: req.PreferXPath == true)
             : null;
 
-        // The cache check and store are separate lock acquisitions (same as the FindWindowCache
-        // pattern). The potential race (two threads both miss the cache and both store the same
-        // element) is benign: the second store merely overwrites the first with an equivalent value.
         if (cacheKey != null &&
             TryGetCachedElement(cacheKey, locator, out var cached) &&
             cached != null)
@@ -8333,16 +8314,11 @@ public partial class UiService : IUiService
         }
 
         var findSw = Stopwatch.StartNew();
-        var lastResult = LocatorSearchResult.NotFound("not-started");
+        ResolvedElement? lastResult = null;
 
         while (true)
         {
-            lastResult = TryFindElementBySmartStrategy(
-                searchRoot,
-                session,
-                locator,
-                preferAttributes: preferAttributes,
-                xpathOnly: xpathOnly);
+            lastResult = _elementResolver.ResolveOne(req);
 
             if (lastResult.Element != null)
             {
@@ -8363,82 +8339,33 @@ public partial class UiService : IUiService
                 return lastResult.Element;
             }
 
-            // When a parent was used but child was not found inside it, optionally retry
-            // from the full window root before sleeping or timing out.
-            if (req.ParentLocator != null &&
-                req.FallbackToWindowRootIfParentChildNotFound == true)
-            {
-                var rootFallback = TryFindElementBySmartStrategy(
-                    root,
-                    session,
-                    locator,
-                    preferAttributes: preferAttributes,
-                    xpathOnly: xpathOnly);
-
-                if (rootFallback.Element != null)
-                {
-                    findSw.Stop();
-
-                    if (cacheKey != null)
-                        StoreCachedElement(cacheKey, rootFallback.Element);
-
-                    _logger.LogInformation(
-                        "UI locator resolved by window-root fallback. operation={Operation}, policy={Policy}, strategy={Strategy}, elapsedMs={ElapsedMs}, locator={Locator}, parent={Parent}",
-                        SanitizeValue(req.Operation),
-                        policy.PolicyName,
-                        rootFallback.Strategy,
-                        findSw.ElapsedMilliseconds,
-                        DescribeLocator(locator),
-                        parentDescription ?? "");
-
-                    return rootFallback.Element;
-                }
-
-                lastResult = rootFallback;
-            }
-
             if (DateTime.UtcNow >= deadline)
             {
                 _logger.LogWarning(
                     "UI locator not found. operation={Operation}, policy={Policy}, lastStrategy={Strategy}, locator={Locator}, parent={Parent}",
                     SanitizeValue(req.Operation),
                     policy.PolicyName,
-                    lastResult.Strategy,
+                    lastResult?.Strategy ?? "unknown",
                     DescribeLocator(locator),
                     parentDescription ?? "");
 
                 var timeoutDesc = policy.Timeout.TotalMilliseconds >= 1000
                     ? $"{(int)policy.Timeout.TotalSeconds}s"
                     : $"{(int)policy.Timeout.TotalMilliseconds}ms";
+
+                if (lastResult?.Diagnostics != null && lastResult.Diagnostics.Status == "ElementAmbiguous")
+                {
+                    throw new InvalidOperationException(
+                        $"ElementAmbiguous: Multiple matching elements found ({lastResult.Diagnostics.Candidates.Count}). Message: {lastResult.Diagnostics.Message}");
+                }
+
                 throw new InvalidOperationException(
                     $"Element not found within {timeoutDesc} using policy={policy.PolicyName}, " +
-                    $"lastStrategy={lastResult.Strategy}, locator={DescribeLocator(locator)}, " +
+                    $"lastStrategy={lastResult?.Strategy ?? "unknown"}, locator={DescribeLocator(locator)}, " +
                     $"parent={parentDescription ?? ""}");
             }
 
             Thread.Sleep(policy.RetryInterval);
-
-            if (policy.RefreshRootEveryRetry)
-            {
-                root = GetWindowRoot(session, allowDesktopPopupScan: policy.AllowDesktopPopupScan);
-
-                // Also re-resolve the parent scope when the root changes.
-                if (req.ParentLocator != null)
-                {
-                    var parentRetry = TryFindElementBySmartStrategy(
-                        root,
-                        session,
-                        req.ParentLocator,
-                        preferAttributes: preferAttributes,
-                        xpathOnly: xpathOnly);
-
-                    searchRoot = parentRetry.Element ?? root;
-                }
-                else
-                {
-                    searchRoot = root;
-                }
-            }
         }
     }
 
@@ -8450,11 +8377,12 @@ public partial class UiService : IUiService
         AutomationSession session, AutomationElement root, UiLocator locator)
     {
         var deadline = DateTime.UtcNow + DefaultRetry;
+        var options = new ResolveOptions();
         while (true)
         {
-            var element = TryFindElement(root, session, locator);
-            if (element != null)
-                return element;
+            var resolved = _elementResolver.ResolveOne(locator, root, options);
+            if (resolved.Element != null)
+                return resolved.Element;
 
             if (DateTime.UtcNow >= deadline)
                 throw new InvalidOperationException(
@@ -8515,7 +8443,7 @@ public partial class UiService : IUiService
     ///   <item><term>default</term><description>XPath first (legacy behavior), then attribute conditions.</description></item>
     /// </list>
     /// </summary>
-    private LocatorSearchResult TryFindElementBySmartStrategy(
+    internal static LocatorSearchResult TryFindElementBySmartStrategy(
         AutomationElement root,
         AutomationSession session,
         UiLocator locator,
@@ -8575,7 +8503,7 @@ public partial class UiService : IUiService
     ///   <item>Full condition-based fallback (all attributes AND-ed)</item>
     /// </list>
     /// </summary>
-    private LocatorSearchResult TryFindElementByFastAttributes(
+    internal static LocatorSearchResult TryFindElementByFastAttributes(
         AutomationElement root,
         AutomationSession session,
         UiLocator locator)
@@ -8642,13 +8570,8 @@ public partial class UiService : IUiService
 
             return LocatorSearchResult.NotFound("attributes-not-found");
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogDebug(
-                ex,
-                "Fast attribute locator search failed. locator={Locator}",
-                DescribeLocator(locator));
-
             return LocatorSearchResult.NotFound("attributes-exception");
         }
     }
@@ -8790,7 +8713,7 @@ public partial class UiService : IUiService
     /// name that produced the result.  Strategy names are used in structured log
     /// messages so callers can tell at a glance which path was taken.
     /// </summary>
-    private sealed class LocatorSearchResult
+    internal sealed class LocatorSearchResult
     {
         public AutomationElement? Element { get; init; }
 
@@ -8814,16 +8737,6 @@ public partial class UiService : IUiService
     // =========================================================================
 
     /// <summary>
-    /// Carries the element and resolution strategy name returned by
-    /// <see cref="ResolveForStateQuery"/>.
-    /// </summary>
-    private sealed class ResolvedElement
-    {
-        public AutomationElement Element { get; init; } = null!;
-        public string Strategy { get; init; } = "unknown";
-    }
-
-    /// <summary>
     /// Resolves the target element for state-query operations (isenabled, isvisible,
     /// isfocused, iswindowactive, isclickable, iseditable, exists, wait).
     /// Unlike action-oriented lookup this resolver:
@@ -8837,9 +8750,18 @@ public partial class UiService : IUiService
     /// </summary>
     private ResolvedElement ResolveForStateQuery(UiRequest request)
     {
-        // Delegate to the central resolver; it handles ParentLocator, ComboBox fallback,
-        // and all new pywinauto-style locator fields.
-        return ResolveForStateQueryViaEngine(request);
+        var resolved = _elementResolver.ResolveOne(request);
+        if (resolved.Element != null)
+        {
+            return resolved;
+        }
+
+        var emptyLoc = request.Locator ?? (request.LocatorPath != null && request.LocatorPath.Count > 0 ? request.LocatorPath[^1] : new UiLocator());
+        throw new InvalidOperationException(
+            $"Element not found for state query: strategy={resolved.Strategy}, " +
+            $"rootStrategy={resolved.RootStrategy}, " +
+            $"locator={DescribeLocator(emptyLoc)}" +
+            (resolved.Diagnostics?.Errors.Count > 0 ? $", errors=[{string.Join("; ", resolved.Diagnostics.Errors)}]" : ""));
     }
 
     /// <summary>
@@ -9109,7 +9031,7 @@ public partial class UiService : IUiService
     /// <paramref name="root"/> and returns the first matching element, or
     /// <see langword="null"/> when no element matches.
     /// </summary>
-    private static AutomationElement? FindByXPath(
+    internal static AutomationElement? FindByXPath(
         AutomationElement root, AutomationSession session, string xpath)
     {
         var steps = ParseXPath(xpath);
@@ -9383,7 +9305,7 @@ public partial class UiService : IUiService
             : new AndCondition(conditions.ToArray());
     }
 
-    private static ControlType ParseControlType(string value)
+    internal static ControlType ParseControlType(string value)
     {
         if (Enum.TryParse<ControlType>(value, ignoreCase: true, out var ct))
             return ct;
@@ -9394,7 +9316,7 @@ public partial class UiService : IUiService
             "Slider, Spinner, Tab, TabItem, Table, Text, ToolBar, Tree, TreeItem, Window.");
     }
 
-    private static string DescribeLocator(UiLocator l)
+    internal static string DescribeLocator(UiLocator l)
     {
         var parts = new List<string>();
         if (!string.IsNullOrWhiteSpace(l.XPath))         parts.Add($"xpath='{l.XPath}'");
@@ -15917,7 +15839,7 @@ public partial class UiService : IUiService
         Thread.Sleep(WindowActivationDelayMs);
     }
 
-    private static string SafeElementName(AutomationElement element)
+    internal static string SafeElementName(AutomationElement element)
     {
         try
         {
@@ -15929,7 +15851,7 @@ public partial class UiService : IUiService
         }
     }
 
-    private static string SafeElementAutomationId(AutomationElement element)
+    internal static string SafeElementAutomationId(AutomationElement element)
     {
         try
         {
@@ -15941,7 +15863,7 @@ public partial class UiService : IUiService
         }
     }
 
-    private static string SafeElementClassName(AutomationElement element)
+    internal static string SafeElementClassName(AutomationElement element)
     {
         try
         {
@@ -15953,7 +15875,7 @@ public partial class UiService : IUiService
         }
     }
 
-    private static int? SafeProcessId(AutomationElement element)
+    internal static int? SafeProcessId(AutomationElement element)
     {
         try
         {
@@ -15965,7 +15887,7 @@ public partial class UiService : IUiService
         }
     }
 
-    private static bool? SafeIsOffscreen(AutomationElement element)
+    internal static bool? SafeIsOffscreen(AutomationElement element)
     {
         try
         {
@@ -15977,7 +15899,7 @@ public partial class UiService : IUiService
         }
     }
 
-    private static bool? SafeIsEnabled(AutomationElement element)
+    internal static bool? SafeIsEnabled(AutomationElement element)
     {
         try
         {
@@ -15989,7 +15911,7 @@ public partial class UiService : IUiService
         }
     }
 
-    private static string SafeElementControlType(AutomationElement element)
+    internal static string SafeElementControlType(AutomationElement element)
     {
         try
         {
@@ -16013,7 +15935,7 @@ public partial class UiService : IUiService
         }
     }
 
-    private static object? SafeBoundingRectangleObject(AutomationElement element)
+    internal static object? SafeBoundingRectangleObject(AutomationElement element)
     {
         try
         {
