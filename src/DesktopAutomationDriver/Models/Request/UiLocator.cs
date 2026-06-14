@@ -179,6 +179,9 @@ public class UiLocator
     public int? NearY { get; set; }
     public int? Tolerance { get; set; }
 
+    /// <summary>When true, limits matches to elements containing the point specified by NearX and NearY.</summary>
     public bool? ContainsPoint { get; set; }
+
+    /// <summary>When true, limits matches to elements intersecting the rectangle specified by Left, Top, Right, and Bottom.</summary>
     public bool? IntersectsRectangle { get; set; }
 }
