@@ -7,6 +7,8 @@ namespace DesktopAutomationDriver.Services.Resolution;
 
 public static class ElementScoring
 {
+    private const int NearParentDistanceThresholdPixels = 500;
+
     public static (int Score, string Reason) Score(
         AutomationElement element,
         UiLocator locator,
@@ -182,7 +184,7 @@ public static class ElementScoring
                     var center = new Point((int)(rect.Left + rect.Width / 2), (int)(rect.Top + rect.Height / 2));
                     var parentCenter = new Point((int)(parentRect.Left + parentRect.Width / 2), (int)(parentRect.Top + parentRect.Height / 2));
                     double dist = Math.Sqrt(Math.Pow(center.X - parentCenter.X, 2) + Math.Pow(center.Y - parentCenter.Y, 2));
-                    if (dist < 500)
+                    if (dist < NearParentDistanceThresholdPixels)
                     {
                         score += 15;
                         reasons.Add("near-parent");
