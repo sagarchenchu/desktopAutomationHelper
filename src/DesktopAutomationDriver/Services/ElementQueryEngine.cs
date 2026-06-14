@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using DesktopAutomationDriver.Models;
 using DesktopAutomationDriver.Models.Request;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
@@ -19,7 +20,7 @@ public partial class UiService
     // Central resolver entry points
     // =========================================================================
 
-    private ITreeWalker GetTreeWalker(FlaUI.Core.AutomationBase automation, string? treeView)
+    internal static ITreeWalker GetTreeWalker(FlaUI.Core.AutomationBase automation, string? treeView)
     {
         var view = treeView?.ToLowerInvariant() ?? "control";
         return view switch
@@ -30,7 +31,7 @@ public partial class UiService
         };
     }
 
-    private List<AutomationElement> FindDescendantsWithWalker(
+    internal static List<AutomationElement> FindDescendantsWithWalker(
         AutomationElement root, int maxDepth, ITreeWalker walker)
     {
         var result = new List<AutomationElement>();
@@ -54,9 +55,8 @@ public partial class UiService
                     child = walker.GetNextSibling(child);
                 }
             }
-            catch (Exception ex)
+            catch
             {
-                _logger.LogDebug(ex, "Failed to walk child branch in FindDescendantsWithWalker.");
                 continue;
             }
 
@@ -118,7 +118,7 @@ public partial class UiService
         return GetForegroundWindowElement(session.Automation);
     }
 
-    private static int CalculateBestMatchScore(string input, string pattern)
+    internal static int CalculateBestMatchScore(string input, string pattern)
     {
         if (string.IsNullOrWhiteSpace(input) || string.IsNullOrWhiteSpace(pattern))
             return 0;
@@ -983,7 +983,7 @@ public partial class UiService
     /// BFS traversal of the UIA tree up to <paramref name="maxDepth"/> levels.
     /// Depth 0 = direct children of <paramref name="root"/>.
     /// </summary>
-    private static List<AutomationElement> FindDescendantsUpToDepth(
+    internal static List<AutomationElement> FindDescendantsUpToDepth(
         AutomationElement root, int maxDepth)
     {
         var result = new List<AutomationElement>();
@@ -1264,7 +1264,7 @@ public partial class UiService
     // NOTE: SafeElementValue is defined in UiService.cs (reads ValuePattern then TextPattern).
     // SafeElementText below reads TextPattern first then falls back to element Name.
 
-    private static string SafeElementText(AutomationElement element)
+    internal static string SafeElementText(AutomationElement element)
     {
         try
         {
@@ -1282,13 +1282,13 @@ public partial class UiService
         return SafeElementName(element);
     }
 
-    private static string SafeFrameworkId(AutomationElement element)
+    internal static string SafeFrameworkId(AutomationElement element)
     {
         try { return element.Properties.FrameworkId.ValueOrDefault ?? string.Empty; }
         catch { return string.Empty; }
     }
 
-    private static string SafeRuntimeIdString(AutomationElement element)
+    internal static string SafeRuntimeIdString(AutomationElement element)
     {
         try
         {
@@ -1306,7 +1306,7 @@ public partial class UiService
     /// Compares <paramref name="value"/> against <paramref name="pattern"/> using the
     /// specified <paramref name="mode"/>.
     /// </summary>
-    private static bool StringMatchesByMode(
+    internal static bool StringMatchesByMode(
         string value, string pattern, string? mode, bool caseSensitive)
     {
         var comparison = caseSensitive
@@ -1332,7 +1332,7 @@ public partial class UiService
     /// Returns false on any <see cref="RegexMatchTimeoutException"/> or
     /// <see cref="ArgumentException"/> (invalid pattern).
     /// </summary>
-    private static bool SafeRegexIsMatch(string input, string pattern)
+    internal static bool SafeRegexIsMatch(string input, string pattern)
     {
         try
         {
@@ -1432,62 +1432,40 @@ public partial class UiService
 
     private object? FindAll(UiRequest req)
     {
-        var session  = RequireSession();
-        var locator  = req.Locator ?? new UiLocator();
+        var session = RequireSession();
+        var locator = req.Locator ?? new UiLocator();
+        var maxMatches = req.MaxMatches ?? GetListResponseLimit(req);
 
-        // Determine root
-        string rootStrategy;
-        AutomationElement root;
+        // Resolve via ElementResolver
+        var resolvedList = _elementResolver.ResolveAll(req);
+        var limited = resolvedList.Take(maxMatches).ToList();
 
-        if (req.UseDesktopRoot == true)
+        var items = limited.Select((r, i) => new
         {
-            root         = session.Automation.GetDesktop();
-            rootStrategy = "desktop";
-        }
-        else if (req.ParentLocator != null)
-        {
-            var windowRoot   = GetWindowRoot(session, allowDesktopPopupScan: false);
-            var parentResult = TryFindElementBySmartStrategy(
-                windowRoot, session, req.ParentLocator,
-                preferAttributes: true, xpathOnly: false);
-
-            root         = parentResult.Element ?? windowRoot;
-            rootStrategy = parentResult.Element != null ? "parent-locator" : "app-main-window";
-        }
-        else
-        {
-            root         = GetWindowRoot(session, allowDesktopPopupScan: false);
-            rootStrategy = session.ActiveWindow != null ? "active-window" : "app-main-window";
-        }
-
-        var topLevelOnly = locator.TopLevelOnly == true;
-        var depth        = locator.Depth;
-        var maxMatches   = req.MaxMatches ?? GetListResponseLimit(req);
-
-        var candidates = CollectCandidates(root, locator, session, depth, topLevelOnly);
-
-        // Filter (skip when locator is completely empty)
-        List<AutomationElement> filtered;
-        if (IsEmptyLocator(locator))
-            filtered = candidates;
-        else
-        {
-            filtered = new List<AutomationElement>(candidates.Count);
-            foreach (var c in candidates)
-                if (MatchesLocator(c, locator, out _))
-                    filtered.Add(c);
-        }
-
-        var scored = ScoreAndSortCandidates(filtered, locator);
-        var limited = scored.Take(maxMatches).ToList();
-        var items   = limited.Select((s, i) => BuildCandidateDto(s.Element, i, s.Score, s.Reason)).ToList();
+            index = i,
+            name = SafeElementName(r.Element!),
+            automationId = SafeElementAutomationId(r.Element!),
+            className = SafeElementClassName(r.Element!),
+            controlType = SafeElementControlType(r.Element!),
+            frameworkId = SafeFrameworkId(r.Element!),
+            runtimeId = SafeRuntimeIdString(r.Element!),
+            processId = SafeProcessId(r.Element!),
+            hwnd = r.Element!.Properties.NativeWindowHandle.ValueOrDefault != IntPtr.Zero ? r.Element!.Properties.NativeWindowHandle.ValueOrDefault.ToInt64() : (long?)null,
+            rectangle = SafeBoundingRectangleObject(r.Element!),
+            value = SafeElementValue(r.Element!),
+            text = SafeElementText(r.Element!),
+            isEnabled = SafeIsEnabled(r.Element!),
+            isOffscreen = SafeIsOffscreen(r.Element!),
+            score = 100,
+            reason = "Resolved by ElementResolver"
+        }).ToList();
 
         return new
         {
             operation    = "findall",
-            count        = filtered.Count,
+            count        = resolvedList.Count,
             returned     = items.Count,
-            rootStrategy,
+            rootStrategy = resolvedList.Count > 0 ? resolvedList[0].RootStrategy : "unknown",
             locator      = DescribeLocatorAsObject(req.Locator),
             items
         };
