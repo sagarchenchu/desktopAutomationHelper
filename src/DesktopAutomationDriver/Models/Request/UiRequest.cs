@@ -127,6 +127,11 @@ public class UiRequest
     /// </summary>
     public bool? FallbackToWindowRootIfParentChildNotFound { get; set; }
 
+    /// <summary>
+    /// Optional search scope for element resolution.
+    /// </summary>
+    public string? SearchScope { get; set; }
+
     // -------------------------------------------------------------------------
     // switchwindow extended matching
     // -------------------------------------------------------------------------
@@ -411,6 +416,13 @@ public class UiRequest
     // -------------------------------------------------------------------------
     // pywinauto-style central element resolver fields (Phase 2)
     // -------------------------------------------------------------------------
+
+    public bool? TopLevelOnly { get; set; }
+    public int? FoundIndex { get; set; }
+    public int? CtrlIndex { get; set; }
+    public bool? ActiveOnly { get; set; }
+    public bool? IncludeHidden { get; set; }
+    public bool? ThrowIfAmbiguous { get; set; }
 
     /// <summary>
     /// Path of locators to traverse deeply nested controls.

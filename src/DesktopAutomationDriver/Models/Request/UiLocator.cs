@@ -55,6 +55,28 @@ public class UiLocator
     // pywinauto-style extended identification fields
     // -------------------------------------------------------------------------
 
+    // Pywinauto-style aliases
+    public string? Title { get => Name; set => Name = value; }
+    public string? AutoId { get => AutomationId; set => AutomationId = value; }
+    public string? AutoIdRegex { get => AutomationIdRegex; set => AutomationIdRegex = value; }
+    public int? Pid { get => ProcessId; set => ProcessId = value; }
+
+    // Regex fields
+    public string? ControlTypeRegex { get; set; }
+
+    // Extra UIA fields
+    public string? LocalizedControlType { get; set; }
+    public string? HelpText { get; set; }
+    public string? AccessKey { get; set; }
+    public string? AcceleratorKey { get; set; }
+
+    // State / match filters
+    public bool? ContentOnly { get; set; }
+
+    // Debug / scope behavior
+    public bool? RawView { get; set; }
+    public bool? IncludeChildren { get; set; }
+
     /// <summary>Native window handle (HWND). When set, the element is resolved directly from this handle.</summary>
     public long? Hwnd { get; set; }
 
@@ -164,6 +186,11 @@ public class UiLocator
 
     /// <summary>Name hint used for best-match scoring.</summary>
     public string? BestMatch { get; set; }
+
+    /// <summary>
+    /// Optional search scope for element resolution.
+    /// </summary>
+    public string? SearchScope { get; set; }
 
     // -------------------------------------------------------------------------
     // Rectangle locator filters
