@@ -802,37 +802,46 @@ public partial class UiService
         }
 
         var sw         = Stopwatch.StartNew();
-        ElementResolveResult lastResult = new() { Strategy = "not-started" };
+        Exception? lastException = null;
 
         while (true)
         {
-            lastResult = ResolveElement(
-                request, locator,
-                purpose:            purpose,
-                allowDesktopSearch: effectiveAllowDesktop,
-                allowOffscreen:     allowOffscreen);
-
-            if (lastResult.Element != null)
+            try
             {
-                sw.Stop();
+                DesktopAutomationDriver.Models.Resolver.ResolvedElement resolved;
+                if (request.LocatorPath != null || request.Criteria != null)
+                {
+                    resolved = _uiElementResolver.ResolveLocatorPath(request);
+                }
+                else
+                {
+                    resolved = _uiElementResolver.ResolveOne(request, locator);
+                }
 
-                if (cacheKey != null)
-                    StoreCachedElement(cacheKey, lastResult.Element);
+                if (resolved?.Element != null)
+                {
+                    sw.Stop();
 
-                _logger.LogInformation(
-                    "UI locator resolved (engine). operation={Operation}, strategy={Strategy}, rootStrategy={RootStrategy}, elapsedMs={ElapsedMs}, locator={Locator}",
-                    SanitizeValue(request.Operation),
-                    lastResult.Strategy,
-                    lastResult.RootStrategy,
-                    sw.ElapsedMilliseconds,
-                    DescribeLocator(locator ?? new UiLocator()));
+                    if (cacheKey != null)
+                        StoreCachedElement(cacheKey, resolved.Element);
 
-                return lastResult.Element;
+                    _logger.LogInformation(
+                        "UI locator resolved (engine). operation={Operation}, strategy={Strategy}, elapsedMs={ElapsedMs}, locator={Locator}",
+                        SanitizeValue(request.Operation),
+                        resolved.Strategy,
+                        sw.ElapsedMilliseconds,
+                        DescribeLocator(locator ?? new UiLocator()));
+
+                    return resolved.Element;
+                }
             }
-
-            if (lastResult.Strategy == "ambiguity-error")
+            catch (Exception ex)
             {
-                throw new InvalidOperationException(lastResult.Errors.FirstOrDefault() ?? "ElementAmbiguous: Multiple matching elements found.");
+                lastException = ex;
+                if (ex.Message.StartsWith("ElementAmbiguous") && (request.Ambiguity ?? "error") == "error")
+                {
+                    throw;
+                }
             }
 
             if (DateTime.UtcNow >= deadline)
@@ -840,20 +849,17 @@ public partial class UiService
                 sw.Stop();
 
                 _logger.LogWarning(
-                    "UI locator not found (engine). operation={Operation}, strategy={Strategy}, rootStrategy={RootStrategy}, elapsedMs={ElapsedMs}, locator={Locator}",
+                    "UI locator not found (engine). operation={Operation}, elapsedMs={ElapsedMs}, locator={Locator}",
                     SanitizeValue(request.Operation),
-                    lastResult.Strategy,
-                    lastResult.RootStrategy,
                     sw.ElapsedMilliseconds,
                     DescribeLocator(locator ?? new UiLocator()));
 
-                var specialErr = lastResult.Errors.FirstOrDefault(e => e.StartsWith("ElementNotFound") || e.StartsWith("ElementAmbiguous"));
-                if (specialErr != null)
+                if (lastException != null)
                 {
-                    throw new InvalidOperationException(specialErr);
+                    throw lastException;
                 }
 
-                throw new InvalidOperationException(BuildElementNotFoundMessage(lastResult, policy));
+                throw new InvalidOperationException($"Element not found for operation {purpose}.");
             }
 
             Thread.Sleep(policy.RetryInterval);
@@ -1432,42 +1438,42 @@ public partial class UiService
 
     private object? FindAll(UiRequest req)
     {
-        var session = RequireSession();
-        var locator = req.Locator ?? new UiLocator();
-        var maxMatches = req.MaxMatches ?? GetListResponseLimit(req);
+        var matches = _uiElementResolver.ResolveMany(req, req.Locator, purpose: "findall");
 
-        // Resolve via ElementResolver
-        var resolvedList = _elementResolver.ResolveAll(req);
-        var limited = resolvedList.Take(maxMatches).ToList();
-
-        var items = limited.Select((r, i) => new
-        {
-            index = i,
-            name = SafeElementName(r.Element!),
-            automationId = SafeElementAutomationId(r.Element!),
-            className = SafeElementClassName(r.Element!),
-            controlType = SafeElementControlType(r.Element!),
-            frameworkId = SafeFrameworkId(r.Element!),
-            runtimeId = SafeRuntimeIdString(r.Element!),
-            processId = SafeProcessId(r.Element!),
-            hwnd = r.Element!.Properties.NativeWindowHandle.ValueOrDefault != IntPtr.Zero ? r.Element!.Properties.NativeWindowHandle.ValueOrDefault.ToInt64() : (long?)null,
-            rectangle = SafeBoundingRectangleObject(r.Element!),
-            value = SafeElementValue(r.Element!),
-            text = SafeElementText(r.Element!),
-            isEnabled = SafeIsEnabled(r.Element!),
-            isOffscreen = SafeIsOffscreen(r.Element!),
-            score = 100,
-            reason = "Resolved by ElementResolver"
-        }).ToList();
+        var items = matches.Select((r, i) => ToResolvedElementDto(r, i)).ToList();
 
         return new
         {
-            operation    = "findall",
-            count        = resolvedList.Count,
-            returned     = items.Count,
-            rootStrategy = resolvedList.Count > 0 ? resolvedList[0].RootStrategy : "unknown",
-            locator      = DescribeLocatorAsObject(req.Locator),
+            operation = req.Operation,
+            count = matches.Count,
+            returned = matches.Count,
+            searchRoot = req.SearchRoot ?? (req.UseDesktopRoot == true ? "desktop" : (req.UseActiveWindowRoot == true ? "foreground" : "currentWindow")),
+            treeView = req.TreeView ?? "control",
+            backend = req.Backend ?? "uia",
             items
+        };
+    }
+
+    private object ToResolvedElementDto(DesktopAutomationDriver.Models.Resolver.ResolvedElement resolved, int index)
+    {
+        var e = resolved.Element;
+        return new
+        {
+            index = index,
+            score = resolved.Score,
+            strategy = resolved.Strategy,
+            name = SafeElementName(e),
+            automationId = SafeElementAutomationId(e),
+            className = SafeElementClassName(e),
+            controlType = SafeElementControlType(e),
+            frameworkId = SafeFrameworkId(e),
+            processId = SafeProcessId(e),
+            hwnd = e.Properties.NativeWindowHandle.ValueOrDefault != IntPtr.Zero ? e.Properties.NativeWindowHandle.ValueOrDefault.ToInt64() : (long?)null,
+            rectangle = SafeBoundingRectangleObject(e),
+            isEnabled = SafeIsEnabled(e),
+            isOffscreen = SafeIsOffscreen(e),
+            value = SafeElementValue(e),
+            text = SafeElementText(e)
         };
     }
 
@@ -1480,21 +1486,45 @@ public partial class UiService
     /// using broad control types: ListItem, CheckBox, RadioButton, MenuItem, Text, DataItem,
     /// TreeItem, Custom, Button.
     /// </summary>
+    /// <summary>
+    /// Searches the desktop for a visible popup/dropdown item matching the request value,
+    /// using broad control types: ListItem, CheckBox, RadioButton, MenuItem, Text, DataItem,
+    /// TreeItem, Custom, Button.
+    /// </summary>
     private object? SelectOpenDropdownItem(UiRequest req)
     {
         var matchValue = req.Value ?? string.Empty;
         if (string.IsNullOrWhiteSpace(matchValue))
             throw new ArgumentException("'value' is required for selectopendropdownitem.");
 
-        var session    = RequireSession();
-        var desktop    = session.Automation.GetDesktop();
-        var cf         = session.Automation.ConditionFactory;
-        var matchMode  = req.Locator?.MatchMode ?? req.MatchMode ?? "contains";
+        var session = RequireSession();
+        var matchMode = req.Locator?.MatchMode ?? req.MatchMode ?? "contains";
         var itemRegion = ParseDropdownItemRegion(req.ItemRegion);
-        var timeoutMs  = req.TimeoutMs ?? 5000;
-        var deadline   = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        var timeoutMs = req.TimeoutMs ?? 5000;
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
 
-        // Broad control types for popup/dropdown items
+        var roots = new List<(AutomationElement Element, string Name)>();
+        try
+        {
+            var activePopup = GetActivePopupRoot(session);
+            if (activePopup != null) roots.Add((activePopup, "activePopup"));
+        }
+        catch { }
+        try
+        {
+            var foreground = GetForegroundWindowElement(session.Automation);
+            if (foreground != null) roots.Add((foreground, "foreground"));
+        }
+        catch { }
+        try
+        {
+            var desktop = session.Automation.GetDesktop();
+            if (desktop != null) roots.Add((desktop, "desktop"));
+        }
+        catch { }
+
+        var treeViews = new[] { "raw", "control", "content" };
+
         var itemControlTypes = new[]
         {
             ControlType.ListItem,
@@ -1510,44 +1540,76 @@ public partial class UiService
 
         do
         {
-            foreach (var ct in itemControlTypes)
+            foreach (var (root, rootName) in roots)
             {
-                AutomationElement[] candidates;
-                try { candidates = desktop.FindAllDescendants(cf.ByControlType(ct)); }
-                catch { continue; }
-
-                foreach (var candidate in candidates)
+                foreach (var tv in treeViews)
                 {
-                    try
+                    var stepRequest = new UiRequest { Operation = req.Operation, TreeView = tv };
+                    var diag = new DesktopAutomationDriver.Models.Resolver.ResolveDiagnostics();
+                    var collected = _uiElementResolver.CollectCandidates(root, new UiLocator(), stepRequest, diag);
+
+                    foreach (var c in collected)
                     {
-                        // Skip clearly offscreen elements
-                        if (SafeIsOffscreen(candidate) == true)
-                            continue;
-
-                        var name  = SafeElementName(candidate);
-                        var value = SafeElementValue(candidate);
-                        var text  = SafeElementText(candidate);
-
-                        if (MatchesAnyText(name, value, text, matchValue, matchMode))
+                        try
                         {
-                            _logger.LogInformation(
-                                "selectopendropdownitem candidate found. name={Name}, ct={ControlType}, matchMode={MatchMode}",
-                                name, SafeElementControlType(candidate), SanitizeValue(matchMode));
+                            var ct = c.ControlType;
+                            if (!itemControlTypes.Contains(ct)) continue;
+                            if (SafeIsOffscreen(c) == true) continue;
 
-                            var activated = ActivateOpenDropdownItem(candidate, matchValue, itemRegion, req.SoftVerification == true);
-                            if (activated)
+                            var name = SafeElementName(c);
+                            var value = SafeElementValue(c);
+                            var text = SafeElementText(c);
+
+                            if (MatchesAnyText(name, value, text, matchValue, matchMode))
+                            {
+                                string activationStrategy = "unknown";
+                                bool verified = false;
+                                string verificationReason = string.Empty;
+
+                                // Selection activation behavior:
+                                if (c.Patterns.Toggle.IsSupported)
+                                {
+                                    c.Patterns.Toggle.Pattern.Toggle();
+                                    activationStrategy = "toggle-pattern";
+                                    verified = true;
+                                }
+                                else if (c.Patterns.SelectionItem.IsSupported)
+                                {
+                                    c.Patterns.SelectionItem.Pattern.Select();
+                                    activationStrategy = "selection-item-pattern";
+                                    verified = true;
+                                }
+                                else if (c.Patterns.Invoke.IsSupported)
+                                {
+                                    c.Patterns.Invoke.Pattern.Invoke();
+                                    activationStrategy = "invoke-pattern";
+                                    verified = true;
+                                }
+                                else
+                                {
+                                    // Soft physical click
+                                    TryPhysicalClick(c, "selectopendropdownitem");
+                                    activationStrategy = $"physical-click-{itemRegion}";
+                                    verified = false;
+                                    verificationReason = "click sent; dropdown item does not expose selection/toggle pattern";
+                                }
+
                                 return new
                                 {
-                                    selected    = matchValue,
-                                    name,
-                                    controlType = SafeElementControlType(candidate),
-                                    itemRegion  = itemRegion.ToString()
+                                    success = true,
+                                    activationStrategy,
+                                    verified,
+                                    verificationReason,
+                                    item = new
+                                    {
+                                        name,
+                                        controlType = SafeElementControlType(c),
+                                        rectangle = SafeBoundingRectangleObject(c)
+                                    }
                                 };
+                            }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogDebug(ex, "selectopendropdownitem: skipping unstable candidate.");
+                        catch { }
                     }
                 }
             }
@@ -1568,9 +1630,29 @@ public partial class UiService
     private object? ListOpenDropdownItems(UiRequest req)
     {
         var session = RequireSession();
-        var desktop = session.Automation.GetDesktop();
-        var cf      = session.Automation.ConditionFactory;
-        var limit   = GetListResponseLimit(req);
+        var limit = req.Limit ?? req.MaxMatches ?? 50;
+
+        var roots = new List<(AutomationElement Element, string Name)>();
+        try
+        {
+            var activePopup = GetActivePopupRoot(session);
+            if (activePopup != null) roots.Add((activePopup, "activePopup"));
+        }
+        catch { }
+        try
+        {
+            var foreground = GetForegroundWindowElement(session.Automation);
+            if (foreground != null) roots.Add((foreground, "foreground"));
+        }
+        catch { }
+        try
+        {
+            var desktop = session.Automation.GetDesktop();
+            if (desktop != null) roots.Add((desktop, "desktop"));
+        }
+        catch { }
+
+        var treeViews = new[] { "raw", "control", "content" };
 
         var itemControlTypes = new[]
         {
@@ -1585,49 +1667,78 @@ public partial class UiService
             ControlType.Button
         };
 
-        var items = new List<object>(limit);
+        var items = new List<object>();
+        var seenRuntimeIds = new HashSet<string>();
 
-        foreach (var ct in itemControlTypes)
+        foreach (var (root, rootName) in roots)
         {
-            AutomationElement[] candidates;
-            try { candidates = desktop.FindAllDescendants(cf.ByControlType(ct)); }
-            catch { continue; }
-
-            foreach (var candidate in candidates)
+            foreach (var tv in treeViews)
             {
-                if (items.Count >= limit) break;
+                var stepRequest = new UiRequest { Operation = req.Operation, TreeView = tv };
+                var diag = new DesktopAutomationDriver.Models.Resolver.ResolveDiagnostics();
+                var collected = _uiElementResolver.CollectCandidates(root, new UiLocator(), stepRequest, diag);
 
-                try
-                {
-                    if (SafeIsOffscreen(candidate) == true) continue;
-
-                    items.Add(new
+                foreach (var c in collected)
                     {
-                        name         = SafeElementName(candidate),
-                        controlType  = SafeElementControlType(candidate),
-                        className    = SafeElementClassName(candidate),
-                        value        = SafeElementValue(candidate),
-                        text         = SafeElementText(candidate),
-                        automationId = SafeElementAutomationId(candidate),
-                        isOffscreen  = SafeIsOffscreen(candidate),
-                        isEnabled    = SafeIsEnabled(candidate),
-                        bounds       = SafeBoundingRectangleObject(candidate)
-                    });
+                    try
+                    {
+                        var ct = c.ControlType;
+                        if (!itemControlTypes.Contains(ct)) continue;
+                        if (SafeIsOffscreen(c) == true) continue;
+
+                        var rtId = SafeRuntimeIdString(c);
+                        if (!string.IsNullOrEmpty(rtId) && seenRuntimeIds.Contains(rtId)) continue;
+                        if (!string.IsNullOrEmpty(rtId)) seenRuntimeIds.Add(rtId);
+
+                        bool toggle = c.Patterns.Toggle.IsSupported;
+                        bool selectionItem = c.Patterns.SelectionItem.IsSupported;
+                        bool invoke = c.Patterns.Invoke.IsSupported;
+
+                        items.Add(new
+                        {
+                            index = items.Count,
+                            name = SafeElementName(c),
+                            value = SafeElementValue(c),
+                            text = SafeElementText(c),
+                            controlType = SafeElementControlType(c),
+                            automationId = SafeElementAutomationId(c),
+                            className = SafeElementClassName(c),
+                            rectangle = SafeBoundingRectangleObject(c),
+                            patterns = new
+                            {
+                                toggle = toggle,
+                                selectionItem = selectionItem,
+                                invoke = invoke
+                            }
+                        });
+
+                        if (items.Count >= limit) break;
+                    }
+                    catch { }
                 }
-                catch (Exception ex)
+
+                if (items.Count > 0)
                 {
-                    _logger.LogDebug(ex, "listopendropdownitems: skipping unstable element.");
+                    return new
+                    {
+                        found = true,
+                        container = new
+                        {
+                            name = SafeElementName(root),
+                            controlType = SafeElementControlType(root),
+                            className = SafeElementClassName(root),
+                            rectangle = SafeBoundingRectangleObject(root)
+                        },
+                        items
+                    };
                 }
             }
-
-            if (items.Count >= limit) break;
         }
 
         return new
         {
-            operation = "listopendropdownitems",
-            count     = items.Count,
-            items
+            found = false,
+            items = new List<object>()
         };
     }
 
