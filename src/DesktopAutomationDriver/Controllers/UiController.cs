@@ -61,6 +61,31 @@ public class UiController : ControllerBase
             var result = _uiService.Execute(request, HttpContext.RequestAborted);
             return Ok(UiResponse.Ok(result));
         }
+        catch (DesktopAutomationDriver.Models.Resolver.UiResolutionException ex)
+        {
+            _logger.LogWarning(ex, "UI resolution failed for operation '{Op}'",
+                SanitizeOp(request.Operation));
+            var screenshot = _uiService.TakeFailureScreenshot(_failureScreenshotDirectory);
+            return NotFound(new UiResponse
+            {
+                Success = false,
+                Error = ex.Message,
+                ScreenshotPath = screenshot,
+                Reason = ex.Reason,
+                Locator = ex.Locator,
+                Candidates = ex.Candidates,
+                Suggestions = ex.Suggestions,
+                Value = new
+                {
+                    success = false,
+                    reason = ex.Reason,
+                    message = ex.Message,
+                    locator = ex.Locator,
+                    candidates = ex.Candidates,
+                    suggestions = ex.Suggestions
+                }
+            });
+        }
         catch (ArgumentException ex)
         {
             _logger.LogWarning(ex, "Invalid argument for operation '{Op}'",

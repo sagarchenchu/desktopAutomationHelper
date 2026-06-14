@@ -21,4 +21,18 @@ public class ElementCandidate
     public bool? IsOffscreen { get; set; }
     public int Score { get; set; }
     public string Reason { get; set; } = string.Empty;
+
+    // -------------------------------------------------------------------------
+    // Backend separation fields
+    // -------------------------------------------------------------------------
+    public string Backend { get; set; } = "uia";
+    public object? NativeElement { get; set; }
+    public FlaUI.Core.AutomationElements.AutomationElement? UiaElement { get; set; }
+    public System.IntPtr? HwndPtr { get; set; }
+    public int? ControlId { get; set; }
+    public bool? Enabled { get; set; }
+    public bool? Visible { get; set; }
+    public int CtrlIndex { get; set; }
+    public int FoundIndex { get; set; }
+    public double ScoreDouble { get; set; }
 }
