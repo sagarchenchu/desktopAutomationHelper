@@ -8519,7 +8519,7 @@ public partial class UiService : IUiService
         bool requireClickable = false)
     {
         var locator = request.Locator ?? new UiLocator();
-        var searchRoot = request.SearchRoot ?? (request.UseDesktopRoot == true ? "desktop" : (request.UseActiveWindowRoot == true ? "foreground" : "current"));
+        var searchRoot = GetSearchRootName(request);
 
         var options = new DesktopAutomationDriver.Services.Resolution.ElementSearchOptions
         {
@@ -16719,7 +16719,7 @@ public partial class UiService : IUiService
         if (request.Locator != null)
         {
             var locator = request.Locator;
-            var searchRoot = request.SearchRoot ?? (request.UseDesktopRoot == true ? "desktop" : (request.UseActiveWindowRoot == true ? "foreground" : "current"));
+            var searchRoot = GetSearchRootName(request);
             var options = new DesktopAutomationDriver.Services.Resolution.ElementSearchOptions
             {
                 SearchRoot = searchRoot,
