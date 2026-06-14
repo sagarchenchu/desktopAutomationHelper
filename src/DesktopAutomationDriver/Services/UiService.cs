@@ -209,12 +209,14 @@ public partial class UiService : IUiService
         };
 
     private readonly ElementResolver _elementResolver;
+    private readonly UiElementResolver _uiElementResolver;
 
-    public UiService(IUiSessionContext ctx, ILogger<UiService> logger, ILogger<ElementResolver> resolverLogger)
+    public UiService(IUiSessionContext ctx, ILogger<UiService> logger, ILogger<ElementResolver> resolverLogger, ILogger<UiElementResolver> uiResolverLogger)
     {
         _ctx = ctx;
         _logger = logger;
         _elementResolver = new ElementResolver(ctx, resolverLogger, GetWindowRoot);
+        _uiElementResolver = new UiElementResolver(ctx, uiResolverLogger, GetWindowRoot);
     }
 
     // =========================================================================
@@ -255,6 +257,8 @@ public partial class UiService : IUiService
                 "findlocator"    => FindLocatorDebug(request),
                 "inspectlocator" => FindLocatorDebug(request),
                 "findall"        => FindAll(request),
+                "findmany"       => FindAll(request),
+                "resolvemany"    => FindAll(request),
 
                 // ----- Open dropdown item operations -----
                 "listopendropdownitems"   => ListOpenDropdownItems(request),
@@ -2247,71 +2251,47 @@ public partial class UiService : IUiService
     private object? FindLocatorDebug(UiRequest req)
     {
         var locator = req.Locator;
-        if (locator == null)
-            throw new ArgumentException("'locator' is required for findlocator/inspectlocator.");
+        if (locator == null && req.LocatorPath == null && req.Criteria == null)
+            throw new ArgumentException("'locator', 'locatorPath' or 'criteria' is required for findlocator/inspectlocator.");
 
         var session = RequireSession();
 
-        // Use the central resolver with diagnostics
-        var result = _elementResolver.ResolveOne(req);
-
-        if (result.Element != null)
-        {
-            return new
-            {
-                found        = true,
-                strategy     = result.Strategy,
-                rootStrategy = result.RootStrategy,
-                element      = CreateElementSnapshot(result.Element),
-                candidates   = result.Diagnostics?.Candidates ?? new List<ElementCandidate>(),
-                ambiguous    = false
-            };
-        }
-
-        if (result.Diagnostics?.Status == "ElementAmbiguous")
-        {
-            return new
-            {
-                found               = false,
-                strategy            = result.Strategy,
-                rootStrategy        = result.RootStrategy,
-                element             = (object?)null,
-                candidates          = result.Diagnostics.Candidates,
-                ambiguous           = true,
-                suggestedFoundIndex = 0,
-                message             = "Multiple matching elements found. Suggest adding foundIndex (e.g., 0, 1, etc.) to your locator to select the correct element."
-            };
-        }
-
-        // Legacy fallback: try the old path for backward compatibility
         try
         {
-            var root    = GetWindowRoot(session);
-            var element = FindLocatorWithRetry(session, root, locator);
+            DesktopAutomationDriver.Models.Resolver.ResolvedElement result;
+            if (req.LocatorPath != null || req.Criteria != null)
+            {
+                result = _uiElementResolver.ResolveLocatorPath(req);
+            }
+            else
+            {
+                result = _uiElementResolver.ResolveOne(req);
+            }
+
             return new
             {
-                found        = true,
-                strategy     = "legacy-fallback",
-                rootStrategy = "app-main-window",
-                element      = CreateElementSnapshot(element),
-                candidates   = Array.Empty<object>(),
-                ambiguous    = false
+                found = true,
+                strategy = result.Strategy,
+                rootStrategy = req.SearchRoot ?? "currentWindow",
+                element = CreateElementSnapshot(result.Element),
+                candidates = new List<object>(),
+                ambiguous = false
             };
         }
-        catch
+        catch (Exception ex)
         {
-            // Not found even via legacy path
+            var isAmbiguous = ex.Message.Contains("ElementAmbiguous");
+            return new
+            {
+                found = false,
+                strategy = "not-found",
+                rootStrategy = req.SearchRoot ?? "currentWindow",
+                element = (object?)null,
+                candidates = new List<object>(),
+                ambiguous = isAmbiguous,
+                message = ex.Message
+            };
         }
-
-        return new
-        {
-            found        = false,
-            strategy     = result.Strategy,
-            rootStrategy = result.RootStrategy,
-            errors       = result.Diagnostics?.Errors ?? new List<string>(),
-            candidates   = result.Diagnostics?.Candidates ?? new List<ElementCandidate>(),
-            locator      = DescribeLocatorAsObject(locator)
-        };
     }
 
     private object? InspectLogicalMenu(UiRequest req)
@@ -8750,18 +8730,22 @@ public partial class UiService : IUiService
     /// </summary>
     private ResolvedElement ResolveForStateQuery(UiRequest request)
     {
-        var resolved = _elementResolver.ResolveOne(request);
-        if (resolved.Element != null)
+        DesktopAutomationDriver.Models.Resolver.ResolvedElement resolved;
+        if (request.LocatorPath != null || request.Criteria != null)
         {
-            return resolved;
+            resolved = _uiElementResolver.ResolveLocatorPath(request);
+        }
+        else
+        {
+            resolved = _uiElementResolver.ResolveOne(request);
         }
 
-        var emptyLoc = request.Locator ?? (request.LocatorPath != null && request.LocatorPath.Count > 0 ? request.LocatorPath[^1] : new UiLocator());
-        throw new InvalidOperationException(
-            $"Element not found for state query: strategy={resolved.Strategy}, " +
-            $"rootStrategy={resolved.RootStrategy}, " +
-            $"locator={DescribeLocator(emptyLoc)}" +
-            (resolved.Diagnostics?.Errors.Count > 0 ? $", errors=[{string.Join("; ", resolved.Diagnostics.Errors)}]" : ""));
+        return new ResolvedElement
+        {
+            Element = resolved.Element,
+            Strategy = resolved.Strategy,
+            RootStrategy = request.SearchRoot ?? "currentWindow"
+        };
     }
 
     /// <summary>
