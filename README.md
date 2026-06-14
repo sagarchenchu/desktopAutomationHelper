@@ -704,7 +704,7 @@ Finds a ComboBox by its Name and selects an item by the item's visible text.
 
 ### POST /select/combobox/aid
 
-Finds a ComboBox by its Name property and selects an item by the item's UIA AutomationId.
+Finds a ComboBox and selects an item within it by its UIA AutomationId.
 
 - **Request Format:**
   ```json
