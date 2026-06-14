@@ -8345,7 +8345,7 @@ public partial class UiService : IUiService
                     "UI locator not found. operation={Operation}, policy={Policy}, lastStrategy={Strategy}, locator={Locator}, parent={Parent}",
                     SanitizeValue(req.Operation),
                     policy.PolicyName,
-                    lastResult.Strategy,
+                    lastResult?.Strategy ?? "unknown",
                     DescribeLocator(locator),
                     parentDescription ?? "");
 
@@ -8353,7 +8353,7 @@ public partial class UiService : IUiService
                     ? $"{(int)policy.Timeout.TotalSeconds}s"
                     : $"{(int)policy.Timeout.TotalMilliseconds}ms";
 
-                if (lastResult.Diagnostics != null && lastResult.Diagnostics.Status == "ElementAmbiguous")
+                if (lastResult?.Diagnostics != null && lastResult.Diagnostics.Status == "ElementAmbiguous")
                 {
                     throw new InvalidOperationException(
                         $"ElementAmbiguous: Multiple matching elements found ({lastResult.Diagnostics.Candidates.Count}). Message: {lastResult.Diagnostics.Message}");
@@ -8361,7 +8361,7 @@ public partial class UiService : IUiService
 
                 throw new InvalidOperationException(
                     $"Element not found within {timeoutDesc} using policy={policy.PolicyName}, " +
-                    $"lastStrategy={lastResult.Strategy}, locator={DescribeLocator(locator)}, " +
+                    $"lastStrategy={lastResult?.Strategy ?? "unknown"}, locator={DescribeLocator(locator)}, " +
                     $"parent={parentDescription ?? ""}");
             }
 
