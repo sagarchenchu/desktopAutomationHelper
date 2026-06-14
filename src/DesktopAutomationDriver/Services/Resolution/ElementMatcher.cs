@@ -268,7 +268,7 @@ public static class ElementMatcher
                 candidate.RejectReasons.Add($"offscreen mismatch: expected={locator.Offscreen.Value}, actual={snapshot.IsOffscreen}");
             }
         }
-        if (locator.IncludeOffscreen.HasValue && locator.IncludeOffscreen.Value == false)
+        if (locator.IncludeOffscreen.HasValue && !locator.IncludeOffscreen.Value)
         {
             if (snapshot.IsOffscreen == true)
             {
