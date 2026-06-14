@@ -87,92 +87,668 @@ Missing or invalid tokens receive `HTTP 401`:
 
 ## REST API Reference
 
-All responses follow the WebDriver response envelope:
+All responses from WebDriver-compatible endpoints follow the WebDriver response envelope format:
 
 ```json
-{ "sessionId": "<id>", "status": 0, "value": { ... } }
+{
+  "sessionId": "<string|null>",
+  "status": 0,
+  "value": { ... }
+}
 ```
 
-### GET /verify  *(no auth)*
+The `status` property indicates the status of the operation: `0` denotes success, and non-zero values denote various error statuses.
 
-Returns driver status, connection port, and the Bearer token. Use this to bootstrap
-a client session on any shared machine.
+Below is the detailed specification of all WebDriver-compatible REST endpoints.
+
+---
+
+### GET /verify *(no authentication required)*
+
+Returns the current running status, username, connection port, fixed probe port (if active), and the Bearer token required for other endpoints. Use this to bootstrap your automated client sessions.
+
+- **Request Format:** No request body required.
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": null,
+    "status": 0,
+    "value": {
+      "running": true,
+      "username": "DOMAIN\\alice",
+      "port": 33201,
+      "probePort": 9102,
+      "token": "7kP2mXqR...",
+      "authorizationHeader": "Bearer 7kP2mXqR..."
+    }
+  }
+  ```
+
+---
+
+### GET /status
+
+Checks if the driver is running and ready to accept new sessions. Requires Bearer authentication.
+
+- **Request Format:** No request body required.
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": null,
+    "status": 0,
+    "value": {
+      "ready": true,
+      "message": "Desktop Automation Driver is running",
+      "build": {
+        "version": "1.0.0",
+        "revision": "",
+        "time": "2026-06-14T00:46:12Z"
+      }
+    }
+  }
+  ```
+
+---
 
 ### POST /session
 
-Creates a new automation session (launch app or attach to running process).
+Creates a new automation session (either launching an application or attaching to a running process) and returns the session capability details. Requires Bearer authentication.
 
-**Launch an application:**
-
-```json
-{
-  "desiredCapabilities": {
-    "app": "C:\\Windows\\System32\\notepad.exe",
-    "uiaType": "UIA3",
-    "launchDelay": 1000
+- **Request Format (Launch Application):**
+  ```json
+  {
+    "desiredCapabilities": {
+      "app": "C:\\Windows\\System32\\notepad.exe",
+      "appArguments": "-arg1 val1",
+      "appWorkingDir": "C:\\Windows\\System32",
+      "uiaType": "UIA3",
+      "launchDelay": 1000
+    }
   }
-}
-```
-
-**Attach to running process:**
-
-```json
-{
-  "desiredCapabilities": {
-    "appName": "notepad",
-    "uiaType": "UIA3"
+  ```
+- **Request Format (Attach to Process):**
+  ```json
+  {
+    "desiredCapabilities": {
+      "appName": "notepad",
+      "uiaType": "UIA3"
+    }
   }
-}
-```
+  ```
+- **Request Fields:**
+  | Field | Type | Required | Description |
+  |---|---|---|---|
+  | `desiredCapabilities` | object | Yes | Capabilities defined for the session. |
+  | `desiredCapabilities.app` | string | No* | Full path to application executable. *Either `app` or `appName` must be set. |
+  | `desiredCapabilities.appName` | string | No* | Process name of already-running app to attach to. *Either `app` or `appName` must be set. |
+  | `desiredCapabilities.appArguments` | string | No | Command-line arguments to pass when launching the application. |
+  | `desiredCapabilities.appWorkingDir` | string | No | Working directory for the application process. |
+  | `desiredCapabilities.uiaType` | string | No | UI Automation backend type: `"UIA2"` or `"UIA3"` (default: `"UIA3"`). |
+  | `desiredCapabilities.launchDelay` | number | No | Delay in milliseconds to wait after launch before beginning automation (default: `1000`). |
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": {
+      "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+      "capabilities": {
+        "app": "C:\\Windows\\System32\\notepad.exe",
+        "appName": "notepad",
+        "uiaType": "UIA3",
+        "processId": 1234
+      }
+    }
+  }
+  ```
+
+---
+
+### GET /session/{sessionId}
+
+Retrieves capability information about an active session. Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": {
+      "app": "C:\\Windows\\System32\\notepad.exe",
+      "appName": "notepad",
+      "uiaType": "UIA3",
+      "processId": 1234
+    }
+  }
+  ```
+
+---
 
 ### DELETE /session/{sessionId}
 
-Closes the session and disposes the automation backend.
+Closes the active session and disposes of the automation backend. Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": null
+  }
+  ```
+
+---
+
+### GET /sessions
+
+Lists all active session IDs. Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": null,
+    "status": 0,
+    "value": [
+      "4b9a1012-706f-409c-be7c-bc7d35368a62"
+    ]
+  }
+  ```
+
+---
 
 ### POST /session/{sessionId}/element
 
-Finds the first matching element.
+Finds the first matching element in the application window scope. Requires Bearer authentication.
 
-Supported `using` strategies:
+- **Request Format:**
+  ```json
+  {
+    "using": "automation id",
+    "value": "OKButton"
+  }
+  ```
+- **Request Fields:**
+  | Field | Type | Required | Description |
+  |---|---|---|---|
+  | `using` | string | Yes | Search strategy: `"automation id"`, `"id"`, `"name"`, `"link text"`, `"partial link text"`, `"class name"`, `"tag name"`, or `"xpath"`. |
+  | `value` | string | Yes | The value to search for. |
 
-| Strategy | Description |
-|---|---|
-| `automation id` / `id` | Match by AutomationId |
-| `name` / `link text` | Exact match on Name |
-| `partial link text` | Substring match on Name |
-| `class name` | Match by ClassName |
-| `tag name` | Match by ControlType (e.g. `Button`, `Edit`) |
-| `xpath` | Pattern: `//ControlType[@AutomationId='x']` |
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": {
+      "elementId": "element-a1b2c3d4"
+    }
+  }
+  ```
+
+---
+
+### POST /session/{sessionId}/elements
+
+Finds all matching elements within the application window scope. Requires Bearer authentication.
+
+- **Request Format:** Same as `POST /session/{sessionId}/element`.
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": [
+      { "elementId": "element-a1b2c3d4" },
+      { "elementId": "element-e5f6g7h8" }
+    ]
+  }
+  ```
+
+---
+
+### POST /session/{sessionId}/element/{elementId}/element
+
+Finds a child element starting from the specified parent element scope. Requires Bearer authentication.
+
+- **Request Format:** Same as `POST /session/{sessionId}/element`.
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": {
+      "elementId": "child-element-xyz123"
+    }
+  }
+  ```
+
+---
+
+### POST /session/{sessionId}/element/{elementId}/elements
+
+Finds all matching child elements starting from the specified parent element scope. Requires Bearer authentication.
+
+- **Request Format:** Same as `POST /session/{sessionId}/element`.
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": [
+      { "elementId": "child-element-xyz123" }
+    ]
+  }
+  ```
+
+---
 
 ### POST /session/{sessionId}/element/{elementId}/click
 
-Clicks the element.
+Performs a mouse click on the specified element. Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": null
+  }
+  ```
+
+---
+
+### POST /session/{sessionId}/element/{elementId}/doubleclick
+
+Performs a double-click on the specified element. Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": null
+  }
+  ```
+
+---
+
+### POST /session/{sessionId}/element/{elementId}/rightclick
+
+Performs a right-click on the specified element. Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": null
+  }
+  ```
+
+---
 
 ### POST /session/{sessionId}/element/{elementId}/value
 
-Types text into the element. Supports WebDriver key codes.
+Types keys into the specified element. Supports standard characters and special key codes. Requires Bearer authentication.
 
-```json
-{ "value": ["Hello World", "\uE007"] }
-```
+- **Request Format:**
+  ```json
+  {
+    "value": ["Hello World", "\uE007"]
+  }
+  ```
+- **Request Fields:**
+  | Field | Type | Required | Description |
+  |---|---|---|---|
+  | `value` | string[] | Yes | Array of keys to send. Concatenated and typed in sequence. Standard Unicode WebDriver key codes are supported. |
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": null
+  }
+  ```
+
+---
+
+### POST /session/{sessionId}/element/{elementId}/clear
+
+Clears the text of an editable element. Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": null
+  }
+  ```
+
+---
 
 ### GET /session/{sessionId}/element/{elementId}/text
 
-Returns the visible text of the element.
+Retrieves the visible text of the element. Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": "My Output Text"
+  }
+  ```
+
+---
+
+### GET /session/{sessionId}/element/{elementId}/name
+
+Retrieves the control type name of the element (e.g., `"Button"`, `"Edit"`). Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": "Edit"
+  }
+  ```
+
+---
 
 ### GET /session/{sessionId}/element/{elementId}/attribute/{name}
 
-Returns the named attribute (`Name`, `AutomationId`, `ClassName`, `Value`, etc.).
+Retrieves the value of a specific named attribute or property of the element. Requires Bearer authentication.
+Common attributes: `Name`, `AutomationId`, `ClassName`, `IsEnabled`, `IsOffscreen`, `ControlType`, `Value`, `HelpText`, `BoundingRectangle`.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": "ok_btn_automation_id"
+  }
+  ```
+
+---
+
+### GET /session/{sessionId}/element/{elementId}/enabled
+
+Checks if the element is currently enabled. Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": true
+  }
+  ```
+
+---
+
+### GET /session/{sessionId}/element/{elementId}/displayed
+
+Checks if the element is currently visible on screen. Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": true
+  }
+  ```
+
+---
 
 ### GET /session/{sessionId}/screenshot
 
-Returns a Base64-encoded PNG screenshot of the application window.
+Takes a Base64-encoded PNG screenshot of the application window. Requires Bearer authentication.
+
+- **Success Response (HTTP 200):**
+  ```json
+  {
+    "sessionId": "4b9a1012-706f-409c-be7c-bc7d35368a62",
+    "status": 0,
+    "value": "iVBORw0KGgoAAAANSUhEUgAA..."
+  }
+  ```
 
 Full API reference: see [Controllers/ElementController.cs](src/DesktopAutomationDriver/Controllers/ElementController.cs).
 
 ---
 
-## POST /ui — Unified Automation Endpoint
+## Simple Automation API
+
+The Simple Automation API exposes lightweight, action-oriented HTTP POST endpoints wrapping the automation service. Each simple automation request yields a consistent `{"success": true}` or `{"success": false, "error": "..."}` response (or `{"found": true/false}` for list operations). This allows easy scripting and execution without handling element-level session IDs or complex WebDriver state machines.
+
+All Simple Automation routes require the Bearer token in the `Authorization` header.
+
+---
+
+### POST /launch
+
+Launches the application at the given path and creates an active session.
+
+- **Request Format:**
+  ```json
+  {
+    "exePath": "C:\\Windows\\System32\\notepad.exe"
+  }
+  ```
+- **Response Format:**
+  ```json
+  {
+    "success": true
+  }
+  ```
+  Or on failure:
+  ```json
+  {
+    "success": false,
+    "error": "Error message describing the failure."
+  }
+  ```
+
+---
+
+### POST /close
+
+Closes the first top-level window whose title contains the given string.
+
+- **Request Format:**
+  ```json
+  {
+    "app": "Notepad"
+  }
+  ```
+- **Response Format:** Same as `POST /launch`.
+
+---
+
+### POST /listallwindows
+
+Checks whether any top-level window whose title contains the given name is open.
+
+- **Request Format:**
+  ```json
+  {
+    "window": "Notepad"
+  }
+  ```
+- **Response Format:**
+  ```json
+  {
+    "found": true
+  }
+  ```
+
+---
+
+### POST /switchwindow
+
+Brings the window whose title contains `windowTitle` to the foreground and makes it the active window for subsequent operations.
+
+- **Request Format:**
+  ```json
+  {
+    "windowTitle": "Notepad"
+  }
+  ```
+- **Response Format:** Same as `POST /launch`.
+
+---
+
+### POST /maximize
+
+Switches to the window whose title contains `window` and maximizes it.
+
+- **Request Format:**
+  ```json
+  {
+    "window": "Notepad"
+  }
+  ```
+- **Response Format:** Same as `POST /launch`.
+
+---
+
+### POST /click/name
+
+Clicks the first element whose UIA Name matches the given value.
+
+- **Request Format:**
+  ```json
+  {
+    "name": "OK"
+  }
+  ```
+- **Response Format:** Same as `POST /launch`.
+
+---
+
+### POST /click/aid
+
+Clicks the first element whose UIA AutomationId matches the given value.
+
+- **Request Format:**
+  ```json
+  {
+    "automationId": "btnOK"
+  }
+  ```
+- **Response Format:** Same as `POST /launch`.
+
+---
+
+### POST /click/advanced
+
+Clicks the element matching the supplied Name and/or ControlType. At least one of `name` or `controlType` must be provided; supplying both narrows the match.
+
+- **Request Format:**
+  ```json
+  {
+    "name": "Save",
+    "controlType": "Button"
+  }
+  ```
+- **Response Format:** Same as `POST /launch`.
+
+---
+
+### POST /doubleclick/name
+
+Double-clicks the first element whose UIA Name matches the given value.
+
+- **Request Format:**
+  ```json
+  {
+    "name": "MyFile.txt"
+  }
+  ```
+- **Response Format:** Same as `POST /launch`.
+
+---
+
+### POST /doubleclick/aid
+
+Double-clicks the first element whose UIA AutomationId matches the given value.
+
+- **Request Format:**
+  ```json
+  {
+    "automationId": "listItem1"
+  }
+  ```
+- **Response Format:** Same as `POST /launch`.
+
+---
+
+### POST /select/combobox/name
+
+Finds a ComboBox by its Name and selects an item by the item's visible text.
+
+- **Request Format:**
+  ```json
+  {
+    "combobox": "CountryCombo",
+    "itemName": "United States"
+  }
+  ```
+- **Response Format:** Same as `POST /launch`.
+
+---
+
+### POST /select/combobox/aid
+
+Finds a ComboBox by its Name property and selects an item by the item's UIA AutomationId.
+
+- **Request Format:**
+  ```json
+  {
+    "combobox": "CountryCombo",
+    "automationId": "item_us"
+  }
+  ```
+- **Response Format:** Same as `POST /launch`.
+
+---
+
+### POST /alert/ok
+
+Finds the topmost modal dialog and clicks its OK or Yes button. Succeeds silently when no alert is present.
+
+- **Request Format:** `{}` (optional request body)
+- **Response Format:**
+  ```json
+  {
+    "success": true
+  }
+  ```
+
+---
+
+### POST /alert/cancel
+
+Finds the topmost modal dialog and clicks its Cancel or No button. Succeeds silently when no alert is present.
+
+- **Request Format:** `{}` (optional request body)
+- **Response Format:** Same as `POST /alert/ok`.
+
+---
+
+### POST /alert/close
+
+Finds the topmost modal dialog and closes it via the Window pattern. Succeeds silently when no alert is present.
+
+- **Request Format:** `{}` (optional request body)
+- **Response Format:** Same as `POST /alert/ok`.
+
+---
+\n## POST /ui — Unified Automation Endpoint
 
 All desktop automation operations are exposed through a single endpoint:
 
@@ -186,6 +762,8 @@ Content-Type: application/json
 because the operation data is supplied as JSON in the request body.
 
 ### Request envelope
+
+The POST `/ui` endpoint accepts a rich, consolidated JSON payload (`UiRequest`) allowing for powerful single-endpoint execution and high-performance, low-latency UI Automation.
 
 ```json
 {
@@ -205,74 +783,220 @@ because the operation data is supplied as JSON in the request body.
     "controlType": "...",
     "xpath": "..."
   },
+  "parentLocator": {
+    "automationId": "..."
+  },
+  "containerLocator": {
+    "automationId": "..."
+  },
   "value": "...",
   "clickRegion": "LowerRight",
   "itemRegion": "LeftCenter",
   "index": 0,
   "columnIndex": 0,
   "limit": 50,
-  "includeDesktopDescendants": false
+  "includeDesktopDescendants": false,
+  "allowKeyboardFallback": false,
+  "timeoutMs": 5000,
+  "fast": false,
+  "disableAutoFollow": false,
+  "useCache": false,
+  "preferAttributes": true,
+  "preferXPath": false,
+  "xpathOnly": false,
+  "fallbackToWindowRootIfParentChildNotFound": false,
+  "hwnd": 123456,
+  "className": "Notepad",
+  "processId": 1234,
+  "matchMode": "contains",
+  "forceKillAttachedProcess": false,
+  "action": "button",
+  "button": "OK|Yes|Save",
+  "desktopSearch": true,
+  "sameProcessOnly": false,
+  "makeCurrent": true,
+  "offsetX": 0,
+  "offsetY": 0,
+  "dragStart": "center",
+  "dragDurationMs": 250,
+  "dragSteps": 10,
+  "fromX": 100,
+  "fromY": 100,
+  "toX": 200,
+  "toY": 200,
+  "x": 150,
+  "y": 150,
+  "includeOffscreen": true,
+  "maxAttempts": 30,
+  "delayMs": 150,
+  "direction": "down",
+  "amount": 1,
+  "mode": "auto",
+  "wheelDelta": null,
+  "verifyScroll": false,
+  "scrollDelayMs": 100,
+  "state": "exists",
+  "pollIntervalMs": 200,
+  "returnAllMatches": false,
+  "maxMatches": 500,
+  "includeDiagnostics": false,
+  "allowBestMatch": false,
+  "bestMatch": null,
+  "useDesktopRoot": false,
+  "useActiveWindowRoot": false,
+  "softVerification": false,
+  "locatorPath": [],
+  "criteria": [],
+  "searchRoot": "currentWindow",
+  "treeView": "control",
+  "backend": "hybrid",
+  "returnCandidates": false,
+  "debug": false,
+  "ambiguity": "error"
 }
 ```
 
-| Field | Type | Used by | Notes |
-|---|---|---|---|
-| `operation` | string | all operations | Required. Case-insensitive. |
-| `locator` | object | element/menu/grid operations | Primary element locator. Multiple non-null properties are combined with AND logic. |
-| `locator2` | object | position and drag/drop operations | Secondary element locator. |
-| `value` | string | operation-specific | Executable path, text, key sequence, timeout, menu path, item name, window title, screenshot path, etc. |
-| `clickRegion` | string | header dropdown operations | Optional header click target. Defaults to `LowerRight`. |
-| `itemRegion` | string | header dropdown item selection | Optional list-item click target. Defaults to `LeftCenter`. |
-| `index` | number | combo/grid operations | Zero-based combo item index or grid row index. |
-| `columnIndex` | number | grid operations | Zero-based grid column index. |
-| `limit` | number | list/debug operations | Optional maximum number of returned items. |
-| `includeDesktopDescendants` | boolean | `listwindows` | When true, also scans desktop descendants. Defaults to false. |
+#### Complete `UiRequest` Property Reference
+
+| Property | Type | Description |
+|---|---|---|
+| `operation` | string | **Required**. The case-insensitive operation name (e.g. `"launch"`, `"click"`, `"type"`, `"gettext"`, etc.). |
+| `locator` | object (`UiLocator`) | Primary locator options identifying the target UI element. Multiple non-null criteria are combined with AND logic. |
+| `locator2` | object (`UiLocator`) | Secondary locator used by position comparison (`isrightof`, `isleftof`, etc.) and drag/drop operations. |
+| `parentLocator` | object (`UiLocator`) | Parent container locator. If set, searches the target child element within this container scope only. |
+| `containerLocator` | object (`UiLocator`) | Optional scrollable container locator for scroll-into-view loops. |
+| `value` | string | Auxiliary parameter whose meaning depends on the operation (e.g. execution path, typing text, key sequence, timeouts, window title, etc.). |
+| `clickRegion` | string | Header click target region for grid header dropdown operations. Defaults to `LowerRight`. |
+| `itemRegion` | string | Dropdown ListItem target region for dropdown selections. Defaults to `LeftCenter`. |
+| `index` | number | Zero-based index used by `"select"` to pick ComboBox items by position, and by `"clickGridCell"` / `"doubleclickGridCell"` to specify row index. |
+| `columnIndex` | number | Zero-based column index used by grid cell click operations. |
+| `limit` | number | Maximum returned items for list/diagnostic operations. |
+| `includeDesktopDescendants`| boolean | When true, listwindows also scans desktop descendants. Defaults to false. |
+| `allowKeyboardFallback` | boolean | When true, ComboBox selection may fallback to keyboard type-ahead on visible list failure. |
+| `timeoutMs` | number | Overrides the default operation timeout in milliseconds. |
+| `fast` | boolean | Forces short timeout (100ms), no desktop popup scanning, and cached elements. |
+| `disableAutoFollow` | boolean | Disables automatic popup/dialog window follow checks for this operation. |
+| `useCache` | boolean | Enables element locator caching. Returns a previously resolved element on matching criteria. |
+| `preferAttributes` | boolean | Attempts attribute-based criteria match (AutomationId, Name, ClassName) before XPath. (Default for fast operations). |
+| `preferXPath` | boolean | Evaluates XPath criteria before attribute-based checks. |
+| `xpathOnly` | boolean | Restricts lookup exclusively to XPath; fails if locator lacks an XPath expression. |
+| `fallbackToWindowRootIfParentChildNotFound` | boolean | Retries a failed parent-child lookup scope against the full window root before giving up. |
+| `hwnd` | number | Native window handle (HWND) match filter for window operations. |
+| `className` | string | Win32 class name filter for 'switchwindow'. |
+| `processId` | number | Process ID override for 'switchwindow'. |
+| `matchMode` | string | Title matching mode: `exact`, `contains` (default), `regex`. |
+| `forceKillAttachedProcess` | boolean | When true, 'quit' force-kills the attached process tree unconditionally. |
+| `action` | string | Popup action type: `button` (default), `close`, `enter`, `escape`, `makecurrent`. |
+| `button` | string | Pipe-separated button candidate names to click (e.g. `OK|Yes|Save`). |
+| `desktopSearch` | boolean | If true (default), scans desktop root during popup discovery. |
+| `sameProcessOnly` | boolean | Restricts popup scanning to windows matching current app PID. |
+| `makeCurrent` | boolean | Focuses and sets the discovered popup as active window. |
+| `offsetX`, `offsetY` | number | Drag offset movement vectors in pixels for dragbyoffset. |
+| `dragStart` | string | Rectangle drag anchor point: `center`, `topLeft`, `bottomLeft`, etc. (Default: `"center"`). |
+| `dragDurationMs` | number | Total drag animation duration in milliseconds. Defaults to 250. |
+| `dragSteps` | number | Interpolated mouse move step frames for dragbyoffset. |
+| `fromX`, `fromY`, `toX`, `toY` | number | Mouse start and end screen coordinates for dragcoordinates. |
+| `x`, `y` | number | Targeted screen coordinate offsets for low-level cursor/scroll. |
+| `includeOffscreen` | boolean | Includes offscreen elements during scroll-into-view searches. |
+| `maxAttempts` | number | Maximum scroll loop retry attempts before timing out. |
+| `delayMs` | number | Polling iteration delay in milliseconds during scroll-into-view. |
+| `direction` | string | Direction vector: `up`, `down`, `left`, `right`. |
+| `amount` | number | Wheel ticks or pattern-specific unit amounts. |
+| `mode` | string | Scroll strategy: `auto` (default), `wheel`, `pattern`. |
+| `wheelDelta` | number | Raw mouse wheel delta values. Negative = down/left, positive = up/right. |
+| `verifyScroll` | boolean | Ensures scroll position actually modified during wheel scrolls. |
+| `scrollDelayMs` | number | Settling delay in milliseconds after scrolling completes. Defaults to 100. |
+| `state` | string | Target element state check for wait operations (e.g. `exists`, `visible`, `enabled`). |
+| `pollIntervalMs` | number | Query polling sleep interval in milliseconds during waits. |
+| `returnAllMatches` | boolean | Returns complete matched element list instead of just first match. |
+| `maxMatches` | number | Result count limit when returnAllMatches is enabled. |
+| `includeDiagnostics` | boolean | Returns verbose trace metadata of resolved candidate scores on success. |
+| `allowBestMatch` | boolean | Permits partial best-match scoring when exact attributes are missing. |
+| `bestMatch` | string | Best-match fallback text hint. |
+| `useDesktopRoot` | boolean | Searches from UIA desktop root, enabling multi-process element lookups. |
+| `useActiveWindowRoot` | boolean | Always looks up elements starting from active foreground window. |
+| `softVerification` | boolean | Disables throwing errors on post-action check failures (emits warnings instead). |
+| `locatorPath` | array | Sequence of locators for deep pywinauto-style path traversals. |
+| `criteria` | array | Extra filter constraints for complex traversals. |
+| `searchRoot` | string | Start node: `currentWindow`, `desktop`, `foreground`, `activePopup`, `parent`. |
+| `treeView` | string | Selection of UIA tree views: `control` (default), `content`, `raw`. |
+| `backend` | string | Automation technology stack choice: `uia`, `win32`, `hybrid` (default). |
+| `returnCandidates` | boolean | Returns diagnostic candidates list on failure or ambiguous resolution. |
+| `debug` | boolean | Enables verbose pywinauto-style diagnostic tracing. |
+| `ambiguity` | string | Resolution handling on duplicates: `error`, `first`, `all`. |
+
+---
 
 ### Response formats
 
-Success:
+Success Response Envelope (HTTP 200):
 
 ```json
-{ "success": true, "value": { } }
+{
+  "success": true,
+  "value": { ... }
+}
 ```
 
-Client/request errors return `400`; not-found/operation failures return `404`; unexpected
-failures return `500`. Error responses include a message and may include a failure
-screenshot path if screenshot capture is configured:
+The type and schema of the `value` property depends on the requested operation (e.g., check operations return boolean `{"exists": true}`, element detail returns metadata object, listing returns lists, click/actions return `null`).
+
+Error Response Envelope:
+Client/request errors return `400 BadRequest`, not-found/operation failures return `404 NotFound`, and unhandled internal driver failures return `500 InternalServerError`.
 
 ```json
 {
   "success": false,
   "value": null,
-  "error": "'operation' is required.",
-  "screenshotPath": "C:\\...\\failure.png"
+  "error": "Detailed error message describing what failed.",
+  "screenshotPath": "C:\\Users\\alice\\AppData\\Local\\Temp\\DesktopAutomationHelper\\Failures\\failure-screenshot.png"
 }
 ```
 
+---
+
 ### Locator reference
 
-All `locator` and `locator2` objects support these properties:
+All `locator`, `locator2`, `parentLocator`, and `containerLocator` objects are defined by the `UiLocator` schema, supporting detailed attribute and pywinauto-style advanced scoring filters.
 
-| Property | Description |
-|---|---|
-| `mode` | Optional mode hint. Menu operations can use `"logical"` for logical menu traversal. |
-| `automationId` | UIA AutomationId property. |
-| `name` | UIA Name property, exact match. |
-| `className` | UIA ClassName property. |
-| `controlType` | UIA control type string, e.g. `Button`, `Edit`, `ComboBox`, `MenuItem`. |
-| `xpath` | XPath-style expression. When set, all other locator properties are ignored. |
+| Property | Type | Description |
+|---|---|---|
+| `mode` | string | Locator strategy mode hint (e.g. `"logical"` for deep visual menu traversal). |
+| `name` | string | Exact match on UIA Name attribute (element label). |
+| `nameRegex` | string | Regex match on UIA Name attribute. |
+| `automationId` | string | Match on UIA AutomationId attribute. |
+| `automationIdRegex` | string | Regex match on UIA AutomationId. |
+| `className` | string | Match on UIA ClassName attribute. |
+| `classNameRegex` | string | Regex match on ClassName. |
+| `controlType` | string | Match on UIA ControlType string (e.g. `Button`, `Edit`, `ComboBox`, `Window`). |
+| `xpath` | string | XPath-style traversal expression. When set, other attribute properties are bypassed. |
+| `hwnd` | number | Exact native window handle (HWND). If provided, resolves the element directly from window. |
+| `processId` | number | Filter by Win32 Process ID. |
+| `controlId` | number | Filter by Win32 Control ID (DlgCtrlID). |
+| `frameworkId` | string | Filter by target framework identifier (e.g. `"WPF"`, `"WinForm"`, `"Win32"`). |
+| `runtimeId` | string | Exact UIA RuntimeId match (e.g. `"42.1234"`). Useful for pinning single UI elements. |
+| `value` | string | Match on ValuePattern value. |
+| `valueRegex` | string | Regex match on ValuePattern value. |
+| `text` | string | Match on TextPattern content (or fallback element Name). |
+| `visible` | boolean | Visibility status filter (true = visible only, false = hidden only). |
+| `enabled` | boolean | Enabled status filter. |
+| `offscreen` | boolean | Offscreen status filter. |
+| `matchMode` | string | Global match mode for strings: `exact` (default), `contains`, `startswith`, `regex`. |
+| `nameMatchMode` | string | Overrides `matchMode` specifically for Name. |
+| `automationIdMatchMode` | string | Overrides `matchMode` for AutomationId. |
+| `classNameMatchMode` | string | Overrides `matchMode` for ClassName. |
+| `valueMatchMode` | string | Overrides `matchMode` for Value. |
+| `textMatchMode` | string | Overrides `matchMode` for Text. |
+| `foundIndex` | number | Scored, filtered candidate index selection (matches pywinauto `found_index`). |
+| `ctrlIndex` | number | Zero-based pre-filtered raw candidate retrieval index (matches pywinauto `ctrl_index`). |
+| `depth` | number | Maximum UIA tree traversal depth (Default: 20). |
+| `topLevelOnly` | boolean | Restricts candidates to direct parent-root children (depth = 1). |
+| `activeOnly` | boolean | Restricts element query search to active foreground window scope. |
+| `includeOffscreen` | boolean | Scans and returns elements physically off-screen. |
+| `role` | string | Filter by ARIA role / LocalizedControlType. |
+| `bestMatch` | string | Weight name scoring hint used by advanced fuzzy search. |
 
-XPath examples:
-
-```text
-//Button[@Name='OK']
-//*[@AutomationId='myId']
-//ComboBox[@Name='Status']/ListItem[@Name='Active']
-//Edit[@AutomationId='search' and @Name='Search']
-//ListItem[@Name='Item'][2]
-```
-
-### `/ui` operations
+---
+\n### `/ui` operations
 
 #### Session, window, and inspection
 
