@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using DesktopAutomationDriver.Models;
 using DesktopAutomationDriver.Models.Request;
+using DesktopAutomationDriver.Services.NativeUia;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
@@ -209,11 +210,16 @@ public partial class UiService : IUiService
         };
 
     private readonly DesktopAutomationDriver.Services.Resolution.ElementResolver _newResolver;
+    private readonly INativeUiaComboBoxService _nativeUiaComboBoxService;
 
-    public UiService(IUiSessionContext ctx, ILogger<UiService> logger)
+    public UiService(
+        IUiSessionContext ctx,
+        ILogger<UiService> logger,
+        INativeUiaComboBoxService nativeUiaComboBoxService)
     {
         _ctx = ctx;
         _logger = logger;
+        _nativeUiaComboBoxService = nativeUiaComboBoxService;
         _newResolver = new DesktopAutomationDriver.Services.Resolution.ElementResolver(ctx, logger, GetWindowRoot);
     }
 
@@ -4309,6 +4315,33 @@ public partial class UiService : IUiService
         {
             _logger.LogInformation(
                 "selectcomboboxitem is deprecated alias. Routing through canonical select pipeline.");
+        }
+
+        if (ShouldTryNativeComboBoxSelect(req))
+        {
+            try
+            {
+                var nativeSession = RequireSession();
+                var nativeResult = _nativeUiaComboBoxService.SelectComboBox(
+                    req,
+                    GetActiveWindowHwndOrNull(nativeSession),
+                    GetActiveProcessIdOrNull(nativeSession));
+
+                _logger.LogInformation(
+                    "ComboBox selected via native UIA service. operation={Operation}, value={Value}, index={Index}",
+                    SanitizeValue(req.Operation),
+                    SanitizeValue(req.Value),
+                    req.Index);
+
+                return nativeResult;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Native UIA ComboBox select failed; falling back to FlaUI pipeline.");
+
+                if (req.Value?.Contains("__native_only__", StringComparison.Ordinal) == true)
+                    throw;
+            }
         }
 
         var session = RequireSession();
@@ -10386,6 +10419,49 @@ public partial class UiService : IUiService
         Keyboard.Press(key);
         Thread.Sleep(25);
         Keyboard.Release(key);
+    }
+
+    private static bool ShouldTryNativeComboBoxSelect(UiRequest req)
+    {
+        var controlType = req.Locator?.ControlType;
+        if (string.IsNullOrWhiteSpace(controlType))
+            return true;
+
+        if (string.Equals(controlType, "ComboBox", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (string.Equals(controlType, "Edit", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
+    }
+
+    private static IntPtr? GetActiveWindowHwndOrNull(AutomationSession session)
+    {
+        try
+        {
+            var activeWindow = session.ActiveWindow ?? session.Application?.GetMainWindow(session.Automation);
+            if (activeWindow == null)
+                return null;
+
+            return activeWindow.Properties.NativeWindowHandle.Value;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static int? GetActiveProcessIdOrNull(AutomationSession session)
+    {
+        try
+        {
+            return session.Application?.ProcessId;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static bool IsComboBoxElement(AutomationElement element)
