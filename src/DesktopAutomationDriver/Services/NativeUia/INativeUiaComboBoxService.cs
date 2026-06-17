@@ -4,5 +4,7 @@ namespace DesktopAutomationDriver.Services.NativeUia;
 
 public interface INativeUiaComboBoxService
 {
-    object SelectComboBox(UiRequest request, IntPtr? activeWindowHwnd, int? processId);
+    object SelectComboBoxNativeUia(UiRequest request, IntPtr? activeWindowHwnd, int? processId);
+
+    object InspectComboBoxNativeUia(UiRequest request, IntPtr? activeWindowHwnd, int? processId);
 }

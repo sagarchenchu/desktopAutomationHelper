@@ -46,4 +46,12 @@ public class NativeUiaTextTests
     {
         Assert.Equal(expected, NativeUiaText.ParseControlTypeId(controlType));
     }
+
+    [Theory]
+    [InlineData("regex", "Item 1", "Item.*", true)]
+    [InlineData("regex", "Alpha", "Beta", false)]
+    public void Matches_RegexMode_Works(string matchMode, string candidate, string requested, bool expected)
+    {
+        Assert.Equal(expected, NativeUiaText.Matches(candidate, requested, matchMode));
+    }
 }

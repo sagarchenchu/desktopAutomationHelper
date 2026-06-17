@@ -33,6 +33,7 @@ internal static class NativeUiaText
         {
             "contains" => left.Contains(right, StringComparison.OrdinalIgnoreCase),
             "startswith" => left.StartsWith(right, StringComparison.OrdinalIgnoreCase),
+            "regex" => Regex.IsMatch(left, requested!, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),
             "exact" => string.Equals(left, right, StringComparison.OrdinalIgnoreCase),
             _ => string.Equals(left, right, StringComparison.OrdinalIgnoreCase)
         };

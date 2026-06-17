@@ -348,6 +348,11 @@ public partial class UiService : IUiService
                 "selectdynamicmenupath" => SelectDynamicMenuPath(request),
                 // Backward-compatible alias – the canonical operation is "select".
                 "selectcomboboxitem" => Select(request),
+                "selectcomboboxuia" => SelectComboBoxNativeUia(request),
+                "selectuia" => SelectComboBoxNativeUia(request),
+                "selectnativecombo" => SelectComboBoxNativeUia(request),
+                "selectcomboboxnative" => SelectComboBoxNativeUia(request),
+                "inspectcomboboxuia" => InspectComboBoxNativeUia(request),
                 "draganddrop"     => DragAndDrop(request),
                 "dragbyoffset"    => DragByOffset(request),
                 "dragcoordinates" => DragCoordinates(request),
@@ -4319,29 +4324,8 @@ public partial class UiService : IUiService
 
         if (ShouldTryNativeComboBoxSelect(req))
         {
-            try
-            {
-                var nativeSession = RequireSession();
-                var nativeResult = _nativeUiaComboBoxService.SelectComboBox(
-                    req,
-                    GetActiveWindowHwndOrNull(nativeSession),
-                    GetActiveProcessIdOrNull(nativeSession));
-
-                _logger.LogInformation(
-                    "ComboBox selected via native UIA service. operation={Operation}, value={Value}, index={Index}",
-                    SanitizeValue(req.Operation),
-                    SanitizeValue(req.Value),
-                    req.Index);
-
-                return nativeResult;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Native UIA ComboBox select failed; falling back to FlaUI pipeline.");
-
-                if (req.Value?.Contains("__native_only__", StringComparison.Ordinal) == true)
-                    throw;
-            }
+            _logger.LogInformation(
+                "ComboBox select detected. Use selectcomboboxuia for native UIA workflow; continuing with FlaUI pipeline.");
         }
 
         var session = RequireSession();
@@ -5810,7 +5794,7 @@ public partial class UiService : IUiService
                 try
                 {
                     _logger.LogWarning("PerformPhysicalDrag cleanup: mouse button still down, sending button up. button={Button}", button);
-                    SendMouseInput(btnUp);
+                    SendMouseInputChecked(btnUp, $"drag-{button}-up-cleanup");
                 }
                 catch
                 {
@@ -7249,7 +7233,7 @@ public partial class UiService : IUiService
             };
         }
 
-        var items = GetListItems(list)
+        var items = GetDropdownSelectableItems(list)
             .Select(x => SafeElementName(x))
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .ToList();
@@ -7267,8 +7251,8 @@ public partial class UiService : IUiService
 
     private object? SelectHeaderDropdownItem(UiRequest req)
     {
-        if (string.IsNullOrWhiteSpace(req.Value))
-            throw new ArgumentException("value is required for selectheaderdropdownitem.");
+        if (string.IsNullOrWhiteSpace(req.Value) && !req.Index.HasValue)
+            throw new ArgumentException("value or index is required for selectheaderdropdownitem.");
 
         var resolved = ResolveElementResultForOperation(
             req,
@@ -7289,39 +7273,39 @@ public partial class UiService : IUiService
 
         var region = GridHeaderDropdownHelper.ParseRegion(req.ClickRegion);
         var itemRegion = ParseDropdownItemRegion(req.ItemRegion);
-        var list = OpenHeaderDropdownAndFindList(header, region);
-        if (list == null)
-            throw new InvalidOperationException("Header dropdown list was not found after opening.");
+        var matchMode = req.MatchMode ?? req.Locator?.MatchMode ?? "contains";
 
-        var item = GetListItems(list)
-            .FirstOrDefault(x =>
-                string.Equals(
-                    NormalizeMenuText(SafeElementName(x)),
-                    NormalizeMenuText(req.Value),
-                    StringComparison.OrdinalIgnoreCase));
+        var container = OpenHeaderDropdownAndFindContainer(header, region);
+        if (container == null)
+            throw new InvalidOperationException("Header dropdown container was not found after opening.");
 
-        if (item == null)
+        var selectableItems = GetDropdownSelectableItems(container);
+        var matched = FindDropdownSelectableItem(selectableItems, req.Value, req.Index, matchMode);
+        if (matched == null)
         {
-            var available = GetListItems(list)
-                .Select(x => SafeElementName(x))
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .ToList();
-
+            var available = BuildDropdownItemSummaries(selectableItems);
             throw new InvalidOperationException(
-                $"Dropdown item '{req.Value}' was not found. Available: {string.Join(", ", available)}");
+                $"Dropdown item '{req.Value ?? req.Index?.ToString()}' was not found. Available: {string.Join(", ", available.Select(i => i.name))}");
         }
 
-        if (!ActivateDropdownListItem(item, req.Value, itemRegion))
-            throw new InvalidOperationException($"Failed to click dropdown item '{req.Value}' with region {itemRegion}.");
+        var activation = ActivateOpenDropdownItemSoft(matched, req.Value ?? SafeElementName(matched), itemRegion);
+        var availableItems = BuildDropdownItemSummaries(selectableItems);
 
         return new
         {
-            selected = req.Value,
+            operation = "selectheaderdropdownitem",
+            success = activation.Success,
+            requested = req.Value ?? req.Index?.ToString(),
+            matchedText = activation.MatchedText,
+            activationStrategy = activation.ActivationStrategy,
+            verified = activation.Verified,
+            verificationReason = activation.VerificationReason,
             header = SafeElementName(header),
             headerRegion = region.ToString(),
             itemRegion = itemRegion.ToString(),
-            headerClickRegion = region.ToString(),
-            itemClickRegion = itemRegion.ToString()
+            container = activation.Container,
+            matchedItem = activation.MatchedItem,
+            availableItems
         };
     }
 
@@ -10419,6 +10403,27 @@ public partial class UiService : IUiService
         Keyboard.Press(key);
         Thread.Sleep(25);
         Keyboard.Release(key);
+    }
+
+    private object? SelectComboBoxNativeUia(UiRequest req)
+    {
+        if (req.Value == null && req.Index == null)
+            throw new ArgumentException("Either 'value' or 'index' is required for selectcomboboxuia.");
+
+        var session = RequireSession();
+        return _nativeUiaComboBoxService.SelectComboBoxNativeUia(
+            req,
+            GetActiveWindowHwndOrNull(session),
+            GetActiveProcessIdOrNull(session));
+    }
+
+    private object? InspectComboBoxNativeUia(UiRequest req)
+    {
+        var session = RequireSession();
+        return _nativeUiaComboBoxService.InspectComboBoxNativeUia(
+            req,
+            GetActiveWindowHwndOrNull(session),
+            GetActiveProcessIdOrNull(session));
     }
 
     private static bool ShouldTryNativeComboBoxSelect(UiRequest req)
@@ -15267,6 +15272,13 @@ public partial class UiService : IUiService
         AutomationElement header,
         HeaderDropdownRegion region)
     {
+        return OpenHeaderDropdownAndFindContainer(header, region);
+    }
+
+    private AutomationElement? OpenHeaderDropdownAndFindContainer(
+        AutomationElement header,
+        HeaderDropdownRegion region)
+    {
         BringElementWindowToForeground(header);
         Thread.Sleep(WindowActivationDelayMs);
 
@@ -15275,7 +15287,7 @@ public partial class UiService : IUiService
         if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
             throw new InvalidOperationException("Header has invalid bounding rectangle.");
 
-        AutomationElement? list = null;
+        AutomationElement? container = null;
         foreach (var (candidateRegion, point) in GridHeaderDropdownHelper.GetCandidatePoints(rect, region))
         {
             _logger.LogInformation(
@@ -15288,57 +15300,337 @@ public partial class UiService : IUiService
             SendInstantLeftClick(point, "OpenHeaderDropdown");
             Thread.Sleep(GridHeaderDropdownHelper.DropdownRetryDelayMs);
 
-            list = FindRecentlyOpenedListNearHeader(header);
-            if (list != null)
-                return list;
+            container = FindOpenDropdownContainerNear(header);
+            if (container != null)
+                return container;
         }
 
         Thread.Sleep(GridHeaderDropdownHelper.DropdownOpenDelayMs);
-        return FindRecentlyOpenedListNearHeader(header);
+        return FindOpenDropdownContainerNear(header);
     }
 
-    private AutomationElement? FindRecentlyOpenedListNearHeader(AutomationElement header)
+    private AutomationElement? FindRecentlyOpenedListNearHeader(AutomationElement header) =>
+        FindOpenDropdownContainerNear(header);
+
+    private AutomationElement? FindOpenDropdownContainerNear(AutomationElement? nearElement)
     {
         try
         {
             var session = RequireSession();
-            var headerRect = header.BoundingRectangle;
+            var nearRect = nearElement?.BoundingRectangle;
             var desktop = session.Automation.GetDesktop();
             var cf = session.Automation.ConditionFactory;
 
-            var lists = desktop.FindAllDescendants(cf.ByControlType(ControlType.List));
-
-            foreach (var list in lists)
+            var containerTypes = new[]
             {
-                try
+                ControlType.List,
+                ControlType.Menu,
+                ControlType.Pane,
+                ControlType.Window,
+                ControlType.Custom,
+                ControlType.Tree,
+                ControlType.DataGrid
+            };
+
+            AutomationElement? best = null;
+            var bestScore = int.MinValue;
+
+            foreach (var containerType in containerTypes)
+            {
+                foreach (var candidate in desktop.FindAllDescendants(cf.ByControlType(containerType)))
                 {
-                    var rect = list.BoundingRectangle;
-
-                    if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
-                        continue;
-
-                    if (GridHeaderDropdownHelper.IsListNearHeader(rect, headerRect))
+                    try
                     {
-                        _logger.LogInformation(
-                            "Found header dropdown List near header. list={List}, bounds={Bounds}",
-                            SafeElementName(list),
-                            rect);
+                        var rect = candidate.BoundingRectangle;
+                        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+                            continue;
 
-                        return list;
+                        if (nearRect.HasValue && !GridHeaderDropdownHelper.IsListNearHeader(rect, nearRect.Value))
+                            continue;
+
+                        var score = (int)rect.Width + (int)rect.Height;
+                        if (GetDropdownSelectableItems(candidate).Count == 0)
+                            score -= 1000;
+
+                        if (score > bestScore)
+                        {
+                            bestScore = score;
+                            best = candidate;
+                        }
+                    }
+                    catch
+                    {
+                        // ignore unstable popup elements
                     }
                 }
-                catch
-                {
-                    // Ignore unstable popup elements.
-                }
             }
+
+            if (best != null)
+            {
+                _logger.LogInformation(
+                    "Found open dropdown container. container={Container}, controlType={ControlType}, bounds={Bounds}",
+                    SafeElementName(best),
+                    best.ControlType,
+                    best.BoundingRectangle);
+            }
+
+            return best;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "FindRecentlyOpenedListNearHeader failed");
+            _logger.LogWarning(ex, "FindOpenDropdownContainerNear failed");
+            return null;
+        }
+    }
+
+    private static readonly ControlType[] DropdownSelectableItemTypes =
+    [
+        ControlType.ListItem,
+        ControlType.CheckBox,
+        ControlType.RadioButton,
+        ControlType.MenuItem,
+        ControlType.Text,
+        ControlType.DataItem,
+        ControlType.TreeItem,
+        ControlType.Custom,
+        ControlType.Button
+    ];
+
+    private List<AutomationElement> GetDropdownSelectableItems(AutomationElement container)
+    {
+        try
+        {
+            var cf = RequireSession().Automation.ConditionFactory;
+            var results = new List<AutomationElement>();
+
+            foreach (var itemType in DropdownSelectableItemTypes)
+            {
+                results.AddRange(container.FindAllDescendants(cf.ByControlType(itemType)));
+            }
+
+            return results
+                .Where(e =>
+                {
+                    try
+                    {
+                        return SafeIsOffscreen(e) != true;
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                })
+                .DistinctBy(SafeRuntimeIdString)
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private AutomationElement? FindDropdownSelectableItem(
+        IReadOnlyList<AutomationElement> items,
+        string? value,
+        int? index,
+        string matchMode)
+    {
+        if (index.HasValue)
+        {
+            return index.Value >= 0 && index.Value < items.Count ? items[index.Value] : null;
         }
 
-        return null;
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        return items.FirstOrDefault(item =>
+            MatchesAnyText(
+                SafeElementName(item),
+                SafeElementValue(item),
+                SafeElementText(item),
+                value,
+                matchMode));
+    }
+
+    private List<(string name, string controlType, object rectangle, object patterns)> BuildDropdownItemSummaries(
+        IReadOnlyList<AutomationElement> items)
+    {
+        return items.Select(item => (
+            name: SafeElementName(item),
+            controlType: SafeElementControlType(item),
+            rectangle: SafeBoundingRectangleObject(item),
+            patterns: (object)new
+            {
+                toggle = item.Patterns.Toggle.IsSupported,
+                selectionItem = item.Patterns.SelectionItem.IsSupported,
+                invoke = item.Patterns.Invoke.IsSupported
+            })).ToList();
+    }
+
+    private sealed record OpenDropdownActivationResult(
+        bool Success,
+        string MatchedText,
+        string ActivationStrategy,
+        bool Verified,
+        string VerificationReason,
+        object Container,
+        object MatchedItem);
+
+    private OpenDropdownActivationResult ActivateOpenDropdownItemSoft(
+        AutomationElement item,
+        string itemName,
+        DropdownItemClickRegion region)
+    {
+        var container = item.Parent ?? item;
+        var matchedSummary = new
+        {
+            name = SafeElementName(item),
+            controlType = SafeElementControlType(item),
+            rectangle = SafeBoundingRectangleObject(item)
+        };
+        var containerSummary = new
+        {
+            controlType = SafeElementControlType(container),
+            className = SafeElementClassName(container),
+            rectangle = SafeBoundingRectangleObject(container)
+        };
+
+        if (item.Patterns.Toggle.IsSupported)
+        {
+            try
+            {
+                item.Patterns.Toggle.Pattern.Toggle();
+                Thread.Sleep(DropdownItemFallbackDelayMs);
+                return new OpenDropdownActivationResult(
+                    true,
+                    itemName,
+                    "toggle-pattern",
+                    item.Patterns.Toggle.Pattern.ToggleState == ToggleState.On,
+                    "ToggleState changed",
+                    containerSummary,
+                    matchedSummary);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "ActivateOpenDropdownItemSoft toggle failed.");
+            }
+        }
+
+        if (item.Patterns.SelectionItem.IsSupported)
+        {
+            try
+            {
+                item.Patterns.SelectionItem.Pattern.Select();
+                Thread.Sleep(DropdownItemFallbackDelayMs);
+                var verified = item.Patterns.SelectionItem.Pattern.IsSelected;
+                return new OpenDropdownActivationResult(
+                    true,
+                    itemName,
+                    "selection-item-pattern",
+                    verified,
+                    verified ? "SelectionItem.IsSelected" : "SelectionItem select sent",
+                    containerSummary,
+                    matchedSummary);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "ActivateOpenDropdownItemSoft SelectionItem failed.");
+            }
+        }
+
+        if (item.Patterns.Invoke.IsSupported)
+        {
+            try
+            {
+                item.Patterns.Invoke.Pattern.Invoke();
+                Thread.Sleep(DropdownItemFallbackDelayMs);
+                return new OpenDropdownActivationResult(
+                    true,
+                    itemName,
+                    "invoke-pattern",
+                    false,
+                    "Invoke sent; UIA state not exposed",
+                    containerSummary,
+                    matchedSummary);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "ActivateOpenDropdownItemSoft Invoke failed.");
+            }
+        }
+
+        foreach (var candidateRegion in GetDropdownItemRegionOrder(region))
+        {
+            try
+            {
+                var point = GetDropdownItemClickPoint(item.BoundingRectangle, candidateRegion);
+                if (SendInstantLeftClick(point, $"SelectOpenDropdownItem {SanitizeValue(itemName)} at {candidateRegion}"))
+                {
+                    Thread.Sleep(DropdownItemPhysicalClickSettleMs);
+                    return new OpenDropdownActivationResult(
+                        true,
+                        itemName,
+                        $"physical-click-{candidateRegion.ToString().ToLowerInvariant()}",
+                        false,
+                        "physical click sent; UIA state not exposed",
+                        containerSummary,
+                        matchedSummary);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "ActivateOpenDropdownItemSoft physical click failed.");
+            }
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.SPACE);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
+            return new OpenDropdownActivationResult(
+                true,
+                itemName,
+                "focus-space",
+                false,
+                "Focus+Space sent; UIA state not exposed",
+                containerSummary,
+                matchedSummary);
+        }
+        catch
+        {
+            // continue
+        }
+
+        try
+        {
+            item.Focus();
+            Thread.Sleep(MenuFocusDelayMs);
+            Keyboard.Press(VirtualKeyShort.RETURN);
+            Thread.Sleep(DropdownItemFallbackDelayMs);
+            return new OpenDropdownActivationResult(
+                true,
+                itemName,
+                "focus-enter",
+                false,
+                "Focus+Enter sent; UIA state not exposed",
+                containerSummary,
+                matchedSummary);
+        }
+        catch
+        {
+            // continue
+        }
+
+        return new OpenDropdownActivationResult(
+            false,
+            itemName,
+            "none",
+            false,
+            "All activation strategies failed",
+            containerSummary,
+            matchedSummary);
     }
 
     private List<AutomationElement> GetListItems(AutomationElement list)
