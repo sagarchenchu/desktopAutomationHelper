@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using DesktopAutomationDriver.Middleware;
 using DesktopAutomationDriver.Services;
+using DesktopAutomationDriver.Services.NativeUia;
 using WinForms = System.Windows.Forms.Application;
 
 WinForms.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
@@ -44,6 +45,7 @@ builder.Services.AddSingleton<IAutomationService, AutomationService>();
 builder.Services.AddSingleton<IRecordingService, RecordingService>();
 builder.Services.AddSingleton<IPlaybackService, PlaybackService>();
 builder.Services.AddSingleton<IUiSessionContext, UiSessionContext>();
+builder.Services.AddSingleton<INativeUiaComboBoxService, NativeUiaComboBoxService>();
 builder.Services.AddSingleton<IUiService, UiService>();
 
 builder.Logging.AddConsole();
