@@ -221,5 +221,6 @@ internal static class NativeUiaInput
         public const ushort F4 = 0x73;
         public const ushort Menu = 0x12;
         public const ushort Next = 0x22;
+        public const ushort Escape = 0x1B;
     }
 }

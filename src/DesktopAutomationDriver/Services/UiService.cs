@@ -334,7 +334,7 @@ public partial class UiService : IUiService
                 "scrollintoview"   => ScrollTargetIntoView(request, cancellationToken),
                 "check"            => Check(request),
                 "uncheck"          => Uncheck(request),
-                "select"           => Select(request),
+                "select"           => Select(request, cancellationToken),
                 "selectaid"        => SelectByAid(request),
                 "typeandselect"    => TypeAndSelect(request),
                 "clickgridcell"    => ClickGridCell(request),
@@ -347,7 +347,8 @@ public partial class UiService : IUiService
                 "selectdynamicmenuitem" => SelectDynamicMenuItem(request),
                 "selectdynamicmenupath" => SelectDynamicMenuPath(request),
                 // Backward-compatible alias – the canonical operation is "select".
-                "selectcomboboxitem" => Select(request),
+                "selectcomboboxitem" => Select(request, cancellationToken),
+                "inspectcombobox" => InspectComboBox(request, cancellationToken),
                 "draganddrop"     => DragAndDrop(request),
                 "dragbyoffset"    => DragByOffset(request),
                 "dragcoordinates" => DragCoordinates(request),
@@ -4305,7 +4306,7 @@ public partial class UiService : IUiService
         return null;
     }
 
-    private object? Select(UiRequest req)
+    private object? Select(UiRequest req, CancellationToken cancellationToken = default)
     {
         if (req.Value == null && req.Index == null)
             throw new ArgumentException("Either 'value' (item name) or 'index' is required for 'select'.");
@@ -4317,31 +4318,14 @@ public partial class UiService : IUiService
                 "selectcomboboxitem is deprecated alias. Routing through canonical select pipeline.");
         }
 
-        if (ShouldTryNativeComboBoxSelect(req))
+        if (IsComboBoxSelectRequest(req))
         {
-            try
-            {
-                var nativeSession = RequireSession();
-                var nativeResult = _nativeUiaComboBoxService.SelectComboBox(
-                    req,
-                    GetActiveWindowHwndOrNull(nativeSession),
-                    GetActiveProcessIdOrNull(nativeSession));
-
-                _logger.LogInformation(
-                    "ComboBox selected via native UIA service. operation={Operation}, value={Value}, index={Index}",
-                    SanitizeValue(req.Operation),
-                    SanitizeValue(req.Value),
-                    req.Index);
-
-                return nativeResult;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Native UIA ComboBox select failed; falling back to FlaUI pipeline.");
-
-                if (req.Value?.Contains("__native_only__", StringComparison.Ordinal) == true)
-                    throw;
-            }
+            var nativeSession = RequireSession();
+            return _nativeUiaComboBoxService.SelectComboBox(
+                req,
+                GetActiveWindowHwndOrNull(nativeSession),
+                GetActiveProcessIdOrNull(nativeSession),
+                cancellationToken);
         }
 
         var session = RequireSession();
@@ -4355,24 +4339,17 @@ public partial class UiService : IUiService
         if (IsComboBoxElement(element))
         {
             _logger.LogInformation(
-                "Select operation resolved ComboBox. Routing to ComboBox pipeline. operation={Operation}, value={Value}, index={Index}, comboBox={ComboBox}",
+                "Select resolved ComboBox element. Routing to native UIA-only pipeline. operation={Operation}, value={Value}, index={Index}, comboBox={ComboBox}",
                 SanitizeValue(req.Operation),
                 SanitizeValue(req.Value),
                 req.Index,
                 SafeElementName(element));
 
-            if (!string.IsNullOrWhiteSpace(req.Value))
-            {
-                var itemName = System.Net.WebUtility.HtmlDecode(req.Value).Trim();
-                return SelectComboBoxByValue(session, element, itemName, req);
-            }
-
-            if (req.Index.HasValue)
-            {
-                return SelectComboBoxByIndex(session, element, req.Index.Value, req);
-            }
-
-            throw new ArgumentException("'select' on ComboBox requires either 'value' or 'index'.");
+            return _nativeUiaComboBoxService.SelectComboBox(
+                req,
+                GetActiveWindowHwndOrNull(session),
+                GetActiveProcessIdOrNull(session),
+                cancellationToken);
         }
 
         var cf = session.Automation.ConditionFactory;
@@ -7425,9 +7402,9 @@ public partial class UiService : IUiService
     /// Delegates directly to <see cref="Select"/> so both code paths share
     /// the identical ComboBox selection pipeline.
     /// </summary>
-    private object? SelectComboBoxItem(UiRequest req)
+    private object? SelectComboBoxItem(UiRequest req, CancellationToken cancellationToken = default)
     {
-        return Select(req);
+        return Select(req, cancellationToken);
     }
 
     /// <summary>
@@ -10421,19 +10398,24 @@ public partial class UiService : IUiService
         Keyboard.Release(key);
     }
 
-    private static bool ShouldTryNativeComboBoxSelect(UiRequest req)
+    private object? InspectComboBox(UiRequest req, CancellationToken cancellationToken = default)
+    {
+        var session = RequireSession();
+        return _nativeUiaComboBoxService.InspectComboBox(
+            req,
+            GetActiveWindowHwndOrNull(session),
+            GetActiveProcessIdOrNull(session),
+            cancellationToken);
+    }
+
+    private static bool IsComboBoxSelectRequest(UiRequest req)
     {
         var controlType = req.Locator?.ControlType;
         if (string.IsNullOrWhiteSpace(controlType))
-            return true;
+            return false;
 
-        if (string.Equals(controlType, "ComboBox", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        if (string.Equals(controlType, "Edit", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        return false;
+        return string.Equals(controlType, "ComboBox", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(controlType, "Edit", StringComparison.OrdinalIgnoreCase);
     }
 
     private static IntPtr? GetActiveWindowHwndOrNull(AutomationSession session)
