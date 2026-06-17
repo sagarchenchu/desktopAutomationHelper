@@ -1401,128 +1401,46 @@ public partial class UiService
     private object? SelectOpenDropdownItem(UiRequest req)
     {
         var matchValue = req.Value ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(matchValue))
-            throw new ArgumentException("'value' is required for selectopendropdownitem.");
+        if (string.IsNullOrWhiteSpace(matchValue) && !req.Index.HasValue)
+            throw new ArgumentException("'value' or 'index' is required for selectopendropdownitem.");
 
-        var session = RequireSession();
         var matchMode = req.Locator?.MatchMode ?? req.MatchMode ?? "contains";
         var itemRegion = ParseDropdownItemRegion(req.ItemRegion);
         var timeoutMs = req.TimeoutMs ?? 5000;
         var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
 
-        var roots = new List<(AutomationElement Element, string Name)>();
-        try
-        {
-            var activePopup = GetActivePopupRoot(session);
-            if (activePopup != null) roots.Add((activePopup, "activePopup"));
-        }
-        catch { }
-        try
-        {
-            var foreground = GetForegroundWindowElement(session.Automation);
-            if (foreground != null) roots.Add((foreground, "foreground"));
-        }
-        catch { }
-        try
-        {
-            var desktop = session.Automation.GetDesktop();
-            if (desktop != null) roots.Add((desktop, "desktop"));
-        }
-        catch { }
-
-        var treeViews = new[] { "raw", "control", "content" };
-
-        var itemControlTypes = new[]
-        {
-            ControlType.ListItem,
-            ControlType.CheckBox,
-            ControlType.RadioButton,
-            ControlType.MenuItem,
-            ControlType.Text,
-            ControlType.DataItem,
-            ControlType.TreeItem,
-            ControlType.Custom,
-            ControlType.Button
-        };
-
         do
         {
-            foreach (var (root, rootName) in roots)
+            var container = FindOpenDropdownContainerNear(null);
+            if (container != null)
             {
-                foreach (var tv in treeViews)
+                var items = GetDropdownSelectableItems(container);
+                var matched = FindDropdownSelectableItem(items, matchValue, req.Index, matchMode);
+                if (matched != null)
                 {
-                    var stepRequest = new UiRequest { Operation = req.Operation, TreeView = tv };
-                    var collected = _newResolver.CollectCandidates(root, new UiLocator(), stepRequest, session);
+                    var activation = ActivateOpenDropdownItemSoft(
+                        matched,
+                        matchValue,
+                        itemRegion);
 
-                    foreach (var c in collected)
+                    return new
                     {
-                        try
-                        {
-                            var ct = c.ControlType;
-                            if (!itemControlTypes.Contains(ct)) continue;
-                            if (SafeIsOffscreen(c) == true) continue;
-
-                            var name = SafeElementName(c);
-                            var value = SafeElementValue(c);
-                            var text = SafeElementText(c);
-
-                            if (MatchesAnyText(name, value, text, matchValue, matchMode))
-                            {
-                                string activationStrategy = "unknown";
-                                bool verified = false;
-                                string verificationReason = string.Empty;
-
-                                // Selection activation behavior:
-                                if (c.Patterns.Toggle.IsSupported)
-                                {
-                                    c.Patterns.Toggle.Pattern.Toggle();
-                                    activationStrategy = "toggle-pattern";
-                                    verified = true;
-                                }
-                                else if (c.Patterns.SelectionItem.IsSupported)
-                                {
-                                    c.Patterns.SelectionItem.Pattern.Select();
-                                    activationStrategy = "selection-item-pattern";
-                                    verified = true;
-                                }
-                                else if (c.Patterns.Invoke.IsSupported)
-                                {
-                                    c.Patterns.Invoke.Pattern.Invoke();
-                                    activationStrategy = "invoke-pattern";
-                                    verified = true;
-                                }
-                                else
-                                {
-                                    // Soft physical click
-                                    TryPhysicalClick(c, "selectopendropdownitem");
-                                    activationStrategy = $"physical-click-{itemRegion}";
-                                    verified = false;
-                                    verificationReason = "click sent; dropdown item does not expose selection/toggle pattern";
-                                }
-
-                                return new
-                                {
-                                    success = true,
-                                    activationStrategy,
-                                    verified,
-                                    verificationReason,
-                                    item = new
-                                    {
-                                        name,
-                                        controlType = SafeElementControlType(c),
-                                        rectangle = SafeBoundingRectangleObject(c)
-                                    }
-                                };
-                            }
-                        }
-                        catch { }
-                    }
+                        operation = req.Operation,
+                        success = activation.Success,
+                        requested = matchValue,
+                        matchedText = activation.MatchedText,
+                        activationStrategy = activation.ActivationStrategy,
+                        verified = activation.Verified,
+                        verificationReason = activation.VerificationReason,
+                        container = activation.Container,
+                        matchedItem = activation.MatchedItem,
+                        availableItems = BuildDropdownItemSummaries(items)
+                    };
                 }
             }
 
             if (DateTime.UtcNow < deadline)
                 Thread.Sleep(100);
-
         } while (DateTime.UtcNow < deadline);
 
         throw new InvalidOperationException(
@@ -1531,119 +1449,53 @@ public partial class UiService
     }
 
     /// <summary>
-    /// Lists visible popup/dropdown items from the desktop using broad control types.
+    /// Lists visible popup/dropdown items from open dropdown containers.
     /// </summary>
     private object? ListOpenDropdownItems(UiRequest req)
     {
-        var session = RequireSession();
         var limit = req.Limit ?? req.MaxMatches ?? 50;
+        var container = FindOpenDropdownContainerNear(null);
 
-        var roots = new List<(AutomationElement Element, string Name)>();
-        try
+        if (container == null)
         {
-            var activePopup = GetActivePopupRoot(session);
-            if (activePopup != null) roots.Add((activePopup, "activePopup"));
-        }
-        catch { }
-        try
-        {
-            var foreground = GetForegroundWindowElement(session.Automation);
-            if (foreground != null) roots.Add((foreground, "foreground"));
-        }
-        catch { }
-        try
-        {
-            var desktop = session.Automation.GetDesktop();
-            if (desktop != null) roots.Add((desktop, "desktop"));
-        }
-        catch { }
-
-        var treeViews = new[] { "raw", "control", "content" };
-
-        var itemControlTypes = new[]
-        {
-            ControlType.ListItem,
-            ControlType.CheckBox,
-            ControlType.RadioButton,
-            ControlType.MenuItem,
-            ControlType.Text,
-            ControlType.DataItem,
-            ControlType.TreeItem,
-            ControlType.Custom,
-            ControlType.Button
-        };
-
-        var items = new List<object>();
-        var seenRuntimeIds = new HashSet<string>();
-
-        foreach (var (root, rootName) in roots)
-        {
-            foreach (var tv in treeViews)
+            return new
             {
-                var stepRequest = new UiRequest { Operation = req.Operation, TreeView = tv };
-                var collected = _newResolver.CollectCandidates(root, new UiLocator(), stepRequest, session);
-
-                foreach (var c in collected)
-                    {
-                    try
-                    {
-                        var ct = c.ControlType;
-                        if (!itemControlTypes.Contains(ct)) continue;
-                        if (SafeIsOffscreen(c) == true) continue;
-
-                        var rtId = SafeRuntimeIdString(c);
-                        if (!string.IsNullOrEmpty(rtId) && seenRuntimeIds.Contains(rtId)) continue;
-                        if (!string.IsNullOrEmpty(rtId)) seenRuntimeIds.Add(rtId);
-
-                        bool toggle = c.Patterns.Toggle.IsSupported;
-                        bool selectionItem = c.Patterns.SelectionItem.IsSupported;
-                        bool invoke = c.Patterns.Invoke.IsSupported;
-
-                        items.Add(new
-                        {
-                            index = items.Count,
-                            name = SafeElementName(c),
-                            value = SafeElementValue(c),
-                            text = SafeElementText(c),
-                            controlType = SafeElementControlType(c),
-                            automationId = SafeElementAutomationId(c),
-                            className = SafeElementClassName(c),
-                            rectangle = SafeBoundingRectangleObject(c),
-                            patterns = new
-                            {
-                                toggle = toggle,
-                                selectionItem = selectionItem,
-                                invoke = invoke
-                            }
-                        });
-
-                        if (items.Count >= limit) break;
-                    }
-                    catch { }
-                }
-
-                if (items.Count > 0)
-                {
-                    return new
-                    {
-                        found = true,
-                        container = new
-                        {
-                            name = SafeElementName(root),
-                            controlType = SafeElementControlType(root),
-                            className = SafeElementClassName(root),
-                            rectangle = SafeBoundingRectangleObject(root)
-                        },
-                        items
-                    };
-                }
-            }
+                found = false,
+                items = new List<object>()
+            };
         }
+
+        var items = GetDropdownSelectableItems(container)
+            .Take(limit)
+            .Select((item, index) => (object)new
+            {
+                index,
+                name = SafeElementName(item),
+                value = SafeElementValue(item),
+                text = SafeElementText(item),
+                controlType = SafeElementControlType(item),
+                automationId = SafeElementAutomationId(item),
+                className = SafeElementClassName(item),
+                rectangle = SafeBoundingRectangleObject(item),
+                patterns = new
+                {
+                    toggle = item.Patterns.Toggle.IsSupported,
+                    selectionItem = item.Patterns.SelectionItem.IsSupported,
+                    invoke = item.Patterns.Invoke.IsSupported
+                }
+            })
+            .ToList();
 
         return new
         {
-            found = false,
-            items = new List<object>()
+            found = items.Count > 0,
+            container = new
+            {
+                controlType = SafeElementControlType(container),
+                className = SafeElementClassName(container),
+                rectangle = SafeBoundingRectangleObject(container)
+            },
+            items
         };
     }
 
