@@ -1,4 +1,5 @@
 using DesktopAutomationDriver.Models.Request;
+using DesktopAutomationDriver.Services;
 using DesktopAutomationDriver.Services.NativeUia;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -42,17 +43,27 @@ public class ComboBoxNativeUiaOnlyRoutingTests
             .Returns(new { success = false, stage = "combo-not-found" });
 
         var ctxMock = new Mock<IUiSessionContext>();
+        ctxMock.Setup(c => c.ActiveSession).Returns((AutomationSession?)null);
         var service = new UiService(ctxMock.Object, NullLogger<UiService>.Instance, nativeMock.Object);
 
-        var ex = Assert.Throws<InvalidOperationException>(() => service.Execute(new UiRequest
+        var request = new UiRequest
         {
             Operation = "select",
             Locator = new UiLocator { Name = "Operar", ControlType = "ComboBox" },
             Value = "equals",
             TimeoutMs = 8000
-        }));
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => service.Execute(request));
 
         Assert.Contains("No active session", ex.Message);
+        nativeMock.Verify(
+            s => s.SelectComboBox(
+                It.IsAny<UiRequest>(),
+                It.IsAny<IntPtr?>(),
+                It.IsAny<int?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 }
 
