@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Net;
 using DesktopAutomationDriver.Models.Request;
@@ -6,42 +7,22 @@ using Interop.UIAutomationClient;
 namespace DesktopAutomationDriver.Services.NativeUia;
 
 /// <summary>
-/// pywinauto-style native UIA ComboBox selection engine (no FlaUI).
+/// pywinauto-style native UIA-only ComboBox selection. Bounded by request timeoutMs.
 /// </summary>
 internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
 {
     private const int ComboBoxControlTypeId = 50003;
-    private const int EditControlTypeId = 50004;
-    private const int ExpandDelayMs = 250;
-    private const int ActionDelayMs = 150;
-    private const int PagedSearchMaxPages = 300;
-    private const int PagedSearchVisibleLimit = 20;
-    private const int DefaultTimeoutMs = 20000;
-
-    private static readonly int[] ItemControlTypeIds =
-    [
-        50007, // ListItem
-        50010, // MenuItem
-        50020, // Text
-        50029, // DataItem
-        50025, // TreeItem
-        50002, // CheckBox
-        50013  // RadioButton
-    ];
-
-    private static readonly int[] ContainerControlTypeIds =
-    [
-        50008, // List
-        50009, // Menu
-        50024, // Tree
-        50033, // Pane
-        50032, // Window
-        50028, // DataGrid
-        50003  // ComboBox
-    ];
+    private const int ButtonControlTypeId = 50000;
+    private const int DefaultTimeoutMs = 8000;
+    private const int MaxTimeoutMs = 15000;
+    private const int ExpandDelayMs = 120;
+    private const int ActionDelayMs = 80;
+    private const int MaxBoundedScrollPages = 6;
 
     private readonly NativeUiaAutomation _uia;
-    private readonly NativeUiaElementFinder _finder;
+    private readonly NativeUiaElementResolver _resolver;
+    private readonly NativeUiaDropdownFinder _dropdownFinder;
+    private readonly NativeUiaTextReader _textReader;
     private readonly ILogger<NativeUiaComboBoxService> _logger;
 
     public NativeUiaComboBoxService(ILogger<NativeUiaComboBoxService> logger)
@@ -52,275 +33,344 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
     internal NativeUiaComboBoxService(NativeUiaAutomation uia, ILogger<NativeUiaComboBoxService> logger)
     {
         _uia = uia;
-        _finder = new NativeUiaElementFinder(_uia);
+        _textReader = new NativeUiaTextReader(_uia);
+        _resolver = new NativeUiaElementResolver(_uia);
+        _dropdownFinder = new NativeUiaDropdownFinder(_uia, _textReader);
         _logger = logger;
     }
 
-    public object SelectComboBox(UiRequest request, IntPtr? activeWindowHwnd, int? processId)
-    {
-        var operation = string.IsNullOrWhiteSpace(request.Operation) ? "select" : request.Operation;
-        var timeoutMs = request.TimeoutMs ?? DefaultTimeoutMs;
-        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-        var attempts = new List<object>();
-
-        var requestedValue = request.Index.HasValue && string.IsNullOrWhiteSpace(request.Value)
-            ? null
-            : WebUtility.HtmlDecode(request.Value ?? string.Empty).Trim();
-
-        var combo = ResolveComboBox(request, activeWindowHwnd, processId);
-        if (combo == null)
-            throw new InvalidOperationException("Native UIA ComboBox resolver could not find a ComboBox for the locator.");
-
-        var comboSnapshot = _uia.CreateSnapshot(combo);
-        var beforeValue = GetComboBoxCurrentValue(combo);
-
-        IUIAutomationElement? matchedItem = null;
-        string? strategy = null;
-
-        if (request.Index.HasValue && string.IsNullOrWhiteSpace(requestedValue))
-        {
-            matchedItem = SelectByIndex(combo, request.Index.Value, attempts, out strategy);
-            requestedValue = matchedItem == null ? $"index:{request.Index.Value}" : _uia.GetElementText(matchedItem);
-        }
-        else
-        {
-            if (string.IsNullOrWhiteSpace(requestedValue))
-                throw new ArgumentException("Either 'value' or 'index' is required for ComboBox select.");
-
-            if (!ExpandComboBox(combo, attempts))
-            {
-                _logger.LogWarning(
-                    "Native UIA ComboBox expand did not report success; continuing with item search.");
-            }
-
-            Thread.Sleep(ExpandDelayMs);
-
-            matchedItem = FindDropdownItem(
-                combo,
-                activeWindowHwnd,
-                processId,
-                requestedValue,
-                request,
-                attempts,
-                deadline);
-
-            if (matchedItem != null)
-            {
-                strategy = ActivateItem(combo, matchedItem, attempts, out _);
-            }
-
-            if (matchedItem == null || strategy == null)
-            {
-                if (request.AllowKeyboardFallback == true
-                    && DateTime.UtcNow < deadline
-                    && TryKeyboardTypeahead(combo, requestedValue, attempts))
-                {
-                    strategy = "native-uia-keyboard-typeahead";
-                }
-                else if (DateTime.UtcNow < deadline
-                         && TryPagedVisibleSearch(
-                             combo,
-                             activeWindowHwnd,
-                             processId,
-                             requestedValue,
-                             request,
-                             attempts,
-                             deadline,
-                             out matchedItem,
-                             out var pagedStrategy))
-                {
-                    strategy = pagedStrategy;
-                }
-            }
-        }
-
-        var actual = GetComboBoxCurrentValue(combo);
-        var verified = !string.IsNullOrWhiteSpace(requestedValue)
-                       && NativeUiaText.ValuesEquivalent(actual, requestedValue);
-
-        if (request.Index.HasValue && string.IsNullOrWhiteSpace(request.Value))
-            verified = matchedItem != null;
-
-        var success = verified || (!string.IsNullOrWhiteSpace(strategy) && matchedItem != null);
-
-        var response = new Dictionary<string, object?>
-        {
-            ["operation"] = operation,
-            ["success"] = success,
-            ["strategy"] = strategy ?? "native-uia-unverified",
-            ["requested"] = requestedValue,
-            ["actual"] = actual,
-            ["verified"] = verified,
-            ["comboBox"] = comboSnapshot.ToDiagnosticObject(),
-            ["item"] = matchedItem == null ? null : _uia.CreateSnapshot(matchedItem).ToDiagnosticObject(),
-            ["attempts"] = attempts,
-            ["dropdown"] = new
-            {
-                beforeValue,
-                afterValue = actual,
-                expanded = IsExpanded(combo)
-            }
-        };
-
-        if (!success)
-        {
-            response["visibleItems"] = CollectVisibleItemTexts(combo, activeWindowHwnd, processId, request, 50);
-            response["dropdownCandidates"] = attempts
-                .Where(a => a is Dictionary<string, object?> d && d.ContainsKey("candidate"))
-                .Take(25)
-                .ToList();
-        }
-
-        if (!success)
-        {
-            throw new InvalidOperationException(
-                $"Native UIA ComboBox selection failed. requested='{requestedValue}', actual='{actual}'.");
-        }
-
-        return response;
-    }
-
-    private IUIAutomationElement? ResolveComboBox(
+    public object SelectComboBox(
         UiRequest request,
         IntPtr? activeWindowHwnd,
-        int? processId)
+        int? processId,
+        CancellationToken cancellationToken = default)
     {
-        var locator = ToNativeLocator(request, processId);
-        var searchRoots = BuildSearchRoots(activeWindowHwnd, processId);
+        var sw = Stopwatch.StartNew();
+        var operation = string.IsNullOrWhiteSpace(request.Operation) ? "select" : request.Operation;
+        var timeoutMs = ResolveTimeoutMs(request.TimeoutMs);
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
 
-        foreach (var root in searchRoots)
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureWithinDeadline(deadline, cancellationToken, sw, operation, stage: "start");
+
+        var resolveResult = _resolver.ResolveComboBox(request, activeWindowHwnd, processId, cancellationToken);
+        if (resolveResult.Element == null)
         {
-            var found = _finder.FindFirst(root, locator.AsComboBoxLocator());
-            if (found != null)
-                return found;
+            return BuildFailure(
+                operation,
+                request,
+                resolveResult.Stage ?? "combo-not-found",
+                resolveResult.LastError ?? "ComboBox not found.",
+                sw.ElapsedMilliseconds,
+                resolveResult.Candidates);
+        }
 
-            if (!string.IsNullOrWhiteSpace(locator.AutomationId) || !string.IsNullOrWhiteSpace(locator.Name))
+        if (resolveResult.IsAmbiguous)
+        {
+            return BuildFailure(
+                operation,
+                request,
+                "ambiguous-combobox",
+                resolveResult.LastError ?? "Multiple ComboBoxes matched.",
+                sw.ElapsedMilliseconds,
+                resolveResult.Candidates);
+        }
+
+        var combo = resolveResult.Element;
+        var comboSnapshot = _uia.CreateSnapshot(combo);
+        string? expandedBy = null;
+        string? selectionStrategy = null;
+        IUIAutomationElement? matchedItem = null;
+        var beforeValue = _textReader.ReadComboBoxValue(combo);
+
+        try
+        {
+            if (!_uia.GetBoolProperty(combo, UIA_PropertyIds.UIA_IsEnabledPropertyId, true))
             {
-                var relaxedFound = _finder.FindFirst(root, locator.WithoutControlType());
-                var ancestor = relaxedFound == null ? null : PromoteToComboBox(relaxedFound);
-                if (ancestor != null)
-                    return ancestor;
+                return BuildFailure(
+                    operation,
+                    request,
+                    "combo-disabled",
+                    "ComboBox is disabled.",
+                    sw.ElapsedMilliseconds,
+                    comboSnapshot: comboSnapshot);
+            }
+
+            var requestedValue = request.Index.HasValue && string.IsNullOrWhiteSpace(request.Value)
+                ? null
+                : WebUtility.HtmlDecode(request.Value ?? string.Empty).Trim();
+
+            if (request.Index.HasValue && string.IsNullOrWhiteSpace(requestedValue))
+            {
+                expandedBy = ExpandComboBox(combo, cancellationToken, deadline);
+                Thread.Sleep(ExpandDelayMs);
+                matchedItem = SelectByIndex(combo, activeWindowHwnd, processId, request.Index.Value, cancellationToken, deadline);
+                requestedValue = matchedItem == null ? $"index:{request.Index.Value}" : _textReader.ReadElementText(matchedItem);
+                selectionStrategy = matchedItem == null ? null : "index-select";
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(requestedValue))
+                    throw new ArgumentException("Either 'value' or 'index' is required for ComboBox select.");
+
+                if (TrySetEditableValue(combo, requestedValue, cancellationToken, deadline, out selectionStrategy))
+                {
+                    var directActual = _textReader.ReadComboBoxValue(combo);
+                    if (NativeUiaText.ValuesEquivalent(directActual, requestedValue))
+                    {
+                        return BuildSuccess(
+                            operation,
+                            requestedValue,
+                            directActual,
+                            verified: true,
+                            selectionStrategy ?? "valuepattern-setvalue",
+                            expandedBy: "ValuePattern.SetValue",
+                            comboSnapshot,
+                            matchedItemSnapshot: null,
+                            sw.ElapsedMilliseconds);
+                    }
+                }
+
+                expandedBy = ExpandComboBox(combo, cancellationToken, deadline);
+                Thread.Sleep(ExpandDelayMs);
+
+                matchedItem = FindDropdownItem(
+                    combo,
+                    activeWindowHwnd,
+                    processId,
+                    requestedValue,
+                    request,
+                    cancellationToken,
+                    deadline);
+
+                if (matchedItem != null)
+                    selectionStrategy = ActivateItem(combo, matchedItem, cancellationToken, deadline);
+
+                if ((matchedItem == null || selectionStrategy == null)
+                    && request.AllowKeyboardFallback == true
+                    && DateTime.UtcNow < deadline)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (TryKeyboardTypeahead(combo, requestedValue, cancellationToken, deadline))
+                        selectionStrategy = "keyboard-typeahead";
+                }
+
+                if (matchedItem == null
+                    && DateTime.UtcNow < deadline
+                    && TryBoundedScrollSearch(
+                        combo,
+                        activeWindowHwnd,
+                        processId,
+                        requestedValue,
+                        request,
+                        cancellationToken,
+                        deadline,
+                        out matchedItem,
+                        out selectionStrategy))
+                {
+                    // bounded scroll found item
+                }
+            }
+
+            EnsureWithinDeadline(deadline, cancellationToken, sw, operation, stage: "verify");
+
+            var actual = _textReader.ReadComboBoxValue(combo);
+            var requested = requestedValue ?? request.Value;
+            var verified = !string.IsNullOrWhiteSpace(requested)
+                           && NativeUiaText.ValuesEquivalent(actual, requested);
+            if (request.Index.HasValue && string.IsNullOrWhiteSpace(request.Value))
+                verified = matchedItem != null;
+
+            if (verified || !string.IsNullOrWhiteSpace(selectionStrategy))
+            {
+                return BuildSuccess(
+                    operation,
+                    requested,
+                    actual,
+                    verified,
+                    selectionStrategy ?? "native-uia-unverified",
+                    expandedBy,
+                    comboSnapshot,
+                    matchedItem == null ? null : _uia.CreateSnapshot(matchedItem),
+                    sw.ElapsedMilliseconds);
+            }
+
+            var candidates = _dropdownFinder.CollectVisibleItemTexts(
+                combo, activeWindowHwnd, processId, cancellationToken, deadline, 50)
+                .Cast<object>()
+                .ToList();
+
+            return BuildFailure(
+                operation,
+                request,
+                "item-not-found",
+                $"ComboBox item '{requested}' not found.",
+                sw.ElapsedMilliseconds,
+                candidates,
+                comboSnapshot,
+                expandedBy);
+        }
+        finally
+        {
+            CollapseComboBox(combo);
+        }
+    }
+
+    public object InspectComboBox(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default)
+    {
+        var timeoutMs = ResolveTimeoutMs(request.TimeoutMs);
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var resolveResult = _resolver.ResolveComboBox(request, activeWindowHwnd, processId, cancellationToken);
+        if (resolveResult.Element == null)
+        {
+            return new
+            {
+                operation = "inspectcombobox",
+                found = false,
+                stage = resolveResult.Stage,
+                error = resolveResult.LastError,
+                candidates = resolveResult.Candidates
+            };
+        }
+
+        var combo = resolveResult.Element;
+        var snapshot = _uia.CreateSnapshot(combo);
+        var expandedBy = ExpandComboBox(combo, cancellationToken, deadline);
+        Thread.Sleep(ExpandDelayMs);
+
+        try
+        {
+            var itemsPreview = _dropdownFinder.BuildItemsPreview(
+                combo, activeWindowHwnd, processId, cancellationToken, deadline, 50);
+
+            return new
+            {
+                operation = "inspectcombobox",
+                found = true,
+                ambiguous = resolveResult.IsAmbiguous,
+                comboBox = new
+                {
+                    name = snapshot.Name,
+                    automationId = snapshot.AutomationId,
+                    className = snapshot.ClassName,
+                    frameworkId = snapshot.FrameworkId,
+                    rectangle = NativeUiaDiagnostics.ToRectangleObject(snapshot.BoundingRectangle),
+                    isEnabled = snapshot.IsEnabled,
+                    isOffscreen = snapshot.IsOffscreen,
+                    expandCollapseSupported = snapshot.SupportedPatterns.Contains("ExpandCollapse"),
+                    valuePatternSupported = snapshot.SupportedPatterns.Contains("Value"),
+                    currentValue = _textReader.ReadComboBoxValue(combo),
+                    expandState = GetExpandState(combo)
+                },
+                expandedBy,
+                itemsPreview,
+                candidates = resolveResult.Candidates
+            };
+        }
+        finally
+        {
+            CollapseComboBox(combo);
+        }
+    }
+
+    private static int ResolveTimeoutMs(int? requestTimeoutMs)
+    {
+        var timeout = requestTimeoutMs ?? DefaultTimeoutMs;
+        return Math.Clamp(timeout, 500, MaxTimeoutMs);
+    }
+
+    private static void EnsureWithinDeadline(
+        DateTime deadline,
+        CancellationToken cancellationToken,
+        Stopwatch sw,
+        string operation,
+        string stage)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (DateTime.UtcNow > deadline)
+        {
+            throw new TimeoutException(
+                $"ComboBox {operation} timed out during {stage} after {sw.ElapsedMilliseconds} ms.");
+        }
+    }
+
+    private bool TrySetEditableValue(
+        IUIAutomationElement combo,
+        string requestedValue,
+        CancellationToken cancellationToken,
+        DateTime deadline,
+        out string? strategy)
+    {
+        strategy = null;
+        cancellationToken.ThrowIfCancellationRequested();
+        if (DateTime.UtcNow >= deadline)
+            return false;
+
+        try
+        {
+            if (combo.GetCurrentPattern(UIA_PatternIds.UIA_ValuePatternId) is IUIAutomationValuePattern valuePattern
+                && valuePattern.CurrentIsReadOnly == 0)
+            {
+                valuePattern.SetValue(requestedValue);
+                Thread.Sleep(ActionDelayMs);
+                strategy = "valuepattern-setvalue";
+                return true;
+            }
+
+            var innerEdit = _uia.FindFirstDescendant(
+                combo,
+                _uia.PropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, 50004));
+            if (innerEdit?.GetCurrentPattern(UIA_PatternIds.UIA_ValuePatternId) is IUIAutomationValuePattern editValue
+                && editValue.CurrentIsReadOnly == 0)
+            {
+                editValue.SetValue(requestedValue);
+                Thread.Sleep(ActionDelayMs);
+                strategy = "edit-valuepattern-setvalue";
+                return true;
             }
         }
-
-        return null;
-    }
-
-    private IUIAutomationElement? PromoteToComboBox(IUIAutomationElement element)
-    {
-        var controlType = _uia.GetIntProperty(element, UIA_PropertyIds.UIA_ControlTypePropertyId);
-        if (controlType == ComboBoxControlTypeId)
-            return element;
-
-        if (controlType == EditControlTypeId)
+        catch (Exception ex)
         {
-            return _uia.WalkAncestor(
-                element,
-                e => _uia.GetIntProperty(e, UIA_PropertyIds.UIA_ControlTypePropertyId) == ComboBoxControlTypeId);
+            _logger.LogDebug(ex, "TrySetEditableValue failed.");
         }
 
-        return null;
+        return false;
     }
 
-    private List<IUIAutomationElement> BuildSearchRoots(IntPtr? activeWindowHwnd, int? processId)
+    private string ExpandComboBox(IUIAutomationElement combo, CancellationToken cancellationToken, DateTime deadline)
     {
-        var roots = new List<IUIAutomationElement>();
+        cancellationToken.ThrowIfCancellationRequested();
 
-        if (activeWindowHwnd is > 0)
-        {
-            var activeRoot = _uia.FromHandle(activeWindowHwnd.Value);
-            if (activeRoot != null)
-                roots.Add(activeRoot);
-        }
-
-        var foreground = NativeUiaInput.ForegroundWindowHandle();
-        if (foreground != IntPtr.Zero)
-        {
-            var fgRoot = _uia.FromHandle(foreground);
-            if (fgRoot != null && !roots.Any(r => SameElement(r, fgRoot)))
-                roots.Add(fgRoot);
-        }
-
-        roots.Add(_uia.Root);
-        return roots;
-    }
-
-    private static NativeUiaLocator ToNativeLocator(UiRequest request, int? processId)
-    {
-        return new NativeUiaLocator
-        {
-            Name = request.Locator?.Name,
-            AutomationId = request.Locator?.AutomationId,
-            ClassName = request.Locator?.ClassName ?? request.ClassName,
-            ControlType = request.Locator?.ControlType,
-            Value = null,
-            Hwnd = request.Hwnd ?? request.Locator?.Hwnd,
-            ProcessId = request.ProcessId ?? request.Locator?.ProcessId ?? processId,
-            FoundIndex = request.FoundIndex,
-            MatchMode = string.IsNullOrWhiteSpace(request.MatchMode) ? "exact" : request.MatchMode!
-        };
-    }
-
-    private string GetComboBoxCurrentValue(IUIAutomationElement combo)
-    {
-        var valuePattern = _uia.GetValuePatternText(combo);
-        if (!string.IsNullOrWhiteSpace(valuePattern))
-            return valuePattern;
-
-        var legacyValue = _uia.GetLegacyAccessibleValue(combo);
-        if (!string.IsNullOrWhiteSpace(legacyValue))
-            return legacyValue;
-
-        var name = _uia.GetStringProperty(combo, UIA_PropertyIds.UIA_NamePropertyId);
-        if (!string.IsNullOrWhiteSpace(name))
-            return name;
-
-        var selectedItem = FindSelectedItem(combo);
-        if (selectedItem != null)
-            return _uia.GetElementText(selectedItem);
-
-        var innerEdit = _uia.FindFirstDescendant(
-            combo,
-            _uia.PropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, EditControlTypeId));
-        if (innerEdit != null)
-        {
-            var editValue = _uia.GetValuePatternText(innerEdit);
-            if (!string.IsNullOrWhiteSpace(editValue))
-                return editValue;
-        }
-
-        return _uia.GetElementText(combo);
-    }
-
-    private IUIAutomationElement? FindSelectedItem(IUIAutomationElement combo)
-    {
-        var items = _uia.FindAllDescendants(
-            combo,
-            _uia.PropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, 50007),
-            200);
-
-        foreach (var item in items)
-        {
-            if (_uia.TryGetSelectionItemPattern(item, out var selection) && selection!.CurrentIsSelected != 0)
-                return item;
-        }
-
-        return null;
-    }
-
-    private bool ExpandComboBox(IUIAutomationElement combo, List<object> attempts)
-    {
         if (_uia.TryGetExpandCollapsePattern(combo, out var expandCollapse))
         {
             try
             {
                 expandCollapse!.Expand();
-                attempts.Add(Attempt("native-uia-expandcollapse", true, null, GetComboBoxCurrentValue(combo)));
-                return true;
+                return "expandcollapse";
             }
             catch (Exception ex)
             {
-                attempts.Add(Attempt("native-uia-expandcollapse", false, ex.Message, GetComboBoxCurrentValue(combo)));
+                _logger.LogDebug(ex, "ExpandCollapsePattern.Expand failed.");
+            }
+        }
+
+        var openButton = FindOpenButton(combo);
+        if (openButton != null && _uia.TryGetInvokePattern(openButton, out var openInvoke))
+        {
+            try
+            {
+                openInvoke!.Invoke();
+                return "open-button-invoke";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Open button invoke failed.");
             }
         }
 
@@ -329,12 +379,11 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
             try
             {
                 invoke!.Invoke();
-                attempts.Add(Attempt("native-uia-invoke-expand", true, null, GetComboBoxCurrentValue(combo)));
-                return true;
+                return "invoke";
             }
             catch (Exception ex)
             {
-                attempts.Add(Attempt("native-uia-invoke-expand", false, ex.Message, GetComboBoxCurrentValue(combo)));
+                _logger.LogDebug(ex, "ComboBox Invoke failed.");
             }
         }
 
@@ -342,22 +391,30 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
         if (rect.HasValue)
         {
             var clickPoint = ComboBoxRightEdgePoint(rect.Value);
-            var clicked = NativeUiaInput.ClickPoint(clickPoint);
-            attempts.Add(Attempt("native-uia-physical-expand", clicked, clicked ? null : "click failed", GetComboBoxCurrentValue(combo)));
-            if (clicked)
-                return true;
+            if (NativeUiaInput.ClickPoint(clickPoint))
+                return "physical-right-edge-click";
         }
 
         FocusComboBox(combo);
         NativeUiaInput.SendChord(NativeUiaInput.VirtualKeys.Menu, NativeUiaInput.VirtualKeys.Down);
         Thread.Sleep(ActionDelayMs);
-        attempts.Add(Attempt("native-uia-alt-down-expand", true, null, GetComboBoxCurrentValue(combo)));
+        return "alt-down";
+    }
 
-        FocusComboBox(combo);
-        NativeUiaInput.SendKey(NativeUiaInput.VirtualKeys.F4);
-        Thread.Sleep(ActionDelayMs);
-        attempts.Add(Attempt("native-uia-f4-expand", true, null, GetComboBoxCurrentValue(combo)));
-        return true;
+    private IUIAutomationElement? FindOpenButton(IUIAutomationElement combo)
+    {
+        foreach (var child in _uia.FindAllDescendants(
+                     combo,
+                     _uia.PropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, ButtonControlTypeId),
+                     20))
+        {
+            var name = _uia.GetStringProperty(child, UIA_PropertyIds.UIA_NamePropertyId);
+            if (name.Contains("Open", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("Drop", StringComparison.OrdinalIgnoreCase))
+                return child;
+        }
+
+        return null;
     }
 
     private IUIAutomationElement? FindDropdownItem(
@@ -366,123 +423,50 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
         int? processId,
         string requestedValue,
         UiRequest request,
-        List<object> attempts,
+        CancellationToken cancellationToken,
         DateTime deadline)
     {
-        foreach (var candidate in EnumerateItemCandidates(combo, activeWindowHwnd, processId, request))
+        if (request.Index.HasValue && string.IsNullOrWhiteSpace(request.Value))
+            return SelectByIndex(combo, activeWindowHwnd, processId, request.Index.Value, cancellationToken, deadline);
+
+        foreach (var candidate in _dropdownFinder.EnumerateItemCandidates(
+                     combo, activeWindowHwnd, processId, cancellationToken, deadline))
         {
-            if (DateTime.UtcNow >= deadline)
-                break;
-
-            var snapshot = _uia.CreateSnapshot(candidate);
-            var texts = CandidateTexts(candidate);
-            var isMatch = texts.Any(t => ItemMatches(t, requestedValue, request));
-
-            attempts.Add(new Dictionary<string, object?>
-            {
-                ["candidate"] = snapshot.ToDiagnosticObject(),
-                ["texts"] = texts,
-                ["match"] = isMatch
-            });
-
-            if (isMatch)
+            var texts = _textReader.ReadCandidateTexts(candidate);
+            if (texts.Any(t => ItemMatches(t, requestedValue, request)))
                 return candidate;
         }
 
         return null;
     }
 
-    private IEnumerable<IUIAutomationElement> EnumerateItemCandidates(
+    private IUIAutomationElement? SelectByIndex(
         IUIAutomationElement combo,
         IntPtr? activeWindowHwnd,
         int? processId,
-        UiRequest request)
+        int index,
+        CancellationToken cancellationToken,
+        DateTime deadline)
     {
-        var seen = new HashSet<string>();
-        foreach (var root in BuildDropdownSearchRoots(combo, activeWindowHwnd, processId))
-        {
-            foreach (var typeId in ItemControlTypeIds)
-            {
-                foreach (var element in _uia.FindAllDescendants(
-                             root,
-                             _uia.PropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, typeId),
-                             500))
-                {
-                    var key = RuntimeKey(element);
-                    if (!seen.Add(key))
-                        continue;
+        if (index < 0)
+            throw new ArgumentOutOfRangeException(nameof(index), "ComboBox index must be >= 0.");
 
-                    yield return element;
-                }
-            }
-        }
-    }
+        var items = _dropdownFinder
+            .EnumerateItemCandidates(combo, activeWindowHwnd, processId, cancellationToken, deadline)
+            .ToList();
 
-    private List<IUIAutomationElement> BuildDropdownSearchRoots(
-        IUIAutomationElement combo,
-        IntPtr? activeWindowHwnd,
-        int? processId)
-    {
-        var roots = new List<IUIAutomationElement> { combo };
-
-        if (activeWindowHwnd is > 0)
-        {
-            var activeRoot = _uia.FromHandle(activeWindowHwnd.Value);
-            if (activeRoot != null)
-                roots.Add(activeRoot);
-        }
-
-        var desktopChildren = _uia.FindAllChildren(_uia.Root, _uia.TrueCondition(), 200);
-        roots.AddRange(desktopChildren);
-
-        if (processId.HasValue)
-        {
-            var sameProcess = _uia.FindAllDescendants(
-                _uia.Root,
-                _uia.PropertyCondition(UIA_PropertyIds.UIA_ProcessIdPropertyId, processId.Value),
-                500);
-            roots.AddRange(sameProcess.Where(e =>
-                ContainerControlTypeIds.Contains(_uia.GetIntProperty(e, UIA_PropertyIds.UIA_ControlTypePropertyId))));
-        }
-
-        var foreground = NativeUiaInput.ForegroundWindowHandle();
-        if (foreground != IntPtr.Zero)
-        {
-            var fgRoot = _uia.FromHandle(foreground);
-            if (fgRoot != null)
-                roots.Add(fgRoot);
-        }
-
-        return roots.DistinctBy(RuntimeKey).ToList();
-    }
-
-    private List<string> CandidateTexts(IUIAutomationElement element)
-    {
-        return new List<string>
-        {
-            _uia.GetStringProperty(element, UIA_PropertyIds.UIA_NamePropertyId),
-            _uia.GetValuePatternText(element),
-            _uia.GetTextPatternText(element),
-            _uia.GetLegacyAccessibleName(element),
-            _uia.GetLegacyAccessibleValue(element),
-            _uia.GetStringProperty(element, UIA_PropertyIds.UIA_AutomationIdPropertyId)
-        }.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-    }
-
-    private static bool ItemMatches(string candidate, string requested, UiRequest request)
-    {
-        var matchMode = string.IsNullOrWhiteSpace(request.MatchMode) ? "exact" : request.MatchMode!;
-        return NativeUiaText.Matches(candidate, requested, matchMode);
+        return index < items.Count ? items[index] : null;
     }
 
     private string? ActivateItem(
         IUIAutomationElement combo,
         IUIAutomationElement item,
-        List<object> attempts,
-        out string strategy)
+        CancellationToken cancellationToken,
+        DateTime deadline)
     {
-        strategy = "native-uia-unverified";
-        var before = GetComboBoxCurrentValue(combo);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (DateTime.UtcNow >= deadline)
+            return null;
 
         if (_uia.TryGetSelectionItemPattern(item, out var selectionItem))
         {
@@ -490,18 +474,11 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
             {
                 selectionItem!.Select();
                 Thread.Sleep(ActionDelayMs);
-                var after = GetComboBoxCurrentValue(combo);
-                var success = NativeUiaText.ValuesEquivalent(after, _uia.GetElementText(item));
-                attempts.Add(Attempt("native-uia-selectionitem", success, null, after, before, success));
-                if (success)
-                {
-                    strategy = "native-uia-selectionitem";
-                    return strategy;
-                }
+                return "selectionitem-select";
             }
             catch (Exception ex)
             {
-                attempts.Add(Attempt("native-uia-selectionitem", false, ex.Message, GetComboBoxCurrentValue(combo), before, false));
+                _logger.LogDebug(ex, "SelectionItem.Select failed.");
             }
         }
 
@@ -511,18 +488,11 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
             {
                 invoke!.Invoke();
                 Thread.Sleep(ActionDelayMs);
-                var after = GetComboBoxCurrentValue(combo);
-                var success = NativeUiaText.ValuesEquivalent(after, _uia.GetElementText(item));
-                attempts.Add(Attempt("native-uia-invoke", success, null, after, before, success));
-                if (success)
-                {
-                    strategy = "native-uia-invoke";
-                    return strategy;
-                }
+                return "invoke";
             }
             catch (Exception ex)
             {
-                attempts.Add(Attempt("native-uia-invoke", false, ex.Message, GetComboBoxCurrentValue(combo), before, false));
+                _logger.LogDebug(ex, "Invoke failed.");
             }
         }
 
@@ -533,14 +503,11 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
             {
                 toggle!.Toggle();
                 Thread.Sleep(ActionDelayMs);
-                var after = GetComboBoxCurrentValue(combo);
-                attempts.Add(Attempt("native-uia-toggle", true, null, after, before, true));
-                strategy = "native-uia-toggle";
-                return strategy;
+                return "toggle";
             }
             catch (Exception ex)
             {
-                attempts.Add(Attempt("native-uia-toggle", false, ex.Message, GetComboBoxCurrentValue(combo), before, false));
+                _logger.LogDebug(ex, "Toggle failed.");
             }
         }
 
@@ -553,44 +520,27 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
             if (NativeUiaInput.ClickPoint(center))
             {
                 Thread.Sleep(ActionDelayMs);
-                var after = GetComboBoxCurrentValue(combo);
-                var success = NativeUiaText.ValuesEquivalent(after, _uia.GetElementText(item));
-                attempts.Add(Attempt("native-uia-physical-click", success, null, after, before, success));
-                if (success)
-                {
-                    strategy = "native-uia-physical-click";
-                    return strategy;
-                }
+                return "physical-click-center";
             }
 
             if (NativeUiaInput.ClickPoint(leftCenter))
             {
                 Thread.Sleep(ActionDelayMs);
-                var after = GetComboBoxCurrentValue(combo);
-                var success = NativeUiaText.ValuesEquivalent(after, _uia.GetElementText(item));
-                attempts.Add(Attempt("native-uia-physical-click-left", success, null, after, before, success));
-                if (success)
-                {
-                    strategy = "native-uia-physical-click-left";
-                    return strategy;
-                }
+                return "physical-click-leftcenter";
             }
         }
 
         try
         {
             item.SetFocus();
-            Thread.Sleep(50);
+            Thread.Sleep(40);
             NativeUiaInput.SendKey(NativeUiaInput.VirtualKeys.Return);
             Thread.Sleep(ActionDelayMs);
-            var afterEnter = GetComboBoxCurrentValue(combo);
-            attempts.Add(Attempt("native-uia-focus-enter", true, null, afterEnter, before, true));
-            strategy = "native-uia-focus-enter";
-            return strategy;
+            return "focus-enter";
         }
         catch (Exception ex)
         {
-            attempts.Add(Attempt("native-uia-focus-enter", false, ex.Message, GetComboBoxCurrentValue(combo), before, false));
+            _logger.LogDebug(ex, "Focus+Enter failed.");
         }
 
         try
@@ -598,21 +548,26 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
             item.SetFocus();
             NativeUiaInput.SendKey(NativeUiaInput.VirtualKeys.Space);
             Thread.Sleep(ActionDelayMs);
-            var afterSpace = GetComboBoxCurrentValue(combo);
-            attempts.Add(Attempt("native-uia-focus-space", true, null, afterSpace, before, true));
-            strategy = "native-uia-focus-space";
-            return strategy;
+            return "focus-space";
         }
         catch (Exception ex)
         {
-            attempts.Add(Attempt("native-uia-focus-space", false, ex.Message, GetComboBoxCurrentValue(combo), before, false));
+            _logger.LogDebug(ex, "Focus+Space failed.");
         }
 
         return null;
     }
 
-    private bool TryKeyboardTypeahead(IUIAutomationElement combo, string requestedValue, List<object> attempts)
+    private bool TryKeyboardTypeahead(
+        IUIAutomationElement combo,
+        string requestedValue,
+        CancellationToken cancellationToken,
+        DateTime deadline)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (DateTime.UtcNow >= deadline)
+            return false;
+
         try
         {
             FocusComboBox(combo);
@@ -620,98 +575,84 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
             Thread.Sleep(ActionDelayMs);
             NativeUiaInput.SendKey(NativeUiaInput.VirtualKeys.Return);
             Thread.Sleep(ActionDelayMs);
-            var after = GetComboBoxCurrentValue(combo);
-            var success = NativeUiaText.ValuesEquivalent(after, requestedValue);
-            attempts.Add(Attempt("native-uia-keyboard-typeahead", success, null, after, null, success));
-            return success;
+            return NativeUiaText.ValuesEquivalent(_textReader.ReadComboBoxValue(combo), requestedValue);
         }
         catch (Exception ex)
         {
-            attempts.Add(Attempt("native-uia-keyboard-typeahead", false, ex.Message, GetComboBoxCurrentValue(combo)));
+            _logger.LogDebug(ex, "Keyboard typeahead failed.");
             return false;
         }
     }
 
-    private bool TryPagedVisibleSearch(
+    private bool TryBoundedScrollSearch(
         IUIAutomationElement combo,
         IntPtr? activeWindowHwnd,
         int? processId,
         string requestedValue,
         UiRequest request,
-        List<object> attempts,
+        CancellationToken cancellationToken,
         DateTime deadline,
         out IUIAutomationElement? matchedItem,
-        out string strategy)
+        out string? strategy)
     {
         matchedItem = null;
-        strategy = "native-uia-paged-visible-search";
+        strategy = null;
         string? previousBatch = null;
 
-        for (var page = 0; page < PagedSearchMaxPages && DateTime.UtcNow < deadline; page++)
+        for (var page = 0; page < MaxBoundedScrollPages && DateTime.UtcNow < deadline; page++)
         {
-            var visibleItems = CollectVisibleItemTexts(combo, activeWindowHwnd, processId, request, PagedSearchVisibleLimit);
-            var batch = string.Join("|", visibleItems);
-            attempts.Add(new Dictionary<string, object?> { ["pagedBatch"] = batch, ["page"] = page });
+            cancellationToken.ThrowIfCancellationRequested();
 
-            matchedItem = FindDropdownItem(combo, activeWindowHwnd, processId, requestedValue, request, attempts, deadline);
+            matchedItem = FindDropdownItem(
+                combo, activeWindowHwnd, processId, requestedValue, request, cancellationToken, deadline);
             if (matchedItem != null)
             {
-                var activation = ActivateItem(combo, matchedItem, attempts, out strategy);
-                if (activation != null)
+                strategy = ActivateItem(combo, matchedItem, cancellationToken, deadline);
+                if (strategy != null)
                     return true;
             }
 
+            var batch = string.Join(
+                "|",
+                _dropdownFinder.CollectVisibleItemTexts(combo, activeWindowHwnd, processId, cancellationToken, deadline, 20));
             if (string.Equals(batch, previousBatch, StringComparison.Ordinal))
                 break;
 
             previousBatch = batch;
-            NativeUiaInput.WheelDown(5);
-            Thread.Sleep(ActionDelayMs);
-            NativeUiaInput.SendKey(NativeUiaInput.VirtualKeys.Next);
+            NativeUiaInput.WheelDown(3);
             Thread.Sleep(ActionDelayMs);
         }
 
         matchedItem = null;
+        strategy = null;
         return false;
     }
 
-    private List<string> CollectVisibleItemTexts(
-        IUIAutomationElement combo,
-        IntPtr? activeWindowHwnd,
-        int? processId,
-        UiRequest request,
-        int limit)
+    private void CollapseComboBox(IUIAutomationElement combo)
     {
-        return EnumerateItemCandidates(combo, activeWindowHwnd, processId, request)
-            .Select(_uia.GetElementText)
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(limit)
-            .ToList();
-    }
+        try
+        {
+            if (_uia.TryGetExpandCollapsePattern(combo, out var pattern))
+            {
+                pattern!.Collapse();
+                return;
+            }
+        }
+        catch
+        {
+            // continue to ESC fallback
+        }
 
-    private IUIAutomationElement? SelectByIndex(
-        IUIAutomationElement combo,
-        int index,
-        List<object> attempts,
-        out string? strategy)
-    {
-        strategy = null;
-        if (index < 0)
-            throw new ArgumentOutOfRangeException(nameof(index), "ComboBox index must be >= 0.");
-
-        if (!ExpandComboBox(combo, attempts))
-            _logger.LogDebug("Expand before index selection did not report success.");
-
-        Thread.Sleep(ExpandDelayMs);
-
-        var items = EnumerateItemCandidates(combo, null, null, new UiRequest()).ToList();
-        if (index >= items.Count)
-            return null;
-
-        var item = items[index];
-        strategy = ActivateItem(combo, item, attempts, out var activationStrategy);
-        return strategy == null ? null : item;
+        try
+        {
+            FocusComboBox(combo);
+            NativeUiaInput.SendKey(NativeUiaInput.VirtualKeys.Escape, release: false);
+            NativeUiaInput.SendKey(NativeUiaInput.VirtualKeys.Escape, release: true);
+        }
+        catch
+        {
+            // best effort cleanup
+        }
     }
 
     private void FocusComboBox(IUIAutomationElement combo)
@@ -734,55 +675,81 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
         return new Point(rect.Right - offset, rect.Top + rect.Height / 2);
     }
 
-    private bool IsExpanded(IUIAutomationElement combo)
+    private string GetExpandState(IUIAutomationElement combo)
     {
         if (!_uia.TryGetExpandCollapsePattern(combo, out var pattern) || pattern == null)
-            return false;
+            return "unsupported";
 
         try
         {
-            return pattern.CurrentExpandCollapseState == ExpandCollapseState.ExpandCollapseState_Expanded;
+            return pattern.CurrentExpandCollapseState switch
+            {
+                ExpandCollapseState.ExpandCollapseState_Expanded => "expanded",
+                ExpandCollapseState.ExpandCollapseState_Collapsed => "collapsed",
+                ExpandCollapseState.ExpandCollapseState_PartiallyExpanded => "partially-expanded",
+                _ => "unknown"
+            };
         }
         catch
         {
-            return false;
+            return "unknown";
         }
     }
 
-    private static Dictionary<string, object?> Attempt(
+    private static bool ItemMatches(string candidate, string requested, UiRequest request)
+    {
+        var matchMode = string.IsNullOrWhiteSpace(request.MatchMode) ? "exact" : request.MatchMode!;
+        return NativeUiaText.Matches(candidate, requested, matchMode);
+    }
+
+    private static object BuildSuccess(
+        string operation,
+        string? requested,
+        string actual,
+        bool verified,
         string strategy,
-        bool success,
-        string? error,
-        string? afterValue,
-        string? beforeValue = null,
-        bool? verified = null)
+        string? expandedBy,
+        NativeUiaElementSnapshot comboSnapshot,
+        NativeUiaElementSnapshot? matchedItemSnapshot,
+        long elapsedMs) => new Dictionary<string, object?>
     {
-        return new Dictionary<string, object?>
-        {
-            ["strategy"] = strategy,
-            ["success"] = success,
-            ["error"] = error,
-            ["beforeValue"] = beforeValue,
-            ["afterValue"] = afterValue,
-            ["verified"] = verified
-        };
-    }
+        ["operation"] = operation,
+        ["controlType"] = "ComboBox",
+        ["selected"] = requested,
+        ["success"] = true,
+        ["strategy"] = strategy,
+        ["expandedBy"] = expandedBy,
+        ["matchedItem"] = matchedItemSnapshot == null
+            ? null
+            : NativeUiaDiagnostics.CandidateDiagnostic(0, matchedItemSnapshot),
+        ["actualValue"] = actual,
+        ["actual"] = actual,
+        ["verified"] = verified,
+        ["comboBox"] = NativeUiaDiagnostics.ComboSummary(comboSnapshot),
+        ["combo"] = NativeUiaDiagnostics.ComboSummary(comboSnapshot),
+        ["elapsedMs"] = elapsedMs
+    };
 
-    private static bool SameElement(IUIAutomationElement left, IUIAutomationElement right)
+    private static object BuildFailure(
+        string operation,
+        UiRequest request,
+        string stage,
+        string error,
+        long elapsedMs,
+        IEnumerable<object>? candidates = null,
+        NativeUiaElementSnapshot? comboSnapshot = null,
+        string? expandedBy = null) => new Dictionary<string, object?>
     {
-        return string.Equals(RuntimeKey(left), RuntimeKey(right), StringComparison.Ordinal);
-    }
-
-    private static string RuntimeKey(IUIAutomationElement element)
-    {
-        try
-        {
-            var runtimeId = element.GetRuntimeId();
-            return runtimeId == null ? element.GetHashCode().ToString() : string.Join(".", runtimeId);
-        }
-        catch
-        {
-            return Guid.NewGuid().ToString("N");
-        }
-    }
+        ["operation"] = operation,
+        ["controlType"] = "ComboBox",
+        ["success"] = false,
+        ["error"] = error,
+        ["stage"] = stage,
+        ["requested"] = request.Value ?? (request.Index.HasValue ? $"index:{request.Index}" : null),
+        ["comboBox"] = comboSnapshot == null ? null : NativeUiaDiagnostics.ComboSummary(comboSnapshot),
+        ["combo"] = comboSnapshot == null ? null : NativeUiaDiagnostics.ComboSummary(comboSnapshot),
+        ["expandedBy"] = expandedBy,
+        ["candidates"] = candidates?.ToList() ?? [],
+        ["elapsedMs"] = elapsedMs
+    };
 }
