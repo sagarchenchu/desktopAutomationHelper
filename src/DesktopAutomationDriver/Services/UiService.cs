@@ -352,11 +352,11 @@ public partial class UiService : IUiService
                 "selectdynamicmenupath" => SelectDynamicMenuPath(request),
                 // Backward-compatible alias – the canonical operation is "select".
                 "selectcomboboxitem" => Select(request, cancellationToken),
-                "selectcomboboxuia" => ExecuteNativeUiaComboBoxOperation(
+                "selectcomboboxuia" => ExecuteNativeUiaWithTimeout(
                     request,
                     SelectComboBoxNativeUia,
                     cancellationToken),
-                "findcomboboxuia" => ExecuteNativeUiaComboBoxOperation(
+                "findcomboboxuia" => ExecuteNativeUiaWithTimeout(
                     request,
                     FindComboBoxNativeUia,
                     cancellationToken),
@@ -10526,12 +10526,12 @@ public partial class UiService : IUiService
         Keyboard.Release(key);
     }
 
-    private object? ExecuteNativeUiaComboBoxOperation(
+    private object? ExecuteNativeUiaWithTimeout(
         UiRequest request,
         Func<UiRequest, CancellationToken, object?> operation,
         CancellationToken requestCancellationToken)
     {
-        var timeoutMs = request.TimeoutMs.GetValueOrDefault(8000);
+        var timeoutMs = request.TimeoutMs.GetValueOrDefault(5000);
         timeoutMs = Math.Clamp(timeoutMs, 500, 15000);
 
         using var timeoutCts = new CancellationTokenSource(timeoutMs);
@@ -10608,6 +10608,8 @@ public partial class UiService : IUiService
 
     private object? FindComboBoxNativeUia(UiRequest request, CancellationToken cancellationToken)
     {
+        _logger.LogInformation("findcomboboxuia checkpoint 1: entered UiService");
+
         var session = TryGetSessionOrNull();
 
         IntPtr? rootHwnd = null;
@@ -10644,9 +10646,11 @@ public partial class UiService : IUiService
                 success = false,
                 found = false,
                 reason = "no-active-window",
-                message = "No active window/root hwnd found. Call /ui switchwindow first or launch/attach the application before findcomboboxuia."
+                message = "No active window/root hwnd found. Call /ui switchwindow first."
             };
         }
+
+        _logger.LogInformation("findcomboboxuia checkpoint 2: before service.FindComboBox");
 
         return _nativeUiaComboBoxService.FindComboBox(
             request,

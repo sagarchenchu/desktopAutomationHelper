@@ -79,8 +79,7 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
                 activeWindowHwnd,
                 processId,
                 deadline,
-                cancellationToken,
-                allowDesktopFallback: !IsUiaOnlyOperation(operation));
+                cancellationToken);
 
             if (resolveResult.Element == null)
             {
@@ -285,19 +284,20 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
         int? processId,
         CancellationToken cancellationToken = default)
     {
+        _logger.LogInformation("findcomboboxuia checkpoint 3: entered NativeUiaComboBoxService.FindComboBox");
+
         var timeoutMs = ResolveTimeoutMs(request.TimeoutMs);
         var startedUtc = DateTime.UtcNow;
         var deadlineUtc = startedUtc.AddMilliseconds(timeoutMs);
 
-        _logger.LogInformation(
-            "findcomboboxuia started. rootHwnd={RootHwnd}, processId={ProcessId}, timeoutMs={TimeoutMs}, locator={Locator}",
-            activeWindowHwnd?.ToInt64(),
-            processId,
-            timeoutMs,
-            DescribeLocator(request.Locator));
-
         try
         {
+            _logger.LogInformation(
+                "findcomboboxuia start rootHwnd={RootHwnd}, processId={ProcessId}, timeoutMs={TimeoutMs}",
+                activeWindowHwnd?.ToInt64(),
+                processId,
+                timeoutMs);
+
             cancellationToken.ThrowIfCancellationRequested();
 
             if (activeWindowHwnd == null && !processId.HasValue)
@@ -308,56 +308,46 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
                     success = false,
                     found = false,
                     reason = "no-active-window",
-                    elapsedMs = ElapsedMs(startedUtc),
-                    message = "No active window/root hwnd found. Call /ui switchwindow first."
+                    elapsedMs = ElapsedMs(startedUtc)
                 };
             }
 
-            var resolveResult = _resolver.ResolveComboBox(
+            _logger.LogInformation("findcomboboxuia checkpoint 4: before ResolveComboBox");
+
+            var result = _resolver.ResolveComboBox(
                 request,
                 activeWindowHwnd,
                 processId,
                 deadlineUtc,
-                cancellationToken,
-                allowDesktopFallback: false);
+                cancellationToken);
 
-            _logger.LogInformation(
-                "findcomboboxuia resolved found={Found}, stage={Stage}, candidates={CandidateCount}, elapsedMs={ElapsedMs}",
-                resolveResult.Element != null,
-                resolveResult.Stage,
-                resolveResult.Candidates?.Count ?? 0,
-                ElapsedMs(startedUtc));
+            _logger.LogInformation("findcomboboxuia checkpoint 5: after ResolveComboBox");
 
-            if (resolveResult.Element == null)
+            if (result.Element == null)
             {
-                var reason = resolveResult.IsAmbiguous
-                    ? "ambiguous-combobox"
-                    : resolveResult.Stage ?? "combo-not-found";
-
                 return new
                 {
                     operation = "findcomboboxuia",
                     success = false,
                     found = false,
-                    reason,
-                    stage = resolveResult.Stage,
+                    reason = "combo-not-found",
+                    stage = result.Stage,
                     elapsedMs = ElapsedMs(startedUtc),
-                    candidates = resolveResult.Candidates,
-                    message = resolveResult.LastError ?? "ComboBox was not found."
+                    candidates = result.Candidates,
+                    message = result.LastError
                 };
             }
 
-            EnsureWithinDeadline(deadlineUtc, cancellationToken, "findcomboboxuia snapshot");
+            EnsureWithinDeadline(deadlineUtc, "findcomboboxuia snapshot");
 
-            var snapshot = _uia.CreateSnapshot(resolveResult.Element);
+            var snapshot = _uia.CreateSnapshot(result.Element);
 
             return new
             {
                 operation = "findcomboboxuia",
                 success = true,
                 found = true,
-                ambiguous = resolveResult.IsAmbiguous,
-                stage = resolveResult.Stage,
+                stage = result.Stage,
                 elapsedMs = ElapsedMs(startedUtc),
                 comboBox = new
                 {
@@ -371,7 +361,20 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
                     isOffscreen = snapshot.IsOffscreen,
                     boundingRectangle = NativeUiaDiagnostics.ToRectangleObject(snapshot.BoundingRectangle)
                 },
-                candidates = resolveResult.Candidates
+                candidates = result.Candidates
+            };
+        }
+        catch (TimeoutException ex)
+        {
+            return new
+            {
+                operation = "findcomboboxuia",
+                success = false,
+                found = false,
+                reason = "timeout",
+                timeoutMs,
+                elapsedMs = ElapsedMs(startedUtc),
+                message = ex.Message
             };
         }
         catch (OperationCanceledException)
@@ -382,33 +385,13 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
                 success = false,
                 found = false,
                 reason = "cancelled",
-                elapsedMs = ElapsedMs(startedUtc),
-                message = "findcomboboxuia was cancelled."
-            };
-        }
-        catch (TimeoutException ex)
-        {
-            _logger.LogWarning(
-                "findcomboboxuia timeout timeoutMs={TimeoutMs}, elapsedMs={ElapsedMs}, rootHwnd={RootHwnd}, processId={ProcessId}",
                 timeoutMs,
-                ElapsedMs(startedUtc),
-                activeWindowHwnd?.ToInt64(),
-                processId);
-
-            return new
-            {
-                operation = "findcomboboxuia",
-                success = false,
-                found = false,
-                reason = "timeout",
-                elapsedMs = ElapsedMs(startedUtc),
-                timeoutMs,
-                message = ex.Message
+                elapsedMs = ElapsedMs(startedUtc)
             };
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "findcomboboxuia failed.");
+            _logger.LogWarning(ex, "findcomboboxuia failed");
 
             return new
             {
@@ -417,8 +400,8 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
                 found = false,
                 reason = "error",
                 elapsedMs = ElapsedMs(startedUtc),
-                message = ex.Message,
-                exceptionType = ex.GetType().Name
+                exceptionType = ex.GetType().Name,
+                message = ex.Message
             };
         }
     }
@@ -479,8 +462,7 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
             activeWindowHwnd,
             processId,
             deadline,
-            cancellationToken,
-            allowDesktopFallback: true);
+            cancellationToken);
         if (resolveResult.Element == null)
         {
             return new
@@ -560,14 +542,19 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
         return parts.Count == 0 ? string.Empty : string.Join(", ", parts);
     }
 
+    private static void EnsureWithinDeadline(DateTime deadlineUtc, string stage)
+    {
+        if (DateTime.UtcNow > deadlineUtc)
+            throw new TimeoutException($"{stage} exceeded timeout.");
+    }
+
     private static void EnsureWithinDeadline(
         DateTime deadlineUtc,
         CancellationToken cancellationToken,
         string stage)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (DateTime.UtcNow > deadlineUtc)
-            throw new TimeoutException($"{stage} exceeded timeout.");
+        EnsureWithinDeadline(deadlineUtc, stage);
     }
 
     private static void EnsureWithinDeadline(

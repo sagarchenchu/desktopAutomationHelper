@@ -27,6 +27,8 @@ internal sealed class NativeUiaAutomation
 
     public IUIAutomationElement Root => _automation.GetRootElement();
 
+    public IUIAutomationCondition ControlViewCondition => _automation.ControlViewCondition;
+
     public IUIAutomationElement? FromHandle(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero)
