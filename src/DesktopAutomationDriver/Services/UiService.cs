@@ -10534,27 +10534,145 @@ public partial class UiService : IUiService
         var timeoutMs = request.TimeoutMs.GetValueOrDefault(5000);
         timeoutMs = Math.Clamp(timeoutMs, 500, 15000);
 
-        using var timeoutCts = new CancellationTokenSource(timeoutMs);
+        var sw = Stopwatch.StartNew();
+
+        using var timeoutCts = new CancellationTokenSource();
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             requestCancellationToken,
             timeoutCts.Token);
 
+        var operationName = string.IsNullOrWhiteSpace(request.Operation)
+            ? "native-uia"
+            : request.Operation;
+
+        _logger.LogInformation(
+            "Native UIA hard-timeout wrapper started. operation={Operation}, timeoutMs={TimeoutMs}",
+            operationName,
+            timeoutMs);
+
+        var task = Task.Run(() =>
+        {
+            try
+            {
+                return operation(request, linkedCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return new
+                {
+                    operation = operationName,
+                    success = false,
+                    found = false,
+                    reason = "timeout-or-cancelled",
+                    timeoutMs,
+                    elapsedMs = sw.ElapsedMilliseconds,
+                    message = $"{operationName} was cancelled."
+                };
+            }
+            catch (TimeoutException ex)
+            {
+                return new
+                {
+                    operation = operationName,
+                    success = false,
+                    found = false,
+                    reason = "timeout",
+                    timeoutMs,
+                    elapsedMs = sw.ElapsedMilliseconds,
+                    message = ex.Message
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Native UIA operation failed inside worker. operation={Operation}",
+                    operationName);
+
+                return new
+                {
+                    operation = operationName,
+                    success = false,
+                    found = false,
+                    reason = "error",
+                    timeoutMs,
+                    elapsedMs = sw.ElapsedMilliseconds,
+                    exceptionType = ex.GetType().Name,
+                    message = ex.Message
+                };
+            }
+        }, CancellationToken.None);
+
+        Task completedTask;
+
         try
         {
-            return operation(request, linkedCts.Token);
+            completedTask = Task.WhenAny(
+                    task,
+                    Task.Delay(timeoutMs, requestCancellationToken))
+                .GetAwaiter()
+                .GetResult();
         }
         catch (OperationCanceledException)
         {
+            try
+            {
+                timeoutCts.Cancel();
+            }
+            catch
+            {
+                // best effort
+            }
+
             return new
             {
-                operation = request.Operation,
+                operation = operationName,
                 success = false,
                 found = false,
-                reason = "timeout-or-cancelled",
+                reason = "request-cancelled",
                 timeoutMs,
-                message = $"{request.Operation} exceeded timeout or request was cancelled."
+                elapsedMs = sw.ElapsedMilliseconds,
+                message = $"{operationName} request was cancelled by the HTTP client."
             };
         }
+
+        if (completedTask == task)
+        {
+            var result = task.GetAwaiter().GetResult();
+
+            _logger.LogInformation(
+                "Native UIA hard-timeout wrapper completed. operation={Operation}, elapsedMs={ElapsedMs}",
+                operationName,
+                sw.ElapsedMilliseconds);
+
+            return result;
+        }
+
+        try
+        {
+            timeoutCts.Cancel();
+        }
+        catch
+        {
+            // best effort
+        }
+
+        _logger.LogWarning(
+            "Native UIA hard timeout. operation={Operation}, timeoutMs={TimeoutMs}, elapsedMs={ElapsedMs}. The API returned safely, but the worker may still be blocked.",
+            operationName,
+            timeoutMs,
+            sw.ElapsedMilliseconds);
+
+        return new
+        {
+            operation = operationName,
+            success = false,
+            found = false,
+            reason = "hard-timeout",
+            timeoutMs,
+            elapsedMs = sw.ElapsedMilliseconds,
+            message = $"{operationName} did not return within {timeoutMs} ms. Native UIA may still be blocked internally, but the API returned safely."
+        };
     }
 
     private object? SelectComboBoxNativeUia(UiRequest request, CancellationToken cancellationToken)
