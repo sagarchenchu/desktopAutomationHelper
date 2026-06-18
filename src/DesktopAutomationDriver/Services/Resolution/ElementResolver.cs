@@ -137,6 +137,7 @@ public sealed class ElementResolver : IElementResolver
                 case "desktop":
                     return session.Automation.GetDesktop();
                 case "activewindow":
+                case "foreground":
                     return GetForegroundWindowElement(session.Automation);
                 case "desktoppopup":
                     return GetActivePopupRoot(session);
@@ -303,11 +304,12 @@ public sealed class ElementResolver : IElementResolver
         AutomationElement rootEl = parentEl ?? DetermineSearchRoot(locator, request, session);
 
         // 3. HWND direct
-        if (locator.Hwnd.HasValue)
+        if (locator.Hwnd.HasValue || locator.Handle.HasValue)
         {
+            var hwndValue = locator.Hwnd ?? locator.Handle!.Value;
             try
             {
-                var element = session.Automation.FromHandle(new IntPtr(locator.Hwnd.Value));
+                var element = session.Automation.FromHandle(new IntPtr(hwndValue));
                 if (element != null)
                 {
                     var candidate = CreateCandidate(element);
@@ -434,7 +436,12 @@ public sealed class ElementResolver : IElementResolver
         }
         else // default to control tree
         {
-            if (topLevelOnly)
+            var searchScope = locator.SearchScope?.ToLowerInvariant();
+            if (string.Equals(searchScope, "children", StringComparison.OrdinalIgnoreCase))
+            {
+                rawCandidates = root.FindAllChildren().ToList();
+            }
+            else if (topLevelOnly)
             {
                 rawCandidates = root.FindAllChildren().ToList();
             }

@@ -210,6 +210,9 @@ public partial class UiService : IUiService
         };
 
     private readonly DesktopAutomationDriver.Services.Resolution.ElementResolver _newResolver;
+    private readonly DesktopAutomationDriver.Services.ElementResolution.ElementResolver _pywinautoResolver;
+
+    private const bool UsePywinautoStyleResolver = true;
     private readonly INativeUiaComboBoxService _nativeUiaComboBoxService;
 
     public UiService(
@@ -221,6 +224,7 @@ public partial class UiService : IUiService
         _logger = logger;
         _nativeUiaComboBoxService = nativeUiaComboBoxService;
         _newResolver = new DesktopAutomationDriver.Services.Resolution.ElementResolver(ctx, logger, GetWindowRoot);
+        _pywinautoResolver = new DesktopAutomationDriver.Services.ElementResolution.ElementResolver(ctx, logger, GetWindowRoot);
     }
 
     // =========================================================================
@@ -1605,36 +1609,31 @@ public partial class UiService : IUiService
 
     private object Exists(UiRequest req)
     {
-        try
+        var result = PywinautoResolve(req, QueryResolveOptions);
+        if (result.Success && result.Element != null)
         {
-            var resolved = ResolveForStateQuery(req);
-            var element  = resolved.Element;
+            var element = result.Element;
+            return new
+            {
+                operation = "exists",
+                exists = true,
+                strategy = result.Strategy,
+                automationId = SafeElementAutomationId(element),
+                name = SafeElementName(element),
+                controlType = SafeElementControlType(element),
+                className = SafeElementClassName(element),
+                isOffscreen = element.Properties.IsOffscreen.ValueOrDefault,
+                boundingRectangle = SafeBoundingRectangleObject(element),
+                snapshot = result.Snapshot,
+                candidateCount = result.CandidateCount,
+                searchRoot = result.SearchRoot,
+                criteria = result.Criteria,
+                elapsedMs = result.ElapsedMs,
+                fallbackUsed = result.FallbackUsed
+            };
+        }
 
-            return new
-            {
-                operation        = "exists",
-                exists           = true,
-                strategy         = resolved.Strategy,
-                automationId     = SafeElementAutomationId(element),
-                name             = SafeElementName(element),
-                controlType      = SafeElementControlType(element),
-                className        = SafeElementClassName(element),
-                isOffscreen      = element.Properties.IsOffscreen.ValueOrDefault,
-                boundingRectangle = SafeBoundingRectangleObject(element)
-            };
-        }
-        catch (Exception ex)
-        {
-            return new
-            {
-                operation     = "exists",
-                exists        = false,
-                strategy      = "not-found",
-                lastError     = ex.Message,
-                locator       = DescribeLocatorAsObject(req.Locator),
-                parentLocator = DescribeLocatorAsObject(req.ParentLocator)
-            };
-        }
+        return BuildPywinautoQueryResponse("exists", result);
     }
 
     private object WaitFor(UiRequest req, CancellationToken cancellationToken)
@@ -1825,49 +1824,67 @@ public partial class UiService : IUiService
 
     private object? GetValue(UiRequest req)
     {
-        var element = ResolveElementOrThrow(req, req.Locator, purpose: "getvalue");
+        var resolved = PywinautoResolve(req, ReadResolveOptions);
+        if (!resolved.Success || resolved.Element == null)
+            throw new InvalidOperationException(
+                $"Element not found for getvalue. criteria={System.Text.Json.JsonSerializer.Serialize(resolved.Criteria)}, candidates={resolved.CandidateCount}");
+
+        var element = resolved.Element;
 
         if (element.Patterns.Value.IsSupported)
-            return new { value = element.Patterns.Value.Pattern.Value ?? string.Empty };
+            return new { value = element.Patterns.Value.Pattern.Value ?? string.Empty, resolverStrategy = resolved.Strategy };
 
         if (element.Patterns.RangeValue.IsSupported)
-            return new { value = element.Patterns.RangeValue.Pattern.Value.ToString() };
+            return new { value = element.Patterns.RangeValue.Pattern.Value.ToString(), resolverStrategy = resolved.Strategy };
 
-        return new { value = element.Name ?? string.Empty };
+        return new { value = element.Name ?? string.Empty, resolverStrategy = resolved.Strategy };
     }
 
     private object? GetText(UiRequest req)
     {
-        var element = ResolveElementOrThrow(req, req.Locator, purpose: "gettext");
+        var resolved = PywinautoResolve(req, ReadResolveOptions);
+        if (!resolved.Success || resolved.Element == null)
+            throw new InvalidOperationException(
+                $"Element not found for gettext. criteria={System.Text.Json.JsonSerializer.Serialize(resolved.Criteria)}, candidates={resolved.CandidateCount}");
+
+        var element = resolved.Element;
         const int MaxText = 1_048_576;
 
         try
         {
             if (element.Patterns.Text.IsSupported)
-                return new { text = element.Patterns.Text.Pattern.DocumentRange.GetText(MaxText) };
+                return new { text = element.Patterns.Text.Pattern.DocumentRange.GetText(MaxText), resolverStrategy = resolved.Strategy };
         }
         catch { /* fall through */ }
 
         try
         {
             if (element.Patterns.Value.IsSupported)
-                return new { text = element.Patterns.Value.Pattern.Value ?? string.Empty };
+                return new { text = element.Patterns.Value.Pattern.Value ?? string.Empty, resolverStrategy = resolved.Strategy };
         }
         catch { /* fall through */ }
 
-        return new { text = element.Name ?? string.Empty };
+        return new { text = element.Name ?? string.Empty, resolverStrategy = resolved.Strategy };
     }
 
     private object? GetName(UiRequest req)
     {
-        var element = ResolveElementForOperation(req, "getname");
-        return new { name = element.Name ?? string.Empty };
+        var resolved = PywinautoResolve(req, ReadResolveOptions);
+        if (!resolved.Success || resolved.Element == null)
+            throw new InvalidOperationException(
+                $"Element not found for getname. criteria={System.Text.Json.JsonSerializer.Serialize(resolved.Criteria)}, candidates={resolved.CandidateCount}");
+
+        return new { name = resolved.Element.Name ?? string.Empty, resolverStrategy = resolved.Strategy };
     }
 
     private object? GetControlType(UiRequest req)
     {
-        var element = ResolveElementForOperation(req, "getcontroltype");
-        return new { controlType = element.ControlType.ToString() };
+        var resolved = PywinautoResolve(req, ReadResolveOptions);
+        if (!resolved.Success || resolved.Element == null)
+            throw new InvalidOperationException(
+                $"Element not found for getcontroltype. criteria={System.Text.Json.JsonSerializer.Serialize(resolved.Criteria)}, candidates={resolved.CandidateCount}");
+
+        return new { controlType = resolved.Element.ControlType.ToString(), resolverStrategy = resolved.Strategy };
     }
 
     private object? GetSelected(UiRequest req)
@@ -2051,12 +2068,12 @@ public partial class UiService : IUiService
 
     private object? Click(UiRequest req)
     {
-        var resolved = ResolveElementResultForOperation(
-            req,
-            purpose: "click",
-            action: true,
-            allowOffscreen: false,
-            requireClickable: true);
+        var resolved = PywinautoResolve(req, ClickResolveOptions);
+        if (!resolved.Success || resolved.Element == null)
+        {
+            throw new InvalidOperationException(
+                $"Element not found for click. criteria={System.Text.Json.JsonSerializer.Serialize(resolved.Criteria)}, candidates={System.Text.Json.JsonSerializer.Serialize(resolved.Candidates)}");
+        }
 
         var element = resolved.Element;
 
@@ -2101,9 +2118,13 @@ public partial class UiService : IUiService
 
         return new
         {
+            operation = "click",
             clicked = true,
+            success = true,
             strategy = clickStrategy,
-            element = CreateElementSnapshot(element)
+            resolverStrategy = resolved.Strategy,
+            element = resolved.Snapshot ?? CreateElementSnapshot(element),
+            fallbackUsed = resolved.FallbackUsed
         };
     }
 
@@ -2319,36 +2340,10 @@ public partial class UiService : IUiService
         if (locator == null && req.LocatorPath == null && req.Criteria == null)
             throw new ArgumentException("'locator', 'locatorPath' or 'criteria' is required for findlocator/inspectlocator.");
 
-        var session = RequireSession();
+        RequireSession();
 
-        try
-        {
-            var result = _newResolver.ResolveOne(req, "inspectlocator");
-
-            return new
-            {
-                found = true,
-                strategy = result.Strategy,
-                rootStrategy = req.SearchRoot ?? "currentWindow",
-                element = CreateElementSnapshot(result.Element),
-                candidates = new List<object>(),
-                ambiguous = false
-            };
-        }
-        catch (Exception ex)
-        {
-            var isAmbiguous = ex.Message.Contains("ElementAmbiguous");
-            return new
-            {
-                found = false,
-                strategy = "not-found",
-                rootStrategy = req.SearchRoot ?? "currentWindow",
-                element = (object?)null,
-                candidates = new List<object>(),
-                ambiguous = isAmbiguous,
-                message = ex.Message
-            };
-        }
+        var result = PywinautoResolve(req, QueryResolveOptions);
+        return BuildPywinautoQueryResponse(req.Operation ?? "findlocator", result);
     }
 
     private object? InspectLogicalMenu(UiRequest req)
@@ -8265,7 +8260,7 @@ public partial class UiService : IUiService
         hwnd = SafeWindowHandle(element).ToInt64()
     };
 
-    private static bool IsEmptyLocator(UiLocator? locator)
+    internal static bool IsEmptyLocator(UiLocator? locator)
     {
         return locator == null || (
             string.IsNullOrWhiteSpace(locator.Name) &&
@@ -8941,6 +8936,126 @@ public partial class UiService : IUiService
     }
 
     // =========================================================================
+    // pywinauto-style centralized resolver
+    // =========================================================================
+
+    private ElementResolution.ElementResolveResult PywinautoResolve(
+        UiRequest request,
+        ElementResolution.ResolveOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        var timeoutMs = request.TimeoutMs ?? 5000;
+        var pollMs = request.PollIntervalMs ?? 200;
+
+        if (UsePywinautoStyleResolver)
+        {
+            var result = _pywinautoResolver.ResolveWithRetry(
+                request,
+                request.Locator,
+                options,
+                TimeSpan.FromMilliseconds(timeoutMs),
+                TimeSpan.FromMilliseconds(pollMs),
+                cancellationToken);
+
+            if (result.Success || !ShouldTryLegacyResolverFallback(request))
+                return result;
+
+            try
+            {
+                var legacy = _newResolver.ResolveOne(request.Locator ?? new UiLocator(), request, options.Purpose);
+                if (legacy.Element != null)
+                {
+                    return new ElementResolution.ElementResolveResult
+                    {
+                        Success = true,
+                        Element = legacy.Element,
+                        Snapshot = ElementResolution.ElementSnapshot.FromResolutionSnapshot(
+                            Resolution.ElementResolver.CreateSnapshot(legacy.Element)),
+                        Strategy = "legacy-fallback",
+                        FallbackUsed = true,
+                        CandidateCount = legacy.Candidates.Count,
+                        Criteria = ElementResolution.ElementSearchCriteria.FromLocator(request.Locator),
+                        ElapsedMs = result.ElapsedMs
+                    };
+                }
+            }
+            catch
+            {
+                // return primary resolver diagnostics
+            }
+
+            return result;
+        }
+
+        var inner = _newResolver.ResolveOne(request.Locator ?? new UiLocator(), request, options.Purpose);
+        return new ElementResolution.ElementResolveResult
+        {
+            Success = inner.Element != null,
+            Element = inner.Element,
+            Snapshot = inner.Element == null
+                ? null
+                : ElementResolution.ElementSnapshot.FromResolutionSnapshot(
+                    Resolution.ElementResolver.CreateSnapshot(inner.Element)),
+            Strategy = inner.Strategy,
+            CandidateCount = inner.Candidates.Count,
+            Criteria = ElementResolution.ElementSearchCriteria.FromLocator(request.Locator)
+        };
+    }
+
+    private static bool ShouldTryLegacyResolverFallback(UiRequest request) =>
+        request.Fast == true;
+
+    private static ElementResolution.ResolveOptions QueryResolveOptions =>
+        new()
+        {
+            AllowOffscreen = true,
+            AllowDisabled = true,
+            IncludeHidden = true,
+            ReturnCandidates = true,
+            Purpose = "query"
+        };
+
+    private static ElementResolution.ResolveOptions ReadResolveOptions =>
+        new()
+        {
+            AllowOffscreen = true,
+            AllowDisabled = true,
+            IncludeHidden = true,
+            ReturnCandidates = true,
+            Purpose = "read"
+        };
+
+    private static ElementResolution.ResolveOptions ClickResolveOptions =>
+        new()
+        {
+            AllowOffscreen = false,
+            AllowDisabled = false,
+            IncludeHidden = false,
+            ReturnCandidates = true,
+            ThrowIfNotFound = false,
+            Purpose = "click"
+        };
+
+    private object BuildPywinautoQueryResponse(string operation, ElementResolution.ElementResolveResult result) =>
+        new
+        {
+            operation,
+            found = result.Success,
+            exists = result.Success,
+            strategy = result.Strategy,
+            error = result.Error,
+            snapshot = result.Snapshot,
+            element = result.Snapshot,
+            candidateCount = result.CandidateCount,
+            candidates = result.Candidates,
+            searchRoot = result.SearchRoot,
+            criteria = result.Criteria,
+            elapsedMs = result.ElapsedMs,
+            ambiguous = result.Ambiguous,
+            fallbackUsed = result.FallbackUsed
+        };
+
+    // =========================================================================
     // Resolved element for state-query pipeline
     // =========================================================================
 
@@ -8958,12 +9073,17 @@ public partial class UiService : IUiService
     /// </summary>
     private ResolvedElement ResolveForStateQuery(UiRequest request)
     {
-        var locator = request.Locator ?? new UiLocator();
-        var matchResult = _newResolver.ResolveOne(locator, request, "state-query");
+        var result = PywinautoResolve(request, QueryResolveOptions);
+        if (!result.Success || result.Element == null)
+        {
+            throw new InvalidOperationException(
+                result.Error ?? $"Element not found for state query. candidateCount={result.CandidateCount}");
+        }
+
         return new ResolvedElement
         {
-            Element = matchResult.Element,
-            Strategy = matchResult.Strategy,
+            Element = result.Element,
+            Strategy = result.Strategy,
             RootStrategy = request.SearchRoot ?? "currentWindow"
         };
     }
