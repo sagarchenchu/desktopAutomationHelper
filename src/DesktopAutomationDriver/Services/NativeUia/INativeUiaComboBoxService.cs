@@ -10,13 +10,13 @@ public interface INativeUiaComboBoxService
         int? processId,
         CancellationToken cancellationToken = default);
 
-    object FindComboBox(
+    object InspectComboBox(
         UiRequest request,
         IntPtr? activeWindowHwnd,
         int? processId,
         CancellationToken cancellationToken = default);
 
-    object InspectComboBox(
+    object FindComboBox(
         UiRequest request,
         IntPtr? activeWindowHwnd,
         int? processId,

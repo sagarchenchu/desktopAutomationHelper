@@ -352,8 +352,14 @@ public partial class UiService : IUiService
                 "selectdynamicmenupath" => SelectDynamicMenuPath(request),
                 // Backward-compatible alias – the canonical operation is "select".
                 "selectcomboboxitem" => Select(request, cancellationToken),
-                "selectcomboboxuia" => SelectComboBoxNativeUia(request, cancellationToken),
-                "findcomboboxuia" => FindComboBoxNativeUia(request, cancellationToken),
+                "selectcomboboxuia" => ExecuteNativeUiaComboBoxOperation(
+                    request,
+                    SelectComboBoxNativeUia,
+                    cancellationToken),
+                "findcomboboxuia" => ExecuteNativeUiaComboBoxOperation(
+                    request,
+                    FindComboBoxNativeUia,
+                    cancellationToken),
                 "inspectcombobox" => InspectComboBox(request, cancellationToken),
                 "draganddrop"     => DragAndDrop(request),
                 "dragbyoffset"    => DragByOffset(request),
@@ -10520,23 +10526,132 @@ public partial class UiService : IUiService
         Keyboard.Release(key);
     }
 
+    private object? ExecuteNativeUiaComboBoxOperation(
+        UiRequest request,
+        Func<UiRequest, CancellationToken, object?> operation,
+        CancellationToken requestCancellationToken)
+    {
+        var timeoutMs = request.TimeoutMs.GetValueOrDefault(8000);
+        timeoutMs = Math.Clamp(timeoutMs, 500, 15000);
+
+        using var timeoutCts = new CancellationTokenSource(timeoutMs);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            requestCancellationToken,
+            timeoutCts.Token);
+
+        try
+        {
+            return operation(request, linkedCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return new
+            {
+                operation = request.Operation,
+                success = false,
+                found = false,
+                reason = "timeout-or-cancelled",
+                timeoutMs,
+                message = $"{request.Operation} exceeded timeout or request was cancelled."
+            };
+        }
+    }
+
     private object? SelectComboBoxNativeUia(UiRequest request, CancellationToken cancellationToken)
     {
         var session = TryGetSessionOrNull();
+
+        IntPtr? rootHwnd = null;
+        int? processId = null;
+
+        try
+        {
+            processId = session?.Application?.ProcessId;
+        }
+        catch
+        {
+            processId = null;
+        }
+
+        try
+        {
+            if (session?.ActiveWindow != null)
+            {
+                var hwnd = SafeWindowHandle(session.ActiveWindow);
+                if (hwnd != IntPtr.Zero)
+                    rootHwnd = hwnd;
+            }
+        }
+        catch
+        {
+            rootHwnd = null;
+        }
+
+        if (rootHwnd == null && !processId.HasValue)
+        {
+            return new
+            {
+                operation = "selectcomboboxuia",
+                success = false,
+                found = false,
+                reason = "no-active-window",
+                message = "No active window/root hwnd found. Call /ui switchwindow first or launch/attach the application before selectcomboboxuia."
+            };
+        }
+
         return _nativeUiaComboBoxService.SelectComboBox(
             request,
-            session == null ? null : GetActiveWindowHwndOrNull(session),
-            session == null ? null : GetActiveProcessIdOrNull(session),
+            rootHwnd,
+            processId,
             cancellationToken);
     }
 
     private object? FindComboBoxNativeUia(UiRequest request, CancellationToken cancellationToken)
     {
         var session = TryGetSessionOrNull();
+
+        IntPtr? rootHwnd = null;
+        int? processId = null;
+
+        try
+        {
+            processId = session?.Application?.ProcessId;
+        }
+        catch
+        {
+            processId = null;
+        }
+
+        try
+        {
+            if (session?.ActiveWindow != null)
+            {
+                var hwnd = SafeWindowHandle(session.ActiveWindow);
+                if (hwnd != IntPtr.Zero)
+                    rootHwnd = hwnd;
+            }
+        }
+        catch
+        {
+            rootHwnd = null;
+        }
+
+        if (rootHwnd == null && !processId.HasValue)
+        {
+            return new
+            {
+                operation = "findcomboboxuia",
+                success = false,
+                found = false,
+                reason = "no-active-window",
+                message = "No active window/root hwnd found. Call /ui switchwindow first or launch/attach the application before findcomboboxuia."
+            };
+        }
+
         return _nativeUiaComboBoxService.FindComboBox(
             request,
-            session == null ? null : GetActiveWindowHwndOrNull(session),
-            session == null ? null : GetActiveProcessIdOrNull(session),
+            rootHwnd,
+            processId,
             cancellationToken);
     }
 

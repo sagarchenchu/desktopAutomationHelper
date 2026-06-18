@@ -129,6 +129,37 @@ internal sealed class NativeUiaAutomation
         return results;
     }
 
+    public IUIAutomationElement[] GetChildren(IUIAutomationElement root, int maxChildren = 200)
+    {
+        var results = new List<IUIAutomationElement>(maxChildren);
+
+        try
+        {
+            var arr = root.FindAll(TreeScope.TreeScope_Children, TrueCondition());
+            var count = Math.Min(arr.Length, maxChildren);
+
+            for (var i = 0; i < count; i++)
+            {
+                try
+                {
+                    var child = arr.GetElement(i);
+                    if (child != null)
+                        results.Add(child);
+                }
+                catch
+                {
+                    // ignore stale element
+                }
+            }
+        }
+        catch
+        {
+            // ignore search failures
+        }
+
+        return results.ToArray();
+    }
+
     public IUIAutomationElement? FindFirstDescendant(
         IUIAutomationElement root,
         IUIAutomationCondition condition)
