@@ -352,6 +352,8 @@ public partial class UiService : IUiService
                 "selectdynamicmenupath" => SelectDynamicMenuPath(request),
                 // Backward-compatible alias – the canonical operation is "select".
                 "selectcomboboxitem" => Select(request, cancellationToken),
+                "selectcomboboxuia" => SelectComboBoxNativeUia(request, cancellationToken),
+                "findcomboboxuia" => FindComboBoxNativeUia(request, cancellationToken),
                 "inspectcombobox" => InspectComboBox(request, cancellationToken),
                 "draganddrop"     => DragAndDrop(request),
                 "dragbyoffset"    => DragByOffset(request),
@@ -10516,6 +10518,74 @@ public partial class UiService : IUiService
         Keyboard.Press(key);
         Thread.Sleep(25);
         Keyboard.Release(key);
+    }
+
+    private object? SelectComboBoxNativeUia(UiRequest request, CancellationToken cancellationToken)
+    {
+        var session = TryGetSessionOrNull();
+
+        IntPtr? rootHwnd = null;
+        int? processId = null;
+
+        try
+        {
+            processId = session?.Application?.ProcessId;
+        }
+        catch
+        {
+            processId = null;
+        }
+
+        try
+        {
+            if (session?.ActiveWindow != null)
+            {
+                var hwnd = SafeWindowHandle(session.ActiveWindow);
+                if (hwnd != IntPtr.Zero)
+                    rootHwnd = hwnd;
+            }
+        }
+        catch
+        {
+            rootHwnd = null;
+        }
+
+        var selector = new DesktopAutomationDriver.NativeUia.NativeUiaComboBoxSelector(_logger);
+        return selector.Select(request, rootHwnd, processId, cancellationToken);
+    }
+
+    private object? FindComboBoxNativeUia(UiRequest request, CancellationToken cancellationToken)
+    {
+        var session = TryGetSessionOrNull();
+
+        IntPtr? rootHwnd = null;
+        int? processId = null;
+
+        try
+        {
+            processId = session?.Application?.ProcessId;
+        }
+        catch
+        {
+            processId = null;
+        }
+
+        try
+        {
+            if (session?.ActiveWindow != null)
+            {
+                var hwnd = SafeWindowHandle(session.ActiveWindow);
+                if (hwnd != IntPtr.Zero)
+                    rootHwnd = hwnd;
+            }
+        }
+        catch
+        {
+            rootHwnd = null;
+        }
+
+        var selector = new DesktopAutomationDriver.NativeUia.NativeUiaComboBoxSelector(_logger);
+        return selector.FindOnly(request, rootHwnd, processId, cancellationToken);
     }
 
     private object? InspectComboBox(UiRequest req, CancellationToken cancellationToken = default)
