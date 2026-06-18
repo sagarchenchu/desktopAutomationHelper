@@ -16,7 +16,11 @@ internal sealed class NativeUiaElementResolver
 {
     private const int ComboBoxControlTypeId = 50003;
     private const int EditControlTypeId = 50004;
-    private const int MaxSearchLimit = 200;
+    private const int WindowControlTypeId = 50032;
+    private const int MaxComboBoxCandidates = 80;
+    private const int MaxSearchDepth = 8;
+    private const int MaxChildrenPerNode = 200;
+    private const int MaxProcessWindows = 20;
 
     private readonly NativeUiaAutomation _uia;
     private readonly NativeUiaElementFinder _finder;
@@ -31,19 +35,12 @@ internal sealed class NativeUiaElementResolver
         UiRequest request,
         IntPtr? activeWindowHwnd,
         int? processId,
+        DateTime deadlineUtc,
         CancellationToken cancellationToken,
-        DateTime? deadline = null,
-        bool allowDesktopFallback = true)
+        bool allowDesktopFallback = false)
     {
+        ThrowIfExpired(deadlineUtc, "ResolveComboBox");
         cancellationToken.ThrowIfCancellationRequested();
-        if (deadline.HasValue && DateTime.UtcNow > deadline.Value)
-        {
-            return new NativeUiaResolveResult
-            {
-                Stage = "timeout",
-                LastError = "ComboBox resolve timed out before search started."
-            };
-        }
 
         var locator = ToNativeLocator(request, processId);
         if (locator.Hwnd is > 0)
@@ -61,7 +58,7 @@ internal sealed class NativeUiaElementResolver
         {
             return new NativeUiaResolveResult
             {
-                Stage = "no-search-context",
+                Stage = "no-active-window",
                 LastError = "No active window hwnd or processId. Launch/attach and switchwindow first."
             };
         }
@@ -70,12 +67,12 @@ internal sealed class NativeUiaElementResolver
         if (request.ParentLocator != null)
         {
             var parentLocator = ToNativeLocator(request.ParentLocator, request, processId);
-            foreach (var root in BuildSearchRoots(activeWindowHwnd, processId, includeDesktop: false))
+            foreach (var root in BuildSearchRoots(activeWindowHwnd, processId, allowDesktopFallback, deadlineUtc, cancellationToken))
             {
+                ThrowIfExpired(deadlineUtc, "ResolveComboBox parent-root");
                 cancellationToken.ThrowIfCancellationRequested();
-                ThrowIfPastDeadline(deadline);
 
-                var parent = _finder.FindFirst(root, parentLocator);
+                var parent = _finder.FindFirst(root, parentLocator, descendants: true, limit: 50);
                 if (parent != null)
                 {
                     searchRoots.Add(parent);
@@ -94,25 +91,24 @@ internal sealed class NativeUiaElementResolver
         }
         else
         {
-            searchRoots.AddRange(BuildSearchRoots(activeWindowHwnd, processId, includeDesktop: false));
+            searchRoots.AddRange(BuildSearchRoots(activeWindowHwnd, processId, allowDesktopFallback, deadlineUtc, cancellationToken));
+        }
+
+        if (searchRoots.Count == 0)
+        {
+            return new NativeUiaResolveResult
+            {
+                Stage = "no-active-window",
+                LastError = "No active window hwnd or processId. Launch/attach and switchwindow first."
+            };
         }
 
         var allMatches = new List<IUIAutomationElement>();
         foreach (var root in searchRoots)
         {
+            ThrowIfExpired(deadlineUtc, "ResolveComboBox search");
             cancellationToken.ThrowIfCancellationRequested();
-            ThrowIfPastDeadline(deadline);
-            allMatches.AddRange(FindComboMatches(root, locator));
-        }
-
-        if (allMatches.Count == 0 && allowDesktopFallback)
-        {
-            foreach (var root in BuildSearchRoots(activeWindowHwnd, processId, includeDesktop: true))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                ThrowIfPastDeadline(deadline);
-                allMatches.AddRange(FindComboMatches(root, locator));
-            }
+            allMatches.AddRange(FindComboMatches(root, locator, deadlineUtc, cancellationToken));
         }
 
         allMatches = allMatches.DistinctBy(RuntimeKey).ToList();
@@ -163,24 +159,104 @@ internal sealed class NativeUiaElementResolver
     private NativeUiaResolveResult SingleResult(IUIAutomationElement element) =>
         new() { Element = element, Candidates = [NativeUiaDiagnostics.CandidateDiagnostic(0, _uia.CreateSnapshot(element))] };
 
-    private List<IUIAutomationElement> FindComboMatches(IUIAutomationElement root, NativeUiaLocator locator)
+    private List<IUIAutomationElement> FindComboMatches(
+        IUIAutomationElement root,
+        NativeUiaLocator locator,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken)
     {
-        var matches = _finder.FindElements(root, locator.AsComboBoxLocator(), limit: MaxSearchLimit);
-        if (matches.Count > 0)
-            return matches;
-
-        if (string.IsNullOrWhiteSpace(locator.AutomationId) && string.IsNullOrWhiteSpace(locator.Name))
-            return matches;
-
-        var promoted = new List<IUIAutomationElement>();
-        foreach (var candidate in _finder.FindElements(root, locator.WithoutControlType(), limit: MaxSearchLimit))
+        if (!string.IsNullOrWhiteSpace(locator.AutomationId) || !string.IsNullOrWhiteSpace(locator.Name))
         {
-            var combo = PromoteToComboBox(candidate);
-            if (combo != null && ElementMatchesComboLocator(combo, locator))
-                promoted.Add(combo);
+            ThrowIfExpired(deadlineUtc, "FindComboMatches targeted");
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var targeted = _finder.FindFirst(root, locator.AsComboBoxLocator(), descendants: true, limit: 1);
+            if (targeted != null && ElementMatchesComboLocator(targeted, locator))
+                return [targeted];
+
+            foreach (var candidate in _finder.FindElements(root, locator.WithoutControlType(), descendants: true, limit: 20))
+            {
+                ThrowIfExpired(deadlineUtc, "FindComboMatches promote");
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var combo = PromoteToComboBox(candidate);
+                if (combo != null && ElementMatchesComboLocator(combo, locator))
+                    return [combo];
+            }
         }
 
-        return promoted;
+        var bounded = new List<IUIAutomationElement>();
+        FindComboBoxesBounded(
+            root,
+            bounded,
+            depth: 0,
+            maxDepth: MaxSearchDepth,
+            maxCandidates: MaxComboBoxCandidates,
+            deadlineUtc,
+            cancellationToken);
+
+        return bounded
+            .Where(e => ElementMatchesComboLocator(e, locator))
+            .ToList();
+    }
+
+    private void FindComboBoxesBounded(
+        IUIAutomationElement root,
+        List<IUIAutomationElement> results,
+        int depth,
+        int maxDepth,
+        int maxCandidates,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfExpired(deadlineUtc, "FindComboBoxesBounded");
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (depth > maxDepth || results.Count >= maxCandidates)
+            return;
+
+        IUIAutomationElement[] children;
+        try
+        {
+            children = _uia.GetChildren(root, MaxChildrenPerNode);
+        }
+        catch
+        {
+            return;
+        }
+
+        foreach (var child in children)
+        {
+            ThrowIfExpired(deadlineUtc, "FindComboBoxesBounded loop");
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var controlType = _uia.GetIntProperty(child, UIA_PropertyIds.UIA_ControlTypePropertyId);
+                if (controlType == ComboBoxControlTypeId)
+                {
+                    results.Add(child);
+                    if (results.Count >= maxCandidates)
+                        return;
+                }
+            }
+            catch
+            {
+                // Ignore stale/unavailable element.
+            }
+
+            FindComboBoxesBounded(
+                child,
+                results,
+                depth + 1,
+                maxDepth,
+                maxCandidates,
+                deadlineUtc,
+                cancellationToken);
+
+            if (results.Count >= maxCandidates)
+                return;
+        }
     }
 
     private bool ElementMatchesComboLocator(IUIAutomationElement element, NativeUiaLocator locator)
@@ -217,7 +293,12 @@ internal sealed class NativeUiaElementResolver
         return null;
     }
 
-    private List<IUIAutomationElement> BuildSearchRoots(IntPtr? activeWindowHwnd, int? processId, bool includeDesktop)
+    private List<IUIAutomationElement> BuildSearchRoots(
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        bool allowDesktopFallback,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken)
     {
         var roots = new List<IUIAutomationElement>();
 
@@ -227,19 +308,21 @@ internal sealed class NativeUiaElementResolver
             if (activeRoot != null)
                 roots.Add(activeRoot);
         }
-
-        if (processId.HasValue && activeWindowHwnd is not > 0)
+        else if (processId.HasValue)
         {
-            var processWindows = _uia.FindAllDescendants(
+            ThrowIfExpired(deadlineUtc, "BuildSearchRoots process-windows");
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var processWindows = _uia.FindAllChildren(
                 _uia.Root,
                 _uia.And(
                     _uia.PropertyCondition(UIA_PropertyIds.UIA_ProcessIdPropertyId, processId.Value),
-                    _uia.PropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, 50032)),
-                20);
+                    _uia.PropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, WindowControlTypeId)),
+                MaxProcessWindows);
             roots.AddRange(processWindows);
         }
 
-        if (includeDesktop)
+        if (allowDesktopFallback && roots.Count == 0)
             roots.Add(_uia.Root);
 
         return roots.DistinctBy(RuntimeKey).ToList();
@@ -256,10 +339,10 @@ internal sealed class NativeUiaElementResolver
         return processId.HasValue;
     }
 
-    private static void ThrowIfPastDeadline(DateTime? deadline)
+    private static void ThrowIfExpired(DateTime deadlineUtc, string stage)
     {
-        if (deadline.HasValue && DateTime.UtcNow > deadline.Value)
-            throw new TimeoutException("Native UIA ComboBox resolve timed out.");
+        if (DateTime.UtcNow > deadlineUtc)
+            throw new TimeoutException($"{stage} exceeded timeout.");
     }
 
     private static NativeUiaLocator ToNativeLocator(UiRequest request, int? processId) =>

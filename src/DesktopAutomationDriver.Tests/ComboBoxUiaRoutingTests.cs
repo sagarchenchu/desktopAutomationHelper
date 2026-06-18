@@ -1,3 +1,4 @@
+using System.Text.Json;
 using DesktopAutomationDriver.Models.Request;
 using DesktopAutomationDriver.Services;
 using DesktopAutomationDriver.Services.NativeUia;
@@ -9,22 +10,9 @@ namespace DesktopAutomationDriver.Tests;
 public class ComboBoxUiaRoutingTests
 {
     [Fact]
-    public void FindComboBoxUia_WithoutSession_RoutesToNativeServiceWithNullContext()
+    public void FindComboBoxUia_WithoutSession_FailsFastWithoutCallingService()
     {
         var nativeMock = new Mock<INativeUiaComboBoxService>(MockBehavior.Strict);
-        nativeMock
-            .Setup(s => s.FindComboBox(
-                It.Is<UiRequest>(r => r.Operation == "findcomboboxuia"),
-                null,
-                null,
-                It.IsAny<CancellationToken>()))
-            .Returns(new
-            {
-                operation = "findcomboboxuia",
-                found = false,
-                success = false,
-                stage = "no-search-context"
-            });
 
         var ctxMock = new Mock<IUiSessionContext>();
         ctxMock.Setup(c => c.ActiveSession).Returns((AutomationSession?)null);
@@ -34,37 +22,44 @@ public class ComboBoxUiaRoutingTests
         {
             Operation = "findcomboboxuia",
             Locator = new UiLocator { AutomationId = "cmbinbound", ControlType = "ComboBox" },
-            TimeoutMs = 8000
+            TimeoutMs = 3000
         };
 
         var result = service.Execute(request);
+        var json = JsonSerializer.Serialize(result);
 
-        Assert.NotNull(result);
+        Assert.Contains("no-active-window", json);
+        Assert.Contains("\"success\":false", json);
+        Assert.Contains("\"found\":false", json);
         nativeMock.Verify(
             s => s.FindComboBox(
-                It.Is<UiRequest>(r => r.Locator!.AutomationId == "cmbinbound"),
-                null,
-                null,
+                It.IsAny<UiRequest>(),
+                It.IsAny<IntPtr?>(),
+                It.IsAny<int?>(),
                 It.IsAny<CancellationToken>()),
-            Times.Once);
+            Times.Never);
     }
 
     [Fact]
-    public void SelectComboBoxUia_WithoutSession_RoutesToNativeServiceWithNullContext()
+    public void FindComboBoxUia_OperationOnly_WithoutSession_FailsFast()
     {
         var nativeMock = new Mock<INativeUiaComboBoxService>(MockBehavior.Strict);
-        nativeMock
-            .Setup(s => s.SelectComboBox(
-                It.Is<UiRequest>(r => r.Operation == "selectcomboboxuia"),
-                null,
-                null,
-                It.IsAny<CancellationToken>()))
-            .Returns(new
-            {
-                operation = "selectcomboboxuia",
-                success = false,
-                stage = "no-search-context"
-            });
+
+        var ctxMock = new Mock<IUiSessionContext>();
+        ctxMock.Setup(c => c.ActiveSession).Returns((AutomationSession?)null);
+        var service = new UiService(ctxMock.Object, NullLogger<UiService>.Instance, nativeMock.Object);
+
+        var result = service.Execute(new UiRequest { Operation = "findcomboboxuia", TimeoutMs = 3000 });
+        var json = JsonSerializer.Serialize(result);
+
+        Assert.Contains("no-active-window", json);
+        nativeMock.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public void SelectComboBoxUia_WithoutSession_FailsFastWithoutCallingService()
+    {
+        var nativeMock = new Mock<INativeUiaComboBoxService>(MockBehavior.Strict);
 
         var ctxMock = new Mock<IUiSessionContext>();
         ctxMock.Setup(c => c.ActiveSession).Returns((AutomationSession?)null);
@@ -79,88 +74,37 @@ public class ComboBoxUiaRoutingTests
         };
 
         var result = service.Execute(request);
+        var json = JsonSerializer.Serialize(result);
 
-        Assert.NotNull(result);
+        Assert.Contains("no-active-window", json);
         nativeMock.Verify(
             s => s.SelectComboBox(
-                It.Is<UiRequest>(r => r.Value == "Between"),
-                null,
-                null,
+                It.IsAny<UiRequest>(),
+                It.IsAny<IntPtr?>(),
+                It.IsAny<int?>(),
                 It.IsAny<CancellationToken>()),
-            Times.Once);
+            Times.Never);
     }
 
     [Fact]
-    public void FindComboBoxUia_InvalidLocator_ReturnsStructuredFailureFromService()
+    public void FindComboBoxUia_WithoutSession_WithRequestProcessId_StillFailsFastAtUiService()
     {
         var nativeMock = new Mock<INativeUiaComboBoxService>(MockBehavior.Strict);
-        nativeMock
-            .Setup(s => s.FindComboBox(
-                It.IsAny<UiRequest>(),
-                It.IsAny<IntPtr?>(),
-                It.IsAny<int?>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(new
-            {
-                operation = "findcomboboxuia",
-                found = false,
-                success = false,
-                stage = "combo-not-found",
-                error = "Native UIA resolver could not find a ComboBox for the locator."
-            });
 
         var ctxMock = new Mock<IUiSessionContext>();
         ctxMock.Setup(c => c.ActiveSession).Returns((AutomationSession?)null);
         var service = new UiService(ctxMock.Object, NullLogger<UiService>.Instance, nativeMock.Object);
 
-        var request = new UiRequest
+        var result = service.Execute(new UiRequest
         {
             Operation = "findcomboboxuia",
-            Locator = new UiLocator { AutomationId = "missing-combo", ControlType = "ComboBox" }
-        };
-
-        var result = service.Execute(request);
-
-        Assert.NotNull(result);
-        nativeMock.Verify(
-            s => s.FindComboBox(
-                It.Is<UiRequest>(r => r.Locator!.AutomationId == "missing-combo"),
-                null,
-                null,
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Theory]
-    [InlineData(null, 8000)]
-    [InlineData(5000, 5000)]
-    [InlineData(20000, 15000)]
-    public void FindComboBoxUia_TimeoutMs_IsForwardedToService(int? requestTimeout, int expectedTimeout)
-    {
-        int? capturedTimeout = null;
-
-        var nativeMock = new Mock<INativeUiaComboBoxService>(MockBehavior.Strict);
-        nativeMock
-            .Setup(s => s.FindComboBox(
-                It.IsAny<UiRequest>(),
-                It.IsAny<IntPtr?>(),
-                It.IsAny<int?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<UiRequest, IntPtr?, int?, CancellationToken>((req, _, _, _) => capturedTimeout = req.TimeoutMs)
-            .Returns(new { operation = "findcomboboxuia", found = false, success = false, stage = "no-search-context" });
-
-        var ctxMock = new Mock<IUiSessionContext>();
-        ctxMock.Setup(c => c.ActiveSession).Returns((AutomationSession?)null);
-        var service = new UiService(ctxMock.Object, NullLogger<UiService>.Instance, nativeMock.Object);
-
-        service.Execute(new UiRequest
-        {
-            Operation = "findcomboboxuia",
-            Locator = new UiLocator { AutomationId = "cmbinbound", ControlType = "ComboBox" },
-            TimeoutMs = requestTimeout
+            Locator = new UiLocator { AutomationId = "missing-combo", ControlType = "ComboBox" },
+            ProcessId = 1234,
+            TimeoutMs = 3000
         });
 
-        Assert.Equal(requestTimeout, capturedTimeout);
-        Assert.Equal(expectedTimeout, NativeUiaTimeoutPolicy.Resolve(requestTimeout));
+        var json = JsonSerializer.Serialize(result);
+        Assert.Contains("no-active-window", json);
+        nativeMock.VerifyNoOtherCalls();
     }
 }
