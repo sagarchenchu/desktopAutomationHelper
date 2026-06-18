@@ -46,6 +46,7 @@ builder.Services.AddSingleton<IRecordingService, RecordingService>();
 builder.Services.AddSingleton<IPlaybackService, PlaybackService>();
 builder.Services.AddSingleton<IUiSessionContext, UiSessionContext>();
 builder.Services.AddSingleton<INativeUiaComboBoxService, NativeUiaComboBoxService>();
+builder.Services.AddSingleton<INativeUiaBasicOperationService, NativeUiaBasicOperationService>();
 builder.Services.AddSingleton<IUiService, UiService>();
 
 builder.Logging.AddConsole();

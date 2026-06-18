@@ -8,14 +8,14 @@ using Moq;
 
 namespace DesktopAutomationDriver.Tests;
 
-public class NativeUiaHardTimeoutTests
+public class NativeUiaBasicOperationHardTimeoutTests
 {
     [Fact]
-    public void FindComboBoxUia_WhenServiceBlocks_ReturnsHardTimeoutJson()
+    public void ClickUia_WhenServiceBlocks_ReturnsHardTimeoutJson()
     {
-        var nativeMock = new Mock<INativeUiaComboBoxService>();
-        nativeMock
-            .Setup(s => s.FindComboBox(
+        var basicMock = new Mock<INativeUiaBasicOperationService>();
+        basicMock
+            .Setup(s => s.Click(
                 It.IsAny<UiRequest>(),
                 It.IsAny<IntPtr?>(),
                 It.IsAny<int?>(),
@@ -23,13 +23,13 @@ public class NativeUiaHardTimeoutTests
             .Returns(() =>
             {
                 Thread.Sleep(4000);
-                return new { operation = "findcomboboxuia", success = true, found = true };
+                return new { operation = "clickuia", success = true };
             });
 
         using var automation = new UIA3Automation();
         var app = FlaUI.Core.Application.Attach(Environment.ProcessId);
         using var session = new AutomationSession(
-            "hard-timeout-test",
+            "basic-hard-timeout-test",
             app,
             automation,
             "UIA3",
@@ -39,14 +39,14 @@ public class NativeUiaHardTimeoutTests
         var ctxMock = new Mock<IUiSessionContext>();
         ctxMock.Setup(c => c.ActiveSession).Returns(session);
 
-        var service = UiServiceTestFactory.Create(ctxMock.Object, comboMock: nativeMock);
+        var service = UiServiceTestFactory.Create(ctxMock.Object, basicMock: basicMock);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var result = service.Execute(new UiRequest
         {
-            Operation = "findcomboboxuia",
+            Operation = "clickuia",
             TimeoutMs = 1000,
-            Locator = new UiLocator { AutomationId = "cmbText", ControlType = "ComboBox" }
+            Locator = new UiLocator { AutomationId = "btnSearch", ControlType = "Button" }
         });
         sw.Stop();
 
@@ -55,6 +55,5 @@ public class NativeUiaHardTimeoutTests
         Assert.True(sw.ElapsedMilliseconds < 3000, $"Expected hard timeout around 1s, took {sw.ElapsedMilliseconds}ms");
         Assert.Contains("hard-timeout", json);
         Assert.Contains("\"success\":false", json);
-        Assert.Contains("\"found\":false", json);
     }
 }

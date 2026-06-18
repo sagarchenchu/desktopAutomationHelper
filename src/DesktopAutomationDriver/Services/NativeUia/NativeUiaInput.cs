@@ -215,11 +215,14 @@ internal static class NativeUiaInput
 
     internal static class VirtualKeys
     {
+        public const ushort Backspace = 0x08;
         public const ushort Return = 0x0D;
+        public const ushort Control = 0x11;
+        public const ushort Menu = 0x12;
         public const ushort Space = 0x20;
+        public const ushort A = 0x41;
         public const ushort Down = 0x28;
         public const ushort F4 = 0x73;
-        public const ushort Menu = 0x12;
         public const ushort Next = 0x22;
         public const ushort Escape = 0x1B;
     }
