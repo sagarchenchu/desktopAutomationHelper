@@ -214,15 +214,18 @@ public partial class UiService : IUiService
 
     private const bool UsePywinautoStyleResolver = true;
     private readonly INativeUiaComboBoxService _nativeUiaComboBoxService;
+    private readonly INativeUiaBasicOperationService _nativeUiaBasicOperationService;
 
     public UiService(
         IUiSessionContext ctx,
         ILogger<UiService> logger,
-        INativeUiaComboBoxService nativeUiaComboBoxService)
+        INativeUiaComboBoxService nativeUiaComboBoxService,
+        INativeUiaBasicOperationService nativeUiaBasicOperationService)
     {
         _ctx = ctx;
         _logger = logger;
         _nativeUiaComboBoxService = nativeUiaComboBoxService;
+        _nativeUiaBasicOperationService = nativeUiaBasicOperationService;
         _newResolver = new DesktopAutomationDriver.Services.Resolution.ElementResolver(ctx, logger, GetWindowRoot);
         _pywinautoResolver = new DesktopAutomationDriver.Services.ElementResolution.ElementResolver(ctx, logger, GetWindowRoot);
     }
@@ -359,6 +362,26 @@ public partial class UiService : IUiService
                 "findcomboboxuia" => ExecuteNativeUiaWithTimeout(
                     request,
                     FindComboBoxNativeUia,
+                    cancellationToken),
+                "clickuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    ClickNativeUia,
+                    cancellationToken),
+                "typeuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    TypeNativeUia,
+                    cancellationToken),
+                "sendkeysuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    SendKeysNativeUia,
+                    cancellationToken),
+                "clearuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    ClearNativeUia,
+                    cancellationToken),
+                "focusuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    FocusNativeUia,
                     cancellationToken),
                 "inspectcombobox" => InspectComboBox(request, cancellationToken),
                 "draganddrop"     => DragAndDrop(request),
@@ -10689,33 +10712,7 @@ public partial class UiService : IUiService
 
     private object? SelectComboBoxNativeUia(UiRequest request, CancellationToken cancellationToken)
     {
-        var session = TryGetSessionOrNull();
-
-        IntPtr? rootHwnd = null;
-        int? processId = null;
-
-        try
-        {
-            processId = session?.Application?.ProcessId;
-        }
-        catch
-        {
-            processId = null;
-        }
-
-        try
-        {
-            if (session?.ActiveWindow != null)
-            {
-                var hwnd = SafeWindowHandle(session.ActiveWindow);
-                if (hwnd != IntPtr.Zero)
-                    rootHwnd = hwnd;
-            }
-        }
-        catch
-        {
-            rootHwnd = null;
-        }
+        var (rootHwnd, processId) = GetNativeUiaSessionContext();
 
         if (rootHwnd == null && !processId.HasValue)
         {
@@ -10740,33 +10737,7 @@ public partial class UiService : IUiService
     {
         _logger.LogInformation("findcomboboxuia checkpoint 1: entered UiService");
 
-        var session = TryGetSessionOrNull();
-
-        IntPtr? rootHwnd = null;
-        int? processId = null;
-
-        try
-        {
-            processId = session?.Application?.ProcessId;
-        }
-        catch
-        {
-            processId = null;
-        }
-
-        try
-        {
-            if (session?.ActiveWindow != null)
-            {
-                var hwnd = SafeWindowHandle(session.ActiveWindow);
-                if (hwnd != IntPtr.Zero)
-                    rootHwnd = hwnd;
-            }
-        }
-        catch
-        {
-            rootHwnd = null;
-        }
+        var (rootHwnd, processId) = GetNativeUiaSessionContext();
 
         if (rootHwnd == null && !processId.HasValue)
         {
@@ -10787,6 +10758,90 @@ public partial class UiService : IUiService
             rootHwnd,
             processId,
             cancellationToken);
+    }
+
+    private object? ClickNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Click);
+
+    private object? TypeNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Type);
+
+    private object? SendKeysNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.SendKeys);
+
+    private object? ClearNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Clear);
+
+    private object? FocusNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Focus);
+
+    private object? ExecuteNativeUiaBasicOperation(
+        UiRequest request,
+        CancellationToken cancellationToken,
+        Func<UiRequest, IntPtr?, int?, CancellationToken, object> operation)
+    {
+        var operationName = string.IsNullOrWhiteSpace(request.Operation)
+            ? "native-uia-basic"
+            : request.Operation;
+
+        var (rootHwnd, processId) = GetNativeUiaSessionContext();
+
+        var requiresSession = operationName != "sendkeysuia"
+                              || HasNativeUiaLocator(request);
+
+        if (requiresSession && rootHwnd == null && !processId.HasValue)
+        {
+            return new
+            {
+                operation = operationName,
+                success = false,
+                reason = "no-active-window",
+                message = "No active window/root hwnd found. Call /ui switchwindow first."
+            };
+        }
+
+        return operation(request, rootHwnd, processId, cancellationToken);
+    }
+
+    private static bool HasNativeUiaLocator(UiRequest request) =>
+        request.Hwnd is > 0
+        || request.Locator?.Hwnd is > 0
+        || request.Locator?.Handle is > 0
+        || !string.IsNullOrWhiteSpace(request.Locator?.AutomationId)
+        || !string.IsNullOrWhiteSpace(request.Locator?.Name)
+        || !string.IsNullOrWhiteSpace(request.Locator?.ClassName)
+        || !string.IsNullOrWhiteSpace(request.Locator?.ControlType);
+
+    private (IntPtr? rootHwnd, int? processId) GetNativeUiaSessionContext()
+    {
+        var session = TryGetSessionOrNull();
+
+        int? processId = null;
+        try
+        {
+            processId = session?.Application?.ProcessId;
+        }
+        catch
+        {
+            processId = null;
+        }
+
+        IntPtr? rootHwnd = null;
+        try
+        {
+            if (session?.ActiveWindow != null)
+            {
+                var hwnd = SafeWindowHandle(session.ActiveWindow);
+                if (hwnd != IntPtr.Zero)
+                    rootHwnd = hwnd;
+            }
+        }
+        catch
+        {
+            rootHwnd = null;
+        }
+
+        return (rootHwnd, processId);
     }
 
     private object? InspectComboBox(UiRequest req, CancellationToken cancellationToken = default)

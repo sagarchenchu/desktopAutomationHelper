@@ -44,7 +44,7 @@ public class ComboBoxNativeUiaOnlyRoutingTests
 
         var ctxMock = new Mock<IUiSessionContext>();
         ctxMock.Setup(c => c.ActiveSession).Returns((AutomationSession?)null);
-        var service = new UiService(ctxMock.Object, NullLogger<UiService>.Instance, nativeMock.Object);
+        var service = UiServiceTestFactory.Create(ctxMock.Object, comboMock: nativeMock);
 
         var request = new UiRequest
         {
