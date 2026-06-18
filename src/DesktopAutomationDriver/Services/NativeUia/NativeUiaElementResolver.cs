@@ -116,11 +116,11 @@ internal sealed class NativeUiaElementResolver
         cancellationToken.ThrowIfCancellationRequested();
 
         var locator = ToNativeLocator(request, processId);
-        var allCombos = FindComboBoxesBounded(root, deadlineUtc, cancellationToken);
-        var matches = allCombos
-            .Where(e => ElementMatchesComboLocator(e, locator))
-            .DistinctBy(RuntimeKey)
-            .ToList();
+        var matches = FindMatchingComboBoxesBounded(
+            root,
+            locator,
+            deadlineUtc,
+            cancellationToken);
 
         var candidates = matches
             .Select((element, index) => NativeUiaDiagnostics.CandidateDiagnostic(index, _uia.CreateSnapshot(element)))
@@ -169,42 +169,56 @@ internal sealed class NativeUiaElementResolver
     private NativeUiaResolveResult SingleResult(IUIAutomationElement element) =>
         new() { Element = element, Candidates = [NativeUiaDiagnostics.CandidateDiagnostic(0, _uia.CreateSnapshot(element))] };
 
-    private List<IUIAutomationElement> FindComboBoxesBounded(
+    private List<IUIAutomationElement> FindMatchingComboBoxesBounded(
         IUIAutomationElement root,
+        NativeUiaLocator locator,
         DateTime deadlineUtc,
         CancellationToken cancellationToken)
     {
         var results = new List<IUIAutomationElement>();
-        FindComboBoxesBoundedRecursive(
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        FindMatchingComboBoxesBoundedRecursive(
             root,
+            locator,
             results,
+            seen,
             depth: 0,
             maxDepth: MaxSearchDepth,
             maxCandidates: MaxComboBoxCandidates,
             deadlineUtc,
             cancellationToken);
+
         return results;
     }
 
-    private void FindComboBoxesBoundedRecursive(
+    private void FindMatchingComboBoxesBoundedRecursive(
         IUIAutomationElement root,
+        NativeUiaLocator locator,
         List<IUIAutomationElement> results,
+        HashSet<string> seen,
         int depth,
         int maxDepth,
         int maxCandidates,
         DateTime deadlineUtc,
         CancellationToken cancellationToken)
     {
-        ThrowIfExpired(deadlineUtc, "FindComboBoxesBoundedRecursive");
+        ThrowIfExpired(deadlineUtc, "FindMatchingComboBoxesBoundedRecursive");
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (depth > maxDepth || results.Count >= maxCandidates)
+        if (depth > maxDepth)
+            return;
+
+        if (results.Count >= maxCandidates)
             return;
 
         IUIAutomationElementArray children;
+
         try
         {
-            children = root.FindAll(TreeScope.TreeScope_Children, _uia.ControlViewCondition);
+            children = root.FindAll(
+                TreeScope.TreeScope_Children,
+                _uia.ControlViewCondition);
         }
         catch
         {
@@ -215,10 +229,11 @@ internal sealed class NativeUiaElementResolver
 
         for (var i = 0; i < childCount; i++)
         {
-            ThrowIfExpired(deadlineUtc, "FindComboBoxesBoundedRecursive loop");
+            ThrowIfExpired(deadlineUtc, "FindMatchingComboBoxesBoundedRecursive loop");
             cancellationToken.ThrowIfCancellationRequested();
 
             IUIAutomationElement child;
+
             try
             {
                 child = children.GetElement(i);
@@ -230,30 +245,65 @@ internal sealed class NativeUiaElementResolver
 
             try
             {
-                if (child.CurrentControlType == ComboBoxControlTypeId)
+                var controlType = _uia.GetIntProperty(
+                    child,
+                    UIA_PropertyIds.UIA_ControlTypePropertyId);
+
+                if (controlType == ComboBoxControlTypeId)
                 {
-                    results.Add(child);
-                    if (results.Count >= maxCandidates)
-                        return;
+                    if (ElementMatchesComboLocator(child, locator))
+                    {
+                        var key = RuntimeKey(child);
+
+                        if (seen.Add(key))
+                        {
+                            results.Add(child);
+
+                            if (ShouldStopAfterFirstStrongMatch(locator))
+                                return;
+
+                            if (results.Count >= maxCandidates)
+                                return;
+                        }
+                    }
                 }
             }
             catch
             {
-                // Element may be stale.
+                // Ignore stale/bad UIA element.
             }
 
-            FindComboBoxesBoundedRecursive(
+            FindMatchingComboBoxesBoundedRecursive(
                 child,
+                locator,
                 results,
+                seen,
                 depth + 1,
                 maxDepth,
                 maxCandidates,
                 deadlineUtc,
                 cancellationToken);
 
+            if (ShouldStopAfterFirstStrongMatch(locator) && results.Count > 0)
+                return;
+
             if (results.Count >= maxCandidates)
                 return;
         }
+    }
+
+    private static bool ShouldStopAfterFirstStrongMatch(NativeUiaLocator locator)
+    {
+        if (locator.FoundIndex.HasValue)
+            return false;
+
+        if (locator.Hwnd is > 0)
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(locator.AutomationId))
+            return true;
+
+        return false;
     }
 
     private List<IUIAutomationElement> FindTopLevelWindowsForProcessBounded(

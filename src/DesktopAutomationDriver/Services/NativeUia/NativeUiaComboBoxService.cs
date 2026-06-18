@@ -292,12 +292,6 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
 
         try
         {
-            _logger.LogInformation(
-                "findcomboboxuia start rootHwnd={RootHwnd}, processId={ProcessId}, timeoutMs={TimeoutMs}",
-                activeWindowHwnd?.ToInt64(),
-                processId,
-                timeoutMs);
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (activeWindowHwnd == null && !processId.HasValue)
