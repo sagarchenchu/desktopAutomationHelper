@@ -10523,69 +10523,21 @@ public partial class UiService : IUiService
     private object? SelectComboBoxNativeUia(UiRequest request, CancellationToken cancellationToken)
     {
         var session = TryGetSessionOrNull();
-
-        IntPtr? rootHwnd = null;
-        int? processId = null;
-
-        try
-        {
-            processId = session?.Application?.ProcessId;
-        }
-        catch
-        {
-            processId = null;
-        }
-
-        try
-        {
-            if (session?.ActiveWindow != null)
-            {
-                var hwnd = SafeWindowHandle(session.ActiveWindow);
-                if (hwnd != IntPtr.Zero)
-                    rootHwnd = hwnd;
-            }
-        }
-        catch
-        {
-            rootHwnd = null;
-        }
-
-        var selector = new DesktopAutomationDriver.NativeUia.NativeUiaComboBoxSelector(_logger);
-        return selector.Select(request, rootHwnd, processId, cancellationToken);
+        return _nativeUiaComboBoxService.SelectComboBox(
+            request,
+            session == null ? null : GetActiveWindowHwndOrNull(session),
+            session == null ? null : GetActiveProcessIdOrNull(session),
+            cancellationToken);
     }
 
     private object? FindComboBoxNativeUia(UiRequest request, CancellationToken cancellationToken)
     {
         var session = TryGetSessionOrNull();
-
-        IntPtr? rootHwnd = null;
-        int? processId = null;
-
-        try
-        {
-            processId = session?.Application?.ProcessId;
-        }
-        catch
-        {
-            processId = null;
-        }
-
-        try
-        {
-            if (session?.ActiveWindow != null)
-            {
-                var hwnd = SafeWindowHandle(session.ActiveWindow);
-                if (hwnd != IntPtr.Zero)
-                    rootHwnd = hwnd;
-            }
-        }
-        catch
-        {
-            rootHwnd = null;
-        }
-
-        var selector = new DesktopAutomationDriver.NativeUia.NativeUiaComboBoxSelector(_logger);
-        return selector.FindOnly(request, rootHwnd, processId, cancellationToken);
+        return _nativeUiaComboBoxService.FindComboBox(
+            request,
+            session == null ? null : GetActiveWindowHwndOrNull(session),
+            session == null ? null : GetActiveProcessIdOrNull(session),
+            cancellationToken);
     }
 
     private object? InspectComboBox(UiRequest req, CancellationToken cancellationToken = default)

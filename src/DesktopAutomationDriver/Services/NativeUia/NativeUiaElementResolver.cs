@@ -31,9 +31,19 @@ internal sealed class NativeUiaElementResolver
         UiRequest request,
         IntPtr? activeWindowHwnd,
         int? processId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTime? deadline = null,
+        bool allowDesktopFallback = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (deadline.HasValue && DateTime.UtcNow > deadline.Value)
+        {
+            return new NativeUiaResolveResult
+            {
+                Stage = "timeout",
+                LastError = "ComboBox resolve timed out before search started."
+            };
+        }
 
         var locator = ToNativeLocator(request, processId);
         if (locator.Hwnd is > 0)
@@ -47,18 +57,60 @@ internal sealed class NativeUiaElementResolver
             }
         }
 
+        if (!HasSearchContext(request, activeWindowHwnd, processId))
+        {
+            return new NativeUiaResolveResult
+            {
+                Stage = "no-search-context",
+                LastError = "No active window hwnd or processId. Launch/attach and switchwindow first."
+            };
+        }
+
+        var searchRoots = new List<IUIAutomationElement>();
+        if (request.ParentLocator != null)
+        {
+            var parentLocator = ToNativeLocator(request.ParentLocator, request, processId);
+            foreach (var root in BuildSearchRoots(activeWindowHwnd, processId, includeDesktop: false))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ThrowIfPastDeadline(deadline);
+
+                var parent = _finder.FindFirst(root, parentLocator);
+                if (parent != null)
+                {
+                    searchRoots.Add(parent);
+                    break;
+                }
+            }
+
+            if (searchRoots.Count == 0)
+            {
+                return new NativeUiaResolveResult
+                {
+                    Stage = "parent-not-found",
+                    LastError = "parentLocator did not resolve to a container element."
+                };
+            }
+        }
+        else
+        {
+            searchRoots.AddRange(BuildSearchRoots(activeWindowHwnd, processId, includeDesktop: false));
+        }
+
         var allMatches = new List<IUIAutomationElement>();
-        foreach (var root in BuildSearchRoots(activeWindowHwnd, processId, includeDesktop: false))
+        foreach (var root in searchRoots)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            ThrowIfPastDeadline(deadline);
             allMatches.AddRange(FindComboMatches(root, locator));
         }
 
-        if (allMatches.Count == 0)
+        if (allMatches.Count == 0 && allowDesktopFallback)
         {
             foreach (var root in BuildSearchRoots(activeWindowHwnd, processId, includeDesktop: true))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                ThrowIfPastDeadline(deadline);
                 allMatches.AddRange(FindComboMatches(root, locator));
             }
         }
@@ -193,16 +245,38 @@ internal sealed class NativeUiaElementResolver
         return roots.DistinctBy(RuntimeKey).ToList();
     }
 
-    private static NativeUiaLocator ToNativeLocator(UiRequest request, int? processId) => new()
+    private static bool HasSearchContext(UiRequest request, IntPtr? activeWindowHwnd, int? processId)
     {
-        Name = request.Locator?.Name,
-        AutomationId = request.Locator?.AutomationId,
-        ClassName = request.Locator?.ClassName ?? request.ClassName,
-        ControlType = request.Locator?.ControlType,
-        Hwnd = request.Hwnd ?? request.Locator?.Hwnd,
-        ProcessId = request.ProcessId ?? request.Locator?.ProcessId ?? processId,
-        FoundIndex = request.FoundIndex,
-        MatchMode = string.IsNullOrWhiteSpace(request.MatchMode) ? "exact" : request.MatchMode!
+        if (request.Hwnd is > 0 || request.Locator?.Hwnd is > 0 || request.Locator?.Handle is > 0)
+            return true;
+
+        if (activeWindowHwnd is > 0)
+            return true;
+
+        return processId.HasValue;
+    }
+
+    private static void ThrowIfPastDeadline(DateTime? deadline)
+    {
+        if (deadline.HasValue && DateTime.UtcNow > deadline.Value)
+            throw new TimeoutException("Native UIA ComboBox resolve timed out.");
+    }
+
+    private static NativeUiaLocator ToNativeLocator(UiRequest request, int? processId) =>
+        ToNativeLocator(request.Locator, request, processId);
+
+    private static NativeUiaLocator ToNativeLocator(UiLocator? locator, UiRequest request, int? processId) => new()
+    {
+        Name = locator?.Name,
+        AutomationId = locator?.AutomationId,
+        ClassName = locator?.ClassName ?? request.ClassName,
+        ControlType = locator?.ControlType,
+        Hwnd = request.Hwnd ?? locator?.Hwnd ?? locator?.Handle,
+        ProcessId = request.ProcessId ?? locator?.ProcessId ?? processId,
+        FoundIndex = request.FoundIndex ?? locator?.FoundIndex ?? locator?.Index,
+        MatchMode = string.IsNullOrWhiteSpace(request.MatchMode)
+            ? locator?.MatchMode ?? "exact"
+            : request.MatchMode!
     };
 
     private static string RuntimeKey(IUIAutomationElement element)
