@@ -2,6 +2,7 @@ using System.Text.Json;
 using DesktopAutomationDriver.Models.Request;
 using DesktopAutomationDriver.Services;
 using DesktopAutomationDriver.Services.NativeUia;
+using FlaUI.UIA3;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -25,13 +26,18 @@ public class NativeUiaHardTimeoutTests
                 return new { operation = "findcomboboxuia", success = true, found = true };
             });
 
-        var sessionMock = new Mock<AutomationSession>(MockBehavior.Loose);
-        var appMock = new Mock<FlaUI.Core.Application>(MockBehavior.Loose);
-        appMock.Setup(a => a.ProcessId).Returns(4242);
-        sessionMock.Setup(s => s.Application).Returns(appMock.Object);
+        using var automation = new UIA3Automation();
+        var app = FlaUI.Core.Application.Attach(Environment.ProcessId);
+        using var session = new AutomationSession(
+            "hard-timeout-test",
+            app,
+            automation,
+            "UIA3",
+            null,
+            null);
 
         var ctxMock = new Mock<IUiSessionContext>();
-        ctxMock.Setup(c => c.ActiveSession).Returns(sessionMock.Object);
+        ctxMock.Setup(c => c.ActiveSession).Returns(session);
 
         var service = new UiService(ctxMock.Object, NullLogger<UiService>.Instance, nativeMock.Object);
 
