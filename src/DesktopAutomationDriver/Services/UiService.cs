@@ -10526,6 +10526,18 @@ public partial class UiService : IUiService
         Keyboard.Release(key);
     }
 
+    /// <summary>
+    /// Runs risky Native UIA ComboBox operations behind a hard API timeout.
+    ///
+    /// CancellationToken alone is not enough because UIA COM calls such as
+    /// FindAll, FromHandle, CreateSnapshot, or property reads may block inside
+    /// native code and never observe cancellation.
+    ///
+    /// This wrapper returns a JSON hard-timeout response once timeoutMs elapses.
+    /// The worker task may still be blocked internally; this is acceptable for
+    /// preventing HTTP client ReadTimeout. A separate helper process would be
+    /// required to kill stuck COM work completely.
+    /// </summary>
     private object? ExecuteNativeUiaWithTimeout(
         UiRequest request,
         Func<UiRequest, CancellationToken, object?> operation,
@@ -10534,6 +10546,10 @@ public partial class UiService : IUiService
         var timeoutMs = request.TimeoutMs.GetValueOrDefault(5000);
         timeoutMs = Math.Clamp(timeoutMs, 500, 15000);
 
+        var operationName = string.IsNullOrWhiteSpace(request.Operation)
+            ? "native-uia"
+            : request.Operation;
+
         var sw = Stopwatch.StartNew();
 
         using var timeoutCts = new CancellationTokenSource();
@@ -10541,16 +10557,12 @@ public partial class UiService : IUiService
             requestCancellationToken,
             timeoutCts.Token);
 
-        var operationName = string.IsNullOrWhiteSpace(request.Operation)
-            ? "native-uia"
-            : request.Operation;
-
         _logger.LogInformation(
             "Native UIA hard-timeout wrapper started. operation={Operation}, timeoutMs={TimeoutMs}",
             operationName,
             timeoutMs);
 
-        var task = Task.Run(() =>
+        var workerTask = Task.Run<object?>(() =>
         {
             try
             {
@@ -10608,7 +10620,7 @@ public partial class UiService : IUiService
         try
         {
             completedTask = Task.WhenAny(
-                    task,
+                    workerTask,
                     Task.Delay(timeoutMs, requestCancellationToken))
                 .GetAwaiter()
                 .GetResult();
@@ -10636,9 +10648,9 @@ public partial class UiService : IUiService
             };
         }
 
-        if (completedTask == task)
+        if (completedTask == workerTask)
         {
-            var result = task.GetAwaiter().GetResult();
+            var result = workerTask.GetAwaiter().GetResult();
 
             _logger.LogInformation(
                 "Native UIA hard-timeout wrapper completed. operation={Operation}, elapsedMs={ElapsedMs}",
