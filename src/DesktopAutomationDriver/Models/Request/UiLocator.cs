@@ -80,6 +80,12 @@ public class UiLocator
     /// <summary>Native window handle (HWND). When set, the element is resolved directly from this handle.</summary>
     public long? Hwnd { get; set; }
 
+    /// <summary>Alias for <see cref="Hwnd"/> (pywinauto handle).</summary>
+    public int? Handle { get => Hwnd.HasValue ? (int)Hwnd.Value : null; set => Hwnd = value; }
+
+    /// <summary>Zero-based disambiguation index (alias for <see cref="FoundIndex"/>).</summary>
+    public int? Index { get => FoundIndex; set => FoundIndex = value; }
+
     /// <summary>Win32 process ID owning the element.</summary>
     public int? ProcessId { get; set; }
 
@@ -176,6 +182,18 @@ public class UiLocator
 
     /// <summary>When true, off-screen elements are included in candidate collection. Defaults to true.</summary>
     public bool? IncludeOffscreen { get; set; }
+
+    /// <summary>When true, hidden/off-screen elements are included (alias for <see cref="IncludeOffscreen"/>).</summary>
+    public bool? IncludeHidden { get => IncludeOffscreen; set => IncludeOffscreen = value; }
+
+    /// <summary>When true, disabled elements are included in resolution.</summary>
+    public bool? IncludeDisabled { get; set; }
+
+    /// <summary>Alias for <see cref="Offscreen"/> filter.</summary>
+    public bool? IsOffscreen { get => Offscreen; set => Offscreen = value; }
+
+    /// <summary>Optional predicate expression (reserved for future filtering).</summary>
+    public string? Predicate { get; set; }
 
     // -------------------------------------------------------------------------
     // Miscellaneous
