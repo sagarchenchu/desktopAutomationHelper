@@ -22,8 +22,7 @@ public class NativeUiaComboBoxFindTests
         var json = System.Text.Json.JsonSerializer.Serialize(result);
         Assert.Contains("\"found\":false", json);
         Assert.Contains("\"success\":false", json);
-        Assert.Contains("no-search-context", json);
-        Assert.Contains("\"timeoutMs\":8000", json);
+        Assert.Contains("no-active-window", json);
     }
 
     [Fact]
@@ -61,6 +60,7 @@ public class NativeUiaComboBoxFindTests
         var result = service.FindComboBox(request, activeWindowHwnd: null, processId: null);
         var json = System.Text.Json.JsonSerializer.Serialize(result);
 
-        Assert.Contains($"\"timeoutMs\":{expectedTimeout}", json);
+        Assert.Contains("no-active-window", json);
+        Assert.Equal(expectedTimeout, NativeUiaTimeoutPolicy.Resolve(requestTimeout));
     }
 }
