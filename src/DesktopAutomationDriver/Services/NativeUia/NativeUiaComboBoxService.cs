@@ -50,170 +50,394 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
         var timeoutMs = ResolveTimeoutMs(request.TimeoutMs);
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
 
+        _logger.LogInformation(
+            "NativeUiaComboBox {Operation} starting. rootHwnd={RootHwnd}, processId={ProcessId}, timeoutMs={TimeoutMs}",
+            operation,
+            activeWindowHwnd,
+            processId,
+            timeoutMs);
+
         cancellationToken.ThrowIfCancellationRequested();
-        EnsureWithinDeadline(deadline, cancellationToken, sw, operation, stage: "start");
 
-        var resolveResult = _resolver.ResolveComboBox(request, activeWindowHwnd, processId, cancellationToken);
-        if (resolveResult.Element == null)
+        if (IsUiaOnlyOperation(operation) && !HasSearchContext(request, activeWindowHwnd, processId))
         {
             return BuildFailure(
                 operation,
                 request,
-                resolveResult.Stage ?? "combo-not-found",
-                resolveResult.LastError ?? "ComboBox not found.",
-                sw.ElapsedMilliseconds,
-                resolveResult.Candidates);
+                "no-search-context",
+                "No active window hwnd or processId. Launch/attach and switchwindow first.",
+                sw.ElapsedMilliseconds);
         }
-
-        if (resolveResult.IsAmbiguous)
-        {
-            return BuildFailure(
-                operation,
-                request,
-                "ambiguous-combobox",
-                resolveResult.LastError ?? "Multiple ComboBoxes matched.",
-                sw.ElapsedMilliseconds,
-                resolveResult.Candidates);
-        }
-
-        var combo = resolveResult.Element;
-        var comboSnapshot = _uia.CreateSnapshot(combo);
-        string? expandedBy = null;
-        string? selectionStrategy = null;
-        IUIAutomationElement? matchedItem = null;
-        var beforeValue = _textReader.ReadComboBoxValue(combo);
 
         try
         {
-            if (!_uia.GetBoolProperty(combo, UIA_PropertyIds.UIA_IsEnabledPropertyId, true))
+            if (!TryEnsureWithinDeadline(deadline, cancellationToken, sw, operation, "start", out var startTimeout))
+                return startTimeout!;
+
+            var resolveResult = _resolver.ResolveComboBox(
+                request,
+                activeWindowHwnd,
+                processId,
+                cancellationToken,
+                deadline,
+                allowDesktopFallback: !IsUiaOnlyOperation(operation));
+
+            if (resolveResult.Element == null)
+            {
+                _logger.LogWarning(
+                    "NativeUiaComboBox {Operation} resolve failed. stage={Stage}, elapsedMs={ElapsedMs}",
+                    operation,
+                    resolveResult.Stage,
+                    sw.ElapsedMilliseconds);
+
+                return BuildFailure(
+                    operation,
+                    request,
+                    resolveResult.Stage ?? "combo-not-found",
+                    resolveResult.LastError ?? "ComboBox not found.",
+                    sw.ElapsedMilliseconds,
+                    resolveResult.Candidates);
+            }
+
+            if (resolveResult.IsAmbiguous)
             {
                 return BuildFailure(
                     operation,
                     request,
-                    "combo-disabled",
-                    "ComboBox is disabled.",
+                    "ambiguous-combobox",
+                    resolveResult.LastError ?? "Multiple ComboBoxes matched.",
                     sw.ElapsedMilliseconds,
-                    comboSnapshot: comboSnapshot);
+                    resolveResult.Candidates);
             }
 
-            var requestedValue = request.Index.HasValue && string.IsNullOrWhiteSpace(request.Value)
-                ? null
-                : WebUtility.HtmlDecode(request.Value ?? string.Empty).Trim();
+            var combo = resolveResult.Element;
+            var comboSnapshot = _uia.CreateSnapshot(combo);
+            string? expandedBy = null;
+            string? selectionStrategy = null;
+            IUIAutomationElement? matchedItem = null;
 
-            if (request.Index.HasValue && string.IsNullOrWhiteSpace(requestedValue))
+            try
             {
-                expandedBy = ExpandComboBox(combo, cancellationToken, deadline);
-                Thread.Sleep(ExpandDelayMs);
-                matchedItem = SelectByIndex(combo, activeWindowHwnd, processId, request.Index.Value, cancellationToken, deadline);
-                requestedValue = matchedItem == null ? $"index:{request.Index.Value}" : _textReader.ReadElementText(matchedItem);
-                selectionStrategy = matchedItem == null ? null : "index-select";
-            }
-            else
-            {
-                if (string.IsNullOrWhiteSpace(requestedValue))
-                    throw new ArgumentException("Either 'value' or 'index' is required for ComboBox select.");
-
-                if (TrySetEditableValue(combo, requestedValue, cancellationToken, deadline, out selectionStrategy))
+                if (!_uia.GetBoolProperty(combo, UIA_PropertyIds.UIA_IsEnabledPropertyId, true))
                 {
-                    var directActual = _textReader.ReadComboBoxValue(combo);
-                    if (NativeUiaText.ValuesEquivalent(directActual, requestedValue))
-                    {
-                        return BuildSuccess(
+                    return BuildFailure(
+                        operation,
+                        request,
+                        "combo-disabled",
+                        "ComboBox is disabled.",
+                        sw.ElapsedMilliseconds,
+                        comboSnapshot: comboSnapshot);
+                }
+
+                var requestedValue = request.Index.HasValue && string.IsNullOrWhiteSpace(request.Value)
+                    ? null
+                    : WebUtility.HtmlDecode(request.Value ?? string.Empty).Trim();
+
+                if (request.Index.HasValue && string.IsNullOrWhiteSpace(requestedValue))
+                {
+                    expandedBy = ExpandComboBox(combo, cancellationToken, deadline);
+                    Thread.Sleep(ExpandDelayMs);
+                    matchedItem = SelectByIndex(combo, activeWindowHwnd, processId, request.Index.Value, cancellationToken, deadline);
+                    requestedValue = matchedItem == null ? $"index:{request.Index.Value}" : _textReader.ReadElementText(matchedItem);
+                    selectionStrategy = matchedItem == null ? null : "index-select";
+                }
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(requestedValue))
+                        return BuildFailure(
                             operation,
-                            requestedValue,
-                            directActual,
-                            verified: true,
-                            selectionStrategy ?? "valuepattern-setvalue",
-                            expandedBy: "ValuePattern.SetValue",
-                            comboSnapshot,
-                            matchedItemSnapshot: null,
-                            sw.ElapsedMilliseconds);
+                            request,
+                            "invalid-request",
+                            "Either 'value' or 'index' is required for ComboBox select.",
+                            sw.ElapsedMilliseconds,
+                            comboSnapshot: comboSnapshot);
+
+                    if (TrySetEditableValue(combo, requestedValue, cancellationToken, deadline, out selectionStrategy))
+                    {
+                        var directActual = _textReader.ReadComboBoxValue(combo);
+                        if (NativeUiaText.ValuesEquivalent(directActual, requestedValue))
+                        {
+                            return BuildSuccess(
+                                operation,
+                                requestedValue,
+                                directActual,
+                                verified: true,
+                                selectionStrategy ?? "valuepattern-setvalue",
+                                expandedBy: "ValuePattern.SetValue",
+                                comboSnapshot,
+                                matchedItemSnapshot: null,
+                                sw.ElapsedMilliseconds);
+                        }
                     }
-                }
 
-                expandedBy = ExpandComboBox(combo, cancellationToken, deadline);
-                Thread.Sleep(ExpandDelayMs);
+                    expandedBy = ExpandComboBox(combo, cancellationToken, deadline);
+                    Thread.Sleep(ExpandDelayMs);
 
-                matchedItem = FindDropdownItem(
-                    combo,
-                    activeWindowHwnd,
-                    processId,
-                    requestedValue,
-                    request,
-                    cancellationToken,
-                    deadline);
-
-                if (matchedItem != null)
-                    selectionStrategy = ActivateItem(combo, matchedItem, cancellationToken, deadline);
-
-                if ((matchedItem == null || selectionStrategy == null)
-                    && request.AllowKeyboardFallback == true
-                    && DateTime.UtcNow < deadline)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (TryKeyboardTypeahead(combo, requestedValue, cancellationToken, deadline))
-                        selectionStrategy = "keyboard-typeahead";
-                }
-
-                if (matchedItem == null
-                    && DateTime.UtcNow < deadline
-                    && TryBoundedScrollSearch(
+                    matchedItem = FindDropdownItem(
                         combo,
                         activeWindowHwnd,
                         processId,
                         requestedValue,
                         request,
                         cancellationToken,
-                        deadline,
-                        out matchedItem,
-                        out selectionStrategy))
-                {
-                    // bounded scroll found item
+                        deadline);
+
+                    if (matchedItem != null)
+                        selectionStrategy = ActivateItem(combo, matchedItem, cancellationToken, deadline);
+
+                    if ((matchedItem == null || selectionStrategy == null)
+                        && request.AllowKeyboardFallback == true
+                        && DateTime.UtcNow < deadline)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (TryKeyboardTypeahead(combo, requestedValue, cancellationToken, deadline))
+                            selectionStrategy = "keyboard-typeahead";
+                    }
+
+                    if (matchedItem == null
+                        && DateTime.UtcNow < deadline
+                        && TryBoundedScrollSearch(
+                            combo,
+                            activeWindowHwnd,
+                            processId,
+                            requestedValue,
+                            request,
+                            cancellationToken,
+                            deadline,
+                            out matchedItem,
+                            out selectionStrategy))
+                    {
+                        // bounded scroll found item
+                    }
                 }
-            }
 
-            EnsureWithinDeadline(deadline, cancellationToken, sw, operation, stage: "verify");
+                if (!TryEnsureWithinDeadline(deadline, cancellationToken, sw, operation, "verify", out var verifyTimeout))
+                    return verifyTimeout!;
 
-            var actual = _textReader.ReadComboBoxValue(combo);
-            var requested = requestedValue ?? request.Value;
-            var verified = !string.IsNullOrWhiteSpace(requested)
-                           && NativeUiaText.ValuesEquivalent(actual, requested);
-            if (request.Index.HasValue && string.IsNullOrWhiteSpace(request.Value))
-                verified = matchedItem != null;
+                var actual = _textReader.ReadComboBoxValue(combo);
+                var requested = requestedValue ?? request.Value;
+                var verified = !string.IsNullOrWhiteSpace(requested)
+                               && NativeUiaText.ValuesEquivalent(actual, requested);
+                if (request.Index.HasValue && string.IsNullOrWhiteSpace(request.Value))
+                    verified = matchedItem != null;
 
-            if (verified || !string.IsNullOrWhiteSpace(selectionStrategy))
-            {
-                return BuildSuccess(
+                if (verified || !string.IsNullOrWhiteSpace(selectionStrategy))
+                {
+                    _logger.LogInformation(
+                        "NativeUiaComboBox {Operation} succeeded. strategy={Strategy}, verified={Verified}, elapsedMs={ElapsedMs}",
+                        operation,
+                        selectionStrategy ?? "native-uia-unverified",
+                        verified,
+                        sw.ElapsedMilliseconds);
+
+                    return BuildSuccess(
+                        operation,
+                        requested,
+                        actual,
+                        verified,
+                        selectionStrategy ?? "native-uia-unverified",
+                        expandedBy,
+                        comboSnapshot,
+                        matchedItem == null ? null : _uia.CreateSnapshot(matchedItem),
+                        sw.ElapsedMilliseconds);
+                }
+
+                var candidates = _dropdownFinder.CollectVisibleItemTexts(
+                    combo, activeWindowHwnd, processId, cancellationToken, deadline, 50)
+                    .Cast<object>()
+                    .ToList();
+
+                return BuildFailure(
                     operation,
-                    requested,
-                    actual,
-                    verified,
-                    selectionStrategy ?? "native-uia-unverified",
-                    expandedBy,
+                    request,
+                    "item-not-found",
+                    $"ComboBox item '{requested}' not found.",
+                    sw.ElapsedMilliseconds,
+                    candidates,
                     comboSnapshot,
-                    matchedItem == null ? null : _uia.CreateSnapshot(matchedItem),
-                    sw.ElapsedMilliseconds);
+                    expandedBy);
             }
-
-            var candidates = _dropdownFinder.CollectVisibleItemTexts(
-                combo, activeWindowHwnd, processId, cancellationToken, deadline, 50)
-                .Cast<object>()
-                .ToList();
+            finally
+            {
+                CollapseComboBox(combo);
+            }
+        }
+        catch (TimeoutException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "NativeUiaComboBox {Operation} timed out. elapsedMs={ElapsedMs}",
+                operation,
+                sw.ElapsedMilliseconds);
 
             return BuildFailure(
                 operation,
                 request,
-                "item-not-found",
-                $"ComboBox item '{requested}' not found.",
-                sw.ElapsedMilliseconds,
-                candidates,
-                comboSnapshot,
-                expandedBy);
+                "timeout",
+                ex.Message,
+                sw.ElapsedMilliseconds);
         }
-        finally
+    }
+
+    public object FindComboBox(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default)
+    {
+        var sw = Stopwatch.StartNew();
+        const string operation = "findcomboboxuia";
+        var timeoutMs = ResolveTimeoutMs(request.TimeoutMs);
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        _logger.LogInformation(
+            "NativeUiaComboBox {Operation} starting. rootHwnd={RootHwnd}, processId={ProcessId}, timeoutMs={TimeoutMs}",
+            operation,
+            activeWindowHwnd,
+            processId,
+            timeoutMs);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!HasSearchContext(request, activeWindowHwnd, processId))
         {
-            CollapseComboBox(combo);
+            _logger.LogWarning(
+                "NativeUiaComboBox {Operation} failed fast: no-search-context. elapsedMs={ElapsedMs}",
+                operation,
+                sw.ElapsedMilliseconds);
+
+            return new
+            {
+                operation,
+                found = false,
+                success = false,
+                stage = "no-search-context",
+                error = "No active window hwnd or processId. Launch/attach and switchwindow first.",
+                rootHwnd = activeWindowHwnd,
+                processId,
+                timeoutMs,
+                elapsedMs = sw.ElapsedMilliseconds
+            };
         }
+
+        try
+        {
+            var resolveResult = _resolver.ResolveComboBox(
+                request,
+                activeWindowHwnd,
+                processId,
+                cancellationToken,
+                deadline,
+                allowDesktopFallback: false);
+
+            if (resolveResult.Element == null)
+            {
+                _logger.LogWarning(
+                    "NativeUiaComboBox {Operation} not found. stage={Stage}, elapsedMs={ElapsedMs}",
+                    operation,
+                    resolveResult.Stage,
+                    sw.ElapsedMilliseconds);
+
+                return new
+                {
+                    operation,
+                    found = false,
+                    success = false,
+                    stage = resolveResult.Stage ?? "combo-not-found",
+                    error = resolveResult.LastError ?? "ComboBox not found.",
+                    ambiguous = resolveResult.IsAmbiguous,
+                    candidates = resolveResult.Candidates,
+                    rootHwnd = activeWindowHwnd,
+                    processId,
+                    timeoutMs,
+                    elapsedMs = sw.ElapsedMilliseconds
+                };
+            }
+
+            var snapshot = _uia.CreateSnapshot(resolveResult.Element);
+            _logger.LogInformation(
+                "NativeUiaComboBox {Operation} found ComboBox. automationId={AutomationId}, elapsedMs={ElapsedMs}",
+                operation,
+                snapshot.AutomationId,
+                sw.ElapsedMilliseconds);
+
+            return new
+            {
+                operation,
+                found = true,
+                success = true,
+                strategy = "native-uia-resolve",
+                ambiguous = resolveResult.IsAmbiguous,
+                comboBox = NativeUiaDiagnostics.ComboSummary(snapshot),
+                candidates = resolveResult.Candidates,
+                rootHwnd = activeWindowHwnd,
+                processId,
+                timeoutMs,
+                elapsedMs = sw.ElapsedMilliseconds
+            };
+        }
+        catch (TimeoutException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "NativeUiaComboBox {Operation} timed out. elapsedMs={ElapsedMs}",
+                operation,
+                sw.ElapsedMilliseconds);
+
+            return new
+            {
+                operation,
+                found = false,
+                success = false,
+                stage = "timeout",
+                error = ex.Message,
+                rootHwnd = activeWindowHwnd,
+                processId,
+                timeoutMs,
+                elapsedMs = sw.ElapsedMilliseconds
+            };
+        }
+    }
+
+    private static bool IsUiaOnlyOperation(string operation) =>
+        string.Equals(operation, "selectcomboboxuia", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(operation, "findcomboboxuia", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasSearchContext(UiRequest request, IntPtr? activeWindowHwnd, int? processId)
+    {
+        if (request.Hwnd is > 0 || request.Locator?.Hwnd is > 0 || request.Locator?.Handle is > 0)
+            return true;
+
+        if (activeWindowHwnd is > 0)
+            return true;
+
+        return processId.HasValue;
+    }
+
+    private static bool TryEnsureWithinDeadline(
+        DateTime deadline,
+        CancellationToken cancellationToken,
+        Stopwatch sw,
+        string operation,
+        string stage,
+        out object? timeoutFailure)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (DateTime.UtcNow <= deadline)
+        {
+            timeoutFailure = null;
+            return true;
+        }
+
+        timeoutFailure = new Dictionary<string, object?>
+        {
+            ["operation"] = operation,
+            ["success"] = false,
+            ["stage"] = "timeout",
+            ["error"] = $"ComboBox {operation} timed out during {stage} after {sw.ElapsedMilliseconds} ms.",
+            ["elapsedMs"] = sw.ElapsedMilliseconds
+        };
+        return false;
     }
 
     public object InspectComboBox(
@@ -226,7 +450,13 @@ internal sealed class NativeUiaComboBoxService : INativeUiaComboBoxService
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var resolveResult = _resolver.ResolveComboBox(request, activeWindowHwnd, processId, cancellationToken);
+        var resolveResult = _resolver.ResolveComboBox(
+            request,
+            activeWindowHwnd,
+            processId,
+            cancellationToken,
+            deadline,
+            allowDesktopFallback: true);
         if (resolveResult.Element == null)
         {
             return new
