@@ -115,4 +115,48 @@ public class BasicOperationUiaRoutingTests
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }
+
+    [Fact]
+    public void ClickMenuUia_WithSession_CallsClickMenuOnBasicOperationService()
+    {
+        var basicMock = new Mock<INativeUiaBasicOperationService>();
+        basicMock
+            .Setup(s => s.ClickMenu(
+                It.IsAny<UiRequest>(),
+                It.IsAny<IntPtr?>(),
+                It.IsAny<int?>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(new { operation = "clickmenuuia", success = true, strategy = "expandcollapse-expand" });
+
+        using var automation = new FlaUI.UIA3.UIA3Automation();
+        var app = FlaUI.Core.Application.Attach(Environment.ProcessId);
+        using var session = new AutomationSession(
+            "clickmenu-uia-test",
+            app,
+            automation,
+            "UIA3",
+            null,
+            null);
+
+        var ctxMock = new Mock<IUiSessionContext>();
+        ctxMock.Setup(c => c.ActiveSession).Returns(session);
+        var service = UiServiceTestFactory.Create(ctxMock.Object, basicMock: basicMock);
+
+        var result = service.Execute(new UiRequest
+        {
+            Operation = "clickmenuuia",
+            Locator = new UiLocator { Name = "DQA", ControlType = "Menu", MatchMode = "exact" },
+            TimeoutMs = 5000
+        });
+
+        var json = JsonSerializer.Serialize(result);
+        Assert.Contains("\"success\":true", json);
+        basicMock.Verify(
+            s => s.ClickMenu(
+                It.Is<UiRequest>(r => r.Operation == "clickmenuuia"),
+                It.IsAny<IntPtr?>(),
+                It.IsAny<int?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
 }
