@@ -215,17 +215,20 @@ public partial class UiService : IUiService
     private const bool UsePywinautoStyleResolver = true;
     private readonly INativeUiaComboBoxService _nativeUiaComboBoxService;
     private readonly INativeUiaBasicOperationService _nativeUiaBasicOperationService;
+    private readonly INativeUiaTreeDiagnosticService _nativeUiaTreeDiagnosticService;
 
     public UiService(
         IUiSessionContext ctx,
         ILogger<UiService> logger,
         INativeUiaComboBoxService nativeUiaComboBoxService,
-        INativeUiaBasicOperationService nativeUiaBasicOperationService)
+        INativeUiaBasicOperationService nativeUiaBasicOperationService,
+        INativeUiaTreeDiagnosticService nativeUiaTreeDiagnosticService)
     {
         _ctx = ctx;
         _logger = logger;
         _nativeUiaComboBoxService = nativeUiaComboBoxService;
         _nativeUiaBasicOperationService = nativeUiaBasicOperationService;
+        _nativeUiaTreeDiagnosticService = nativeUiaTreeDiagnosticService;
         _newResolver = new DesktopAutomationDriver.Services.Resolution.ElementResolver(ctx, logger, GetWindowRoot);
         _pywinautoResolver = new DesktopAutomationDriver.Services.ElementResolution.ElementResolver(ctx, logger, GetWindowRoot);
     }
@@ -382,6 +385,14 @@ public partial class UiService : IUiService
                 "focusuia" => ExecuteNativeUiaWithTimeout(
                     request,
                     FocusNativeUia,
+                    cancellationToken),
+                "dumpuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    DumpNativeUia,
+                    cancellationToken),
+                "finduia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    FindNativeUia,
                     cancellationToken),
                 "inspectcombobox" => InspectComboBox(request, cancellationToken),
                 "draganddrop"     => DragAndDrop(request),
@@ -10774,6 +10785,41 @@ public partial class UiService : IUiService
 
     private object? FocusNativeUia(UiRequest request, CancellationToken cancellationToken) =>
         ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Focus);
+
+    private object? DumpNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaDiagnosticOperation(request, cancellationToken, _nativeUiaTreeDiagnosticService.DumpTree);
+
+    private object? FindNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaDiagnosticOperation(request, cancellationToken, _nativeUiaTreeDiagnosticService.FindElement);
+
+    private object? ExecuteNativeUiaDiagnosticOperation(
+        UiRequest request,
+        CancellationToken cancellationToken,
+        Func<UiRequest, IntPtr?, int?, CancellationToken, object> operation)
+    {
+        var operationName = string.IsNullOrWhiteSpace(request.Operation)
+            ? "native-uia-diagnostic"
+            : request.Operation;
+
+        var (rootHwnd, processId) = GetNativeUiaSessionContext();
+
+        if (rootHwnd == null && !processId.HasValue && !request.ProcessId.HasValue)
+        {
+            return new
+            {
+                operation = operationName,
+                success = false,
+                reason = "no-active-window",
+                message = "No active window/root hwnd found. Call /ui switchwindow first."
+            };
+        }
+
+        return operation(
+            request,
+            rootHwnd,
+            request.ProcessId ?? processId,
+            cancellationToken);
+    }
 
     private object? ExecuteNativeUiaBasicOperation(
         UiRequest request,
