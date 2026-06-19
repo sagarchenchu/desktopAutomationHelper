@@ -129,7 +129,7 @@ public class NativeUiaElementResolverViewAcceptanceTests
         {
             var candidate = Path.GetFullPath(Path.Combine(dir, "..", "..", "..", "..", relativePath));
             if (File.Exists(candidate))
-                return File.ReadAllText(candidate);
+                return File.ReadAllText(candidate).Replace("\r\n", "\n", StringComparison.Ordinal);
 
             dir = Path.Combine(dir, "..");
         }
