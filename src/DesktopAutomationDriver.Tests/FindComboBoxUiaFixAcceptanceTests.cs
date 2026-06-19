@@ -44,6 +44,6 @@ public class FindComboBoxUiaFixAcceptanceTests
             relativePath));
 
         Assert.True(File.Exists(path), $"Expected source file at {path}");
-        return File.ReadAllText(path);
+        return File.ReadAllText(path).Replace("\r\n", "\n", StringComparison.Ordinal);
     }
 }
