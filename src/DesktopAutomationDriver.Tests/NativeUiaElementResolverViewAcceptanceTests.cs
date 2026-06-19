@@ -77,10 +77,10 @@ public class NativeUiaElementResolverViewAcceptanceTests
     }
 
     [Fact]
-    public void InferDefaultView_ComboBoxOperations_DefaultToControl()
+    public void InferDefaultView_ComboBoxOperations_DefaultToRaw()
     {
         Assert.Equal(
-            "control",
+            "raw",
             DesktopAutomationDriver.Services.NativeUia.NativeUiaElementResolver.InferDefaultView(
                 new DesktopAutomationDriver.Models.Request.UiRequest
                 {
@@ -91,6 +91,35 @@ public class NativeUiaElementResolverViewAcceptanceTests
                         ControlType = "ComboBox"
                     }
                 }));
+
+        Assert.Equal(
+            "raw",
+            DesktopAutomationDriver.Services.NativeUia.NativeUiaElementResolver.InferDefaultView(
+                new DesktopAutomationDriver.Models.Request.UiRequest
+                {
+                    Operation = "selectcomboboxuia",
+                    Locator = new DesktopAutomationDriver.Models.Request.UiLocator
+                    {
+                        AutomationId = "cmbTest",
+                        ControlType = "ComboBox"
+                    }
+                }));
+    }
+
+    [Fact]
+    public void ComboBoxResolver_PassesViewConditionThroughBoundedSearch()
+    {
+        var content = ReadSource("DesktopAutomationDriver/Services/NativeUia/NativeUiaElementResolver.cs");
+
+        Assert.Contains(
+            "var viewCondition = ResolveViewCondition(request);\n        var viewName = ResolveViewName(request);\n        var matches = FindMatchingComboBoxesBounded(\n            root,\n            locator,\n            viewCondition,",
+            content);
+        Assert.Contains(
+            "Native UIA resolver could not find a ComboBox for the locator (view={viewName}).",
+            content);
+        Assert.Contains(
+            "if (operation is \"clickmenuuia\" or \"findcomboboxuia\" or \"selectcomboboxuia\")\n            return \"raw\";",
+            content);
     }
 
     private static string ReadSource(string relativePath)

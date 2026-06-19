@@ -293,7 +293,7 @@ internal sealed class NativeUiaElementResolver
             return new NativeUiaResolveResult
             {
                 Stage = "combo-not-found",
-                LastError = $"Native UIA resolver could not find a ComboBox for the locator (stage={stage}, view={viewName}).",
+                LastError = $"Native UIA resolver could not find a ComboBox for the locator (view={viewName}).",
                 Candidates = candidates
             };
         }
@@ -739,10 +739,7 @@ internal sealed class NativeUiaElementResolver
     {
         var operation = request.Operation?.Trim().ToLowerInvariant();
 
-        if (operation is "findcomboboxuia" or "selectcomboboxuia" or "inspectcombobox")
-            return "control";
-
-        if (operation == "clickmenuuia")
+        if (operation is "clickmenuuia" or "findcomboboxuia" or "selectcomboboxuia")
             return "raw";
 
         var controlType = request.Locator?.ControlType;
