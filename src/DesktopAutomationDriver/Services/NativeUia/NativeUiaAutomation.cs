@@ -29,6 +29,8 @@ internal sealed class NativeUiaAutomation
 
     public IUIAutomationCondition ControlViewCondition => _automation.ControlViewCondition;
 
+    public IUIAutomationCondition ContentViewCondition => _automation.ContentViewCondition;
+
     public IUIAutomationElement? FromHandle(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero)
