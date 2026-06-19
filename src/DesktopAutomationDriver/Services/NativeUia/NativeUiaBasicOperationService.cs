@@ -16,6 +16,7 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
     private const int ListItemControlTypeId = 50007;
     private const int TabItemControlTypeId = 50019;
     private const int MenuItemControlTypeId = 50010;
+    private const int MenuControlTypeId = 50011;
     private const int CheckBoxControlTypeId = 50002;
     private const int RadioButtonControlTypeId = 50013;
     private const int DefaultTimeoutMs = 5000;
@@ -46,6 +47,13 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
         int? processId,
         CancellationToken cancellationToken = default) =>
         ExecuteOperation("clickuia", request, activeWindowHwnd, processId, cancellationToken, ClickElement);
+
+    public object ClickMenu(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default) =>
+        ExecuteOperation("clickmenuuia", request, activeWindowHwnd, processId, cancellationToken, ClickElement);
 
     public object Type(
         UiRequest request,
@@ -309,7 +317,27 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
         }
 
         var controlType = _uia.GetIntProperty(element, UIA_PropertyIds.UIA_ControlTypePropertyId);
-        if (controlType is ListItemControlTypeId or TabItemControlTypeId or MenuItemControlTypeId
+
+        if (controlType is MenuItemControlTypeId or MenuControlTypeId
+            && _uia.TryGetExpandCollapsePattern(element, out var expandCollapse))
+        {
+            attempted.Add("expandcollapse-expand");
+            try
+            {
+                expandCollapse!.Expand();
+                Thread.Sleep(ActionDelayMs);
+                return (true, "expandcollapse-expand", null, attempted, null);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "ExpandCollapse.Expand failed.");
+            }
+        }
+
+        if ((controlType is ListItemControlTypeId
+                or TabItemControlTypeId
+                or MenuItemControlTypeId
+                or MenuControlTypeId)
             && _uia.TryGetSelectionItemPattern(element, out var selectionItem))
         {
             attempted.Add("selectionitem-select");

@@ -24,6 +24,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         50018, // MenuBar
         50021, // ToolBar
         50010, // MenuItem
+        50011, // Menu
         50000, // Button
         50020, // Text
         50033, // Pane
