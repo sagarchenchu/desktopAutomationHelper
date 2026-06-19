@@ -28,6 +28,8 @@ public class FindComboBoxUiaFixAcceptanceTests
 
         Assert.Contains("FindMatchingComboBoxesBounded", content);
         Assert.Contains("ShouldStopAfterFirstStrongMatch", content);
+        Assert.Contains("FindMatchingComboBoxesBoundedRecursive(", content);
+        Assert.Contains("IUIAutomationCondition viewCondition", content);
         Assert.DoesNotContain("FindComboBoxesBounded", content);
         Assert.DoesNotContain("TreeScope_Subtree", content);
         Assert.DoesNotContain("TreeScope.Subtree", content);

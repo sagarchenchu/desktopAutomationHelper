@@ -55,22 +55,26 @@ internal sealed class NativeUiaElementResolver
             }
         }
 
+        NativeUiaResolveResult? lastComboResult = null;
+
         if (activeWindowHwnd.HasValue && activeWindowHwnd.Value != IntPtr.Zero)
         {
             var root = _uia.FromHandle(activeWindowHwnd.Value);
-            if (root == null)
+            if (root != null)
             {
-                return NativeUiaResolveResult.NotFound(
-                    "not-found",
-                    "Could not resolve activeWindowHwnd to UIA root.");
-            }
+                var result = FindComboBoxUnderRootBounded(
+                    request,
+                    root,
+                    processId,
+                    deadlineUtc,
+                    cancellationToken,
+                    stage: "active-window");
 
-            return FindComboBoxUnderRootBounded(
-                request,
-                root,
-                processId,
-                deadlineUtc,
-                cancellationToken);
+                if (result.Element != null || result.IsAmbiguous)
+                    return result;
+
+                lastComboResult = result;
+            }
         }
 
         if (processId.HasValue)
@@ -90,16 +94,18 @@ internal sealed class NativeUiaElementResolver
                     window,
                     processId,
                     deadlineUtc,
-                    cancellationToken);
+                    cancellationToken,
+                    stage: "process-window");
 
-                if (result.Element != null)
+                if (result.Element != null || result.IsAmbiguous)
                     return result;
-            }
 
-            return NativeUiaResolveResult.NotFound(
-                "not-found",
-                "No matching ComboBox found under process windows.");
+                lastComboResult = result;
+            }
         }
+
+        if (lastComboResult != null)
+            return lastComboResult;
 
         return NativeUiaResolveResult.NotFound(
             "no-root",
@@ -261,15 +267,19 @@ internal sealed class NativeUiaElementResolver
         IUIAutomationElement root,
         int? processId,
         DateTime deadlineUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string stage)
     {
         ThrowIfExpired(deadlineUtc, "FindComboBoxUnderRootBounded");
         cancellationToken.ThrowIfCancellationRequested();
 
         var locator = ToNativeLocator(request, processId);
+        var viewCondition = ResolveViewCondition(request);
+        var viewName = ResolveViewName(request);
         var matches = FindMatchingComboBoxesBounded(
             root,
             locator,
+            viewCondition,
             deadlineUtc,
             cancellationToken);
 
@@ -283,7 +293,7 @@ internal sealed class NativeUiaElementResolver
             return new NativeUiaResolveResult
             {
                 Stage = "combo-not-found",
-                LastError = "Native UIA resolver could not find a ComboBox for the locator.",
+                LastError = $"Native UIA resolver could not find a ComboBox for the locator (stage={stage}, view={viewName}).",
                 Candidates = candidates
             };
         }
@@ -492,6 +502,7 @@ internal sealed class NativeUiaElementResolver
     private List<IUIAutomationElement> FindMatchingComboBoxesBounded(
         IUIAutomationElement root,
         NativeUiaLocator locator,
+        IUIAutomationCondition viewCondition,
         DateTime deadlineUtc,
         CancellationToken cancellationToken)
     {
@@ -501,6 +512,7 @@ internal sealed class NativeUiaElementResolver
         FindMatchingComboBoxesBoundedRecursive(
             root,
             locator,
+            viewCondition,
             results,
             seen,
             depth: 0,
@@ -515,6 +527,7 @@ internal sealed class NativeUiaElementResolver
     private void FindMatchingComboBoxesBoundedRecursive(
         IUIAutomationElement root,
         NativeUiaLocator locator,
+        IUIAutomationCondition viewCondition,
         List<IUIAutomationElement> results,
         HashSet<string> seen,
         int depth,
@@ -538,7 +551,7 @@ internal sealed class NativeUiaElementResolver
         {
             children = root.FindAll(
                 TreeScope.TreeScope_Children,
-                _uia.ControlViewCondition);
+                viewCondition);
         }
         catch
         {
@@ -596,6 +609,7 @@ internal sealed class NativeUiaElementResolver
             FindMatchingComboBoxesBoundedRecursive(
                 child,
                 locator,
+                viewCondition,
                 results,
                 seen,
                 depth + 1,
@@ -724,6 +738,9 @@ internal sealed class NativeUiaElementResolver
     internal static string InferDefaultView(UiRequest request)
     {
         var operation = request.Operation?.Trim().ToLowerInvariant();
+
+        if (operation is "findcomboboxuia" or "selectcomboboxuia" or "inspectcombobox")
+            return "control";
 
         if (operation == "clickmenuuia")
             return "raw";

@@ -28,6 +28,15 @@ public class NativeUiaElementResolverViewAcceptanceTests
 
         var elementRecursiveBlock = content[recursiveStart..comboRecursiveStart];
         Assert.DoesNotContain("_uia.ControlViewCondition", elementRecursiveBlock);
+
+        var comboEnd = content.IndexOf(
+            "private static bool ShouldStopAfterFirstStrongMatch",
+            StringComparison.Ordinal);
+        Assert.True(comboEnd > comboRecursiveStart);
+
+        var comboRecursiveBlock = content[comboRecursiveStart..comboEnd];
+        Assert.Contains("viewCondition", comboRecursiveBlock);
+        Assert.DoesNotContain("_uia.ControlViewCondition", comboRecursiveBlock);
     }
 
     [Fact]
@@ -63,6 +72,23 @@ public class NativeUiaElementResolverViewAcceptanceTests
                     {
                         Name = "DQA",
                         ControlType = "Menu"
+                    }
+                }));
+    }
+
+    [Fact]
+    public void InferDefaultView_ComboBoxOperations_DefaultToControl()
+    {
+        Assert.Equal(
+            "control",
+            DesktopAutomationDriver.Services.NativeUia.NativeUiaElementResolver.InferDefaultView(
+                new DesktopAutomationDriver.Models.Request.UiRequest
+                {
+                    Operation = "findcomboboxuia",
+                    Locator = new DesktopAutomationDriver.Models.Request.UiLocator
+                    {
+                        AutomationId = "cmbTest",
+                        ControlType = "ComboBox"
                     }
                 }));
     }
