@@ -28,6 +28,8 @@ public class FindComboBoxUiaFixAcceptanceTests
 
         Assert.Contains("FindMatchingComboBoxesBounded", content);
         Assert.Contains("ShouldStopAfterFirstStrongMatch", content);
+        Assert.Contains("FindMatchingComboBoxesBoundedRecursive(", content);
+        Assert.Contains("IUIAutomationCondition viewCondition", content);
         Assert.DoesNotContain("FindComboBoxesBounded", content);
         Assert.DoesNotContain("TreeScope_Subtree", content);
         Assert.DoesNotContain("TreeScope.Subtree", content);
@@ -42,6 +44,6 @@ public class FindComboBoxUiaFixAcceptanceTests
             relativePath));
 
         Assert.True(File.Exists(path), $"Expected source file at {path}");
-        return File.ReadAllText(path);
+        return File.ReadAllText(path).Replace("\r\n", "\n", StringComparison.Ordinal);
     }
 }
