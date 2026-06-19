@@ -156,12 +156,17 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
 
                 if (resolveResult.Element == null)
                 {
+                    var view = request.View
+                               ?? request.TreeView
+                               ?? NativeUiaElementResolver.InferDefaultView(request);
+
                     return new
                     {
                         operation,
                         success = false,
                         reason = resolveResult.Stage ?? "element-not-found",
                         stage = resolverStage,
+                        view,
                         elapsedMs = sw.ElapsedMilliseconds,
                         candidates = resolveResult.Candidates,
                         message = resolveResult.LastError

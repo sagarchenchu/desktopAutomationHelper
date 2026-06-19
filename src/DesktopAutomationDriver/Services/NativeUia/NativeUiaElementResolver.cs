@@ -124,23 +124,26 @@ internal sealed class NativeUiaElementResolver
                 return SingleResult(fromHandle, "hwnd-direct");
         }
 
+        NativeUiaResolveResult? lastResult = null;
+
         if (activeWindowHwnd.HasValue && activeWindowHwnd.Value != IntPtr.Zero)
         {
             var root = _uia.FromHandle(activeWindowHwnd.Value);
-            if (root == null)
+            if (root != null)
             {
-                return NativeUiaResolveResult.NotFound(
-                    "not-found",
-                    "Could not resolve activeWindowHwnd to UIA root.");
-            }
+                var result = FindElementUnderRootBounded(
+                    request,
+                    root,
+                    processId,
+                    deadlineUtc,
+                    cancellationToken,
+                    stage: "active-window");
 
-            return FindElementUnderRootBounded(
-                request,
-                root,
-                processId,
-                deadlineUtc,
-                cancellationToken,
-                stage: "active-window");
+                if (result.Element != null || result.IsAmbiguous)
+                    return result;
+
+                lastResult = result;
+            }
         }
 
         if (processId.HasValue)
@@ -163,14 +166,15 @@ internal sealed class NativeUiaElementResolver
                     cancellationToken,
                     stage: "process-window");
 
-                if (result.Element != null)
+                if (result.Element != null || result.IsAmbiguous)
                     return result;
-            }
 
-            return NativeUiaResolveResult.NotFound(
-                "not-found",
-                "No matching element found under process windows.");
+                lastResult = result;
+            }
         }
+
+        if (lastResult != null)
+            return lastResult;
 
         return NativeUiaResolveResult.NotFound(
             "no-root",
@@ -189,9 +193,12 @@ internal sealed class NativeUiaElementResolver
         cancellationToken.ThrowIfCancellationRequested();
 
         var locator = ToNativeLocator(request, processId);
+        var viewCondition = ResolveViewCondition(request);
+        var viewName = ResolveViewName(request);
         var matches = FindMatchingElementsBounded(
             root,
             locator,
+            viewCondition,
             deadlineUtc,
             cancellationToken);
 
@@ -205,7 +212,7 @@ internal sealed class NativeUiaElementResolver
             return new NativeUiaResolveResult
             {
                 Stage = "element-not-found",
-                LastError = $"Native UIA resolver could not find an element for the locator (stage={stage}).",
+                LastError = $"Native UIA resolver could not find an element for the locator (stage={stage}, view={viewName}).",
                 Candidates = candidates
             };
         }
@@ -321,6 +328,7 @@ internal sealed class NativeUiaElementResolver
     private List<IUIAutomationElement> FindMatchingElementsBounded(
         IUIAutomationElement root,
         NativeUiaLocator locator,
+        IUIAutomationCondition viewCondition,
         DateTime deadlineUtc,
         CancellationToken cancellationToken)
     {
@@ -330,6 +338,7 @@ internal sealed class NativeUiaElementResolver
         FindMatchingElementsBoundedRecursive(
             root,
             locator,
+            viewCondition,
             results,
             seen,
             depth: 0,
@@ -344,6 +353,7 @@ internal sealed class NativeUiaElementResolver
     private void FindMatchingElementsBoundedRecursive(
         IUIAutomationElement root,
         NativeUiaLocator locator,
+        IUIAutomationCondition viewCondition,
         List<IUIAutomationElement> results,
         HashSet<string> seen,
         int depth,
@@ -389,7 +399,7 @@ internal sealed class NativeUiaElementResolver
         {
             children = root.FindAll(
                 TreeScope.TreeScope_Children,
-                _uia.ControlViewCondition);
+                viewCondition);
         }
         catch
         {
@@ -417,6 +427,7 @@ internal sealed class NativeUiaElementResolver
             FindMatchingElementsBoundedRecursive(
                 child,
                 locator,
+                viewCondition,
                 results,
                 seen,
                 depth + 1,
@@ -693,6 +704,41 @@ internal sealed class NativeUiaElementResolver
         }
 
         return null;
+    }
+
+    private IUIAutomationCondition ResolveViewCondition(UiRequest request)
+    {
+        var requestedView = ResolveViewName(request);
+
+        return requestedView.Trim().ToLowerInvariant() switch
+        {
+            "raw" => _uia.TrueCondition(),
+            "content" => _uia.ContentViewCondition,
+            _ => _uia.ControlViewCondition
+        };
+    }
+
+    private static string ResolveViewName(UiRequest request) =>
+        request.View ?? request.TreeView ?? InferDefaultView(request);
+
+    internal static string InferDefaultView(UiRequest request)
+    {
+        var operation = request.Operation?.Trim().ToLowerInvariant();
+
+        if (operation == "clickmenuuia")
+            return "raw";
+
+        var controlType = request.Locator?.ControlType;
+
+        if (string.Equals(controlType, "Menu", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(controlType, "MenuItem", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(controlType, "ControlType(50011)", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(controlType, "50011", StringComparison.OrdinalIgnoreCase))
+        {
+            return "raw";
+        }
+
+        return "control";
     }
 
     private static void ThrowIfExpired(DateTime deadlineUtc, string stage)
