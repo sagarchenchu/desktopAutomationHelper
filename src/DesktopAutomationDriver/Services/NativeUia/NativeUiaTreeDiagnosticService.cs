@@ -756,7 +756,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         }
     }
 
-    private object BuildElementRecord(
+    private Dictionary<string, object?> BuildElementRecord(
         IUIAutomationElement element,
         int depth,
         string? path,
