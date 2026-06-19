@@ -10,6 +10,12 @@ public interface INativeUiaBasicOperationService
         int? processId,
         CancellationToken cancellationToken = default);
 
+    object ClickMenu(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
+
     object Type(
         UiRequest request,
         IntPtr? activeWindowHwnd,
