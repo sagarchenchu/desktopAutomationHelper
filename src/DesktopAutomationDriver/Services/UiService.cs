@@ -370,6 +370,10 @@ public partial class UiService : IUiService
                     request,
                     ClickNativeUia,
                     cancellationToken),
+                "clickmenuuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    ClickMenuNativeUia,
+                    cancellationToken),
                 "typeuia" => ExecuteNativeUiaWithTimeout(
                     request,
                     TypeNativeUia,
@@ -10773,6 +10777,9 @@ public partial class UiService : IUiService
 
     private object? ClickNativeUia(UiRequest request, CancellationToken cancellationToken) =>
         ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Click);
+
+    private object? ClickMenuNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.ClickMenu);
 
     private object? TypeNativeUia(UiRequest request, CancellationToken cancellationToken) =>
         ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Type);
