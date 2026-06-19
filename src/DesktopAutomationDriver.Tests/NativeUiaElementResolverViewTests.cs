@@ -43,6 +43,26 @@ public class NativeUiaElementResolverViewTests
     }
 
     [Fact]
+    public void InferDefaultView_ComboBoxOperations_DefaultToRaw()
+    {
+        Assert.Equal(
+            "raw",
+            NativeUiaElementResolver.InferDefaultView(new UiRequest
+            {
+                Operation = "findcomboboxuia",
+                Locator = new UiLocator { AutomationId = "cmbTest", ControlType = "ComboBox" }
+            }));
+
+        Assert.Equal(
+            "raw",
+            NativeUiaElementResolver.InferDefaultView(new UiRequest
+            {
+                Operation = "selectcomboboxuia",
+                Locator = new UiLocator { AutomationId = "cmbTest", ControlType = "ComboBox" }
+            }));
+    }
+
+    [Fact]
     public void InferDefaultView_GenericButton_DefaultsToControl()
     {
         var view = NativeUiaElementResolver.InferDefaultView(new UiRequest
