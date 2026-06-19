@@ -139,6 +139,13 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
 
             if (HasLocator(request))
             {
+                if (string.IsNullOrWhiteSpace(request.Operation))
+                    request.Operation = operation;
+
+                var resolveView = request.View
+                                  ?? request.TreeView
+                                  ?? NativeUiaElementResolver.InferDefaultView(request);
+
                 var resolveResult = _resolver.ResolveElement(
                     request,
                     activeWindowHwnd,
@@ -149,19 +156,25 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
                 resolverStage = resolveResult.Stage;
 
                 _logger.LogInformation(
-                    "NativeUiaBasic {Operation} resolver stage={Stage}, elapsedMs={ElapsedMs}",
+                    "NativeUiaBasic {Operation} resolver stage={Stage}, view={View}, elapsedMs={ElapsedMs}",
                     operation,
                     resolverStage,
+                    resolveView,
                     sw.ElapsedMilliseconds);
 
                 if (resolveResult.Element == null)
                 {
+                    var view = request.View
+                               ?? request.TreeView
+                               ?? NativeUiaElementResolver.InferDefaultView(request);
+
                     return new
                     {
                         operation,
                         success = false,
                         reason = resolveResult.Stage ?? "element-not-found",
                         stage = resolverStage,
+                        view,
                         elapsedMs = sw.ElapsedMilliseconds,
                         candidates = resolveResult.Candidates,
                         message = resolveResult.LastError
