@@ -465,8 +465,30 @@ public class UiRequest
     public string? Ambiguity { get; set; }
 
     // -------------------------------------------------------------------------
-    // Dumptree fields
+    // Dumptree / Native UIA diagnostic fields
     // -------------------------------------------------------------------------
     public int? Depth { get; set; }
     public bool? IncludeIdentifiers { get; set; }
+
+    /// <summary>
+    /// Native UIA diagnostic root mode: activeWindow, processWindows, or desktopChildren.
+    /// </summary>
+    public string? Root { get; set; }
+
+    /// <summary>
+    /// Native UIA tree view: control, content, or raw. Alias for <see cref="TreeView"/>.
+    /// </summary>
+    public string? View { get; set; }
+
+    /// <summary>Maximum traversal depth for dumpuia/finduia. Alias for <see cref="Depth"/>.</summary>
+    public int? MaxDepth { get; set; }
+
+    /// <summary>Maximum children per node during bounded UIA traversal.</summary>
+    public int? MaxChildren { get; set; }
+
+    /// <summary>Filter elements whose name contains this substring (dumpuia/finduia).</summary>
+    public string? NameContains { get; set; }
+
+    /// <summary>When true, include a human-readable element path in dumpuia/finduia output.</summary>
+    public bool? IncludePath { get; set; }
 }
