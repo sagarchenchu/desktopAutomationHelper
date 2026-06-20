@@ -39,4 +39,22 @@ public interface INativeUiaBasicOperationService
         IntPtr? activeWindowHwnd,
         int? processId,
         CancellationToken cancellationToken = default);
+
+    object Exists(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
+
+    object GetValue(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
+
+    object Wait(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
 }

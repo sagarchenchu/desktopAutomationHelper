@@ -21,6 +21,9 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
     private const int RadioButtonControlTypeId = 50013;
     private const int DefaultTimeoutMs = 5000;
     private const int MaxTimeoutMs = 15000;
+    private const int DefaultWaitTimeoutMs = 10000;
+    private const int MaxWaitTimeoutMs = 60000;
+    private const int DefaultPollIntervalMs = 200;
     private const int ActionDelayMs = 80;
 
     private readonly NativeUiaAutomation _uia;
@@ -83,6 +86,474 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
         CancellationToken cancellationToken = default) =>
         ExecuteOperation("focusuia", request, activeWindowHwnd, processId, cancellationToken, FocusElement);
 
+    public object Exists(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default)
+    {
+        var sw = Stopwatch.StartNew();
+        var timeoutMs = ResolveTimeoutMs(request.TimeoutMs);
+        var deadlineUtc = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        return ExecuteQueryOperation(
+            "existsuia",
+            request,
+            activeWindowHwnd,
+            processId,
+            deadlineUtc,
+            cancellationToken,
+            sw,
+            (element, stage) => new
+            {
+                operation = "existsuia",
+                success = true,
+                exists = true,
+                reason = (string?)null,
+                strategy = "element-resolved",
+                stage,
+                elapsedMs = sw.ElapsedMilliseconds
+            },
+            onNotFound: (_, stage, view, resolveResult, elapsedMs) => new
+            {
+                operation = "existsuia",
+                success = false,
+                exists = false,
+                reason = resolveResult.Stage ?? "element-not-found",
+                stage,
+                view,
+                elapsedMs,
+                candidates = resolveResult.Candidates,
+                message = resolveResult.LastError,
+                diagnostics = resolveResult.Diagnostics
+            });
+    }
+
+    public object GetValue(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default)
+    {
+        var sw = Stopwatch.StartNew();
+        var timeoutMs = ResolveTimeoutMs(request.TimeoutMs);
+        var deadlineUtc = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        return ExecuteQueryOperation(
+            "getvalueuia",
+            request,
+            activeWindowHwnd,
+            processId,
+            deadlineUtc,
+            cancellationToken,
+            sw,
+            (element, stage) =>
+            {
+                var (readSuccess, strategy, value) = ReadElementValue(element);
+                if (!readSuccess)
+                {
+                    return new
+                    {
+                        operation = "getvalueuia",
+                        success = false,
+                        reason = "value-unavailable",
+                        stage,
+                        elapsedMs = sw.ElapsedMilliseconds,
+                        message = "Could not read a value from the resolved element."
+                    };
+                }
+
+                return new
+                {
+                    operation = "getvalueuia",
+                    success = true,
+                    reason = (string?)null,
+                    strategy,
+                    stage,
+                    value,
+                    elapsedMs = sw.ElapsedMilliseconds
+                };
+            },
+            onNotFound: (_, stage, view, resolveResult, elapsedMs) => new
+            {
+                operation = "getvalueuia",
+                success = false,
+                reason = resolveResult.Stage ?? "element-not-found",
+                stage,
+                view,
+                elapsedMs,
+                candidates = resolveResult.Candidates,
+                message = resolveResult.LastError,
+                diagnostics = resolveResult.Diagnostics
+            });
+    }
+
+    public object Wait(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default)
+    {
+        var sw = Stopwatch.StartNew();
+        var timeoutMs = ResolveWaitTimeoutMs(request.TimeoutMs);
+        var pollIntervalMs = Math.Clamp(request.PollIntervalMs ?? DefaultPollIntervalMs, 50, 2000);
+        var deadlineUtc = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        _logger.LogInformation(
+            "NativeUiaBasic waituia starting. rootHwnd={RootHwnd}, processId={ProcessId}, timeoutMs={TimeoutMs}, pollIntervalMs={PollIntervalMs}",
+            activeWindowHwnd,
+            processId,
+            timeoutMs,
+            pollIntervalMs);
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!HasLocator(request))
+            {
+                return BuildFailure(
+                    "waituia",
+                    "invalid-request",
+                    "Locator is required for waituia.",
+                    sw.ElapsedMilliseconds);
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Operation))
+                request.Operation = "waituia";
+
+            var attempts = 0;
+            NativeUiaResolveResult? lastResolveResult = null;
+            string? lastStage = null;
+            string? lastView = null;
+
+            while (DateTime.UtcNow <= deadlineUtc)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                attempts++;
+
+                var resolveView = request.View
+                                  ?? request.TreeView
+                                  ?? NativeUiaElementResolver.InferDefaultView(request);
+
+                var resolveResult = _resolver.ResolveElement(
+                    request,
+                    activeWindowHwnd,
+                    processId,
+                    deadlineUtc,
+                    cancellationToken);
+
+                lastResolveResult = resolveResult;
+                lastStage = resolveResult.Stage;
+                lastView = resolveView;
+
+                if (resolveResult.Element != null && !resolveResult.IsAmbiguous)
+                {
+                    return new
+                    {
+                        operation = "waituia",
+                        success = true,
+                        reason = (string?)null,
+                        strategy = "wait-until-found",
+                        stage = lastStage,
+                        view = lastView,
+                        attempts,
+                        elapsedMs = sw.ElapsedMilliseconds
+                    };
+                }
+
+                if (resolveResult.IsAmbiguous)
+                {
+                    return new
+                    {
+                        operation = "waituia",
+                        success = false,
+                        reason = "ambiguous-element",
+                        stage = lastStage,
+                        view = lastView,
+                        attempts,
+                        elapsedMs = sw.ElapsedMilliseconds,
+                        candidates = resolveResult.Candidates,
+                        message = resolveResult.LastError,
+                        diagnostics = resolveResult.Diagnostics
+                    };
+                }
+
+                if (DateTime.UtcNow.AddMilliseconds(pollIntervalMs) > deadlineUtc)
+                    break;
+
+                WaitWithCancellation(pollIntervalMs, cancellationToken);
+            }
+
+            return new
+            {
+                operation = "waituia",
+                success = false,
+                reason = "wait-timeout",
+                stage = lastStage,
+                view = lastView,
+                attempts,
+                elapsedMs = sw.ElapsedMilliseconds,
+                message = lastResolveResult?.LastError
+                    ?? "Native UIA resolver did not find the element before the wait timeout elapsed.",
+                candidates = lastResolveResult?.Candidates,
+                diagnostics = lastResolveResult?.Diagnostics
+            };
+        }
+        catch (TimeoutException ex)
+        {
+            return BuildFailure("waituia", "timeout", ex.Message, sw.ElapsedMilliseconds);
+        }
+        catch (OperationCanceledException)
+        {
+            return BuildFailure("waituia", "cancelled", "waituia was cancelled.", sw.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "NativeUiaBasic waituia failed with exception.");
+
+            return new
+            {
+                operation = "waituia",
+                success = false,
+                reason = "error",
+                elapsedMs = sw.ElapsedMilliseconds,
+                exceptionType = ex.GetType().Name,
+                message = ex.Message
+            };
+        }
+    }
+
+    private object ExecuteQueryOperation(
+        string operation,
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken,
+        Stopwatch sw,
+        Func<IUIAutomationElement, string?, object> onFound,
+        Func<string, string?, string?, NativeUiaResolveResult, long, object> onNotFound)
+    {
+        _logger.LogInformation(
+            "NativeUiaBasic {Operation} starting. rootHwnd={RootHwnd}, processId={ProcessId}, timeoutMs={TimeoutMs}",
+            operation,
+            activeWindowHwnd,
+            processId,
+            ResolveTimeoutMs(request.TimeoutMs));
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureWithinDeadline(deadlineUtc, cancellationToken, "start");
+
+            if (!HasLocator(request))
+            {
+                return BuildFailure(
+                    operation,
+                    "invalid-request",
+                    $"Locator is required for {operation}.",
+                    sw.ElapsedMilliseconds);
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Operation))
+                request.Operation = operation;
+
+            var resolveOutcome = TryResolveLocatedElement(
+                operation,
+                request,
+                activeWindowHwnd,
+                processId,
+                deadlineUtc,
+                cancellationToken,
+                sw.ElapsedMilliseconds,
+                requireEnabled: false);
+
+            if (resolveOutcome.FailureResponse != null)
+            {
+                if (resolveOutcome.ResolveResult != null
+                    && resolveOutcome.View != null
+                    && resolveOutcome.Stage != null
+                    && resolveOutcome.ResolveResult.Element == null
+                    && !resolveOutcome.ResolveResult.IsAmbiguous)
+                {
+                    return onNotFound(
+                        operation,
+                        resolveOutcome.Stage,
+                        resolveOutcome.View,
+                        resolveOutcome.ResolveResult,
+                        sw.ElapsedMilliseconds);
+                }
+
+                return resolveOutcome.FailureResponse;
+            }
+
+            return onFound(resolveOutcome.Element!, resolveOutcome.Stage);
+        }
+        catch (TimeoutException ex)
+        {
+            return BuildFailure(operation, "timeout", ex.Message, sw.ElapsedMilliseconds);
+        }
+        catch (OperationCanceledException)
+        {
+            return BuildFailure(operation, "cancelled", $"{operation} was cancelled.", sw.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "NativeUiaBasic {Operation} failed with exception.", operation);
+
+            return new
+            {
+                operation,
+                success = false,
+                reason = "error",
+                elapsedMs = sw.ElapsedMilliseconds,
+                exceptionType = ex.GetType().Name,
+                message = ex.Message
+            };
+        }
+    }
+
+    private sealed class ResolveLocatedElementOutcome
+    {
+        public IUIAutomationElement? Element { get; init; }
+        public string? Stage { get; init; }
+        public string? View { get; init; }
+        public NativeUiaResolveResult? ResolveResult { get; init; }
+        public object? FailureResponse { get; init; }
+    }
+
+    private ResolveLocatedElementOutcome TryResolveLocatedElement(
+        string operation,
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken,
+        long elapsedMs,
+        bool requireEnabled)
+    {
+        var resolveView = request.View
+                          ?? request.TreeView
+                          ?? NativeUiaElementResolver.InferDefaultView(request);
+
+        var resolveResult = _resolver.ResolveElement(
+            request,
+            activeWindowHwnd,
+            processId,
+            deadlineUtc,
+            cancellationToken);
+
+        var resolverStage = resolveResult.Stage;
+
+        _logger.LogInformation(
+            "NativeUiaBasic {Operation} resolver stage={Stage}, view={View}, elapsedMs={ElapsedMs}",
+            operation,
+            resolverStage,
+            resolveView,
+            elapsedMs);
+
+        if (resolveResult.Element == null)
+        {
+            return new ResolveLocatedElementOutcome
+            {
+                Stage = resolverStage,
+                View = resolveView,
+                ResolveResult = resolveResult,
+                FailureResponse = new
+                {
+                    operation,
+                    success = false,
+                    reason = resolveResult.Stage ?? "element-not-found",
+                    stage = resolverStage,
+                    view = resolveView,
+                    elapsedMs,
+                    candidates = resolveResult.Candidates,
+                    message = resolveResult.LastError,
+                    diagnostics = resolveResult.Diagnostics
+                }
+            };
+        }
+
+        if (resolveResult.IsAmbiguous)
+        {
+            return new ResolveLocatedElementOutcome
+            {
+                Stage = resolverStage,
+                View = resolveView,
+                ResolveResult = resolveResult,
+                FailureResponse = new
+                {
+                    operation,
+                    success = false,
+                    reason = "ambiguous-element",
+                    stage = resolverStage,
+                    view = resolveView,
+                    elapsedMs,
+                    candidates = resolveResult.Candidates,
+                    message = resolveResult.LastError,
+                    diagnostics = resolveResult.Diagnostics
+                }
+            };
+        }
+
+        if (requireEnabled
+            && !_uia.GetBoolProperty(resolveResult.Element, UIA_PropertyIds.UIA_IsEnabledPropertyId, true))
+        {
+            return new ResolveLocatedElementOutcome
+            {
+                Stage = resolverStage,
+                View = resolveView,
+                ResolveResult = resolveResult,
+                FailureResponse = BuildFailure(
+                    operation,
+                    "element-disabled",
+                    "Target element is disabled.",
+                    elapsedMs)
+            };
+        }
+
+        return new ResolveLocatedElementOutcome
+        {
+            Element = resolveResult.Element,
+            Stage = resolverStage,
+            View = resolveView,
+            ResolveResult = resolveResult
+        };
+    }
+
+    private (bool success, string strategy, string? value) ReadElementValue(IUIAutomationElement element)
+    {
+        var valuePatternText = _uia.GetValuePatternText(element);
+        if (!string.IsNullOrWhiteSpace(valuePatternText))
+            return (true, "valuepattern", valuePatternText);
+
+        var text = _textReader.ReadElementText(element);
+        if (!string.IsNullOrWhiteSpace(text))
+            return (true, "text-reader", text);
+
+        var snapshot = _uia.CreateSnapshot(element);
+        if (!string.IsNullOrWhiteSpace(snapshot.Name))
+            return (true, "name", snapshot.Name);
+
+        return (false, "value-unavailable", null);
+    }
+
+    private static void WaitWithCancellation(int pollIntervalMs, CancellationToken cancellationToken)
+    {
+        if (pollIntervalMs <= 0)
+            return;
+
+        cancellationToken.WaitHandle.WaitOne(pollIntervalMs);
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private static int ResolveWaitTimeoutMs(int? requestTimeoutMs)
+    {
+        var timeout = requestTimeoutMs ?? DefaultWaitTimeoutMs;
+        return Math.Clamp(timeout, 500, MaxWaitTimeoutMs);
+    }
+
     private object ExecuteOperation(
         string operation,
         UiRequest request,
@@ -142,71 +613,21 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
                 if (string.IsNullOrWhiteSpace(request.Operation))
                     request.Operation = operation;
 
-                var resolveView = request.View
-                                  ?? request.TreeView
-                                  ?? NativeUiaElementResolver.InferDefaultView(request);
-
-                var resolveResult = _resolver.ResolveElement(
+                var resolveOutcome = TryResolveLocatedElement(
+                    operation,
                     request,
                     activeWindowHwnd,
                     processId,
                     deadlineUtc,
-                    cancellationToken);
+                    cancellationToken,
+                    sw.ElapsedMilliseconds,
+                    requireEnabled: true);
 
-                resolverStage = resolveResult.Stage;
+                if (resolveOutcome.FailureResponse != null)
+                    return resolveOutcome.FailureResponse;
 
-                _logger.LogInformation(
-                    "NativeUiaBasic {Operation} resolver stage={Stage}, view={View}, elapsedMs={ElapsedMs}",
-                    operation,
-                    resolverStage,
-                    resolveView,
-                    sw.ElapsedMilliseconds);
-
-                if (resolveResult.Element == null)
-                {
-                    var view = request.View
-                               ?? request.TreeView
-                               ?? NativeUiaElementResolver.InferDefaultView(request);
-
-                    return new
-                    {
-                        operation,
-                        success = false,
-                        reason = resolveResult.Stage ?? "element-not-found",
-                        stage = resolverStage,
-                        view,
-                        elapsedMs = sw.ElapsedMilliseconds,
-                        candidates = resolveResult.Candidates,
-                        message = resolveResult.LastError,
-                        diagnostics = resolveResult.Diagnostics
-                    };
-                }
-
-                if (resolveResult.IsAmbiguous)
-                {
-                    return new
-                    {
-                        operation,
-                        success = false,
-                        reason = "ambiguous-element",
-                        stage = resolverStage,
-                        elapsedMs = sw.ElapsedMilliseconds,
-                        candidates = resolveResult.Candidates,
-                        message = resolveResult.LastError,
-                        diagnostics = resolveResult.Diagnostics
-                    };
-                }
-
-                element = resolveResult.Element;
-
-                if (!_uia.GetBoolProperty(element, UIA_PropertyIds.UIA_IsEnabledPropertyId, true))
-                {
-                    return BuildFailure(
-                        operation,
-                        "element-disabled",
-                        "Target element is disabled.",
-                        sw.ElapsedMilliseconds);
-                }
+                element = resolveOutcome.Element;
+                resolverStage = resolveOutcome.Stage;
             }
 
             EnsureWithinDeadline(deadlineUtc, cancellationToken, "action");
