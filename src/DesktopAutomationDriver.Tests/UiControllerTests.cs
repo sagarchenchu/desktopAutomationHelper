@@ -55,6 +55,34 @@ public class UiControllerTests
     // ------------------------------------------------------------------
 
     [Fact]
+    public void Execute_WhenNativeUiaPayloadReportsFailure_EnvelopeSuccessFalse()
+    {
+        var payload = new
+        {
+            operation = "clickmenuuia",
+            success = false,
+            reason = "element-not-found",
+            message = "Native UIA resolver could not find an element for the locator."
+        };
+
+        _uiServiceMock
+            .Setup(s => s.Execute(It.Is<UiRequest>(r => r.Operation == "clickmenuuia"), It.IsAny<CancellationToken>()))
+            .Returns(payload);
+
+        var result = _controller.Execute(new UiRequest
+        {
+            Operation = "clickmenuuia",
+            Locator = new UiLocator { Name = "DQA", ControlType = "Menu" }
+        });
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<UiResponse>(ok.Value);
+        Assert.False(response.Success);
+        Assert.Equal(payload, response.Value);
+        Assert.Equal("element-not-found", response.Reason);
+    }
+
+    [Fact]
     public void Execute_SelectOperation_Returns200WithSuccess()
     {
         _uiServiceMock
