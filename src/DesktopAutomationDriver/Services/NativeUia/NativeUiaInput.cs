@@ -25,8 +25,8 @@ internal static class NativeUiaInput
         SetCursorPos(point.X, point.Y);
         Thread.Sleep(30);
 
-        var downFlag = leftButton ? MouseEventFlags.MOUSEEVENTF_LEFTDOWN : MouseEventFlags.MOUSEEVENTF_LEFTDOWN;
-        var upFlag = leftButton ? MouseEventFlags.MOUSEEVENTF_LEFTUP : MouseEventFlags.MOUSEEVENTF_LEFTUP;
+        var downFlag = leftButton ? MouseEventFlags.MOUSEEVENTF_LEFTDOWN : MouseEventFlags.MOUSEEVENTF_RIGHTDOWN;
+        var upFlag = leftButton ? MouseEventFlags.MOUSEEVENTF_LEFTUP : MouseEventFlags.MOUSEEVENTF_RIGHTUP;
 
         var inputs = new[]
         {
@@ -66,6 +66,18 @@ internal static class NativeUiaInput
 
         return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>()) == inputs.Length;
     }
+
+    public static bool DoubleClickPoint(Point point)
+    {
+        if (!ClickPoint(point))
+            return false;
+
+        Thread.Sleep(50);
+
+        return ClickPoint(point);
+    }
+
+    public static bool RightClickPoint(Point point) => ClickPoint(point, leftButton: false);
 
     public static bool FocusWindow(IntPtr hwnd)
     {
@@ -203,6 +215,8 @@ internal static class NativeUiaInput
     {
         MOUSEEVENTF_LEFTDOWN = 0x0002,
         MOUSEEVENTF_LEFTUP = 0x0004,
+        MOUSEEVENTF_RIGHTDOWN = 0x0008,
+        MOUSEEVENTF_RIGHTUP = 0x0010,
         MOUSEEVENTF_WHEEL = 0x0800
     }
 

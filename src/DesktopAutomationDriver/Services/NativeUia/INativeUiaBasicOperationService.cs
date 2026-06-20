@@ -39,4 +39,58 @@ public interface INativeUiaBasicOperationService
         IntPtr? activeWindowHwnd,
         int? processId,
         CancellationToken cancellationToken = default);
+
+    object DoubleClick(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
+
+    object RightClick(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
+
+    object Check(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
+
+    object Uncheck(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
+
+    object SelectTab(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
+
+    object ScreenshotElement(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
+
+    object Exists(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
+
+    object GetValue(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
+
+    object Wait(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default);
 }
