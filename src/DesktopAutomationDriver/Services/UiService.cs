@@ -10778,8 +10778,17 @@ public partial class UiService : IUiService
     private object? ClickNativeUia(UiRequest request, CancellationToken cancellationToken) =>
         ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Click);
 
-    private object? ClickMenuNativeUia(UiRequest request, CancellationToken cancellationToken) =>
-        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.ClickMenu);
+    private object? ClickMenuNativeUia(UiRequest request, CancellationToken cancellationToken)
+    {
+        request.View ??= "raw";
+        request.TreeView ??= "raw";
+        request.IncludeOffscreen ??= true;
+
+        return ExecuteNativeUiaBasicOperation(
+            request,
+            cancellationToken,
+            _nativeUiaBasicOperationService.ClickMenu);
+    }
 
     private object? TypeNativeUia(UiRequest request, CancellationToken cancellationToken) =>
         ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Type);

@@ -177,7 +177,8 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
                         view,
                         elapsedMs = sw.ElapsedMilliseconds,
                         candidates = resolveResult.Candidates,
-                        message = resolveResult.LastError
+                        message = resolveResult.LastError,
+                        diagnostics = resolveResult.Diagnostics
                     };
                 }
 
@@ -191,7 +192,8 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
                         stage = resolverStage,
                         elapsedMs = sw.ElapsedMilliseconds,
                         candidates = resolveResult.Candidates,
-                        message = resolveResult.LastError
+                        message = resolveResult.LastError,
+                        diagnostics = resolveResult.Diagnostics
                     };
                 }
 
