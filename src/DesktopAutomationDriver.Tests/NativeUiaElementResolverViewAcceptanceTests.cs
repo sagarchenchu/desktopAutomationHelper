@@ -54,6 +54,17 @@ public class NativeUiaElementResolverViewAcceptanceTests
     }
 
     [Fact]
+    public void ElementResolver_UsesEnforceProcessIdMatchForElementFiltering()
+    {
+        var content = ReadSource("DesktopAutomationDriver/Services/NativeUia/NativeUiaElementResolver.cs");
+
+        Assert.Contains("EnforceProcessIdMatch = explicitProcessId.HasValue", content);
+        Assert.Contains("if (locator.EnforceProcessIdMatch && locator.ProcessId.HasValue)", content);
+        Assert.Contains("enforceProcessIdMatch = locator.EnforceProcessIdMatch", content);
+        Assert.Contains("failedFields", content);
+    }
+
+    [Fact]
     public void BasicOperationService_ReturnsResolverDiagnosticsOnNotFound()
     {
         var content = ReadSource("DesktopAutomationDriver/Services/NativeUia/NativeUiaBasicOperationService.cs");
