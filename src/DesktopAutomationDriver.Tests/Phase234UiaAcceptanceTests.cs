@@ -38,9 +38,10 @@ public class Phase234UiaAcceptanceTests
         Assert.Contains("object ScreenshotElement(", interfaceContent);
 
         Assert.Contains("DoubleClickElement", serviceContent);
-        Assert.Contains("return (true, \"physical-doubleclick\"", serviceContent);
-        Assert.Contains("invoke-twice", serviceContent);
-        Assert.DoesNotContain("return (true, \"invoke-pattern\", null, attempted, null)", serviceContent);
+        var doubleClickBlock = ExtractMethodBody(serviceContent, "DoubleClickElement");
+        Assert.Contains("return (true, \"physical-doubleclick\"", doubleClickBlock);
+        Assert.Contains("invoke-twice", doubleClickBlock);
+        Assert.DoesNotContain("return (true, \"invoke-pattern\"", doubleClickBlock);
         Assert.Contains("RightClickElement", serviceContent);
         Assert.Contains("SetToggleElement", serviceContent);
         Assert.Contains("ExecuteSelectTabOperation", serviceContent);
@@ -72,6 +73,32 @@ public class Phase234UiaAcceptanceTests
     {
         var content = ReadSource("DesktopAutomationDriver/Program.cs");
         Assert.Contains("INativeUiaGridService, NativeUiaGridService", content);
+    }
+
+    private static string ExtractMethodBody(string content, string methodName)
+    {
+        var marker = $"{methodName}(";
+        var start = content.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Expected method {methodName} in source.");
+
+        var braceStart = content.IndexOf('{', start);
+        Assert.True(braceStart >= 0, $"Expected opening brace for method {methodName}.");
+
+        var depth = 0;
+        for (var i = braceStart; i < content.Length; i++)
+        {
+            if (content[i] == '{')
+                depth++;
+            else if (content[i] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                    return content.Substring(braceStart, i - braceStart + 1);
+            }
+        }
+
+        Assert.Fail($"Could not extract body for method {methodName}.");
+        return string.Empty;
     }
 
     private static string ReadSource(string relativePath)
