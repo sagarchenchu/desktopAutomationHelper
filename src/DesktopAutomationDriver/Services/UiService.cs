@@ -215,6 +215,7 @@ public partial class UiService : IUiService
     private const bool UsePywinautoStyleResolver = true;
     private readonly INativeUiaComboBoxService _nativeUiaComboBoxService;
     private readonly INativeUiaBasicOperationService _nativeUiaBasicOperationService;
+    private readonly INativeUiaGridService _nativeUiaGridService;
     private readonly INativeUiaTreeDiagnosticService _nativeUiaTreeDiagnosticService;
 
     public UiService(
@@ -222,12 +223,14 @@ public partial class UiService : IUiService
         ILogger<UiService> logger,
         INativeUiaComboBoxService nativeUiaComboBoxService,
         INativeUiaBasicOperationService nativeUiaBasicOperationService,
+        INativeUiaGridService nativeUiaGridService,
         INativeUiaTreeDiagnosticService nativeUiaTreeDiagnosticService)
     {
         _ctx = ctx;
         _logger = logger;
         _nativeUiaComboBoxService = nativeUiaComboBoxService;
         _nativeUiaBasicOperationService = nativeUiaBasicOperationService;
+        _nativeUiaGridService = nativeUiaGridService;
         _nativeUiaTreeDiagnosticService = nativeUiaTreeDiagnosticService;
         _newResolver = new DesktopAutomationDriver.Services.Resolution.ElementResolver(ctx, logger, GetWindowRoot);
         _pywinautoResolver = new DesktopAutomationDriver.Services.ElementResolution.ElementResolver(ctx, logger, GetWindowRoot);
@@ -389,6 +392,47 @@ public partial class UiService : IUiService
                 "focusuia" => ExecuteNativeUiaWithTimeout(
                     request,
                     FocusNativeUia,
+                    cancellationToken),
+                "existsuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    ExistsNativeUia,
+                    cancellationToken),
+                "getvalueuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    GetValueNativeUia,
+                    cancellationToken),
+                "waituia" => ExecuteWaitNativeUiaWithTimeout(request, cancellationToken),
+                "doubleclickuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    DoubleClickNativeUia,
+                    cancellationToken),
+                "rightclickuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    RightClickNativeUia,
+                    cancellationToken),
+                "checkuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    CheckNativeUia,
+                    cancellationToken),
+                "uncheckuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    UncheckNativeUia,
+                    cancellationToken),
+                "selecttabuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    SelectTabNativeUia,
+                    cancellationToken),
+                "getgriduia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    GetGridNativeUia,
+                    cancellationToken),
+                "selectgridrowuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    SelectGridRowNativeUia,
+                    cancellationToken),
+                "screenshotelementuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    ScreenshotElementNativeUia,
                     cancellationToken),
                 "dumpuia" => ExecuteNativeUiaWithTimeout(
                     request,
@@ -10579,10 +10623,12 @@ public partial class UiService : IUiService
     private object? ExecuteNativeUiaWithTimeout(
         UiRequest request,
         Func<UiRequest, CancellationToken, object?> operation,
-        CancellationToken requestCancellationToken)
+        CancellationToken requestCancellationToken,
+        int? maxHardTimeoutMs = null)
     {
+        var upperBound = maxHardTimeoutMs ?? 15000;
         var timeoutMs = request.TimeoutMs.GetValueOrDefault(5000);
-        timeoutMs = Math.Clamp(timeoutMs, 500, 15000);
+        timeoutMs = Math.Clamp(timeoutMs, 500, upperBound);
 
         var operationName = string.IsNullOrWhiteSpace(request.Operation)
             ? "native-uia"
@@ -10801,6 +10847,74 @@ public partial class UiService : IUiService
 
     private object? FocusNativeUia(UiRequest request, CancellationToken cancellationToken) =>
         ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Focus);
+
+    private object? ExistsNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Exists);
+
+    private object? GetValueNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.GetValue);
+
+    private object? WaitNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Wait);
+
+    private object? ExecuteWaitNativeUiaWithTimeout(UiRequest request, CancellationToken cancellationToken)
+    {
+        request.TimeoutMs ??= 10000;
+        return ExecuteNativeUiaWithTimeout(
+            request,
+            WaitNativeUia,
+            cancellationToken,
+            maxHardTimeoutMs: 60000);
+    }
+
+    private object? DoubleClickNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.DoubleClick);
+
+    private object? RightClickNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.RightClick);
+
+    private object? CheckNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Check);
+
+    private object? UncheckNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Uncheck);
+
+    private object? SelectTabNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.SelectTab);
+
+    private object? ScreenshotElementNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.ScreenshotElement);
+
+    private object? GetGridNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaGridOperation(request, cancellationToken, _nativeUiaGridService.GetGrid);
+
+    private object? SelectGridRowNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaGridOperation(request, cancellationToken, _nativeUiaGridService.SelectGridRow);
+
+    private object? ExecuteNativeUiaGridOperation(
+        UiRequest request,
+        CancellationToken cancellationToken,
+        Func<UiRequest, IntPtr?, int?, CancellationToken, object> operation)
+    {
+        var operationName = string.IsNullOrWhiteSpace(request.Operation)
+            ? "native-uia-grid"
+            : request.Operation;
+
+        var (rootHwnd, processId) = GetNativeUiaSessionContext();
+
+        if (rootHwnd == null && !processId.HasValue)
+        {
+            return new
+            {
+                operation = operationName,
+                success = false,
+                reason = "no-active-window",
+                message = "No active window/root hwnd found. Call /ui switchwindow first."
+            };
+        }
+
+        return operation(request, rootHwnd, processId, cancellationToken);
+    }
 
     private object? DumpNativeUia(UiRequest request, CancellationToken cancellationToken) =>
         ExecuteNativeUiaDiagnosticOperation(request, cancellationToken, _nativeUiaTreeDiagnosticService.DumpTree);

@@ -47,6 +47,7 @@ builder.Services.AddSingleton<IPlaybackService, PlaybackService>();
 builder.Services.AddSingleton<IUiSessionContext, UiSessionContext>();
 builder.Services.AddSingleton<INativeUiaComboBoxService, NativeUiaComboBoxService>();
 builder.Services.AddSingleton<INativeUiaBasicOperationService, NativeUiaBasicOperationService>();
+builder.Services.AddSingleton<INativeUiaGridService, NativeUiaGridService>();
 builder.Services.AddSingleton<INativeUiaTreeDiagnosticService, NativeUiaTreeDiagnosticService>();
 builder.Services.AddSingleton<IUiService, UiService>();
 
