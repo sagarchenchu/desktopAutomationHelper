@@ -390,6 +390,15 @@ public partial class UiService : IUiService
                     request,
                     FocusNativeUia,
                     cancellationToken),
+                "existsuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    ExistsNativeUia,
+                    cancellationToken),
+                "getvalueuia" => ExecuteNativeUiaWithTimeout(
+                    request,
+                    GetValueNativeUia,
+                    cancellationToken),
+                "waituia" => ExecuteWaitNativeUiaWithTimeout(request, cancellationToken),
                 "dumpuia" => ExecuteNativeUiaWithTimeout(
                     request,
                     DumpNativeUia,
@@ -10579,10 +10588,12 @@ public partial class UiService : IUiService
     private object? ExecuteNativeUiaWithTimeout(
         UiRequest request,
         Func<UiRequest, CancellationToken, object?> operation,
-        CancellationToken requestCancellationToken)
+        CancellationToken requestCancellationToken,
+        int? maxHardTimeoutMs = null)
     {
+        var upperBound = maxHardTimeoutMs ?? 15000;
         var timeoutMs = request.TimeoutMs.GetValueOrDefault(5000);
-        timeoutMs = Math.Clamp(timeoutMs, 500, 15000);
+        timeoutMs = Math.Clamp(timeoutMs, 500, upperBound);
 
         var operationName = string.IsNullOrWhiteSpace(request.Operation)
             ? "native-uia"
@@ -10801,6 +10812,25 @@ public partial class UiService : IUiService
 
     private object? FocusNativeUia(UiRequest request, CancellationToken cancellationToken) =>
         ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Focus);
+
+    private object? ExistsNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Exists);
+
+    private object? GetValueNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.GetValue);
+
+    private object? WaitNativeUia(UiRequest request, CancellationToken cancellationToken) =>
+        ExecuteNativeUiaBasicOperation(request, cancellationToken, _nativeUiaBasicOperationService.Wait);
+
+    private object? ExecuteWaitNativeUiaWithTimeout(UiRequest request, CancellationToken cancellationToken)
+    {
+        request.TimeoutMs ??= 10000;
+        return ExecuteNativeUiaWithTimeout(
+            request,
+            WaitNativeUia,
+            cancellationToken,
+            maxHardTimeoutMs: 60000);
+    }
 
     private object? DumpNativeUia(UiRequest request, CancellationToken cancellationToken) =>
         ExecuteNativeUiaDiagnosticOperation(request, cancellationToken, _nativeUiaTreeDiagnosticService.DumpTree);
