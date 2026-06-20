@@ -672,9 +672,12 @@ internal sealed class NativeUiaElementResolver
                 return false;
         }
 
-        if (locator.ProcessId.HasValue)
+        if (locator.EnforceProcessIdMatch && locator.ProcessId.HasValue)
         {
-            var pid = _uia.GetIntProperty(element, UIA_PropertyIds.UIA_ProcessIdPropertyId);
+            var pid = _uia.GetIntProperty(
+                element,
+                UIA_PropertyIds.UIA_ProcessIdPropertyId);
+
             if (pid != locator.ProcessId.Value)
                 return false;
         }
@@ -887,21 +890,13 @@ internal sealed class NativeUiaElementResolver
 
             if (NativeUiaText.Matches(name, locator.Name, "contains"))
             {
-                var record = BuildDiagnosticRecord(element, depth);
+                var (record, failedFields) = BuildMatchDiagnostic(element, depth, locator);
                 diagnostics.NearNameMatches.Add(record);
 
-                var requestedType = NativeUiaText.ParseControlTypeId(locator.ControlType);
-                if (requestedType.HasValue)
+                if (failedFields.Count > 0)
                 {
-                    var actualType = _uia.GetIntProperty(
-                        element,
-                        UIA_PropertyIds.UIA_ControlTypePropertyId);
-
-                    if (actualType != requestedType.Value)
-                    {
-                        diagnostics.RejectionReason =
-                            $"name matched but controlType mismatch. requested={locator.ControlType}/{requestedType.Value}, actual={NativeUiaText.ControlTypeName(actualType)}/{actualType}";
-                    }
+                    diagnostics.RejectionReason =
+                        $"near-name match rejected: failedFields=[{string.Join(", ", failedFields)}]";
                 }
             }
         }
@@ -962,6 +957,91 @@ internal sealed class NativeUiaElementResolver
                 snapshot.BoundingRectangle),
             supportedPatterns = snapshot.SupportedPatterns
         };
+    }
+
+    private (object Record, List<string> FailedFields) BuildMatchDiagnostic(
+        IUIAutomationElement element,
+        int depth,
+        NativeUiaLocator locator)
+    {
+        var failedFields = new List<string>();
+        var snapshot = _uia.CreateSnapshot(element);
+        var actualProcessId = _uia.GetIntProperty(
+            element,
+            UIA_PropertyIds.UIA_ProcessIdPropertyId);
+
+        var processIdMatches = !locator.EnforceProcessIdMatch
+            || !locator.ProcessId.HasValue
+            || actualProcessId == locator.ProcessId.Value;
+
+        if (!processIdMatches)
+            failedFields.Add("processId");
+
+        if (locator.Hwnd is > 0 && snapshot.NativeWindowHandle != locator.Hwnd.Value)
+            failedFields.Add("hwnd");
+
+        var requestedType = NativeUiaText.ParseControlTypeId(locator.ControlType);
+        if (requestedType.HasValue)
+        {
+            var actualType = _uia.GetIntProperty(
+                element,
+                UIA_PropertyIds.UIA_ControlTypePropertyId);
+
+            if (actualType != requestedType.Value)
+                failedFields.Add("controlType");
+        }
+
+        if (!string.IsNullOrWhiteSpace(locator.Name)
+            && !NativeUiaText.Matches(snapshot.Name, locator.Name, locator.MatchMode))
+        {
+            failedFields.Add("name");
+        }
+
+        if (!string.IsNullOrWhiteSpace(locator.AutomationId)
+            && !NativeUiaText.Matches(snapshot.AutomationId, locator.AutomationId, locator.MatchMode))
+        {
+            failedFields.Add("automationId");
+        }
+
+        if (!string.IsNullOrWhiteSpace(locator.ClassName)
+            && !NativeUiaText.Matches(snapshot.ClassName, locator.ClassName, locator.MatchMode))
+        {
+            failedFields.Add("className");
+        }
+
+        if (!string.IsNullOrWhiteSpace(locator.Value)
+            && !NativeUiaText.Matches(snapshot.Value, locator.Value, locator.MatchMode))
+        {
+            failedFields.Add("value");
+        }
+
+        var actualControlTypeId = _uia.GetIntProperty(
+            element,
+            UIA_PropertyIds.UIA_ControlTypePropertyId);
+
+        var record = new
+        {
+            depth,
+            name = snapshot.Name,
+            automationId = snapshot.AutomationId,
+            controlTypeId = actualControlTypeId,
+            controlType = snapshot.ControlType,
+            className = snapshot.ClassName,
+            frameworkId = snapshot.FrameworkId,
+            processId = actualProcessId,
+            requestedProcessId = locator.ProcessId,
+            enforceProcessIdMatch = locator.EnforceProcessIdMatch,
+            processIdMatches,
+            nativeWindowHandle = snapshot.NativeWindowHandle,
+            isEnabled = snapshot.IsEnabled,
+            isOffscreen = snapshot.IsOffscreen,
+            boundingRectangle = NativeUiaDiagnostics.ToRectangleObject(
+                snapshot.BoundingRectangle),
+            supportedPatterns = snapshot.SupportedPatterns,
+            failedFields
+        };
+
+        return (record, failedFields);
     }
 
     private static NativeUiaResolveResult MergeResolveResults(
@@ -1217,22 +1297,28 @@ internal sealed class NativeUiaElementResolver
             throw new TimeoutException($"{stage} exceeded timeout.");
     }
 
-    private static NativeUiaLocator ToNativeLocator(UiRequest request, int? processId) =>
+    internal static NativeUiaLocator ToNativeLocator(UiRequest request, int? processId) =>
         ToNativeLocator(request.Locator, request, processId);
 
-    private static NativeUiaLocator ToNativeLocator(UiLocator? locator, UiRequest request, int? processId) => new()
+    internal static NativeUiaLocator ToNativeLocator(UiLocator? locator, UiRequest request, int? processId)
     {
-        Name = locator?.Name,
-        AutomationId = locator?.AutomationId,
-        ClassName = locator?.ClassName ?? request.ClassName,
-        ControlType = locator?.ControlType,
-        Hwnd = request.Hwnd ?? locator?.Hwnd ?? locator?.Handle,
-        ProcessId = request.ProcessId ?? locator?.ProcessId ?? processId,
-        FoundIndex = request.FoundIndex ?? locator?.FoundIndex ?? locator?.Index,
-        MatchMode = string.IsNullOrWhiteSpace(request.MatchMode)
-            ? locator?.MatchMode ?? "exact"
-            : request.MatchMode!
-    };
+        var explicitProcessId = request.ProcessId ?? locator?.ProcessId;
+
+        return new NativeUiaLocator
+        {
+            Name = locator?.Name,
+            AutomationId = locator?.AutomationId,
+            ClassName = locator?.ClassName ?? request.ClassName,
+            ControlType = locator?.ControlType,
+            Hwnd = request.Hwnd ?? locator?.Hwnd ?? locator?.Handle,
+            ProcessId = explicitProcessId ?? processId,
+            EnforceProcessIdMatch = explicitProcessId.HasValue,
+            FoundIndex = request.FoundIndex ?? locator?.FoundIndex ?? locator?.Index,
+            MatchMode = string.IsNullOrWhiteSpace(request.MatchMode)
+                ? locator?.MatchMode ?? "exact"
+                : request.MatchMode!
+        };
+    }
 
     private static string RuntimeKey(IUIAutomationElement element)
     {

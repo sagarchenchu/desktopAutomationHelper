@@ -12,6 +12,7 @@ internal sealed class NativeUiaLocator
     public string? Value { get; init; }
     public long? Hwnd { get; init; }
     public int? ProcessId { get; init; }
+    public bool EnforceProcessIdMatch { get; init; }
     public int? FoundIndex { get; init; }
     public string MatchMode { get; init; } = "exact";
 
@@ -25,6 +26,7 @@ internal sealed class NativeUiaLocator
             Value = Value,
             Hwnd = Hwnd,
             ProcessId = ProcessId,
+            EnforceProcessIdMatch = EnforceProcessIdMatch,
             FoundIndex = FoundIndex,
             MatchMode = MatchMode
         };
@@ -34,6 +36,7 @@ internal sealed class NativeUiaLocator
         {
             AutomationId = AutomationId,
             ProcessId = ProcessId,
+            EnforceProcessIdMatch = EnforceProcessIdMatch,
             Hwnd = Hwnd,
             FoundIndex = FoundIndex,
             MatchMode = MatchMode
@@ -44,6 +47,7 @@ internal sealed class NativeUiaLocator
         {
             Name = Name,
             ProcessId = ProcessId,
+            EnforceProcessIdMatch = EnforceProcessIdMatch,
             Hwnd = Hwnd,
             FoundIndex = FoundIndex,
             MatchMode = MatchMode
@@ -54,6 +58,7 @@ internal sealed class NativeUiaLocator
         {
             ControlType = ControlType,
             ProcessId = ProcessId,
+            EnforceProcessIdMatch = EnforceProcessIdMatch,
             Hwnd = Hwnd,
             FoundIndex = FoundIndex,
             MatchMode = MatchMode
@@ -68,6 +73,7 @@ internal sealed class NativeUiaLocator
             Value = Value,
             Hwnd = Hwnd,
             ProcessId = ProcessId,
+            EnforceProcessIdMatch = EnforceProcessIdMatch,
             FoundIndex = FoundIndex,
             MatchMode = MatchMode
         };

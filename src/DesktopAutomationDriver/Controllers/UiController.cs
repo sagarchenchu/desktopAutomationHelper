@@ -59,7 +59,7 @@ public class UiController : ControllerBase
         try
         {
             var result = _uiService.Execute(request, HttpContext.RequestAborted);
-            return Ok(UiResponse.Ok(result));
+            return Ok(UiResponse.FromOperationResult(result));
         }
         catch (DesktopAutomationDriver.Models.Resolver.UiResolutionException ex)
         {
