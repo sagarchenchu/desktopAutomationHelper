@@ -15,6 +15,7 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
 {
     private const int ListItemControlTypeId = 50007;
     private const int TabItemControlTypeId = 50019;
+    private const int TabControlTypeId = 50018;
     private const int MenuItemControlTypeId = 50010;
     private const int MenuControlTypeId = 50011;
     private const int CheckBoxControlTypeId = 50002;
@@ -85,6 +86,50 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
         int? processId,
         CancellationToken cancellationToken = default) =>
         ExecuteOperation("focusuia", request, activeWindowHwnd, processId, cancellationToken, FocusElement);
+
+    public object DoubleClick(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default) =>
+        ExecuteOperation("doubleclickuia", request, activeWindowHwnd, processId, cancellationToken, DoubleClickElement);
+
+    public object RightClick(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default) =>
+        ExecuteOperation("rightclickuia", request, activeWindowHwnd, processId, cancellationToken, RightClickElement);
+
+    public object Check(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default) =>
+        ExecuteOperation("checkuia", request, activeWindowHwnd, processId, cancellationToken,
+            (element, req, deadline, ct) => SetToggleElement(element, deadline, ct, wantChecked: true));
+
+    public object Uncheck(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default) =>
+        ExecuteOperation("uncheckuia", request, activeWindowHwnd, processId, cancellationToken,
+            (element, req, deadline, ct) => SetToggleElement(element, deadline, ct, wantChecked: false));
+
+    public object SelectTab(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default) =>
+        ExecuteSelectTabOperation(request, activeWindowHwnd, processId, cancellationToken);
+
+    public object ScreenshotElement(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken = default) =>
+        ExecuteScreenshotElementOperation(request, activeWindowHwnd, processId, cancellationToken);
 
     public object Exists(
         UiRequest request,
@@ -832,6 +877,359 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
         }
 
         return (false, null, "action-failed", attempted, null);
+    }
+
+    private (bool success, string? strategy, string? reason, List<string>? attemptedStrategies, string? actual) DoubleClickElement(
+        IUIAutomationElement element,
+        UiRequest request,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        var attempted = new List<string>();
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureWithinDeadline(deadlineUtc, cancellationToken, "doubleclick");
+
+        if (_uia.TryGetInvokePattern(element, out var invoke))
+        {
+            attempted.Add("invoke-pattern");
+            try
+            {
+                invoke!.Invoke();
+                Thread.Sleep(ActionDelayMs);
+                return (true, "invoke-pattern", null, attempted, null);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "InvokePattern.Invoke failed for doubleclickuia.");
+            }
+        }
+
+        attempted.Add("physical-doubleclick");
+        var rect = _uia.GetBoundingRectangle(element);
+        if (rect.HasValue)
+        {
+            var center = new Point(rect.Value.Left + rect.Value.Width / 2, rect.Value.Top + rect.Value.Height / 2);
+            if (NativeUiaInput.DoubleClickPoint(center))
+            {
+                Thread.Sleep(ActionDelayMs);
+                return (true, "physical-doubleclick", null, attempted, null);
+            }
+        }
+
+        return (false, null, "action-failed", attempted, null);
+    }
+
+    private (bool success, string? strategy, string? reason, List<string>? attemptedStrategies, string? actual) RightClickElement(
+        IUIAutomationElement element,
+        UiRequest request,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        var attempted = new List<string>();
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureWithinDeadline(deadlineUtc, cancellationToken, "rightclick");
+
+        attempted.Add("physical-rightclick");
+        var rect = _uia.GetBoundingRectangle(element);
+        if (rect.HasValue)
+        {
+            var center = new Point(rect.Value.Left + rect.Value.Width / 2, rect.Value.Top + rect.Value.Height / 2);
+            if (NativeUiaInput.RightClickPoint(center))
+            {
+                Thread.Sleep(ActionDelayMs);
+                return (true, "physical-rightclick", null, attempted, null);
+            }
+        }
+
+        return (false, null, "action-failed", attempted, null);
+    }
+
+    private (bool success, string? strategy, string? reason, List<string>? attemptedStrategies, string? actual) SetToggleElement(
+        IUIAutomationElement element,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken,
+        bool wantChecked)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureWithinDeadline(deadlineUtc, cancellationToken, wantChecked ? "check" : "uncheck");
+
+        if (!_uia.TryGetTogglePattern(element, out var toggle))
+            return (false, null, "toggle-unavailable", ["toggle-pattern"], null);
+
+        var current = toggle!.CurrentToggleState;
+        for (var i = 0; i < 2; i++)
+        {
+            if (wantChecked && current == ToggleState.ToggleState_On)
+                return (true, "toggle-pattern", null, null, "On");
+            if (!wantChecked && current == ToggleState.ToggleState_Off)
+                return (true, "toggle-pattern", null, null, "Off");
+
+            toggle.Toggle();
+            current = toggle.CurrentToggleState;
+        }
+
+        var actual = current switch
+        {
+            ToggleState.ToggleState_On => "On",
+            ToggleState.ToggleState_Off => "Off",
+            _ => "Indeterminate"
+        };
+
+        var success = wantChecked ? current == ToggleState.ToggleState_On : current == ToggleState.ToggleState_Off;
+        return success
+            ? (true, "toggle-pattern", null, null, actual)
+            : (false, null, "toggle-failed", ["toggle-pattern"], actual);
+    }
+
+    private object ExecuteSelectTabOperation(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken)
+    {
+        const string operation = "selecttabuia";
+        var sw = Stopwatch.StartNew();
+        var timeoutMs = ResolveTimeoutMs(request.TimeoutMs);
+        var deadlineUtc = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureWithinDeadline(deadlineUtc, cancellationToken, "start");
+
+            if (!HasLocator(request))
+            {
+                return BuildFailure(
+                    operation,
+                    "invalid-request",
+                    "Locator is required for selecttabuia.",
+                    sw.ElapsedMilliseconds);
+            }
+
+            if (request.Index == null && string.IsNullOrWhiteSpace(request.Value))
+            {
+                return BuildFailure(
+                    operation,
+                    "invalid-request",
+                    "Either index or value is required for selecttabuia.",
+                    sw.ElapsedMilliseconds);
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Operation))
+                request.Operation = operation;
+
+            var resolveOutcome = TryResolveLocatedElement(
+                operation,
+                request,
+                activeWindowHwnd,
+                processId,
+                deadlineUtc,
+                cancellationToken,
+                sw.ElapsedMilliseconds,
+                requireEnabled: true);
+
+            if (resolveOutcome.FailureResponse != null)
+                return resolveOutcome.FailureResponse;
+
+            var tabItem = ResolveTabItem(resolveOutcome.Element!, request, out var tabMatchStrategy);
+            if (tabItem == null)
+            {
+                return new
+                {
+                    operation,
+                    success = false,
+                    reason = "tab-not-found",
+                    stage = resolveOutcome.Stage,
+                    elapsedMs = sw.ElapsedMilliseconds,
+                    message = "Could not find a matching TabItem for the requested tab."
+                };
+            }
+
+            var (success, strategy, reason, attemptedStrategies, actual) =
+                SelectTabItemElement(tabItem, deadlineUtc, cancellationToken);
+
+            if (success)
+            {
+                return new
+                {
+                    operation,
+                    success = true,
+                    strategy,
+                    actual,
+                    tabMatchStrategy,
+                    stage = resolveOutcome.Stage,
+                    elapsedMs = sw.ElapsedMilliseconds
+                };
+            }
+
+            return new
+            {
+                operation,
+                success = false,
+                reason = reason ?? "action-failed",
+                attemptedStrategies,
+                tabMatchStrategy,
+                stage = resolveOutcome.Stage,
+                elapsedMs = sw.ElapsedMilliseconds
+            };
+        }
+        catch (TimeoutException ex)
+        {
+            return BuildFailure(operation, "timeout", ex.Message, sw.ElapsedMilliseconds);
+        }
+        catch (OperationCanceledException)
+        {
+            return BuildFailure(operation, "cancelled", $"{operation} was cancelled.", sw.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "NativeUiaBasic selecttabuia failed with exception.");
+
+            return new
+            {
+                operation,
+                success = false,
+                reason = "error",
+                elapsedMs = sw.ElapsedMilliseconds,
+                exceptionType = ex.GetType().Name,
+                message = ex.Message
+            };
+        }
+    }
+
+    private object ExecuteScreenshotElementOperation(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        CancellationToken cancellationToken)
+    {
+        const string operation = "screenshotelementuia";
+        var sw = Stopwatch.StartNew();
+        var timeoutMs = ResolveTimeoutMs(request.TimeoutMs);
+        var deadlineUtc = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+        return ExecuteQueryOperation(
+            operation,
+            request,
+            activeWindowHwnd,
+            processId,
+            deadlineUtc,
+            cancellationToken,
+            sw,
+            (element, stage) =>
+            {
+                var outputPath = string.IsNullOrWhiteSpace(request.Value)
+                    ? null
+                    : request.Value;
+
+                var capture = NativeUiaScreenshot.CaptureElement(element, _uia, outputPath);
+                if (!capture.success)
+                {
+                    return new
+                    {
+                        operation,
+                        success = false,
+                        reason = "screenshot-failed",
+                        stage,
+                        elapsedMs = sw.ElapsedMilliseconds,
+                        message = capture.error
+                    };
+                }
+
+                return new
+                {
+                    operation,
+                    success = true,
+                    reason = (string?)null,
+                    strategy = "bounding-rect",
+                    stage,
+                    screenshot = capture.base64,
+                    path = capture.path,
+                    width = capture.width,
+                    height = capture.height,
+                    elapsedMs = sw.ElapsedMilliseconds
+                };
+            },
+            onNotFound: (_, stage, view, resolveResult, elapsedMs) => new
+            {
+                operation,
+                success = false,
+                reason = resolveResult.Stage ?? "element-not-found",
+                stage,
+                view,
+                elapsedMs,
+                candidates = resolveResult.Candidates,
+                message = resolveResult.LastError,
+                diagnostics = resolveResult.Diagnostics
+            });
+    }
+
+    private IUIAutomationElement? ResolveTabItem(IUIAutomationElement element, UiRequest request, out string tabMatchStrategy)
+    {
+        tabMatchStrategy = "direct-tabitem";
+
+        var controlType = _uia.GetIntProperty(element, UIA_PropertyIds.UIA_ControlTypePropertyId);
+        if (controlType == TabItemControlTypeId)
+            return element;
+
+        var tabItems = _uia.FindAllDescendants(
+            element,
+            _uia.ControlTypeCondition(TabItemControlTypeId),
+            limit: 200);
+
+        if (tabItems.Count == 0 && controlType != TabControlTypeId)
+        {
+            var tabContainer = _uia.WalkAncestor(
+                element,
+                el => _uia.GetIntProperty(el, UIA_PropertyIds.UIA_ControlTypePropertyId) == TabControlTypeId);
+
+            if (tabContainer != null)
+            {
+                tabItems = _uia.FindAllDescendants(
+                    tabContainer,
+                    _uia.ControlTypeCondition(TabItemControlTypeId),
+                    limit: 200);
+            }
+        }
+
+        if (request.Index is >= 0)
+        {
+            tabMatchStrategy = "tab-index";
+            return request.Index.Value < tabItems.Count ? tabItems[request.Index.Value] : null;
+        }
+
+        tabMatchStrategy = "tab-name";
+        var matchMode = request.Locator?.MatchMode ?? "exact";
+        return tabItems.FirstOrDefault(tab =>
+            NativeUiaText.Matches(
+                _uia.GetStringProperty(tab, UIA_PropertyIds.UIA_NamePropertyId),
+                request.Value,
+                matchMode));
+    }
+
+    private (bool success, string? strategy, string? reason, List<string>? attemptedStrategies, string? actual) SelectTabItemElement(
+        IUIAutomationElement tabItem,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureWithinDeadline(deadlineUtc, cancellationToken, "selecttab");
+
+        if (_uia.TryGetSelectionItemPattern(tabItem, out var selectionItem))
+        {
+            try
+            {
+                selectionItem!.Select();
+                Thread.Sleep(ActionDelayMs);
+                return (true, "selectionitem-select", null, null, null);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "SelectionItem.Select failed for selecttabuia.");
+            }
+        }
+
+        return ClickElement(tabItem, new UiRequest { Operation = "selecttabuia" }, deadlineUtc, cancellationToken);
     }
 
     private (bool success, string? strategy, string? reason, List<string>? attemptedStrategies, string? actual) TypeElement(

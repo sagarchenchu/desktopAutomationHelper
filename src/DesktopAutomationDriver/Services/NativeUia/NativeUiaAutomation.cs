@@ -452,6 +452,43 @@ internal sealed class NativeUiaAutomation
         }
     }
 
+    public bool TryGetGridPattern(
+        IUIAutomationElement element,
+        out IUIAutomationGridPattern? pattern)
+    {
+        pattern = null;
+        try
+        {
+            pattern = element.GetCurrentPattern(UIA_PatternIds.UIA_GridPatternId)
+                as IUIAutomationGridPattern;
+            return pattern != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public bool TryGetTablePattern(
+        IUIAutomationElement element,
+        out IUIAutomationTablePattern? pattern)
+    {
+        pattern = null;
+        try
+        {
+            pattern = element.GetCurrentPattern(UIA_PatternIds.UIA_TablePatternId)
+                as IUIAutomationTablePattern;
+            return pattern != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public IUIAutomationCondition ControlTypeCondition(int controlTypeId) =>
+        PropertyCondition(UIA_PropertyIds.UIA_ControlTypePropertyId, controlTypeId);
+
     public IUIAutomationElement? WalkAncestor(
         IUIAutomationElement element,
         Func<IUIAutomationElement, bool> predicate,
