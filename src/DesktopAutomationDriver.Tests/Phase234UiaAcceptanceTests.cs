@@ -38,6 +38,9 @@ public class Phase234UiaAcceptanceTests
         Assert.Contains("object ScreenshotElement(", interfaceContent);
 
         Assert.Contains("DoubleClickElement", serviceContent);
+        Assert.Contains("return (true, \"physical-doubleclick\"", serviceContent);
+        Assert.Contains("invoke-twice", serviceContent);
+        Assert.DoesNotContain("return (true, \"invoke-pattern\", null, attempted, null)", serviceContent);
         Assert.Contains("RightClickElement", serviceContent);
         Assert.Contains("SetToggleElement", serviceContent);
         Assert.Contains("ExecuteSelectTabOperation", serviceContent);

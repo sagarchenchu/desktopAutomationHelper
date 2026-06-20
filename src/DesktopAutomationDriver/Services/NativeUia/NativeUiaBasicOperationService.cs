@@ -886,29 +886,29 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
         CancellationToken cancellationToken)
     {
         var attempted = new List<string>();
+
         cancellationToken.ThrowIfCancellationRequested();
         EnsureWithinDeadline(deadlineUtc, cancellationToken, "doubleclick");
 
-        if (_uia.TryGetInvokePattern(element, out var invoke))
+        attempted.Add("physical-doubleclick");
+
+        try
         {
-            attempted.Add("invoke-pattern");
-            try
-            {
-                invoke!.Invoke();
-                Thread.Sleep(ActionDelayMs);
-                return (true, "invoke-pattern", null, attempted, null);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "InvokePattern.Invoke failed for doubleclickuia.");
-            }
+            TryFocusElement(element, out _);
+            Thread.Sleep(40);
+        }
+        catch
+        {
+            // best effort only
         }
 
-        attempted.Add("physical-doubleclick");
         var rect = _uia.GetBoundingRectangle(element);
         if (rect.HasValue)
         {
-            var center = new Point(rect.Value.Left + rect.Value.Width / 2, rect.Value.Top + rect.Value.Height / 2);
+            var center = new Point(
+                rect.Value.Left + rect.Value.Width / 2,
+                rect.Value.Top + rect.Value.Height / 2);
+
             if (NativeUiaInput.DoubleClickPoint(center))
             {
                 Thread.Sleep(ActionDelayMs);
@@ -916,7 +916,26 @@ internal sealed class NativeUiaBasicOperationService : INativeUiaBasicOperationS
             }
         }
 
-        return (false, null, "action-failed", attempted, null);
+        if (_uia.TryGetInvokePattern(element, out var invoke))
+        {
+            attempted.Add("invoke-twice");
+
+            try
+            {
+                invoke!.Invoke();
+                Thread.Sleep(100);
+                invoke.Invoke();
+                Thread.Sleep(ActionDelayMs);
+
+                return (true, "invoke-twice", null, attempted, null);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "InvokePattern.Invoke twice failed for doubleclickuia.");
+            }
+        }
+
+        return (false, null, "doubleclick-failed", attempted, null);
     }
 
     private (bool success, string? strategy, string? reason, List<string>? attemptedStrategies, string? actual) RightClickElement(
