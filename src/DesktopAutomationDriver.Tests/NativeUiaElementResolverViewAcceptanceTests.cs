@@ -48,6 +48,28 @@ public class NativeUiaElementResolverViewAcceptanceTests
         Assert.Contains("if (result.Element != null || result.IsAmbiguous)", content);
         Assert.Contains("stage: \"process-window\"", content);
         Assert.Contains("view={viewName}", content);
+        Assert.Contains("NativeUiaResolverDiagnostics", content);
+        Assert.Contains("ResolveRootMode(UiRequest request)", content);
+        Assert.Contains("matched-name-but-rejected", content);
+    }
+
+    [Fact]
+    public void BasicOperationService_ReturnsResolverDiagnosticsOnNotFound()
+    {
+        var content = ReadSource("DesktopAutomationDriver/Services/NativeUia/NativeUiaBasicOperationService.cs");
+
+        Assert.Contains("diagnostics = resolveResult.Diagnostics", content);
+    }
+
+    [Fact]
+    public void UiService_ClickMenuNativeUia_ForcesRawViewAndIncludeOffscreen()
+    {
+        var content = ReadSource("DesktopAutomationDriver/Services/UiService.cs");
+
+        Assert.Contains("private object? ClickMenuNativeUia(", content);
+        Assert.Contains("request.View ??= \"raw\";", content);
+        Assert.Contains("request.TreeView ??= \"raw\";", content);
+        Assert.Contains("request.IncludeOffscreen ??= true;", content);
     }
 
     [Fact]

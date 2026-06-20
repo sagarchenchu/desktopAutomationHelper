@@ -3,6 +3,21 @@ using Interop.UIAutomationClient;
 
 namespace DesktopAutomationDriver.Services.NativeUia;
 
+internal sealed class NativeUiaResolverDiagnostics
+{
+    public string? ViewUsed { get; set; }
+    public string? RootUsed { get; set; }
+    public int MaxDepthUsed { get; set; }
+    public int MaxChildrenUsed { get; set; }
+    public int TotalVisited { get; set; }
+
+    public List<object> SampleNodes { get; } = new();
+    public List<object> NearNameMatches { get; } = new();
+    public List<object> MenuLikeCandidates { get; } = new();
+
+    public string? RejectionReason { get; set; }
+}
+
 internal sealed class NativeUiaResolveResult
 {
     public IUIAutomationElement? Element { get; init; }
@@ -11,8 +26,18 @@ internal sealed class NativeUiaResolveResult
     public string? Stage { get; init; }
     public string? LastError { get; init; }
 
-    public static NativeUiaResolveResult NotFound(string stage, string? message = null) =>
-        new() { Stage = stage, LastError = message };
+    public NativeUiaResolverDiagnostics? Diagnostics { get; init; }
+
+    public static NativeUiaResolveResult NotFound(
+        string stage,
+        string? message = null,
+        NativeUiaResolverDiagnostics? diagnostics = null) =>
+        new()
+        {
+            Stage = stage,
+            LastError = message,
+            Diagnostics = diagnostics
+        };
 }
 
 internal sealed class NativeUiaElementResolver
@@ -25,6 +50,21 @@ internal sealed class NativeUiaElementResolver
     private const int MaxSearchDepth = 8;
     private const int MaxChildrenPerNode = 200;
     private const int MaxProcessWindows = 20;
+    private const int MaxDesktopChildren = 200;
+    private const int MaxDiagnosticNodes = 100;
+
+    private static readonly HashSet<int> MenuLikeControlTypes = new()
+    {
+        50018, // MenuBar
+        50021, // ToolBar
+        50010, // MenuItem
+        50011, // Menu
+        50000, // Button
+        50020, // Text
+        50033, // Pane
+        50025, // Group
+        50026  // Custom
+    };
 
     private readonly NativeUiaAutomation _uia;
 
@@ -122,14 +162,38 @@ internal sealed class NativeUiaElementResolver
         ThrowIfExpired(deadlineUtc, "ResolveElement start");
         cancellationToken.ThrowIfCancellationRequested();
 
+        var includeOffscreen = request.IncludeOffscreen ?? false;
         var locator = ToNativeLocator(request, processId);
         if (locator.Hwnd is > 0)
         {
             var fromHandle = _uia.FromHandle(new IntPtr(locator.Hwnd.Value));
-            if (fromHandle != null && ElementMatchesLocator(fromHandle, locator))
+            if (fromHandle != null && ElementMatchesLocator(fromHandle, locator, includeOffscreen))
                 return SingleResult(fromHandle, "hwnd-direct");
         }
 
+        var rootMode = ResolveRootMode(request);
+
+        if (rootMode == "processWindows")
+            return ResolveElementFromProcessWindows(request, processId, deadlineUtc, cancellationToken);
+
+        if (rootMode == "desktopChildren")
+            return ResolveElementFromDesktopChildren(request, processId, deadlineUtc, cancellationToken);
+
+        return ResolveElementActiveWindowWithFallback(
+            request,
+            activeWindowHwnd,
+            processId,
+            deadlineUtc,
+            cancellationToken);
+    }
+
+    private NativeUiaResolveResult ResolveElementActiveWindowWithFallback(
+        UiRequest request,
+        IntPtr? activeWindowHwnd,
+        int? processId,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken)
+    {
         NativeUiaResolveResult? lastResult = null;
 
         if (activeWindowHwnd.HasValue && activeWindowHwnd.Value != IntPtr.Zero)
@@ -154,29 +218,17 @@ internal sealed class NativeUiaElementResolver
 
         if (processId.HasValue)
         {
-            var rootWindows = FindTopLevelWindowsForProcessBounded(
+            var processResult = SearchProcessWindows(
+                request,
                 processId.Value,
                 deadlineUtc,
-                cancellationToken);
+                cancellationToken,
+                lastResult);
 
-            foreach (var window in rootWindows)
-            {
-                ThrowIfExpired(deadlineUtc, "ResolveElement process window loop");
-                cancellationToken.ThrowIfCancellationRequested();
+            if (processResult.Element != null || processResult.IsAmbiguous)
+                return processResult;
 
-                var result = FindElementUnderRootBounded(
-                    request,
-                    window,
-                    processId,
-                    deadlineUtc,
-                    cancellationToken,
-                    stage: "process-window");
-
-                if (result.Element != null || result.IsAmbiguous)
-                    return result;
-
-                lastResult = result;
-            }
+            lastResult = processResult;
         }
 
         if (lastResult != null)
@@ -185,6 +237,106 @@ internal sealed class NativeUiaElementResolver
         return NativeUiaResolveResult.NotFound(
             "no-root",
             "No active hwnd or process id.");
+    }
+
+    private NativeUiaResolveResult ResolveElementFromProcessWindows(
+        UiRequest request,
+        int? processId,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        if (!processId.HasValue)
+        {
+            return NativeUiaResolveResult.NotFound(
+                "no-root",
+                "processWindows root requires a process id.");
+        }
+
+        var result = SearchProcessWindows(
+            request,
+            processId.Value,
+            deadlineUtc,
+            cancellationToken,
+            lastResult: null);
+
+        return result ?? NativeUiaResolveResult.NotFound(
+            "element-not-found",
+            "No matching element found under process windows.");
+    }
+
+    private NativeUiaResolveResult ResolveElementFromDesktopChildren(
+        UiRequest request,
+        int? processId,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        NativeUiaResolveResult? lastResult = null;
+        var roots = FindDesktopChildrenForProcess(processId, deadlineUtc, cancellationToken);
+        var index = 0;
+
+        foreach (var root in roots)
+        {
+            ThrowIfExpired(deadlineUtc, "ResolveElement desktop child loop");
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var result = FindElementUnderRootBounded(
+                request,
+                root,
+                processId,
+                deadlineUtc,
+                cancellationToken,
+                stage: $"desktop-child[{index}]");
+
+            if (result.Element != null || result.IsAmbiguous)
+                return result;
+
+            lastResult = MergeResolveResults(lastResult, result);
+            index++;
+        }
+
+        if (lastResult != null)
+            return lastResult;
+
+        return NativeUiaResolveResult.NotFound(
+            "no-root",
+            "Could not resolve any desktop child root for the requested root mode.");
+    }
+
+    private NativeUiaResolveResult SearchProcessWindows(
+        UiRequest request,
+        int processId,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken,
+        NativeUiaResolveResult? lastResult)
+    {
+        var rootWindows = FindTopLevelWindowsForProcessBounded(
+            processId,
+            deadlineUtc,
+            cancellationToken);
+
+        foreach (var window in rootWindows)
+        {
+            ThrowIfExpired(deadlineUtc, "ResolveElement process window loop");
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var result = FindElementUnderRootBounded(
+                request,
+                window,
+                processId,
+                deadlineUtc,
+                cancellationToken,
+                stage: "process-window");
+
+            if (result.Element != null || result.IsAmbiguous)
+                return result;
+
+            lastResult = MergeResolveResults(lastResult, result);
+        }
+
+        return lastResult
+               ?? NativeUiaResolveResult.NotFound(
+                   "element-not-found",
+                   "No matching element found under process windows.");
     }
 
     private NativeUiaResolveResult FindElementUnderRootBounded(
@@ -201,12 +353,27 @@ internal sealed class NativeUiaElementResolver
         var locator = ToNativeLocator(request, processId);
         var viewCondition = ResolveViewCondition(request);
         var viewName = ResolveViewName(request);
+        var (maxDepth, maxChildren) = ResolveSearchLimits(request);
+        var includeOffscreen = request.IncludeOffscreen ?? false;
+
+        var diagnostics = new NativeUiaResolverDiagnostics
+        {
+            ViewUsed = viewName,
+            RootUsed = stage,
+            MaxDepthUsed = maxDepth,
+            MaxChildrenUsed = maxChildren
+        };
+
         var matches = FindMatchingElementsBounded(
             root,
             locator,
             viewCondition,
+            diagnostics,
+            includeOffscreen,
             deadlineUtc,
-            cancellationToken);
+            cancellationToken,
+            maxDepth,
+            maxChildren);
 
         var candidates = matches
             .Select((element, index) => NativeUiaDiagnostics.CandidateDiagnostic(index, _uia.CreateSnapshot(element)))
@@ -215,11 +382,21 @@ internal sealed class NativeUiaElementResolver
 
         if (matches.Count == 0)
         {
+            var reason = "element-not-found";
+
+            if (diagnostics.NearNameMatches.Count > 0
+                && !string.IsNullOrWhiteSpace(diagnostics.RejectionReason))
+            {
+                reason = "matched-name-but-rejected";
+            }
+
             return new NativeUiaResolveResult
             {
-                Stage = "element-not-found",
-                LastError = $"Native UIA resolver could not find an element for the locator (stage={stage}, view={viewName}).",
-                Candidates = candidates
+                Stage = reason,
+                LastError = diagnostics.RejectionReason
+                    ?? $"Native UIA resolver could not find an element for the locator (stage={stage}, view={viewName}).",
+                Candidates = candidates,
+                Diagnostics = diagnostics
             };
         }
 
@@ -231,7 +408,8 @@ internal sealed class NativeUiaElementResolver
                 {
                     Stage = "index-out-of-range",
                     LastError = $"Element foundIndex {foundIndex} is out of range (count={matches.Count}).",
-                    Candidates = candidates
+                    Candidates = candidates,
+                    Diagnostics = diagnostics
                 };
             }
 
@@ -239,7 +417,8 @@ internal sealed class NativeUiaElementResolver
             {
                 Element = matches[foundIndex],
                 Stage = stage,
-                Candidates = candidates
+                Candidates = candidates,
+                Diagnostics = diagnostics
             };
         }
 
@@ -250,7 +429,8 @@ internal sealed class NativeUiaElementResolver
                 IsAmbiguous = true,
                 Stage = "ambiguous-element",
                 LastError = $"Found {matches.Count} element candidates. Provide foundIndex to disambiguate.",
-                Candidates = candidates
+                Candidates = candidates,
+                Diagnostics = diagnostics
             };
         }
 
@@ -258,7 +438,8 @@ internal sealed class NativeUiaElementResolver
         {
             Element = matches[0],
             Stage = stage,
-            Candidates = candidates
+            Candidates = candidates,
+            Diagnostics = diagnostics
         };
     }
 
@@ -339,8 +520,12 @@ internal sealed class NativeUiaElementResolver
         IUIAutomationElement root,
         NativeUiaLocator locator,
         IUIAutomationCondition viewCondition,
+        NativeUiaResolverDiagnostics diagnostics,
+        bool includeOffscreen,
         DateTime deadlineUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int maxDepth,
+        int maxChildren)
     {
         var results = new List<IUIAutomationElement>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -349,11 +534,14 @@ internal sealed class NativeUiaElementResolver
             root,
             locator,
             viewCondition,
+            diagnostics,
+            includeOffscreen,
             results,
             seen,
             depth: 0,
-            maxDepth: MaxSearchDepth,
+            maxDepth,
             maxCandidates: MaxElementCandidates,
+            maxChildren,
             deadlineUtc,
             cancellationToken);
 
@@ -364,11 +552,14 @@ internal sealed class NativeUiaElementResolver
         IUIAutomationElement root,
         NativeUiaLocator locator,
         IUIAutomationCondition viewCondition,
+        NativeUiaResolverDiagnostics diagnostics,
+        bool includeOffscreen,
         List<IUIAutomationElement> results,
         HashSet<string> seen,
         int depth,
         int maxDepth,
         int maxCandidates,
+        int maxChildren,
         DateTime deadlineUtc,
         CancellationToken cancellationToken)
     {
@@ -381,26 +572,35 @@ internal sealed class NativeUiaElementResolver
         if (results.Count >= maxCandidates)
             return;
 
-        try
+        diagnostics.TotalVisited++;
+
+        if (ShouldIncludeElement(root, includeOffscreen))
         {
-            if (ElementMatchesLocator(root, locator))
+            TryAddSampleNode(root, depth, diagnostics);
+            TryAddNearNameMatch(root, locator, depth, diagnostics);
+            TryAddMenuLikeCandidate(root, depth, diagnostics);
+
+            try
             {
-                var key = RuntimeKey(root);
-                if (seen.Add(key))
+                if (ElementMatchesLocator(root, locator, includeOffscreen))
                 {
-                    results.Add(root);
+                    var key = RuntimeKey(root);
+                    if (seen.Add(key))
+                    {
+                        results.Add(root);
 
-                    if (ShouldStopAfterFirstStrongMatch(locator))
-                        return;
+                        if (ShouldStopAfterFirstStrongMatch(locator))
+                            return;
 
-                    if (results.Count >= maxCandidates)
-                        return;
+                        if (results.Count >= maxCandidates)
+                            return;
+                    }
                 }
             }
-        }
-        catch
-        {
-            // Ignore stale/bad UIA element.
+            catch
+            {
+                // Ignore stale/bad UIA element.
+            }
         }
 
         IUIAutomationElementArray children;
@@ -416,7 +616,7 @@ internal sealed class NativeUiaElementResolver
             return;
         }
 
-        var childCount = Math.Min(children.Length, MaxChildrenPerNode);
+        var childCount = Math.Min(children.Length, maxChildren);
 
         for (var i = 0; i < childCount; i++)
         {
@@ -438,11 +638,14 @@ internal sealed class NativeUiaElementResolver
                 child,
                 locator,
                 viewCondition,
+                diagnostics,
+                includeOffscreen,
                 results,
                 seen,
                 depth + 1,
                 maxDepth,
                 maxCandidates,
+                maxChildren,
                 deadlineUtc,
                 cancellationToken);
 
@@ -454,8 +657,14 @@ internal sealed class NativeUiaElementResolver
         }
     }
 
-    private bool ElementMatchesLocator(IUIAutomationElement element, NativeUiaLocator locator)
+    private bool ElementMatchesLocator(
+        IUIAutomationElement element,
+        NativeUiaLocator locator,
+        bool includeOffscreen = false)
     {
+        if (!ShouldIncludeElement(element, includeOffscreen))
+            return false;
+
         if (locator.Hwnd is > 0)
         {
             var hwnd = _uia.GetIntProperty(element, UIA_PropertyIds.UIA_NativeWindowHandlePropertyId);
@@ -638,6 +847,253 @@ internal sealed class NativeUiaElementResolver
             return true;
 
         return false;
+    }
+
+    private void TryAddSampleNode(
+        IUIAutomationElement element,
+        int depth,
+        NativeUiaResolverDiagnostics diagnostics)
+    {
+        if (diagnostics.SampleNodes.Count >= MaxDiagnosticNodes)
+            return;
+
+        try
+        {
+            diagnostics.SampleNodes.Add(BuildDiagnosticRecord(element, depth));
+        }
+        catch
+        {
+            // ignore stale element
+        }
+    }
+
+    private void TryAddNearNameMatch(
+        IUIAutomationElement element,
+        NativeUiaLocator locator,
+        int depth,
+        NativeUiaResolverDiagnostics diagnostics)
+    {
+        if (diagnostics.NearNameMatches.Count >= MaxDiagnosticNodes)
+            return;
+
+        if (string.IsNullOrWhiteSpace(locator.Name))
+            return;
+
+        try
+        {
+            var name = _uia.GetStringProperty(
+                element,
+                UIA_PropertyIds.UIA_NamePropertyId);
+
+            if (NativeUiaText.Matches(name, locator.Name, "contains"))
+            {
+                var record = BuildDiagnosticRecord(element, depth);
+                diagnostics.NearNameMatches.Add(record);
+
+                var requestedType = NativeUiaText.ParseControlTypeId(locator.ControlType);
+                if (requestedType.HasValue)
+                {
+                    var actualType = _uia.GetIntProperty(
+                        element,
+                        UIA_PropertyIds.UIA_ControlTypePropertyId);
+
+                    if (actualType != requestedType.Value)
+                    {
+                        diagnostics.RejectionReason =
+                            $"name matched but controlType mismatch. requested={locator.ControlType}/{requestedType.Value}, actual={NativeUiaText.ControlTypeName(actualType)}/{actualType}";
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // ignore stale element
+        }
+    }
+
+    private void TryAddMenuLikeCandidate(
+        IUIAutomationElement element,
+        int depth,
+        NativeUiaResolverDiagnostics diagnostics)
+    {
+        if (diagnostics.MenuLikeCandidates.Count >= MaxDiagnosticNodes)
+            return;
+
+        try
+        {
+            var controlType = _uia.GetIntProperty(
+                element,
+                UIA_PropertyIds.UIA_ControlTypePropertyId);
+
+            if (MenuLikeControlTypes.Contains(controlType))
+            {
+                diagnostics.MenuLikeCandidates.Add(
+                    BuildDiagnosticRecord(element, depth));
+            }
+        }
+        catch
+        {
+            // ignore stale element
+        }
+    }
+
+    private object BuildDiagnosticRecord(IUIAutomationElement element, int depth)
+    {
+        var controlTypeId = _uia.GetIntProperty(
+            element,
+            UIA_PropertyIds.UIA_ControlTypePropertyId);
+
+        var snapshot = _uia.CreateSnapshot(element);
+
+        return new
+        {
+            depth,
+            name = snapshot.Name,
+            automationId = snapshot.AutomationId,
+            controlTypeId,
+            controlType = snapshot.ControlType,
+            className = snapshot.ClassName,
+            frameworkId = snapshot.FrameworkId,
+            processId = snapshot.ProcessId,
+            nativeWindowHandle = snapshot.NativeWindowHandle,
+            isEnabled = snapshot.IsEnabled,
+            isOffscreen = snapshot.IsOffscreen,
+            boundingRectangle = NativeUiaDiagnostics.ToRectangleObject(
+                snapshot.BoundingRectangle),
+            supportedPatterns = snapshot.SupportedPatterns
+        };
+    }
+
+    private static NativeUiaResolveResult MergeResolveResults(
+        NativeUiaResolveResult? previous,
+        NativeUiaResolveResult current)
+    {
+        if (previous == null)
+            return current;
+
+        if (previous.Diagnostics == null)
+            return current;
+
+        if (current.Diagnostics != null)
+            MergeDiagnostics(previous.Diagnostics, current.Diagnostics);
+
+        return new NativeUiaResolveResult
+        {
+            Stage = current.Stage ?? previous.Stage,
+            LastError = current.LastError ?? previous.LastError,
+            Candidates = current.Candidates.Count > 0 ? current.Candidates : previous.Candidates,
+            Diagnostics = previous.Diagnostics
+        };
+    }
+
+    private static void MergeDiagnostics(
+        NativeUiaResolverDiagnostics into,
+        NativeUiaResolverDiagnostics from)
+    {
+        into.TotalVisited += from.TotalVisited;
+        AppendDiagnosticList(into.SampleNodes, from.SampleNodes);
+        AppendDiagnosticList(into.NearNameMatches, from.NearNameMatches);
+        AppendDiagnosticList(into.MenuLikeCandidates, from.MenuLikeCandidates);
+
+        if (string.IsNullOrWhiteSpace(into.RejectionReason)
+            && !string.IsNullOrWhiteSpace(from.RejectionReason))
+        {
+            into.RejectionReason = from.RejectionReason;
+        }
+    }
+
+    private static void AppendDiagnosticList(List<object> target, List<object> source)
+    {
+        foreach (var item in source)
+        {
+            if (target.Count >= MaxDiagnosticNodes)
+                return;
+
+            target.Add(item);
+        }
+    }
+
+    private List<IUIAutomationElement> FindDesktopChildrenForProcess(
+        int? processId,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfExpired(deadlineUtc, "FindDesktopChildrenForProcess");
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var roots = new List<IUIAutomationElement>();
+        IUIAutomationElementArray children;
+
+        try
+        {
+            children = _uia.Root.FindAll(TreeScope.TreeScope_Children, _uia.TrueCondition());
+        }
+        catch
+        {
+            return roots;
+        }
+
+        var childCount = Math.Min(children.Length, MaxDesktopChildren);
+        for (var i = 0; i < childCount; i++)
+        {
+            ThrowIfExpired(deadlineUtc, "FindDesktopChildrenForProcess loop");
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var child = children.GetElement(i);
+                if (processId.HasValue)
+                {
+                    var pid = _uia.GetIntProperty(child, UIA_PropertyIds.UIA_ProcessIdPropertyId);
+                    if (pid != processId.Value)
+                        continue;
+                }
+
+                roots.Add(child);
+                if (roots.Count >= MaxProcessWindows)
+                    return roots;
+            }
+            catch
+            {
+                // ignore stale element
+            }
+        }
+
+        return roots;
+    }
+
+    private static (int MaxDepth, int MaxChildren) ResolveSearchLimits(UiRequest request) =>
+        (
+            Math.Clamp(request.MaxDepth ?? MaxSearchDepth, 0, 20),
+            Math.Clamp(request.MaxChildren ?? MaxChildrenPerNode, 1, 1000));
+
+    internal static string ResolveRootMode(UiRequest request)
+    {
+        var root = request.Root ?? request.SearchRoot ?? "activeWindow";
+
+        return root.Trim().ToLowerInvariant() switch
+        {
+            "processwindows" or "process-windows" or "process_windows" => "processWindows",
+            "desktopchildren" or "desktop-children" or "desktop_children" or "desktop" => "desktopChildren",
+            "activewindow" or "active-window" or "active_window" or "currentwindow" or "current-window" => "activeWindow",
+            _ => "activeWindow"
+        };
+    }
+
+    private static bool ShouldIncludeElement(IUIAutomationElement element, bool includeOffscreen)
+    {
+        if (includeOffscreen)
+            return true;
+
+        try
+        {
+            var value = element.GetCurrentPropertyValue(UIA_PropertyIds.UIA_IsOffscreenPropertyId);
+            return value is not bool offscreen || !offscreen;
+        }
+        catch
+        {
+            return true;
+        }
     }
 
     private List<IUIAutomationElement> FindTopLevelWindowsForProcessBounded(
