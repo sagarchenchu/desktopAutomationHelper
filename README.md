@@ -140,7 +140,7 @@ Checks if the driver is running and ready to accept new sessions. Requires Beare
       "ready": true,
       "message": "Desktop Automation Driver is running",
       "build": {
-        "version": "1.0.0",
+        "version": "1.0.105",
         "revision": "",
         "time": "2026-06-14T00:46:12Z"
       }
