@@ -79,7 +79,7 @@ public class ModelTests
         var resp = new StatusResponse();
         Assert.True(resp.Ready);
         Assert.NotNull(resp.Build);
-        Assert.Equal("1.0.0", resp.Build.Version);
+        Assert.Equal("1.0.105", resp.Build.Version);
     }
 
     [Fact]
