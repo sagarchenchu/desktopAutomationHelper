@@ -21,7 +21,7 @@ public class StatusController : ControllerBase
         var version = Assembly
             .GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-            ?.InformationalVersion ?? "1.0.0";
+            ?.InformationalVersion ?? "1.0.105";
 
         var response = WebDriverResponse<StatusResponse>.Success(new StatusResponse
         {

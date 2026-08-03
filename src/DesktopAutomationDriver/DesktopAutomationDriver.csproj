@@ -7,7 +7,7 @@
     <AssemblyName>DesktopAutomationDriver</AssemblyName>
     <RootNamespace>DesktopAutomationDriver</RootNamespace>
     <Description>Windows Desktop Application Automation Driver using UIA2 and UIA3</Description>
-    <Version>1.0.0</Version>
+    <Version>1.0.105</Version>
     <!-- Allow building Windows-targeted code on non-Windows machines -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <!-- Required for the recording overlay (WinForms transparent window + Win32 hooks) -->
