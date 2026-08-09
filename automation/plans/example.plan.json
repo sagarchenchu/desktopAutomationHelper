@@ -1,0 +1,24 @@
+{
+  "$schema": "../schemas/plan.schema.json",
+  "schemaVersion": 1,
+  "catalogSchemaVersion": 2,
+  "planId": "example.listwindows",
+  "name": "List visible windows",
+  "description": "Session-free smoke plan. listwindows returns a root JSON array of window descriptors.",
+  "steps": [
+    {
+      "id": "list-windows",
+      "operation": "listwindows",
+      "arguments": {
+        "includeDesktopDescendants": false
+      },
+      "captureResponse": true,
+      "assertions": [
+        {
+          "path": "",
+          "operator": "isNotNull"
+        }
+      ]
+    }
+  ]
+}

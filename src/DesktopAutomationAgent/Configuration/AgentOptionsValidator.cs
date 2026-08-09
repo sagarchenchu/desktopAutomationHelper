@@ -6,7 +6,8 @@ public enum OptionsValidationScope
 {
     Workspace,
     Suites,
-    Driver
+    Driver,
+    Runner
 }
 
 public sealed class AgentConfigurationException : Exception
@@ -46,6 +47,49 @@ public static class AgentOptionsValidator
         if (scope is OptionsValidationScope.Driver)
         {
             ValidateDriverOptions(options.Driver);
+        }
+
+        if (scope is OptionsValidationScope.Runner or OptionsValidationScope.Driver)
+        {
+            ValidateRunnerOptions(options.Runner);
+        }
+    }
+
+    public static void ValidateRunnerOptions(RunnerOptions runner)
+    {
+        ArgumentNullException.ThrowIfNull(runner);
+
+        const int maxFiftyMegabytes = 52_428_800;
+        const int maxTimeoutSeconds = 3_600;
+
+        if (runner.StepTransportTimeoutSeconds <= 0 || runner.StepTransportTimeoutSeconds > maxTimeoutSeconds)
+        {
+            throw new AgentConfigurationException(
+                $"Runner:StepTransportTimeoutSeconds must be between 1 and {maxTimeoutSeconds}.");
+        }
+
+        if (runner.CleanupTimeoutSeconds <= 0 || runner.CleanupTimeoutSeconds > maxTimeoutSeconds)
+        {
+            throw new AgentConfigurationException(
+                $"Runner:CleanupTimeoutSeconds must be between 1 and {maxTimeoutSeconds}.");
+        }
+
+        if (runner.MaxPlanBytes <= 0 || runner.MaxPlanBytes > maxFiftyMegabytes)
+        {
+            throw new AgentConfigurationException(
+                $"Runner:MaxPlanBytes must be between 1 and {maxFiftyMegabytes}.");
+        }
+
+        if (runner.MaxResponseBytes <= 0 || runner.MaxResponseBytes > maxFiftyMegabytes)
+        {
+            throw new AgentConfigurationException(
+                $"Runner:MaxResponseBytes must be between 1 and {maxFiftyMegabytes}.");
+        }
+
+        if (runner.RegexTimeoutMilliseconds <= 0 || runner.RegexTimeoutMilliseconds > 60_000)
+        {
+            throw new AgentConfigurationException(
+                "Runner:RegexTimeoutMilliseconds must be between 1 and 60000.");
         }
     }
 
