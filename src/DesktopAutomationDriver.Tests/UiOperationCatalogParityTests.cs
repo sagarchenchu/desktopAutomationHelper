@@ -211,6 +211,7 @@ public class UiOperationCatalogParityTests
         Assert.Empty(findUia.RequiredInputs);
         Assert.Contains(findUia.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "locator" }));
         Assert.Contains(findUia.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "nameContains" }));
+        Assert.Contains(findUia.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "bestMatch" }));
         Assert.Contains(findUia.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "hwnd" }));
         Assert.Contains(findUia.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "className" }));
 
@@ -221,13 +222,41 @@ public class UiOperationCatalogParityTests
         Assert.Contains(findLocator.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "criteria" }));
 
         var sendKeysUia = _catalog.GetOperations().Single(o => o.Name == "sendkeysuia");
-        Assert.True(sendKeysUia.RequiresSession);
+        Assert.False(sendKeysUia.RequiresSession);
+        Assert.Equal(new[] { "value" }, sendKeysUia.RequiredInputs);
+
+        var clickMenu = _catalog.GetOperations().Single(o => o.Name == "clickmenu");
+        Assert.Equal(new[] { "value" }, clickMenu.RequiredInputs);
 
         var getPosition = _catalog.GetOperations().Single(o => o.Name == "getposition");
         Assert.Equal(new[] { "locator", "locator2" }, getPosition.RequiredInputs);
 
         var contextMenu = _catalog.GetOperations().Single(o => o.Name == "contextmenupath");
         Assert.Equal(new[] { "locator", "value" }, contextMenu.RequiredInputs);
+    }
+
+    [Fact]
+    public void Catalog_SessionOptionalOperations_MatchHandlers()
+    {
+        string[] sessionOptional =
+        [
+            "closewindow",
+            "listtrackedwindows",
+            "scroll",
+            "mousescroll",
+            "dragbyoffset",
+            "dragcoordinates",
+            "mouse",
+            "sendkeysuia",
+            "dumpuia",
+            "finduia"
+        ];
+
+        foreach (var name in sessionOptional)
+        {
+            var op = _catalog.GetOperations().Single(o => o.Name == name);
+            Assert.False(op.RequiresSession, $"{name} should not require a session");
+        }
     }
 
     [Fact]
@@ -239,6 +268,39 @@ public class UiOperationCatalogParityTests
 
         Assert.NotEmpty(popupOps);
         Assert.All(popupOps, op => Assert.False(op.RequiresSession));
+
+        var popupOk = popupOps.Single(o => o.Name == "popupok");
+        Assert.Contains(popupOk.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "value" }));
+        Assert.Contains(popupOk.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "hwnd" }));
+        Assert.Contains(popupOk.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "className" }));
+    }
+
+    [Fact]
+    public void Catalog_ValueOrIndexAlternatives_MatchHandlers()
+    {
+        AssertValueOrIndexWithLocator("selectcomboboxuia");
+        AssertValueOrIndexWithLocator("clickheaderdropdownitem");
+        AssertValueOrIndexWithLocator("selectheaderdropdownitem");
+
+        var openDropdown = _catalog.GetOperations().Single(o => o.Name == "selectopendropdownitem");
+        Assert.Empty(openDropdown.RequiredInputs);
+        Assert.Contains(openDropdown.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "value" }));
+        Assert.Contains(openDropdown.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "index" }));
+    }
+
+    [Fact]
+    public void Catalog_MouseAndScrollAlternatives_MatchHandlers()
+    {
+        var mouseScroll = _catalog.GetOperations().Single(o => o.Name == "mousescroll");
+        Assert.Contains(mouseScroll.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "locator" }));
+        Assert.Contains(mouseScroll.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "x", "y" }));
+
+        var mouse = _catalog.GetOperations().Single(o => o.Name == "mouse");
+        Assert.Equal(new[] { "action" }, mouse.RequiredInputs);
+        Assert.Contains(mouse.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "action", "x", "y" }));
+        Assert.Contains(
+            mouse.RequiredInputAlternatives,
+            alt => alt.SequenceEqual(new[] { "action", "fromX", "fromY", "toX", "toY" }));
     }
 
     [Fact]
@@ -246,6 +308,14 @@ public class UiOperationCatalogParityTests
     {
         var response = new UiOperationCatalogResponse();
         Assert.Equal(2, response.SchemaVersion);
+    }
+
+    private void AssertValueOrIndexWithLocator(string name)
+    {
+        var op = _catalog.GetOperations().Single(o => o.Name == name);
+        Assert.Equal(new[] { "locator" }, op.RequiredInputs);
+        Assert.Contains(op.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "locator", "value" }));
+        Assert.Contains(op.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "locator", "index" }));
     }
 
     private static List<string> ExtractUiServiceSwitchOperations()
