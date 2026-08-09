@@ -51,9 +51,64 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         CancellationToken cancellationToken = default)
     {
         var startedAt = DateTimeOffset.UtcNow;
-        var (runId, runDirectory) = ReserveRunDirectory();
+        string runId;
+        string runDirectory;
+        try
+        {
+            (runId, runDirectory) = ReserveRunDirectory();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            _logger.LogError(ex, "Failed to reserve run artifact directory under {WorkspaceRoot}", _workspace.RootPath);
+            return new RunReport
+            {
+                ReportSchemaVersion = 1,
+                RunId = GenerateRunId(),
+                Status = "failed",
+                ExitCode = ExitCodes.SuiteOrWorkspace,
+                PlanPath = planPath,
+                DryRun = dryRun,
+                StartedAtUtc = startedAt,
+                FinishedAtUtc = DateTimeOffset.UtcNow,
+                DurationMilliseconds = (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds,
+                ArtifactWriteStatus = "failed",
+                Failure = new RunFailure
+                {
+                    Classification = UiFailureClassification.ArtifactFailure,
+                    Message = $"Failed to reserve run artifact directory: {ex.Message}"
+                }
+            };
+        }
 
-        var validation = _planReader.Read(planPath);
+        PlanValidationResult validation;
+        try
+        {
+            validation = _planReader.Read(planPath);
+        }
+        catch (Exception ex)
+        {
+            var crashReport = BuildReport(
+                runId,
+                new PlanValidationResult
+                {
+                    PlanPath = planPath,
+                    Errors = [$"Unexpected plan read failure: {ex.Message}"]
+                },
+                dryRun,
+                startedAt,
+                DateTimeOffset.UtcNow,
+                status: "failed",
+                exitCode: ExitCodes.SuiteOrWorkspace,
+                steps: [],
+                onFailureSteps: [],
+                failure: new RunFailure
+                {
+                    Classification = UiFailureClassification.PlanValidation,
+                    Message = $"Unexpected plan read failure: {ex.Message}"
+                });
+            return PersistReport(runDirectory, crashReport);
+        }
+
         if (!validation.IsValid || validation.Plan is null)
         {
             var invalidReport = BuildReport(
@@ -368,7 +423,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                     assertionResults,
                     failedAssertion.Message ?? "Assertion failed.",
                     startedAt,
-                    stopwatch.Elapsed);
+                    stopwatch.Elapsed,
+                    UiFailureClassification.AssertionFailure);
             }
 
             return BuildStepResult(
@@ -383,7 +439,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                 assertionResults,
                 error: null,
                 startedAt,
-                stopwatch.Elapsed);
+                stopwatch.Elapsed,
+                classification: null);
         }
         catch (UiExecutionException ex)
         {
@@ -399,7 +456,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                 Array.Empty<AssertionResult>(),
                 ex.Message,
                 startedAt,
-                stopwatch.Elapsed);
+                stopwatch.Elapsed,
+                ex.Classification);
         }
     }
 
@@ -528,7 +586,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         IReadOnlyList<AssertionResult> assertions,
         string? error,
         DateTimeOffset startedAt,
-        TimeSpan duration)
+        TimeSpan duration,
+        UiFailureClassification? classification)
     {
         var captureValue = step.ShouldCaptureResponse && !step.Sensitive;
         return new StepRunResult
@@ -550,6 +609,7 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             Error = error,
             DriverReason = response?.Reason,
             ScreenshotPath = response?.ScreenshotPath,
+            Classification = classification,
             Assertions = assertions.Select(a => new AssertionRunResult
             {
                 Path = a.Path,
@@ -566,9 +626,10 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
     private static RunFailure BuildStepFailure(StepRunResult result) =>
         new()
         {
-            Classification = result.Assertions.Any(a => !a.Passed)
-                ? UiFailureClassification.AssertionFailure
-                : UiFailureClassification.OperationFailure,
+            Classification = result.Classification
+                ?? (result.Assertions.Any(a => !a.Passed)
+                    ? UiFailureClassification.AssertionFailure
+                    : UiFailureClassification.OperationFailure),
             Message = result.Error ?? "Step failed.",
             StepId = result.Id,
             DriverReason = result.DriverReason,

@@ -202,6 +202,12 @@ public sealed class PlanCatalogPreflight
             if (!_canonicalByName.TryGetValue(step.Operation, out var descriptor))
                 continue;
 
+            if (descriptor.RequiresSession && !hasSession)
+            {
+                errors.Add(
+                    $"{relativePath}: step '{step.Id}' operation '{descriptor.Name}' requires an active session.");
+            }
+
             if (string.Equals(descriptor.Name, "launch", StringComparison.OrdinalIgnoreCase))
             {
                 hasLaunch = true;
@@ -217,14 +223,8 @@ public sealed class PlanCatalogPreflight
             if (string.Equals(descriptor.Name, "close", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(descriptor.Name, "quit", StringComparison.OrdinalIgnoreCase))
             {
+                // Session end only after the RequiresSession check above.
                 hasSession = false;
-                continue;
-            }
-
-            if (descriptor.RequiresSession && !hasSession)
-            {
-                errors.Add(
-                    $"{relativePath}: step '{step.Id}' operation '{descriptor.Name}' requires an active session.");
             }
         }
 

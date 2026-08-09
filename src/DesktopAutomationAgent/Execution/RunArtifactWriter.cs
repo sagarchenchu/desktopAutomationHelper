@@ -77,7 +77,7 @@ public sealed class RunArtifactWriter
         }
     }
 
-    internal static RunReport RedactReport(RunReport report) =>
+    public static RunReport RedactReport(RunReport report) =>
         new()
         {
             ReportSchemaVersion = report.ReportSchemaVersion,
@@ -133,6 +133,7 @@ public sealed class RunArtifactWriter
             Error = SecretRedactor.Redact(step.Error),
             DriverReason = SecretRedactor.Redact(step.DriverReason),
             ScreenshotPath = step.ScreenshotPath,
+            Classification = step.Classification,
             Assertions = step.Assertions.Select(assertion => RedactAssertion(assertion, step.Sensitive)).ToArray(),
             Duration = step.Duration
         };
@@ -144,7 +145,7 @@ public sealed class RunArtifactWriter
             Path = assertion.Path,
             Operator = assertion.Operator,
             Passed = assertion.Passed,
-            Message = assertion.Message,
+            Message = SecretRedactor.Redact(assertion.Message),
             Expected = stepSensitive ? null : RedactJsonElement(assertion.Expected),
             Actual = stepSensitive ? null : RedactJsonElement(assertion.Actual)
         };
@@ -195,6 +196,11 @@ public sealed class RunArtifactWriter
                     .Select(item => RedactJsonElement(item) ?? item)
                     .ToArray();
                 return JsonSerializer.SerializeToElement(items);
+            }
+            case JsonValueKind.String:
+            {
+                var redacted = SecretRedactor.Redact(element.GetString());
+                return JsonSerializer.SerializeToElement(redacted);
             }
             default:
                 return element;

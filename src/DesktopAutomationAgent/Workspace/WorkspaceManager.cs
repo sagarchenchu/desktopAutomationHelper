@@ -285,6 +285,8 @@ public sealed class WorkspaceManager : IWorkspaceManager
         ## Layout
 
         - `example.plan.json` — session-free smoke example that calls `listwindows` only.
+          The driver returns a root JSON array of window descriptors; assert `path: ""` / `isNotNull`.
+          Do not pass `limit` unless/until the driver supports it.
         - `../schemas/plan.schema.json` — JSON Schema (Draft 2020-12) for offline validation.
 
         ## Phase 2 authoring
@@ -312,22 +314,23 @@ public sealed class WorkspaceManager : IWorkspaceManager
     private const string ExamplePlan =
         """
         {
+          "$schema": "../schemas/plan.schema.json",
           "schemaVersion": 1,
           "catalogSchemaVersion": 2,
           "planId": "example.listwindows",
           "name": "List visible windows",
+          "description": "Session-free smoke plan. listwindows returns a root JSON array of window descriptors.",
           "steps": [
             {
               "id": "list-windows",
               "operation": "listwindows",
               "arguments": {
-                "limit": 25,
                 "includeDesktopDescendants": false
               },
               "captureResponse": true,
               "assertions": [
                 {
-                  "path": "/windows",
+                  "path": "",
                   "operator": "isNotNull"
                 }
               ]

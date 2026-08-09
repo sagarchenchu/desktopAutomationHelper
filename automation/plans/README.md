@@ -6,6 +6,8 @@ deterministic runner (Phase 2).
 ## Layout
 
 - `example.plan.json` — session-free smoke example that calls `listwindows` only.
+  The driver returns a root JSON array of window descriptors; assert `path: ""` / `isNotNull`.
+  Do not pass `limit` unless/until the driver supports it.
 - `../schemas/plan.schema.json` — JSON Schema (Draft 2020-12) for offline validation.
 
 ## Phase 2 authoring

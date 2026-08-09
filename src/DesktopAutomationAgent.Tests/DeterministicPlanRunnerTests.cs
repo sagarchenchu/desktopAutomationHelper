@@ -261,6 +261,74 @@ public class DeterministicPlanRunnerTests
     }
 
     [Fact]
+    public async Task UiConnectionFailureProducesExitCode3()
+    {
+        var handler = CreateReadyHandler((req, _) =>
+        {
+            if (req.Method == HttpMethod.Post)
+                throw new HttpRequestException("connection refused");
+            return Task.FromResult(DefaultGet(req));
+        });
+        var options = ReadyOptions();
+        var path = TestSupport.WritePlan(options, "conn.plan.json", TestSupport.MinimalPlanJson());
+        var report = await CreateRunner(options, handler).RunAsync(path, dryRun: false);
+        Assert.Equal(ExitCodes.DriverUnavailable, report.ExitCode);
+        Assert.Equal(UiFailureClassification.DriverUnavailable, report.Failure!.Classification);
+        Assert.Equal(UiFailureClassification.DriverUnavailable, report.Steps[0].Classification);
+    }
+
+    [Fact]
+    public async Task UiAuthFailureProducesExitCode4()
+    {
+        var handler = CreateReadyHandler((req, _) =>
+            Task.FromResult(req.Method == HttpMethod.Post
+                ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                {
+                    Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json")
+                }
+                : DefaultGet(req)));
+        var options = ReadyOptions();
+        var path = TestSupport.WritePlan(options, "auth.plan.json", TestSupport.MinimalPlanJson());
+        var report = await CreateRunner(options, handler).RunAsync(path, dryRun: false);
+        Assert.Equal(ExitCodes.AuthOrCatalog, report.ExitCode);
+        Assert.Equal(UiFailureClassification.Authentication, report.Failure!.Classification);
+    }
+
+    [Fact]
+    public async Task OperationFailureProducesExitCode6()
+    {
+        var handler = CreateReadyHandler((req, _) =>
+            Task.FromResult(req.Method == HttpMethod.Post
+                ? FakeHttpMessageHandler.Json(new { success = false, error = "boom" })
+                : DefaultGet(req)));
+        var options = ReadyOptions();
+        var path = TestSupport.WritePlan(options, "opfail.plan.json", TestSupport.MinimalPlanJson());
+        var report = await CreateRunner(options, handler).RunAsync(path, dryRun: false);
+        Assert.Equal(ExitCodes.ExecutionFailure, report.ExitCode);
+        Assert.Equal(UiFailureClassification.OperationFailure, report.Failure!.Classification);
+    }
+
+    [Fact]
+    public async Task BlockedRunsDirectoryProducesExitCode5()
+    {
+        var options = ReadyOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var runsPath = Path.Combine(workspace.RootPath, "runs");
+        Directory.Delete(runsPath, recursive: true);
+        File.WriteAllText(runsPath, "not-a-directory");
+
+        var handler = CreateReadyHandler((req, _) => Task.FromResult(DefaultGet(req)));
+        var path = Path.Combine(workspace.RootPath, "plans", "blocked.plan.json");
+        File.WriteAllText(path, TestSupport.MinimalPlanJson());
+        var report = await CreateRunner(options, handler, initialize: false).RunAsync(path, dryRun: false);
+        Assert.Equal(ExitCodes.SuiteOrWorkspace, report.ExitCode);
+        Assert.Equal(UiFailureClassification.ArtifactFailure, report.Failure!.Classification);
+        Assert.Equal("failed", report.ArtifactWriteStatus);
+        Assert.Empty(handler.Requests.Where(r => r.Method == HttpMethod.Post));
+    }
+
+    [Fact]
     public async Task PlanHashAndUniqueRunDirectoryArePreserved()
     {
         var handler = CreateReadyHandler((req, _) =>
@@ -340,10 +408,14 @@ public class DeterministicPlanRunnerTests
     private static AgentOptions ReadyOptions() =>
         TestSupport.CreateOptions(baseUrl: "http://127.0.0.1:33201", bearerToken: "test-token");
 
-    private static DeterministicPlanRunner CreateRunner(AgentOptions options, FakeHttpMessageHandler handler)
+    private static DeterministicPlanRunner CreateRunner(
+        AgentOptions options,
+        FakeHttpMessageHandler handler,
+        bool initialize = true)
     {
         var workspace = TestSupport.CreateWorkspace(options);
-        workspace.Initialize();
+        if (initialize)
+            workspace.Initialize();
         return new DeterministicPlanRunner(
             TestSupport.Wrap(options),
             TestSupport.CreatePlanReader(options, workspace),

@@ -148,6 +148,11 @@ public sealed class AssertionEvaluator
         {
             return false;
         }
+        catch (ArgumentException)
+        {
+            // Invalid patterns should be rejected offline; fail closed at runtime.
+            return false;
+        }
     }
 
     internal static bool TryResolvePointer(JsonElement root, string pointer, out JsonElement value, out string? error)

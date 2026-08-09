@@ -147,6 +147,29 @@ public class PlanManifestReaderTests
     }
 
     [Fact]
+    public void Read_MalformedJsonBrokenTokens_FailsOffline()
+    {
+        AssertInvalid("{ this is not : json,,,", "invalid JSON");
+        AssertInvalid("""{"schemaVersion":1,"catalogSchemaVersion":2,"planId":"X","name":"Y","steps":[""", "invalid JSON");
+    }
+
+    [Fact]
+    public void Read_InvalidRegexPattern_FailsOffline()
+    {
+        var steps = """
+            [
+              {
+                "id": "a",
+                "operation": "listwindows",
+                "arguments": {},
+                "assertions": [ { "path": "", "operator": "matchesRegex", "expected": "(" } ]
+              }
+            ]
+            """;
+        AssertInvalid(TestSupport.MinimalPlanJson(stepsOverride: steps), "regex");
+    }
+
+    [Fact]
     public void Read_ReservedArgumentProperty()
     {
         var steps = """
@@ -308,6 +331,8 @@ public class PlanManifestReaderTests
         Assert.Contains("matchesRegex", schema);
         Assert.Contains("cleanupStep", schema);
         Assert.DoesNotContain("\"cleanupSteps\"", schema);
+        Assert.Contains("Combined length of steps and onFailureSteps must be <= 1000", schema);
+        Assert.Contains("(?i)^operation$", schema);
 
         Assert.True(PlanValidator.IsValidJsonPointer(""));
         Assert.True(PlanValidator.IsValidJsonPointer("/a/0"));
