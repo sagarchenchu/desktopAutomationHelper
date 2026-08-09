@@ -1745,22 +1745,34 @@ requests.delete(f"{BASE}/session/{session_id}", headers=AUTH)
 
 ## Desktop Automation Agent
 
-Phase 1 foundation for a project-specific testing agent that talks to this driver
-**only over HTTP**. It never references driver internals and does not execute UI
-operations yet.
+Project-specific testing agent that talks to this driver **only over HTTP**.
+It never references driver internals (no project reference, no FlaUI).
+
+### Phase 1 — foundation
+
+Workspace init, suite/key validation, verify discovery, status/catalog readiness (`doctor`).
+
+### Phase 2 — deterministic plan runner
+
+Validates and executes already-compiled JSON plans through `POST /ui`.
+Phase 2 performs no Jira, BDD, AI, object-repository, database, scheduling or
+suite orchestration work.
 
 ```cmd
 dotnet run --project src/DesktopAutomationAgent -- init
 dotnet run --project src/DesktopAutomationAgent -- validate-suite --file automation/suites/smoke.json
 dotnet run --project src/DesktopAutomationAgent -- validate-keys --keys SAMPLE-1,SAMPLE-2
+dotnet run --project src/DesktopAutomationAgent -- validate-plan --file automation/plans/example.plan.json
+dotnet run --project src/DesktopAutomationAgent -- run-plan --file automation/plans/example.plan.json --dry-run
+dotnet run --project src/DesktopAutomationAgent -- run-plan --file automation/plans/example.plan.json
 dotnet run --project src/DesktopAutomationAgent -- doctor
 dotnet run --project src/DesktopAutomationAgent -- doctor --json
 ```
 
 Configuration precedence: `appsettings.json` → `automation/config/agentsettings.local.json`
 → `DA_AGENT__*` environment variables → command-line. See
-[`docs/phase1-agent-foundation.md`](docs/phase1-agent-foundation.md) for discovery
-rules, Citrix username safety, suite manifests, and exit codes.
+[`docs/phase1-agent-foundation.md`](docs/phase1-agent-foundation.md) and
+[`docs/phase2-deterministic-runner.md`](docs/phase2-deterministic-runner.md).
 
 ---
 

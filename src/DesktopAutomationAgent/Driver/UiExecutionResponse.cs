@@ -21,6 +21,9 @@ public sealed class UiExecutionResponse
 
     public JsonElement? Suggestions { get; set; }
 
+    [JsonIgnore]
+    public int? HttpStatusCode { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 }

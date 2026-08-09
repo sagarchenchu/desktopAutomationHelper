@@ -51,6 +51,7 @@ public sealed class DriverUiClient : IDriverUiClient
         HttpResponseMessage response;
         try
         {
+            // Exactly one POST /ui per attempted step. No retries.
             response = await client.PostAsync("ui", content, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
@@ -77,14 +78,39 @@ public sealed class DriverUiClient : IDriverUiClient
 
         using (response)
         {
-            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            var statusCode = (int)response.StatusCode;
+
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
                 throw new UiExecutionException(
                     UiFailureClassification.Authentication,
-                    $"Driver authentication failed for step '{step.Id}' (HTTP 401).");
+                    $"Driver authentication failed for step '{step.Id}' (HTTP {statusCode}).");
             }
 
-            var bodyBytes = await ReadLimitedBodyAsync(response, cancellationToken).ConfigureAwait(false);
+            byte[] bodyBytes;
+            try
+            {
+                bodyBytes = await ReadLimitedBodyAsync(response, cancellationToken).ConfigureAwait(false);
+            }
+            catch (UiExecutionException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                throw new UiExecutionException(
+                    UiFailureClassification.Cancelled,
+                    $"Step '{step.Id}' was cancelled while reading the response.",
+                    innerException: ex);
+            }
+
+            if (bodyBytes.Length == 0)
+            {
+                throw new UiExecutionException(
+                    UiFailureClassification.OperationFailure,
+                    $"Step '{step.Id}' returned an empty response body (HTTP {statusCode}).");
+            }
+
             UiExecutionResponse? envelope;
             try
             {
@@ -94,7 +120,7 @@ public sealed class DriverUiClient : IDriverUiClient
             {
                 throw new UiExecutionException(
                     UiFailureClassification.OperationFailure,
-                    $"Step '{step.Id}' returned invalid JSON.",
+                    $"Step '{step.Id}' returned invalid JSON (HTTP {statusCode}).",
                     innerException: ex);
             }
 
@@ -102,14 +128,17 @@ public sealed class DriverUiClient : IDriverUiClient
             {
                 throw new UiExecutionException(
                     UiFailureClassification.OperationFailure,
-                    $"Step '{step.Id}' returned an empty response.");
+                    $"Step '{step.Id}' returned an empty response (HTTP {statusCode}).");
             }
 
-            if (!response.IsSuccessStatusCode && envelope.Success)
+            envelope.HttpStatusCode = statusCode;
+
+            if (!response.IsSuccessStatusCode)
             {
+                var detail = SecretRedactor.Redact(envelope.Error ?? envelope.Reason ?? $"HTTP {statusCode}");
                 throw new UiExecutionException(
                     UiFailureClassification.OperationFailure,
-                    $"Step '{step.Id}' returned HTTP {(int)response.StatusCode}.",
+                    $"Step '{step.Id}' failed: {detail}",
                     envelope);
             }
 

@@ -15,8 +15,10 @@ public sealed class PlanStep
 
     public bool Sensitive { get; set; }
 
-    public bool CaptureResponse { get; set; }
+    public bool? CaptureResponse { get; set; }
 
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+
+    public bool ShouldCaptureResponse => CaptureResponse == true;
 }

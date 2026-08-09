@@ -73,7 +73,7 @@ public sealed class PlanCatalogPreflight
         if (_aliasOwners.TryGetValue(operation, out var canonicalFromAlias))
         {
             errors.Add(
-                $"{location}: operation '{operation}' is an alias; use canonical name '{canonicalFromAlias}'.");
+                $"{location}: operation '{operation}' is an alias; use canonical operation '{canonicalFromAlias}'.");
             return;
         }
 
@@ -83,6 +83,7 @@ public sealed class PlanCatalogPreflight
             return;
         }
 
+        // Normalize in memory only; never rewrite the plan file.
         step.Operation = descriptor.Name;
 
         if (descriptor.Deprecated)

@@ -21,7 +21,8 @@ public static class AgentCli
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
     public static Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default) =>
@@ -50,7 +51,8 @@ public static class AgentCli
             return ExitCodes.Success;
         }
 
-        var jsonStdoutMode = parsed is { Kind: AgentCommandKind.Doctor, Json: true };
+        var jsonStdoutMode = parsed.Json
+            && parsed.Kind is AgentCommandKind.Doctor or AgentCommandKind.ValidatePlan or AgentCommandKind.RunPlan;
         using var host = hostBuilder(parsed.ConfigurationArgs, jsonStdoutMode);
 
         try
@@ -60,6 +62,14 @@ public static class AgentCli
                 AgentCommandKind.Init => RunInit(host.Services),
                 AgentCommandKind.ValidateSuite => RunValidateSuite(host.Services, parsed.SuiteFile!),
                 AgentCommandKind.ValidateKeys => RunValidateKeys(host.Services, parsed.Keys),
+                AgentCommandKind.ValidatePlan => RunValidatePlan(host.Services, parsed.PlanFile!, parsed.Json),
+                AgentCommandKind.RunPlan => await RunPlanAsync(
+                        host.Services,
+                        parsed.PlanFile!,
+                        parsed.DryRun,
+                        parsed.Json,
+                        cancellationToken)
+                    .ConfigureAwait(false),
                 AgentCommandKind.Doctor => await RunDoctorAsync(host.Services, parsed.Json, cancellationToken)
                     .ConfigureAwait(false),
                 _ => ExitCodes.UsageOrConfiguration
@@ -114,7 +124,6 @@ public static class AgentCli
 
         if (jsonStdoutMode)
         {
-            // Extra guard: suppress noisy categories during doctor --json.
             builder.Logging.AddFilter("DesktopAutomationAgent", LogLevel.Warning);
         }
 
@@ -200,6 +209,101 @@ public static class AgentCli
 
         Console.WriteLine("Key validation succeeded.");
         return ExitCodes.Success;
+    }
+
+    private static int RunValidatePlan(IServiceProvider services, string file, bool json)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Runner);
+
+        var reader = services.GetRequiredService<PlanManifestReader>();
+        var result = reader.Read(file);
+
+        if (json)
+        {
+            var payload = new
+            {
+                result.IsValid,
+                result.PlanPath,
+                result.PlanId,
+                result.Name,
+                result.StepCount,
+                result.OnFailureStepCount,
+                result.TotalStepCount,
+                result.Sha256,
+                result.Errors,
+                result.Warnings
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine($"Plan file : {result.PlanPath}");
+            Console.WriteLine($"Plan ID   : {result.PlanId}");
+            Console.WriteLine($"Name      : {result.Name}");
+            Console.WriteLine($"Steps     : {result.StepCount}");
+            Console.WriteLine($"OnFailure : {result.OnFailureStepCount}");
+            if (!string.IsNullOrWhiteSpace(result.Sha256))
+                Console.WriteLine($"SHA-256   : {result.Sha256}");
+
+            if (!result.IsValid)
+            {
+                Console.Error.WriteLine("Plan validation failed:");
+                foreach (var error in result.Errors)
+                    Console.Error.WriteLine($"  - {error}");
+            }
+            else
+            {
+                Console.WriteLine("Offline plan validation succeeded.");
+                Console.WriteLine("Note: operation support requires a live catalog (use run-plan --dry-run).");
+            }
+        }
+
+        return result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
+    }
+
+    private static async Task<int> RunPlanAsync(
+        IServiceProvider services,
+        string file,
+        bool dryRun,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Runner);
+
+        var runner = services.GetRequiredService<IDeterministicPlanRunner>();
+        var report = await runner.RunAsync(file, dryRun, cancellationToken).ConfigureAwait(false);
+
+        if (json)
+        {
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(report, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine(dryRun ? "Desktop Automation Agent — run-plan (dry-run)" : "Desktop Automation Agent — run-plan");
+            Console.WriteLine($"Run ID     : {report.RunId}");
+            Console.WriteLine($"Status     : {report.Status}");
+            Console.WriteLine($"Exit code  : {report.ExitCode}");
+            Console.WriteLine($"Plan       : {report.PlanPath}");
+            Console.WriteLine($"Plan ID    : {report.PlanId}");
+            if (!string.IsNullOrWhiteSpace(report.PlanSha256))
+                Console.WriteLine($"Plan SHA   : {report.PlanSha256}");
+            if (!string.IsNullOrWhiteSpace(report.DriverBaseUrl))
+                Console.WriteLine($"Driver     : {report.DriverBaseUrl}");
+            Console.WriteLine($"Steps      : {report.Steps.Count}");
+            Console.WriteLine($"Cleanup    : {report.OnFailureSteps.Count}");
+            Console.WriteLine($"Artifacts  : {report.ArtifactWriteStatus}");
+
+            if (report.Failure is not null)
+            {
+                Console.Error.WriteLine($"Failure [{report.Failure.Classification}]: {report.Failure.Message}");
+            }
+        }
+
+        return report.ExitCode;
     }
 
     private static async Task<int> RunDoctorAsync(

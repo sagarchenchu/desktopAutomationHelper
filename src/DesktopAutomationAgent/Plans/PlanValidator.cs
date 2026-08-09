@@ -36,7 +36,6 @@ public sealed class PlanValidator
         var errors = new List<string>();
         var stepCount = manifest.Steps?.Count ?? 0;
         var onFailureCount = manifest.OnFailureSteps?.Count ?? 0;
-        const int cleanupCount = 0;
 
         if (manifest.SchemaVersion != 1)
         {
@@ -83,8 +82,8 @@ public sealed class PlanValidator
         }
 
         var seenIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        ValidateStepList(manifest.Steps, "steps", relativePath, errors, seenIds);
-        ValidateStepList(manifest.OnFailureSteps, "onFailureSteps", relativePath, errors, seenIds);
+        ValidateStepList(manifest.Steps, "steps", relativePath, errors, seenIds, allowAssertions: true);
+        ValidateStepList(manifest.OnFailureSteps, "onFailureSteps", relativePath, errors, seenIds, allowAssertions: false);
 
         return new PlanValidationResult
         {
@@ -93,8 +92,8 @@ public sealed class PlanValidator
             Name = manifest.Name ?? string.Empty,
             StepCount = stepCount,
             OnFailureStepCount = onFailureCount,
-            CleanupStepCount = cleanupCount,
-            TotalStepCount = stepCount + onFailureCount + cleanupCount,
+            CleanupStepCount = 0,
+            TotalStepCount = stepCount + onFailureCount,
             Errors = errors
         };
     }
@@ -104,7 +103,8 @@ public sealed class PlanValidator
         string listName,
         string relativePath,
         List<string> errors,
-        Dictionary<string, string> seenIds)
+        Dictionary<string, string> seenIds,
+        bool allowAssertions)
     {
         if (steps is null)
             return;
@@ -128,11 +128,11 @@ public sealed class PlanValidator
             }
             else if (seenIds.TryGetValue(step.Id, out var firstLocation))
             {
-                errors.Add($"{location}: duplicate id '{step.Id}' (first seen at {firstLocation}).");
+                errors.Add($"{location}: id duplicates {firstLocation}.id.");
             }
             else
             {
-                seenIds[step.Id] = location;
+                seenIds[step.Id] = $"{listName}[{i}]";
             }
 
             if (string.IsNullOrWhiteSpace(step.Operation))
@@ -159,7 +159,22 @@ public sealed class PlanValidator
                 }
             }
 
-            ValidateAssertions(step.Assertions, location, errors);
+            if (!allowAssertions)
+            {
+                if (step.Assertions is not null)
+                {
+                    errors.Add($"{location}: assertions are not allowed on cleanup steps.");
+                }
+
+                if (step.CaptureResponse is not null)
+                {
+                    errors.Add($"{location}: captureResponse is not allowed on cleanup steps.");
+                }
+            }
+            else
+            {
+                ValidateAssertions(step.Assertions, location, errors);
+            }
         }
     }
 
@@ -198,8 +213,7 @@ public sealed class PlanValidator
 
             if (!AllowedAssertionOperators.Contains(assertion.Operator))
             {
-                errors.Add(
-                    $"{location}: operator '{assertion.Operator}' is not supported.");
+                errors.Add($"{location}: operator '{assertion.Operator}' is not supported.");
                 continue;
             }
 
