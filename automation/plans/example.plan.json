@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "catalogSchemaVersion": 2,
+  "planId": "example.listwindows",
+  "name": "List visible windows",
+  "steps": [
+    {
+      "id": "list-windows",
+      "operation": "listwindows",
+      "arguments": {
+        "limit": 25,
+        "includeDesktopDescendants": false
+      },
+      "captureResponse": true,
+      "assertions": [
+        {
+          "path": "/windows",
+          "operator": "isNotNull"
+        }
+      ]
+    }
+  ]
+}

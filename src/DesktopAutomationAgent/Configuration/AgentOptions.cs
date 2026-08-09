@@ -11,4 +11,6 @@ public sealed class AgentOptions
     public WorkspaceOptions Workspace { get; set; } = new();
 
     public SuiteOptions Suites { get; set; } = new();
+
+    public RunnerOptions Runner { get; set; } = new();
 }
