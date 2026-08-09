@@ -1110,7 +1110,7 @@ public class Phase3ObjectRepositoryTests
     }
 
     [Fact]
-    public void ObjectRepositoryPathSafety_RejectsDirectorySymlinkEscape_WhenSupported()
+    public void ObjectRepositoryPathSafety_RejectsDirectorySymlinkEscape()
     {
         var root = Path.Combine(Path.GetTempPath(), "da-or-symlink-" + Guid.NewGuid().ToString("N"));
         var outside = Path.Combine(Path.GetTempPath(), "da-or-outside-" + Guid.NewGuid().ToString("N"));
@@ -1121,18 +1121,8 @@ public class Phase3ObjectRepositoryTests
 
         try
         {
-            if (OperatingSystem.IsWindows())
-                Directory.CreateSymbolicLink(linkPath, outside);
-            else
-                Directory.CreateSymbolicLink(linkPath, outside);
-        }
-        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
-        {
-            return;
-        }
+            RequireSymbolicLink(() => Directory.CreateSymbolicLink(linkPath, outside), linkPath);
 
-        try
-        {
             var target = Path.Combine(linkPath, "secret.json");
             var thrown = Assert.Throws<RepositoryPathException>(() =>
                 ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(target, root));
@@ -1146,7 +1136,7 @@ public class Phase3ObjectRepositoryTests
     }
 
     [Fact]
-    public void ObjectRepositoryPathSafety_RejectsChainedFileSymlinkEscape_WhenSupported()
+    public void ObjectRepositoryPathSafety_RejectsChainedFileSymlinkEscape()
     {
         var root = Path.Combine(Path.GetTempPath(), "da-or-chain-" + Guid.NewGuid().ToString("N"));
         var outside = Path.Combine(Path.GetTempPath(), "da-or-chain-out-" + Guid.NewGuid().ToString("N"));
@@ -1159,16 +1149,9 @@ public class Phase3ObjectRepositoryTests
 
         try
         {
-            File.CreateSymbolicLink(mid, outsideFile);
-            File.CreateSymbolicLink(entry, mid);
-        }
-        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
-        {
-            return;
-        }
+            RequireSymbolicLink(() => File.CreateSymbolicLink(mid, outsideFile), mid);
+            RequireSymbolicLink(() => File.CreateSymbolicLink(entry, mid), entry);
 
-        try
-        {
             var thrown = Assert.Throws<RepositoryPathException>(() =>
                 ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(entry, root));
             Assert.Contains("outside", thrown.Message, StringComparison.OrdinalIgnoreCase);
@@ -1183,11 +1166,70 @@ public class Phase3ObjectRepositoryTests
     }
 
     [Fact]
-    public void ObjectRepositoryPathSafety_RejectsWindowsJunctionEscape_WhenSupported()
+    public void ObjectRepositoryPathSafety_RejectsSymlinkCycle()
     {
-        if (!OperatingSystem.IsWindows())
-            return;
+        var root = Path.Combine(Path.GetTempPath(), "da-or-cycle-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var a = Path.Combine(root, "a.json");
+        var b = Path.Combine(root, "b.json");
 
+        try
+        {
+            RequireSymbolicLink(() => File.CreateSymbolicLink(a, b), a);
+            RequireSymbolicLink(() => File.CreateSymbolicLink(b, a), b);
+
+            var thrown = Assert.Throws<RepositoryPathException>(() =>
+                ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(a, root));
+            Assert.Contains("cycle", thrown.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            try { File.Delete(a); } catch { /* ignore */ }
+            try { File.Delete(b); } catch { /* ignore */ }
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void ObjectRepositoryPathSafety_RejectsSymlinkDepthLimit()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "da-or-depth-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var leaf = Path.Combine(root, "leaf.json");
+        File.WriteAllText(leaf, "{}");
+        var links = new List<string>();
+
+        try
+        {
+            var previous = leaf;
+            // MaxSymlinkDepth is 32; a chain of 33 links forces depth 33 on the final resolve hop.
+            for (var i = 0; i < 33; i++)
+            {
+                var link = Path.Combine(root, $"l{i}.json");
+                RequireSymbolicLink(() => File.CreateSymbolicLink(link, previous), link);
+                links.Add(link);
+                previous = link;
+            }
+
+            var thrown = Assert.Throws<RepositoryPathException>(() =>
+                ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(previous, root));
+            Assert.Contains("depth", thrown.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            foreach (var link in links)
+            {
+                try { File.Delete(link); } catch { /* ignore */ }
+            }
+
+            try { File.Delete(leaf); } catch { /* ignore */ }
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [WindowsFact]
+    public void ObjectRepositoryPathSafety_RejectsWindowsJunctionEscape()
+    {
         var root = Path.Combine(Path.GetTempPath(), "da-or-junc-" + Guid.NewGuid().ToString("N"));
         var outside = Path.Combine(Path.GetTempPath(), "da-or-junc-out-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -1197,26 +1239,8 @@ public class Phase3ObjectRepositoryTests
 
         try
         {
-            // Prefer cmd mklink /J so the test works on runtimes without Directory.CreateJunction.
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "cmd.exe",
-                Arguments = $"/c mklink /J \"{junction}\" \"{outside}\"",
-                CreateNoWindow = true,
-                UseShellExecute = false
-            };
-            using var process = System.Diagnostics.Process.Start(psi);
-            process?.WaitForExit(5000);
-            if (process is null || process.ExitCode != 0 || !Directory.Exists(junction))
-                return;
-        }
-        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
-        {
-            return;
-        }
+            RequireWindowsJunction(junction, outside);
 
-        try
-        {
             var target = Path.Combine(junction, "secret.json");
             Assert.Throws<RepositoryPathException>(() =>
                 ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(target, root));
@@ -1294,6 +1318,156 @@ public class Phase3ObjectRepositoryTests
     }
 
     [Fact]
+    public void ObjectRepositoryReader_AllowsNullInsideSourceMetadata()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var pagesDir = Path.Combine(workspace.RootPath, "object-repository", "pages");
+        Directory.CreateDirectory(pagesDir);
+        File.WriteAllText(Path.Combine(workspace.RootPath, "object-repository", "repository.json"), """
+            {
+              "schemaVersion": 1,
+              "repositoryId": "default",
+              "name": "Test",
+              "pages": [ { "pageId": "login", "file": "pages/login.page.json" } ]
+            }
+            """);
+        File.WriteAllText(Path.Combine(pagesDir, "login.page.json"), """
+            {
+              "schemaVersion": 1,
+              "pageId": "login",
+              "name": "Login",
+              "state": "active",
+              "elements": {
+                "submit": {
+                  "locator": { "automationId": "submit", "controlType": "Button" },
+                  "source": {
+                    "kind": "manual",
+                    "metadata": { "note": null, "tags": [null, "a"] }
+                  }
+                }
+              }
+            }
+            """);
+
+        var reader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
+        var result = reader.Read("object-repository/repository.json");
+
+        Assert.True(result.IsValid, string.Join("; ", result.Errors));
+    }
+
+    [Fact]
+    public void ObjectRepositoryNullRejector_AllowsNullInsideUnresolvedObjects()
+    {
+        var json = """
+            {
+              "schemaVersion": 1,
+              "pageId": "login",
+              "name": "Login",
+              "state": "candidate",
+              "elements": {},
+              "unresolved": [
+                { "path": "Window/Static", "reason": null, "details": { "x": null } }
+              ]
+            }
+            """;
+
+        var errors = ObjectRepositoryNullRejector.Detect(
+            System.Text.Encoding.UTF8.GetBytes(json),
+            "candidates/login/cap.page.json");
+
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void ObjectRepositoryNullRejector_RejectsNullMetadataObjectAndUnresolvedItems()
+    {
+        var json = """
+            {
+              "schemaVersion": 1,
+              "pageId": "login",
+              "name": "Login",
+              "state": "candidate",
+              "elements": {
+                "submit": {
+                  "locator": { "automationId": "submit", "controlType": "Button" },
+                  "source": { "kind": "capture", "metadata": null }
+                }
+              },
+              "unresolved": [ null ]
+            }
+            """;
+
+        var errors = ObjectRepositoryNullRejector.Detect(
+            System.Text.Encoding.UTF8.GetBytes(json),
+            "page.json");
+
+        Assert.Contains(errors, e => e.Contains("metadata", StringComparison.Ordinal) && e.Contains("null", StringComparison.Ordinal));
+        Assert.Contains(errors, e => e.Contains("unresolved[0]", StringComparison.Ordinal) && e.Contains("null", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ObjectRepositoryNullRejector_AcceptsCommentsAndTrailingCommas()
+    {
+        var json = """
+            {
+              // comment
+              "schemaVersion": 1,
+              "pageId": "login",
+              "name": "Login",
+              "state": "candidate",
+              "elements": {},
+            }
+            """;
+
+        var errors = ObjectRepositoryNullRejector.Detect(
+            System.Text.Encoding.UTF8.GetBytes(json),
+            "page.json");
+
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void ObjectRepositoryReader_AcceptsCommentsAndTrailingCommas()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var pagesDir = Path.Combine(workspace.RootPath, "object-repository", "pages");
+        Directory.CreateDirectory(pagesDir);
+        File.WriteAllText(Path.Combine(workspace.RootPath, "object-repository", "repository.json"), """
+            {
+              // repository manifest
+              "schemaVersion": 1,
+              "repositoryId": "default",
+              "name": "Test",
+              "pages": [ { "pageId": "login", "file": "pages/login.page.json" }, ],
+            }
+            """);
+        File.WriteAllText(Path.Combine(pagesDir, "login.page.json"), """
+            {
+              // page document
+              "schemaVersion": 1,
+              "pageId": "login",
+              "name": "Login",
+              "state": "active",
+              "elements": {
+                "submit": {
+                  "locator": { "automationId": "submit", "controlType": "Button", },
+                  "source": { "kind": "manual", },
+                },
+              },
+            }
+            """);
+
+        var reader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
+        var result = reader.Read("object-repository/repository.json");
+
+        Assert.True(result.IsValid, string.Join("; ", result.Errors));
+    }
+
+    [Fact]
     public void LocatorMatchNormalizer_ControlTypeForLocator_PreservesRoundTrippingCustom()
     {
         Assert.Equal("Custom", LocatorMatchNormalizer.ControlTypeForLocator(50025, "Custom"));
@@ -1342,6 +1516,65 @@ public class Phase3ObjectRepositoryTests
         ]);
         Assert.Null(verify.Error);
         Assert.Equal(50, verify.MaxChildren);
+    }
+
+    private static void RequireSymbolicLink(Action create, string path)
+    {
+        try
+        {
+            create();
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
+        {
+            Assert.Fail(
+                $"Unable to create symbolic link '{path}' required for path-safety coverage. {ex.GetType().Name}: {ex.Message}");
+        }
+
+        if (!File.Exists(path) && !Directory.Exists(path))
+        {
+            Assert.Fail($"Symbolic link '{path}' was not created.");
+        }
+    }
+
+    private static void RequireWindowsJunction(string junctionPath, string targetPath)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/c mklink /J \"{junctionPath}\" \"{targetPath}\"",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using var process = System.Diagnostics.Process.Start(psi);
+            Assert.NotNull(process);
+            process.WaitForExit(5000);
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            if (process.ExitCode != 0 || !Directory.Exists(junctionPath))
+            {
+                Assert.Fail(
+                    $"Unable to create Windows junction '{junctionPath}' -> '{targetPath}' " +
+                    $"(exit {process.ExitCode}). stdout: {stdout} stderr: {stderr}");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
+        {
+            Assert.Fail(
+                $"Unable to create Windows junction '{junctionPath}' required for path-safety coverage. {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private sealed class WindowsFactAttribute : FactAttribute
+    {
+        public WindowsFactAttribute()
+        {
+            if (!OperatingSystem.IsWindows())
+                Skip = "Windows-only junction coverage.";
+        }
     }
 
     private static string NormalizeNewlines(string value) =>
