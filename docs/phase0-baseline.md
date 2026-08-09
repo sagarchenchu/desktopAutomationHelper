@@ -42,6 +42,9 @@ dotnet test src/DesktopAutomationDriver.Tests/DesktopAutomationDriver.Tests.cspr
 - Catalog `schemaVersion` = 2 with `requiredInputAlternatives` for multi-shape inputs.
 - `IsKnownOperation` no longer trims (matches `UiService.Execute`).
 - Audited metadata for launch, switchwindow, select, scroll, dragbyoffset, getposition, contextmenupath/tree paths, sendkeysuia, inspectcombobox, iseditable, finduia.
+- `dumpuia` and all `popup-alert` ops: `requiresSession: false` (processId / desktop discovery).
+- `findlocator` alternatives: locator | locatorPath | criteria; `finduia` alternatives: locator | nameContains | hwnd | className.
+- `UiOperationCatalogResponse.SchemaVersion` default aligned to 2.
 
 ## Public API compatibility statement
 

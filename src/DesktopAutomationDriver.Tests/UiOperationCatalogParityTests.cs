@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using DesktopAutomationDriver.Controllers;
+using DesktopAutomationDriver.Models.Operations;
 using DesktopAutomationDriver.Models.Request;
 using DesktopAutomationDriver.Models.Response;
 using DesktopAutomationDriver.Services;
@@ -202,8 +203,22 @@ public class UiOperationCatalogParityTests
         var inspect = _catalog.GetOperations().Single(o => o.Name == "inspectcombobox");
         Assert.Equal("diagnostic", inspect.OperationType);
 
+        var dumpUia = _catalog.GetOperations().Single(o => o.Name == "dumpuia");
+        Assert.False(dumpUia.RequiresSession);
+
         var findUia = _catalog.GetOperations().Single(o => o.Name == "finduia");
         Assert.False(findUia.RequiresSession);
+        Assert.Empty(findUia.RequiredInputs);
+        Assert.Contains(findUia.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "locator" }));
+        Assert.Contains(findUia.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "nameContains" }));
+        Assert.Contains(findUia.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "hwnd" }));
+        Assert.Contains(findUia.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "className" }));
+
+        var findLocator = _catalog.GetOperations().Single(o => o.Name == "findlocator");
+        Assert.Empty(findLocator.RequiredInputs);
+        Assert.Contains(findLocator.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "locator" }));
+        Assert.Contains(findLocator.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "locatorPath" }));
+        Assert.Contains(findLocator.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "criteria" }));
 
         var sendKeysUia = _catalog.GetOperations().Single(o => o.Name == "sendkeysuia");
         Assert.True(sendKeysUia.RequiresSession);
@@ -213,6 +228,24 @@ public class UiOperationCatalogParityTests
 
         var contextMenu = _catalog.GetOperations().Single(o => o.Name == "contextmenupath");
         Assert.Equal(new[] { "locator", "value" }, contextMenu.RequiredInputs);
+    }
+
+    [Fact]
+    public void Catalog_PopupAlertOperations_DoNotRequireSession()
+    {
+        var popupOps = _catalog.GetOperations()
+            .Where(o => o.Category == "popup-alert")
+            .ToList();
+
+        Assert.NotEmpty(popupOps);
+        Assert.All(popupOps, op => Assert.False(op.RequiresSession));
+    }
+
+    [Fact]
+    public void CatalogResponse_DefaultsSchemaVersionToTwo()
+    {
+        var response = new UiOperationCatalogResponse();
+        Assert.Equal(2, response.SchemaVersion);
     }
 
     private static List<string> ExtractUiServiceSwitchOperations()
