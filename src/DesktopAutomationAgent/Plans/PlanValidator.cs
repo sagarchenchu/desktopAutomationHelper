@@ -36,7 +36,7 @@ public sealed class PlanValidator
         var errors = new List<string>();
         var stepCount = manifest.Steps?.Count ?? 0;
         var onFailureCount = manifest.OnFailureSteps?.Count ?? 0;
-        var cleanupCount = manifest.CleanupSteps?.Count ?? 0;
+        const int cleanupCount = 0;
 
         if (manifest.SchemaVersion != 1)
         {
@@ -83,9 +83,8 @@ public sealed class PlanValidator
         }
 
         var seenIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        ValidateStepList(manifest.Steps, "steps", relativePath, errors, seenIds, isCleanup: false);
-        ValidateStepList(manifest.OnFailureSteps, "onFailureSteps", relativePath, errors, seenIds, isCleanup: false);
-        ValidateStepList(manifest.CleanupSteps, "cleanupSteps", relativePath, errors, seenIds, isCleanup: true);
+        ValidateStepList(manifest.Steps, "steps", relativePath, errors, seenIds);
+        ValidateStepList(manifest.OnFailureSteps, "onFailureSteps", relativePath, errors, seenIds);
 
         return new PlanValidationResult
         {
@@ -105,8 +104,7 @@ public sealed class PlanValidator
         string listName,
         string relativePath,
         List<string> errors,
-        Dictionary<string, string> seenIds,
-        bool isCleanup)
+        Dictionary<string, string> seenIds)
     {
         if (steps is null)
             return;
@@ -161,22 +159,7 @@ public sealed class PlanValidator
                 }
             }
 
-            if (isCleanup)
-            {
-                if (step.Assertions is { Count: > 0 })
-                {
-                    errors.Add($"{location}: cleanup steps must not define assertions.");
-                }
-
-                if (step.CaptureResponse)
-                {
-                    errors.Add($"{location}: cleanup steps must not set captureResponse.");
-                }
-            }
-            else
-            {
-                ValidateAssertions(step.Assertions, location, errors);
-            }
+            ValidateAssertions(step.Assertions, location, errors);
         }
     }
 

@@ -43,7 +43,6 @@ public sealed class PlanCatalogPreflight
         var errors = new List<string>();
         ValidateStepList(manifest.Steps, "steps", relativePath, errors);
         ValidateStepList(manifest.OnFailureSteps, "onFailureSteps", relativePath, errors);
-        ValidateStepList(manifest.CleanupSteps, "cleanupSteps", relativePath, errors);
         ValidateSessionLifecycle(manifest, relativePath, errors);
         return errors;
     }

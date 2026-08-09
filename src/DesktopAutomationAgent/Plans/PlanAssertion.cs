@@ -11,6 +11,8 @@ public sealed class PlanAssertion
 
     public JsonElement? Expected { get; set; }
 
+    public bool IgnoreCase { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 }
