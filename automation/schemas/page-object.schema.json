@@ -115,7 +115,7 @@
           "type": "string",
           "enum": [
             "strong",
-            "moderate",
+            "medium",
             "weak"
           ]
         },

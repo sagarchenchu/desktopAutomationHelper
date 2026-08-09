@@ -32,6 +32,8 @@ public sealed class PlanManifest
     /// </summary>
     public List<PlanStep>? OnFailureSteps { get; set; }
 
+    public string? ObjectRepository { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 }

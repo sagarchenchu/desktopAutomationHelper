@@ -321,6 +321,13 @@ public sealed class ObjectRepositoryReader
         if (!IsInsideDirectory(candidate, normalizedRoot))
             throw new RepositoryPathException("file resolves outside the repository directory.");
 
+        var relative = Path.GetRelativePath(normalizedRoot, candidate).Replace('\\', '/');
+        if (!relative.StartsWith("pages/", StringComparison.Ordinal)
+            && !string.Equals(relative, "pages", StringComparison.Ordinal))
+        {
+            throw new RepositoryPathException("file must be under the pages/ subdirectory.");
+        }
+
         return candidate;
     }
 

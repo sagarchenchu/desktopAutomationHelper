@@ -1,8 +1,6 @@
 # Object repository (Phase 3)
 
 The object repository stores **approved, versioned UI locators** for deterministic plan execution.
-Phase 3 provides the core read/validate/resolve library only. Capture, verify, CLI, and plan
-expansion are implemented in later phases.
 
 ## Layout
 
@@ -14,6 +12,35 @@ object-repository/
   captures/                # raw capture output from tooling (gitignored)
 ```
 
+## CLI workflow
+
+```bash
+# Offline validation
+dotnet run --project src/DesktopAutomationAgent -- validate-object-repository \
+  --file automation/object-repository/repository.json
+
+# Offline resolve one reference
+dotnet run --project src/DesktopAutomationAgent -- resolve-object \
+  --file automation/object-repository/repository.json --ref login.submit
+
+# Live capture (dumpuia) — writes captures/ and candidates/
+dotnet run --project src/DesktopAutomationAgent -- capture-page \
+  --file automation/object-repository/repository.json \
+  --page login --name "Login page" \
+  [--view control|content|raw] \
+  [--root activeWindow|processWindows|desktopChildren] \
+  [--max-depth 8] [--max-children 200] [--include-offscreen] \
+  [--json]
+
+# Live verify (finduia) — all active objects, or filter
+dotnet run --project src/DesktopAutomationAgent -- verify-object-repository \
+  --file automation/object-repository/repository.json \
+  [--page login | --ref login.submit] [--json]
+```
+
+Plans may reference repository objects via `$objectRef` in locator arguments when
+`objectRepository` is set on the plan. See `docs/phase3-object-repository.md`.
+
 ## Captures vs approved objects
 
 | Area | Purpose | Git |
@@ -22,11 +49,8 @@ object-repository/
 | `candidates/` | Human-reviewed drafts promoted from captures | Ignored |
 | `pages/` | Active page-object JSON referenced by `repository.json` | Tracked |
 
-**Captures are never executed directly.** They may include volatile fields (window handles,
-coordinates, runtime IDs) and incomplete locators. Operators review captures, curate locators,
+**Captures are never executed directly.** Operators review captures, curate locators,
 and **manually promote** approved definitions into `pages/` with `state: "active"`.
-
-Promotion is intentional and explicit. The agent does not auto-promote captures or candidates.
 
 ## PII and secrets
 
@@ -47,23 +71,18 @@ Allowed locator fields:
 Volatile fields (handles, coordinates, runtime IDs, bounding boxes, etc.) are **rejected**.
 
 `automationId` alone is sufficient. Without it, `name` and `controlType` **or** `className` and
-`controlType` are required. Name-only, className-only, or controlType-only locators fail validation.
+`controlType` are required.
 
 ## Manual promotion workflow
 
-1. Run capture tooling (later phase) to write artifacts under `captures/`.
-2. Review and edit locators; copy the page JSON into `candidates/` while iterating.
+1. Run `capture-page` to write artifacts under `captures/` and `candidates/`.
+2. Review and edit locators; iterate in `candidates/` if needed.
 3. Set `state` to `active`, `source.kind` to `manual` or `approved`, and add the page to
    `repository.json` under `pages/`.
-4. Commit only the manifest and `pages/` files. Never commit `captures/` or `candidates/`.
+4. Run `verify-object-repository` against the promoted page.
+5. Commit only the manifest and `pages/` files. Never commit `captures/` or `candidates/`.
 
 Active pages must not contain `source.kind: "capture"` elements.
-
-## No AI in Phase 3
-
-Phase 3 does **not** call AI providers, perform self-healing, or rewrite locators automatically.
-All approved objects are human-reviewed. Later phases may add optional diagnostics, but execution
-continues to use only validated, active repository entries.
 
 ## Identifiers
 

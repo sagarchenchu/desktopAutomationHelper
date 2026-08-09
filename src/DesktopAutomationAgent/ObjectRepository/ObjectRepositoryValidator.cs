@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using DesktopAutomationAgent.Configuration;
 
@@ -27,7 +28,7 @@ public sealed class ObjectRepositoryValidator
     private static readonly HashSet<string> AllowedQualityGrades = new(StringComparer.Ordinal)
     {
         "strong",
-        "moderate",
+        "medium",
         "weak"
     };
 
@@ -50,6 +51,7 @@ public sealed class ObjectRepositoryValidator
 
         var totalElements = 0;
         var seenPageIds = new Dictionary<string, string>(StringComparer.Ordinal);
+        var seenPageFiles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         if (manifest.Pages is null)
             return BuildResult(errors, warnings, repositoryPath);
@@ -86,6 +88,29 @@ public sealed class ObjectRepositoryValidator
                 continue;
             }
 
+            var normalizedFile = reference.File.Replace('\\', '/');
+            if (!normalizedFile.StartsWith("pages/", StringComparison.Ordinal))
+            {
+                errors.Add($"{location}: file must be under the pages/ subdirectory.");
+            }
+
+            if (seenPageFiles.TryGetValue(normalizedFile, out var firstFileLocation))
+            {
+                errors.Add($"{location}: file '{reference.File}' duplicates {firstFileLocation}.");
+            }
+            else
+            {
+                seenPageFiles[normalizedFile] = location;
+            }
+
+            var preferredFile = $"pages/{reference.PageId}.page.json";
+            if (!string.Equals(normalizedFile, preferredFile, StringComparison.Ordinal)
+                && normalizedFile.StartsWith("pages/", StringComparison.Ordinal))
+            {
+                warnings.Add(
+                    $"{location}: file '{reference.File}' does not follow preferred naming '{preferredFile}'.");
+            }
+
             if (!pages.TryGetValue(reference.PageId, out var page))
             {
                 errors.Add($"{location}: page file for '{reference.PageId}' was not loaded.");
@@ -98,7 +123,7 @@ public sealed class ObjectRepositoryValidator
                 continue;
             }
 
-            ValidatePage(page, pagePath, reference.PageId, options, errors, warnings, ref totalElements);
+            ValidatePage(page, pagePath, reference.PageId, manifestReferenced: true, options, errors, warnings, ref totalElements);
         }
 
         if (totalElements > options.MaxTotalElements)
@@ -157,6 +182,7 @@ public sealed class ObjectRepositoryValidator
         PageObjectDocument page,
         string pagePath,
         string expectedPageId,
+        bool manifestReferenced,
         ObjectRepositoryOptions options,
         List<string> errors,
         List<string> warnings,
@@ -185,9 +211,14 @@ public sealed class ObjectRepositoryValidator
         {
             errors.Add($"{pagePath}: state must be 'candidate' or 'active'.");
         }
-        else if (string.Equals(page.State, "candidate", StringComparison.Ordinal))
+        else if (manifestReferenced && string.Equals(page.State, "candidate", StringComparison.Ordinal))
         {
-            warnings.Add($"{pagePath}: page state is 'candidate' and will not be used for active resolution.");
+            errors.Add($"{pagePath}: manifest-referenced pages must have state 'active'.");
+        }
+
+        if (string.Equals(page.State, "active", StringComparison.Ordinal) && HasNonEmptyUnresolved(page.Unresolved))
+        {
+            errors.Add($"{pagePath}: active pages must not contain a non-empty unresolved section.");
         }
 
         if (page.ExtensionData is { Count: > 0 })
@@ -223,9 +254,9 @@ public sealed class ObjectRepositoryValidator
                 continue;
             }
 
-            if (seenElementIds.TryGetValue(elementId, out var firstLocation))
+            if (seenElementIds.TryGetValue(elementId, out var firstElementLocation))
             {
-                errors.Add($"{location}: element id '{elementId}' duplicates {firstLocation}.");
+                errors.Add($"{location}: element id '{elementId}' duplicates {firstElementLocation}.");
             }
             else
             {
@@ -234,6 +265,20 @@ public sealed class ObjectRepositoryValidator
 
             ValidateElement(element, location, page.State, errors, warnings);
         }
+    }
+
+    private static bool HasNonEmptyUnresolved(JsonElement? unresolved)
+    {
+        if (unresolved is not JsonElement element)
+            return false;
+
+        return element.ValueKind switch
+        {
+            JsonValueKind.Array => element.GetArrayLength() > 0,
+            JsonValueKind.Object => element.EnumerateObject().Any(),
+            JsonValueKind.Null or JsonValueKind.Undefined => false,
+            _ => true
+        };
     }
 
     private static void ValidateElement(
@@ -267,7 +312,7 @@ public sealed class ObjectRepositoryValidator
             if (!string.IsNullOrWhiteSpace(element.Quality.Grade)
                 && !AllowedQualityGrades.Contains(element.Quality.Grade))
             {
-                errors.Add($"{location}: quality.grade must be strong, moderate, or weak.");
+                errors.Add($"{location}: quality.grade must be strong, medium, or weak.");
             }
         }
 
