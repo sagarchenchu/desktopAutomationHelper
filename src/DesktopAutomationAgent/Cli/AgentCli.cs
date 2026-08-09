@@ -554,6 +554,7 @@ public static class AgentCli
                 View = parsed.View ?? "control",
                 Root = parsed.Root ?? "activeWindow",
                 MaxDepth = parsed.MaxDepth,
+                MaxChildren = parsed.MaxChildren,
                 IncludeOffscreen = parsed.IncludeOffscreen
             },
             cancellationToken).ConfigureAwait(false);

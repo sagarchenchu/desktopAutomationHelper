@@ -92,11 +92,13 @@ public sealed class ObjectCandidateGenerator
         if (element.ValueKind != JsonValueKind.Object)
             return null;
 
+        var controlTypeId = GetNullableInt(element, "controlTypeId");
         return new DumpNode(
             GetString(element, "path"),
             GetString(element, "automationId"),
             GetString(element, "name"),
             GetString(element, "controlType"),
+            controlTypeId,
             GetClassName(element),
             GetInt(element, "depth"));
     }
@@ -111,12 +113,23 @@ public sealed class ObjectCandidateGenerator
             ? number
             : 0;
 
+    private static int? GetNullableInt(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value) && value.TryGetInt32(out var number)
+            ? number
+            : null;
+
     private static string? GetClassName(JsonElement element) => GetString(element, "className");
 
     private static bool HasUsableIdentity(DumpNode node) =>
         HasValue(node.AutomationId)
-        || (HasValue(node.Name) && HasValue(node.ControlType) && LocatorMatchNormalizer.IsKnownControlType(node.ControlType))
-        || (HasValue(node.ClassName) && HasValue(node.ControlType) && LocatorMatchNormalizer.IsKnownControlType(node.ControlType));
+        || (HasValue(node.Name) && HasKnownControlType(node))
+        || (HasValue(node.ClassName) && HasKnownControlType(node));
+
+    private static bool HasKnownControlType(DumpNode node) =>
+        LocatorMatchNormalizer.IsKnownControlType(node.ControlTypeId, node.ControlType);
+
+    private static string LocatorControlType(DumpNode node) =>
+        LocatorMatchNormalizer.ControlTypeForLocator(node.ControlTypeId, node.ControlType);
 
     private static bool HasValue(string? value) => !string.IsNullOrWhiteSpace(value);
 
@@ -140,8 +153,8 @@ public sealed class ObjectCandidateGenerator
         var automationId = LocatorMatchNormalizer.Normalize(node.AutomationId);
         var name = LocatorMatchNormalizer.Normalize(node.Name);
         var className = LocatorMatchNormalizer.Normalize(node.ClassName);
-        var controlType = HasValue(node.ControlType) && LocatorMatchNormalizer.IsKnownControlType(node.ControlType)
-            ? LocatorMatchNormalizer.CanonicalControlType(node.ControlType)
+        var controlType = HasKnownControlType(node)
+            ? LocatorControlType(node)
             : string.Empty;
 
         if (!string.IsNullOrEmpty(automationId) && !string.IsNullOrEmpty(controlType))
@@ -165,11 +178,8 @@ public sealed class ObjectCandidateGenerator
 
     private static ObjectLocator? TryBuildLocator(DumpNode node, IReadOnlyDictionary<string, int> counts)
     {
-        var knownControlType = HasValue(node.ControlType)
-                               && LocatorMatchNormalizer.IsKnownControlType(node.ControlType);
-        var canonicalControlType = knownControlType
-            ? LocatorMatchNormalizer.CanonicalControlType(node.ControlType)
-            : null;
+        var knownControlType = HasKnownControlType(node);
+        var canonicalControlType = knownControlType ? LocatorControlType(node) : null;
 
         if (HasValue(node.AutomationId) && knownControlType)
         {
@@ -257,7 +267,7 @@ public sealed class ObjectCandidateGenerator
     {
         var seed = HasValue(node.AutomationId)
             ? node.AutomationId!
-            : $"{node.Name}-{node.ControlType}";
+            : $"{node.Name}-{LocatorControlType(node)}";
 
         var baseId = SanitizeElementId(seed);
         var candidate = baseId;
@@ -347,6 +357,7 @@ public sealed class ObjectCandidateGenerator
         string? AutomationId,
         string? Name,
         string? ControlType,
+        int? ControlTypeId,
         string? ClassName,
         int Depth)
     {
@@ -355,6 +366,7 @@ public sealed class ObjectCandidateGenerator
                 '\u001f',
                 Path ?? string.Empty,
                 AutomationId ?? string.Empty,
+                ControlTypeId?.ToString() ?? string.Empty,
                 ControlType ?? string.Empty,
                 ClassName ?? string.Empty,
                 Name ?? string.Empty);

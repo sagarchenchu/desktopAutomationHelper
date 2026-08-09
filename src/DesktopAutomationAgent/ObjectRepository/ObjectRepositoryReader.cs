@@ -120,6 +120,12 @@ public sealed class ObjectRepositoryReader
                 [$"{manifestDisplayPath}: invalid JSON ({ex.Message})."]);
         }
 
+        var nullErrors = ObjectRepositoryNullRejector.Detect(manifestBytes, manifestDisplayPath);
+        if (nullErrors.Count > 0)
+        {
+            return Failure(manifestDisplayPath, manifestSha256, fileHashes, null, nullErrors);
+        }
+
         ObjectRepositoryManifest? manifest;
         try
         {
@@ -233,6 +239,13 @@ public sealed class ObjectRepositoryReader
                 catch (Exception ex) when (ex is JsonException or ArgumentException or InvalidOperationException)
                 {
                     errors.Add($"{pageDisplayPath}: invalid JSON ({ex.Message}).");
+                    continue;
+                }
+
+                var pageNullErrors = ObjectRepositoryNullRejector.Detect(pageBytes, pageDisplayPath);
+                if (pageNullErrors.Count > 0)
+                {
+                    errors.AddRange(pageNullErrors);
                     continue;
                 }
 

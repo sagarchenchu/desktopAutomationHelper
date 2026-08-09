@@ -562,39 +562,46 @@ public static class CommandLine
             return Error(kind, json, "--page and --ref are mutually exclusive.", config);
         }
 
-        var captureOnlyFlags = new List<string>();
+        var disallowedFlags = new List<string>();
         if (kind != AgentCommandKind.CapturePage)
         {
             if (!string.IsNullOrWhiteSpace(pageName))
-                captureOnlyFlags.Add("--name");
-            if (maxChildren is not null)
-                captureOnlyFlags.Add("--max-children");
+                disallowedFlags.Add("--name");
         }
+
+        if (kind is not (AgentCommandKind.CapturePage or AgentCommandKind.VerifyObjectRepository)
+            && maxChildren is not null)
+        {
+            disallowedFlags.Add("--max-children");
+        }
+
+        if (kind == AgentCommandKind.CapturePage && !string.IsNullOrWhiteSpace(objectRef))
+            disallowedFlags.Add("--ref");
 
         if (kind is AgentCommandKind.ValidateObjectRepository or AgentCommandKind.ResolveObject)
         {
             if (!string.IsNullOrWhiteSpace(view))
-                captureOnlyFlags.Add("--view");
+                disallowedFlags.Add("--view");
             if (!string.IsNullOrWhiteSpace(root))
-                captureOnlyFlags.Add("--root");
+                disallowedFlags.Add("--root");
             if (maxDepth is not null)
-                captureOnlyFlags.Add("--max-depth");
+                disallowedFlags.Add("--max-depth");
             if (includeOffscreen is not null)
-                captureOnlyFlags.Add("--include-offscreen");
+                disallowedFlags.Add("--include-offscreen");
             if (kind == AgentCommandKind.ValidateObjectRepository && !string.IsNullOrWhiteSpace(pageId))
-                captureOnlyFlags.Add("--page");
+                disallowedFlags.Add("--page");
             if (kind == AgentCommandKind.ValidateObjectRepository && !string.IsNullOrWhiteSpace(objectRef))
-                captureOnlyFlags.Add("--ref");
+                disallowedFlags.Add("--ref");
             if (kind == AgentCommandKind.ResolveObject && !string.IsNullOrWhiteSpace(pageId))
-                captureOnlyFlags.Add("--page");
+                disallowedFlags.Add("--page");
         }
 
-        if (captureOnlyFlags.Count > 0)
+        if (disallowedFlags.Count > 0)
         {
             return Error(
                 kind,
                 json,
-                $"Unexpected argument(s) for {CommandName(kind)}: {string.Join(' ', captureOnlyFlags.Distinct())}.",
+                $"Unexpected argument(s) for {CommandName(kind)}: {string.Join(' ', disallowedFlags.Distinct())}.",
                 config);
         }
 
@@ -618,10 +625,10 @@ public static class CommandLine
 
             if (maxDepth is < 0 or > 20)
                 return Error(kind, json, "--max-depth must be between 0 and 20.", config);
-        }
 
-        if (kind == AgentCommandKind.CapturePage && maxChildren is < 1 or > 1000)
-            return Error(kind, json, "--max-children must be between 1 and 1000.", config);
+            if (maxChildren is < 1 or > 1000)
+                return Error(kind, json, "--max-children must be between 1 and 1000.", config);
+        }
 
         return new ParsedCommand
         {
@@ -765,8 +772,8 @@ public static class CommandLine
           verify-object-repository --file <repository.json>
               [--page <page-id> | --ref <page.element>]
               [--view control|content|raw] [--root activeWindow|processWindows|desktopChildren]
-              [--max-depth <0-20>] [--include-offscreen] [--json]
-              Verify active repository objects via finduia using the same root/depth options as capture.
+              [--max-depth <0-20>] [--max-children <1-1000>] [--include-offscreen] [--json]
+              Verify active repository objects via finduia using the same root/depth/children options as capture.
 
           doctor [--json]
               Run configuration, workspace, driver discovery, status, and catalog checks.
