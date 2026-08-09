@@ -119,8 +119,12 @@ public sealed class ObjectCaptureService
                 ExitCodes.SuiteOrWorkspace);
         }
 
-        var view = NormalizeOption(captureOptions.View, AllowedViews, "control");
-        var root = NormalizeOption(captureOptions.Root, AllowedRoots, "activeWindow");
+        if (!TryResolveOption(captureOptions.View, AllowedViews, "control", out var view, out var viewError))
+            return Failure(viewError!, ExitCodes.UsageOrConfiguration);
+
+        if (!TryResolveOption(captureOptions.Root, AllowedRoots, "activeWindow", out var root, out var rootError))
+            return Failure(rootError!, ExitCodes.UsageOrConfiguration);
+
         var maxDepth = captureOptions.MaxDepth ?? 8;
         var maxChildren = captureOptions.MaxChildren ?? 200;
         var includeOffscreen = captureOptions.IncludeOffscreen ?? false;
@@ -188,7 +192,7 @@ public sealed class ObjectCaptureService
         {
             return Failure(
                 SecretRedactor.Redact(ex.Message),
-                ex.Classification == UiFailureClassification.Cancelled
+                ex.Classification is UiFailureClassification.Cancelled
                     ? ExitCodes.Cancelled
                     : ExitCodes.ExecutionFailure);
         }
@@ -232,6 +236,30 @@ public sealed class ObjectCaptureService
 
         if (File.Exists(captureFullPath) || File.Exists(candidateFullPath))
             return Failure("Capture artifacts already exist and must not be overwritten.", ExitCodes.ExecutionFailure);
+
+        try
+        {
+            ObjectRepositoryPathSafety.EnsureWritablePathInside(captureFullPath, repositoryRoot);
+            ObjectRepositoryPathSafety.EnsureWritablePathInside(candidateFullPath, repositoryRoot);
+            ObjectRepositoryPathSafety.EnsureWritablePathInside(captureFullPath, _workspace.RootPath);
+            ObjectRepositoryPathSafety.EnsureWritablePathInside(candidateFullPath, _workspace.RootPath);
+        }
+        catch (RepositoryPathException ex)
+        {
+            return Failure(ex.Message, ExitCodes.SuiteOrWorkspace);
+        }
+
+        var candidateValidation = new ObjectRepositoryValidator().ValidateCandidatePage(
+            candidatePage,
+            candidateRelative,
+            _options.ObjectRepository);
+        if (!candidateValidation.IsValid)
+        {
+            return Failure(
+                candidateValidation.Errors.FirstOrDefault()
+                ?? "Generated candidate page failed schema validation.",
+                ExitCodes.ExecutionFailure);
+        }
 
         var captureDocument = new Dictionary<string, object?>
         {
@@ -339,13 +367,31 @@ public sealed class ObjectCaptureService
         return false;
     }
 
-    private static string NormalizeOption(string? value, HashSet<string> allowed, string fallback)
+    private static bool TryResolveOption(
+        string? value,
+        HashSet<string> allowed,
+        string fallback,
+        out string resolved,
+        out string? error)
     {
         if (string.IsNullOrWhiteSpace(value))
-            return fallback;
+        {
+            resolved = fallback;
+            error = null;
+            return true;
+        }
 
         var normalized = value.Trim();
-        return allowed.Contains(normalized) ? normalized : fallback;
+        if (allowed.Contains(normalized))
+        {
+            resolved = normalized;
+            error = null;
+            return true;
+        }
+
+        resolved = fallback;
+        error = $"Invalid value '{value}'. Expected one of: {string.Join(", ", allowed.OrderBy(static x => x))}.";
+        return false;
     }
 
     private static string ComputeSha256(string content) =>

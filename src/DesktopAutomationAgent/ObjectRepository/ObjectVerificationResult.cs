@@ -58,4 +58,12 @@ public sealed class ObjectVerificationOptions
     public string? PageId { get; init; }
 
     public string? ObjectRef { get; init; }
+
+    public string View { get; init; } = "control";
+
+    public string Root { get; init; } = "activeWindow";
+
+    public int? MaxDepth { get; init; }
+
+    public bool? IncludeOffscreen { get; init; }
 }

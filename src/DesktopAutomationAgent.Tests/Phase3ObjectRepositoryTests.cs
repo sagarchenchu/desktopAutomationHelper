@@ -821,6 +821,327 @@ public class Phase3ObjectRepositoryTests
         Assert.Contains("ObjectRepository", generated, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("123Submit", "e-123submit")]
+    [InlineData("Submit", "submit")]
+    public void ObjectCandidateGenerator_ElementIds_AreSchemaValid(string automationId, string expectedPrefix)
+    {
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        var id = ObjectCandidateGenerator.ResolveElementId(
+            new ObjectCandidateGenerator.DumpNode(null, automationId, null, "Button", null, 0),
+            used);
+
+        Assert.Matches("^[a-z][a-z0-9-]{0,63}$", id);
+        Assert.StartsWith(expectedPrefix, id, StringComparison.Ordinal);
+        Assert.True(id.Length <= 64);
+    }
+
+    [Fact]
+    public void ObjectCandidateGenerator_ElementIds_TruncateLongIdsAndKeepCollisionsWithinLimit()
+    {
+        var longId = new string('a', 80) + "Button";
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        var first = ObjectCandidateGenerator.ResolveElementId(
+            new ObjectCandidateGenerator.DumpNode(null, longId, null, "Button", null, 0),
+            used);
+        var second = ObjectCandidateGenerator.ResolveElementId(
+            new ObjectCandidateGenerator.DumpNode(null, longId, null, "Button", null, 0),
+            used);
+
+        Assert.Matches("^[a-z][a-z0-9-]{0,63}$", first);
+        Assert.Matches("^[a-z][a-z0-9-]{0,63}$", second);
+        Assert.True(first.Length <= 64);
+        Assert.True(second.Length <= 64);
+        Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public void ObjectCandidateGenerator_TreatsCaseVariantsAsSameAutomationId()
+    {
+        var nodes = new List<JsonElement>
+        {
+            JsonSerializer.SerializeToElement(new { path = "a", automationId = "Submit", controlType = "Button" }),
+            JsonSerializer.SerializeToElement(new { path = "b", automationId = "submit", controlType = "Button" })
+        };
+
+        var page = new ObjectCandidateGenerator().Generate(nodes, "login", "Login", "cap-1");
+        Assert.Empty(page.Elements!);
+        Assert.True(page.Unresolved is JsonElement unresolved && unresolved.GetArrayLength() == 2);
+    }
+
+    [Fact]
+    public void ObjectLocatorValidator_RejectsUnknownControlType()
+    {
+        var result = ObjectLocatorValidator.Validate(
+            new ObjectLocator { AutomationId = "x", ControlType = "NotARealType" },
+            "test.locator");
+
+        Assert.Contains(result.Errors, e => e.Contains("recognized", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ObjectRepositoryReader_RejectsWrongPropertyCasing()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        File.WriteAllText(Path.Combine(workspace.RootPath, "object-repository", "repository.json"), """
+            {
+              "schemaVersion": 1,
+              "RepositoryId": "default",
+              "name": "Test",
+              "pages": []
+            }
+            """);
+
+        var reader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
+        var result = reader.Read("object-repository/repository.json");
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e =>
+            e.Contains("repositoryId", StringComparison.OrdinalIgnoreCase)
+            || e.Contains("unknown", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ObjectRepositoryReader_RejectsNullPageEntries()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        File.WriteAllText(Path.Combine(workspace.RootPath, "object-repository", "repository.json"), """
+            {
+              "schemaVersion": 1,
+              "repositoryId": "default",
+              "name": "Test",
+              "pages": [null]
+            }
+            """);
+
+        var reader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
+        var result = reader.Read("object-repository/repository.json");
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("must not be null", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ObjectRepositoryReader_RejectsNullElementDefinitions()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var pagesDir = Path.Combine(workspace.RootPath, "object-repository", "pages");
+        Directory.CreateDirectory(pagesDir);
+        File.WriteAllText(Path.Combine(workspace.RootPath, "object-repository", "repository.json"), """
+            {
+              "schemaVersion": 1,
+              "repositoryId": "default",
+              "name": "Test",
+              "pages": [ { "pageId": "login", "file": "pages/login.page.json" } ]
+            }
+            """);
+        File.WriteAllText(Path.Combine(pagesDir, "login.page.json"), """
+            {
+              "schemaVersion": 1,
+              "pageId": "login",
+              "name": "Login",
+              "state": "active",
+              "elements": { "submit": null }
+            }
+            """);
+
+        var reader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
+        var result = reader.Read("object-repository/repository.json");
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("must not be null", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ObjectRepositoryReader_RejectsUnknownNestedProperties()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var pagesDir = Path.Combine(workspace.RootPath, "object-repository", "pages");
+        Directory.CreateDirectory(pagesDir);
+        File.WriteAllText(Path.Combine(workspace.RootPath, "object-repository", "repository.json"), """
+            {
+              "schemaVersion": 1,
+              "repositoryId": "default",
+              "name": "Test",
+              "pages": [ { "pageId": "login", "file": "pages/login.page.json", "extra": true } ]
+            }
+            """);
+        File.WriteAllText(Path.Combine(pagesDir, "login.page.json"), """
+            {
+              "schemaVersion": 1,
+              "pageId": "login",
+              "name": "Login",
+              "state": "active",
+              "elements": {
+                "submit": {
+                  "locator": { "automationId": "submit", "controlType": "Button" },
+                  "quality": { "grade": "strong", "unexpected": 1 },
+                  "source": { "kind": "manual", "bogus": "x" }
+                }
+              }
+            }
+            """);
+
+        var reader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
+        var result = reader.Read("object-repository/repository.json");
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("unknown property 'extra'", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result.Errors, e => e.Contains("unexpected", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result.Errors, e => e.Contains("bogus", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ObjectRepositoryReader_RejectsNullRequiredString()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        File.WriteAllText(Path.Combine(workspace.RootPath, "object-repository", "repository.json"), """
+            {
+              "schemaVersion": 1,
+              "repositoryId": "default",
+              "name": null,
+              "pages": []
+            }
+            """);
+
+        var reader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
+        var result = reader.Read("object-repository/repository.json");
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("name is required", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ObjectCandidateGenerator_GeneratedPagePassesCandidateValidation()
+    {
+        var nodes = new List<JsonElement>
+        {
+            JsonSerializer.SerializeToElement(new
+            {
+                path = "Window/Button",
+                automationId = "123Submit",
+                controlType = "Button"
+            })
+        };
+
+        var page = new ObjectCandidateGenerator().Generate(nodes, "login", "Login", "cap-1");
+        var validation = new ObjectRepositoryValidator().ValidateCandidatePage(
+            page,
+            "candidates/login/cap-1.page.json",
+            new ObjectRepositoryOptions());
+
+        Assert.True(validation.IsValid, string.Join("; ", validation.Errors));
+        Assert.All(page.Elements!.Keys, id => Assert.Matches("^[a-z][a-z0-9-]{0,63}$", id));
+    }
+
+    [Fact]
+    public void CommandLine_Parse_RejectsInvalidView()
+    {
+        var parsed = CommandLine.Parse(
+        [
+            "capture-page",
+            "--file", "object-repository/repository.json",
+            "--page", "login",
+            "--name", "Login",
+            "--view", "processWindow",
+            "--json"
+        ]);
+
+        Assert.NotNull(parsed.Error);
+        Assert.Contains("--view", parsed.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.True(parsed.Json);
+    }
+
+    [Fact]
+    public void CommandLine_Parse_RejectsCaptureOnlyFlagsOnValidate()
+    {
+        var parsed = CommandLine.Parse(
+        [
+            "validate-object-repository",
+            "--file", "object-repository/repository.json",
+            "--view", "control",
+            "--json"
+        ]);
+
+        Assert.NotNull(parsed.Error);
+        Assert.Contains("--view", parsed.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.True(parsed.Json);
+    }
+
+    [Fact]
+    public async Task CapturePage_RejectsInvalidRootWithUsageExit()
+    {
+        var options = TestSupport.CreateOptions(
+            baseUrl: "http://127.0.0.1:33201",
+            bearerToken: "secret-token");
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var repoPath = Path.Combine(workspace.RootPath, "object-repository", "repository.json");
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+
+        var exit = await RunAsync(
+            [
+                "capture-page",
+                "--file", repoPath,
+                "--page", "login",
+                "--name", "Login",
+                "--root", "processWindow",
+                "--json"
+            ],
+            options,
+            workspace,
+            handler);
+
+        Assert.Equal(ExitCodes.UsageOrConfiguration, exit.ExitCode);
+        Assert.Equal(0, handler.Requests.Count);
+    }
+
+    [Fact]
+    public void ObjectRepositoryPathSafety_RejectsSymlinkEscape_WhenSupported()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var root = Path.Combine(Path.GetTempPath(), "da-or-symlink-" + Guid.NewGuid().ToString("N"));
+        var outside = Path.Combine(Path.GetTempPath(), "da-or-outside-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "secret.json"), "{}");
+        var linkPath = Path.Combine(root, "pages");
+
+        try
+        {
+            File.CreateSymbolicLink(linkPath, outside);
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        try
+        {
+            var target = Path.Combine(linkPath, "secret.json");
+            var thrown = Assert.Throws<RepositoryPathException>(() =>
+                ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(target, root));
+            Assert.Contains("symbolic link", thrown.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
     private static string NormalizeNewlines(string value) =>
         value.Replace("\r\n", "\n", StringComparison.Ordinal);
 

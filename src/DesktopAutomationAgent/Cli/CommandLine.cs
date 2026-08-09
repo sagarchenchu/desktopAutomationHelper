@@ -562,6 +562,67 @@ public static class CommandLine
             return Error(kind, json, "--page and --ref are mutually exclusive.", config);
         }
 
+        var captureOnlyFlags = new List<string>();
+        if (kind != AgentCommandKind.CapturePage)
+        {
+            if (!string.IsNullOrWhiteSpace(pageName))
+                captureOnlyFlags.Add("--name");
+            if (maxChildren is not null)
+                captureOnlyFlags.Add("--max-children");
+        }
+
+        if (kind is AgentCommandKind.ValidateObjectRepository or AgentCommandKind.ResolveObject)
+        {
+            if (!string.IsNullOrWhiteSpace(view))
+                captureOnlyFlags.Add("--view");
+            if (!string.IsNullOrWhiteSpace(root))
+                captureOnlyFlags.Add("--root");
+            if (maxDepth is not null)
+                captureOnlyFlags.Add("--max-depth");
+            if (includeOffscreen is not null)
+                captureOnlyFlags.Add("--include-offscreen");
+            if (kind == AgentCommandKind.ValidateObjectRepository && !string.IsNullOrWhiteSpace(pageId))
+                captureOnlyFlags.Add("--page");
+            if (kind == AgentCommandKind.ValidateObjectRepository && !string.IsNullOrWhiteSpace(objectRef))
+                captureOnlyFlags.Add("--ref");
+            if (kind == AgentCommandKind.ResolveObject && !string.IsNullOrWhiteSpace(pageId))
+                captureOnlyFlags.Add("--page");
+        }
+
+        if (captureOnlyFlags.Count > 0)
+        {
+            return Error(
+                kind,
+                json,
+                $"Unexpected argument(s) for {CommandName(kind)}: {string.Join(' ', captureOnlyFlags.Distinct())}.",
+                config);
+        }
+
+        if (kind is AgentCommandKind.CapturePage or AgentCommandKind.VerifyObjectRepository)
+        {
+            if (!string.IsNullOrWhiteSpace(view)
+                && view is not ("control" or "content" or "raw"))
+            {
+                return Error(kind, json, "--view must be one of: control, content, raw.", config);
+            }
+
+            if (!string.IsNullOrWhiteSpace(root)
+                && root is not ("activeWindow" or "processWindows" or "desktopChildren"))
+            {
+                return Error(
+                    kind,
+                    json,
+                    "--root must be one of: activeWindow, processWindows, desktopChildren.",
+                    config);
+            }
+
+            if (maxDepth is < 0 or > 20)
+                return Error(kind, json, "--max-depth must be between 0 and 20.", config);
+        }
+
+        if (kind == AgentCommandKind.CapturePage && maxChildren is < 1 or > 1000)
+            return Error(kind, json, "--max-children must be between 1 and 1000.", config);
+
         return new ParsedCommand
         {
             Kind = kind,
@@ -702,8 +763,10 @@ public static class CommandLine
               Capture UI nodes via dumpuia and write capture/candidate artifacts.
 
           verify-object-repository --file <repository.json>
-              [--page <page-id> | --ref <page.element>] [--json]
-              Verify active repository objects via finduia.
+              [--page <page-id> | --ref <page.element>]
+              [--view control|content|raw] [--root activeWindow|processWindows|desktopChildren]
+              [--max-depth <0-20>] [--include-offscreen] [--json]
+              Verify active repository objects via finduia using the same root/depth options as capture.
 
           doctor [--json]
               Run configuration, workspace, driver discovery, status, and catalog checks.

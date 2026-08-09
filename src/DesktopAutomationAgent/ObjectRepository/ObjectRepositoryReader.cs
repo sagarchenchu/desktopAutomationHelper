@@ -12,7 +12,8 @@ public sealed class ObjectRepositoryReader
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = false,
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true
     };
@@ -54,6 +55,15 @@ public sealed class ObjectRepositoryReader
                 null,
                 null,
                 [$"{manifestDisplayPath}: repository manifest not found."]);
+        }
+
+        try
+        {
+            ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(manifestFullPath, _workspace.RootPath);
+        }
+        catch (RepositoryPathException ex)
+        {
+            return Failure(manifestDisplayPath, null, null, null, [$"{manifestDisplayPath}: {ex.Message}"]);
         }
 
         byte[] manifestBytes;
@@ -153,8 +163,15 @@ public sealed class ObjectRepositoryReader
 
         if (manifest.Pages is not null)
         {
-            foreach (var reference in manifest.Pages)
+            for (var pageIndex = 0; pageIndex < manifest.Pages.Count; pageIndex++)
             {
+                var reference = manifest.Pages[pageIndex];
+                if (reference is null)
+                {
+                    errors.Add($"{manifestDisplayPath}: pages[{pageIndex}] must not be null.");
+                    continue;
+                }
+
                 if (string.IsNullOrWhiteSpace(reference.PageId) || string.IsNullOrWhiteSpace(reference.File))
                     continue;
 
@@ -164,7 +181,8 @@ public sealed class ObjectRepositoryReader
                 try
                 {
                     pageFullPath = ResolveRepositoryPagePath(repositoryRoot, reference.File);
-                    EnsureNotSymlinkEscape(pageFullPath, repositoryRoot);
+                    ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(pageFullPath, repositoryRoot);
+                    ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(pageFullPath, _workspace.RootPath);
                     pageDisplayPath = ToDisplayRelativePath(pageFullPath);
                 }
                 catch (RepositoryPathException ex)
@@ -329,57 +347,6 @@ public sealed class ObjectRepositoryReader
         }
 
         return candidate;
-    }
-
-    internal static void EnsureNotSymlinkEscape(string fullPath, string repositoryRoot)
-    {
-        var normalizedRoot = Path.GetFullPath(repositoryRoot)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var current = new DirectoryInfo(Path.GetDirectoryName(fullPath) ?? normalizedRoot);
-        var fileInfo = new FileInfo(fullPath);
-
-        while (true)
-        {
-            if (IsSymbolicLink(current))
-            {
-                throw new RepositoryPathException(
-                    $"path '{fullPath}' traverses a symbolic link directory '{current.FullName}'.");
-            }
-
-            if (WorkspaceManager.PathsEqual(current.FullName, normalizedRoot))
-                break;
-
-            if (current.Parent is null)
-                break;
-
-            current = current.Parent;
-        }
-
-        if (fileInfo.Exists && IsSymbolicLink(fileInfo))
-        {
-            var linkTarget = fileInfo.LinkTarget;
-            if (!string.IsNullOrWhiteSpace(linkTarget))
-            {
-                var resolvedTarget = Path.GetFullPath(
-                    Path.IsPathRooted(linkTarget)
-                        ? linkTarget
-                        : Path.Combine(fileInfo.Directory!.FullName, linkTarget));
-
-                if (!IsInsideDirectory(resolvedTarget, normalizedRoot))
-                {
-                    throw new RepositoryPathException(
-                        $"symbolic link '{fullPath}' resolves outside the repository directory.");
-                }
-            }
-        }
-    }
-
-    private static bool IsSymbolicLink(FileSystemInfo info)
-    {
-        if (info.Attributes.HasFlag(FileAttributes.ReparsePoint))
-            return info.LinkTarget is not null;
-
-        return info.LinkTarget is not null;
     }
 
     private static bool IsInsideDirectory(string fullPath, string directoryRoot)

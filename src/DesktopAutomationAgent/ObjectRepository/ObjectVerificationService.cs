@@ -13,6 +13,20 @@ namespace DesktopAutomationAgent.ObjectRepository;
 
 public sealed class ObjectVerificationService
 {
+    private static readonly HashSet<string> AllowedViews = new(StringComparer.Ordinal)
+    {
+        "control",
+        "content",
+        "raw"
+    };
+
+    private static readonly HashSet<string> AllowedRoots = new(StringComparer.Ordinal)
+    {
+        "activeWindow",
+        "processWindows",
+        "desktopChildren"
+    };
+
     private readonly AgentOptions _options;
     private readonly ObjectRepositoryReader _repositoryReader;
     private readonly ObjectReferenceResolver _referenceResolver;
@@ -84,6 +98,32 @@ public sealed class ObjectVerificationService
             return Failure(selectionError, ExitCodes.UsageOrConfiguration, stopwatch, validation.RepositoryPath,
                 validation.Snapshot.Manifest.RepositoryId, validation.Snapshot.AggregateSha256);
         }
+
+        if (!TryResolveOption(options.View, AllowedViews, "control", out var view, out var viewError))
+        {
+            return Failure(viewError!, ExitCodes.UsageOrConfiguration, stopwatch, validation.RepositoryPath,
+                validation.Snapshot.Manifest.RepositoryId, validation.Snapshot.AggregateSha256);
+        }
+
+        if (!TryResolveOption(options.Root, AllowedRoots, "activeWindow", out var root, out var rootError))
+        {
+            return Failure(rootError!, ExitCodes.UsageOrConfiguration, stopwatch, validation.RepositoryPath,
+                validation.Snapshot.Manifest.RepositoryId, validation.Snapshot.AggregateSha256);
+        }
+
+        var maxDepth = options.MaxDepth ?? 8;
+        if (maxDepth is < 0 or > 20)
+        {
+            return Failure(
+                "maxDepth must be between 0 and 20.",
+                ExitCodes.UsageOrConfiguration,
+                stopwatch,
+                validation.RepositoryPath,
+                validation.Snapshot.Manifest.RepositoryId,
+                validation.Snapshot.AggregateSha256);
+        }
+
+        var includeOffscreen = options.IncludeOffscreen ?? false;
 
         DriverConnection connection;
         try
@@ -175,8 +215,51 @@ public sealed class ObjectVerificationService
                 continue;
             }
 
-            var itemResult = await VerifyReferenceAsync(connection, reference, resolution.Locator, cancellationToken)
-                .ConfigureAwait(false);
+            ObjectVerificationItemResult itemResult;
+            try
+            {
+                itemResult = await VerifyReferenceAsync(
+                        connection,
+                        reference,
+                        resolution.Locator,
+                        view,
+                        root,
+                        maxDepth,
+                        includeOffscreen,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return BuildSummary(
+                    validation,
+                    items,
+                    passed,
+                    missing,
+                    ambiguous,
+                    fragile,
+                    failed,
+                    stopwatch,
+                    ExitCodes.Cancelled,
+                    success: false,
+                    error: "Verification was cancelled.");
+            }
+            catch (UiExecutionException ex) when (ex.Classification == UiFailureClassification.Cancelled)
+            {
+                return BuildSummary(
+                    validation,
+                    items,
+                    passed,
+                    missing,
+                    ambiguous,
+                    fragile,
+                    failed,
+                    stopwatch,
+                    ExitCodes.Cancelled,
+                    success: false,
+                    error: SecretRedactor.Redact(ex.Message));
+            }
+
             items.Add(itemResult);
 
             switch (itemResult.Status)
@@ -221,6 +304,10 @@ public sealed class ObjectVerificationService
         DriverConnection connection,
         string reference,
         ObjectLocator locator,
+        string view,
+        string root,
+        int maxDepth,
+        bool includeOffscreen,
         CancellationToken cancellationToken)
     {
         var foundIndex = locator.FoundIndex;
@@ -238,10 +325,10 @@ public sealed class ObjectVerificationService
         var arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
         {
             ["locator"] = ObjectLocatorSerializer.ToJsonElement(requestLocator),
-            ["root"] = JsonSerializer.SerializeToElement("activeWindow"),
-            ["view"] = JsonSerializer.SerializeToElement("control"),
-            ["maxDepth"] = JsonSerializer.SerializeToElement(8),
-            ["includeOffscreen"] = JsonSerializer.SerializeToElement(false),
+            ["root"] = JsonSerializer.SerializeToElement(root),
+            ["view"] = JsonSerializer.SerializeToElement(view),
+            ["maxDepth"] = JsonSerializer.SerializeToElement(maxDepth),
+            ["includeOffscreen"] = JsonSerializer.SerializeToElement(includeOffscreen),
             ["includePath"] = JsonSerializer.SerializeToElement(true),
             ["timeoutMs"] = JsonSerializer.SerializeToElement(_options.ObjectRepository.DiagnosticTimeoutMilliseconds)
         };
@@ -259,6 +346,10 @@ public sealed class ObjectVerificationService
             response = await _uiClient.ExecuteStepAsync(connection, step, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (UiExecutionException ex) when (ex.Classification == UiFailureClassification.Cancelled)
         {
             throw;
         }
@@ -348,6 +439,33 @@ public sealed class ObjectVerificationService
             MatchCount = matchCount,
             Error = $"foundIndex {foundIndex.Value} is out of range for {matchCount} matches."
         };
+    }
+
+    private static bool TryResolveOption(
+        string? value,
+        HashSet<string> allowed,
+        string fallback,
+        out string resolved,
+        out string? error)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            resolved = fallback;
+            error = null;
+            return true;
+        }
+
+        var normalized = value.Trim();
+        if (allowed.Contains(normalized))
+        {
+            resolved = normalized;
+            error = null;
+            return true;
+        }
+
+        resolved = fallback;
+        error = $"Invalid value '{value}'. Expected one of: {string.Join(", ", allowed.OrderBy(static x => x))}.";
+        return false;
     }
 
     private static bool IsTimeoutOrPartial(JsonElement value)
