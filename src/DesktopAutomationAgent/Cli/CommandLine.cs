@@ -182,6 +182,16 @@ public static class CommandLine
             .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
             .ToArray();
 
+        if (keys.Length == 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.ValidateKeys,
+                Error = "validate-keys requires at least one Jira key in --keys.",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
         return new ParsedCommand
         {
             Kind = AgentCommandKind.ValidateKeys,

@@ -66,7 +66,15 @@ public sealed class DriverConnectionResolver : IDriverConnectionResolver
 
     private async Task<DriverConnection> DiscoverViaVerifyAsync(CancellationToken cancellationToken)
     {
-        var verifyUri = DriverUrlRules.EnsureAllowed(_options.VerifyUrl, _options.AllowRemoteDriver);
+        // Discovery is loopback-only. Remote drivers must be configured explicitly.
+        var verifyUri = DriverUrlRules.EnsureAllowed(_options.VerifyUrl, allowRemote: false);
+        if (!DriverUrlRules.IsLoopbackHost(verifyUri.Host))
+        {
+            throw new AgentConfigurationException(
+                "Verify-endpoint discovery only supports loopback VerifyUrl values. " +
+                "For a remote driver, set Driver:BaseUrl and Driver:BearerToken explicitly.");
+        }
+
         _logger.LogInformation("Discovering driver via verify endpoint {VerifyUrl}", verifyUri);
 
         using var client = _httpClientFactory.CreateClient("driver-unauthenticated");

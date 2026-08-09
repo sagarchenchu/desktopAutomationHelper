@@ -23,71 +23,97 @@ public sealed class WorkspaceManager : IWorkspaceManager
     {
         AgentOptionsValidator.Validate(new AgentOptions { Workspace = _options }, OptionsValidationScope.Workspace);
 
-        var created = new List<string>();
-        var skipped = new List<string>();
-
-        Directory.CreateDirectory(_rootPath);
-
-        foreach (var relativeDir in RelativeDirectories)
+        try
         {
-            var full = Path.Combine(_rootPath, relativeDir);
-            EnsureInsideRoot(full);
-            if (Directory.Exists(full))
+            var created = new List<string>();
+            var skipped = new List<string>();
+
+            Directory.CreateDirectory(_rootPath);
+
+            foreach (var relativeDir in RelativeDirectories)
             {
-                skipped.Add(relativeDir + Path.DirectorySeparatorChar);
-                continue;
+                var full = Path.Combine(_rootPath, relativeDir);
+                EnsureInsideRoot(full);
+                if (Directory.Exists(full))
+                {
+                    skipped.Add(relativeDir + Path.DirectorySeparatorChar);
+                    continue;
+                }
+
+                Directory.CreateDirectory(full);
+                created.Add(relativeDir + Path.DirectorySeparatorChar);
             }
 
-            Directory.CreateDirectory(full);
-            created.Add(relativeDir + Path.DirectorySeparatorChar);
-        }
-
-        foreach (var (relativePath, contents) in TemplateFiles)
-        {
-            var full = Path.Combine(_rootPath, relativePath);
-            EnsureInsideRoot(full);
-            Directory.CreateDirectory(Path.GetDirectoryName(full)!);
-
-            if (File.Exists(full))
+            foreach (var (relativePath, contents) in TemplateFiles)
             {
-                skipped.Add(relativePath);
-                continue;
+                var full = Path.Combine(_rootPath, relativePath);
+                EnsureInsideRoot(full);
+                Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+
+                if (File.Exists(full))
+                {
+                    skipped.Add(relativePath);
+                    continue;
+                }
+
+                File.WriteAllText(full, contents);
+                created.Add(relativePath);
             }
 
-            File.WriteAllText(full, contents);
-            created.Add(relativePath);
+            _logger.LogInformation(
+                "Workspace initialized at {Root}. created={CreatedCount} skippedExisting={SkippedCount}",
+                _rootPath,
+                created.Count,
+                skipped.Count);
+
+            return new WorkspaceInitResult
+            {
+                RootPath = _rootPath,
+                CreatedPaths = created,
+                SkippedExistingPaths = skipped
+            };
         }
-
-        _logger.LogInformation(
-            "Workspace initialized at {Root}. created={CreatedCount} skippedExisting={SkippedCount}",
-            _rootPath,
-            created.Count,
-            skipped.Count);
-
-        return new WorkspaceInitResult
+        catch (WorkspaceException)
         {
-            RootPath = _rootPath,
-            CreatedPaths = created,
-            SkippedExistingPaths = skipped
-        };
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            throw new WorkspaceException(
+                $"Failed to initialize workspace at '{_rootPath}': {ex.Message}",
+                ex);
+        }
     }
 
     public void EnsureInitialized()
     {
-        if (!Directory.Exists(_rootPath))
+        try
         {
-            throw new WorkspaceException(
-                $"Workspace root '{_rootPath}' does not exist. Run 'init' first.");
-        }
-
-        foreach (var relativeDir in RelativeDirectories)
-        {
-            var full = Path.Combine(_rootPath, relativeDir);
-            if (!Directory.Exists(full))
+            if (!Directory.Exists(_rootPath))
             {
                 throw new WorkspaceException(
-                    $"Workspace directory '{relativeDir}' is missing under '{_rootPath}'. Run 'init' first.");
+                    $"Workspace root '{_rootPath}' does not exist. Run 'init' first.");
             }
+
+            foreach (var relativeDir in RelativeDirectories)
+            {
+                var full = Path.Combine(_rootPath, relativeDir);
+                if (!Directory.Exists(full))
+                {
+                    throw new WorkspaceException(
+                        $"Workspace directory '{relativeDir}' is missing under '{_rootPath}'. Run 'init' first.");
+                }
+            }
+        }
+        catch (WorkspaceException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            throw new WorkspaceException(
+                $"Failed to inspect workspace at '{_rootPath}': {ex.Message}",
+                ex);
         }
     }
 
@@ -130,16 +156,31 @@ public sealed class WorkspaceManager : IWorkspaceManager
 
     private bool IsInsideRoot(string fullPath)
     {
-        var root = _rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                   + Path.DirectorySeparatorChar;
-        var normalized = Path.GetFullPath(fullPath);
-        var compareTarget = normalized.EndsWith(Path.DirectorySeparatorChar)
-            ? normalized
-            : normalized + Path.DirectorySeparatorChar;
+        var root = Path.GetFullPath(_rootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalized = Path.GetFullPath(fullPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-        return string.Equals(normalized, _rootPath, StringComparison.OrdinalIgnoreCase)
-               || compareTarget.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        if (PathsEqual(normalized, root))
+            return true;
+
+        var relative = Path.GetRelativePath(root, normalized);
+        if (string.IsNullOrEmpty(relative) || relative == ".")
+            return true;
+
+        // Path.GetRelativePath uses OS path rules. Reject anything that escapes
+        // the root via ".." or an absolute/rooted relative result.
+        return !Path.IsPathRooted(relative)
+               && relative != ".."
+               && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+               && !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal);
     }
+
+    internal static bool PathsEqual(string left, string right) =>
+        string.Equals(
+            left,
+            right,
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     private static readonly string[] RelativeDirectories =
     [
@@ -251,6 +292,11 @@ public sealed class WorkspaceManager : IWorkspaceManager
 public sealed class WorkspaceException : Exception
 {
     public WorkspaceException(string message) : base(message)
+    {
+    }
+
+    public WorkspaceException(string message, Exception innerException)
+        : base(message, innerException)
     {
     }
 }

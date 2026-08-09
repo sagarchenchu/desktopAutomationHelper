@@ -22,7 +22,17 @@ public static class AgentCli
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    public static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default)
+    public static Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default) =>
+        RunAsync(args, BuildHost, cancellationToken);
+
+    /// <summary>
+    /// Testable entry point. <paramref name="hostBuilder"/> receives configuration
+    /// args and whether JSON-only stdout mode is active.
+    /// </summary>
+    internal static async Task<int> RunAsync(
+        string[] args,
+        Func<string[], bool, IHost> hostBuilder,
+        CancellationToken cancellationToken = default)
     {
         var parsed = CommandLine.Parse(args);
         if (parsed.Error is not null)
@@ -38,7 +48,8 @@ public static class AgentCli
             return ExitCodes.Success;
         }
 
-        using var host = BuildHost(parsed.ConfigurationArgs);
+        var jsonStdoutMode = parsed is { Kind: AgentCommandKind.Doctor, Json: true };
+        using var host = hostBuilder(parsed.ConfigurationArgs, jsonStdoutMode);
 
         try
         {
@@ -64,7 +75,7 @@ public static class AgentCli
         }
     }
 
-    internal static IHost BuildHost(string[] configurationArgs)
+    internal static IHost BuildHost(string[] configurationArgs, bool jsonStdoutMode = false)
     {
         var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
         {
@@ -86,13 +97,24 @@ public static class AgentCli
             .AddCommandLine(configurationArgs);
 
         builder.Logging.ClearProviders();
+        // Keep machine-readable stdout clean: all log records go to stderr.
         builder.Logging.AddSimpleConsole(options =>
         {
             options.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ ";
             options.SingleLine = true;
             options.UseUtcTimestamp = true;
         });
+        builder.Services.Configure<Microsoft.Extensions.Logging.Console.ConsoleLoggerOptions>(options =>
+        {
+            options.LogToStandardErrorThreshold = LogLevel.Trace;
+        });
         builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Warning);
+
+        if (jsonStdoutMode)
+        {
+            // Extra guard: suppress noisy categories during doctor --json.
+            builder.Logging.AddFilter("DesktopAutomationAgent", LogLevel.Warning);
+        }
 
         builder.Services.Configure<AgentOptions>(builder.Configuration);
 
