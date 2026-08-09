@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
@@ -23,6 +24,10 @@ public sealed class ObjectCaptureService
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
+
+    private static readonly Regex PageIdPattern = new(
+        @"^[a-z][a-z0-9-]{0,63}$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private static readonly HashSet<string> AllowedViews = new(StringComparer.Ordinal)
     {
@@ -92,6 +97,18 @@ public sealed class ObjectCaptureService
         catch (WorkspaceException ex)
         {
             return Failure(ex.Message, ExitCodes.SuiteOrWorkspace);
+        }
+
+        if (string.IsNullOrWhiteSpace(pageId) || !PageIdPattern.IsMatch(pageId))
+        {
+            return Failure(
+                "pageId must match ^[a-z][a-z0-9-]{0,63}$.",
+                ExitCodes.SuiteOrWorkspace);
+        }
+
+        if (string.IsNullOrWhiteSpace(pageName))
+        {
+            return Failure("page name is required.", ExitCodes.UsageOrConfiguration);
         }
 
         var validation = _repositoryReader.Read(repositoryPath);
@@ -194,6 +211,15 @@ public sealed class ObjectCaptureService
             return Failure("dumpuia returned zero usable nodes.", ExitCodes.ExecutionFailure);
 
         var captureId = DeterministicPlanRunner.GenerateRunId();
+        var candidatePage = _candidateGenerator.Generate(nodes, pageId, pageName, captureId);
+        var unresolvedCount = candidatePage.Unresolved is JsonElement unresolved
+                              && unresolved.ValueKind == JsonValueKind.Array
+            ? unresolved.GetArrayLength()
+            : 0;
+
+        if ((candidatePage.Elements?.Count ?? 0) == 0 && unresolvedCount == 0)
+            return Failure("dumpuia returned zero usable nodes.", ExitCodes.ExecutionFailure);
+
         var repositoryRoot = Path.GetDirectoryName(_workspace.ResolveSafePath(repositoryPath))
             ?? throw new InvalidOperationException("Repository path has no directory.");
 
@@ -206,12 +232,6 @@ public sealed class ObjectCaptureService
 
         if (File.Exists(captureFullPath) || File.Exists(candidateFullPath))
             return Failure("Capture artifacts already exist and must not be overwritten.", ExitCodes.ExecutionFailure);
-
-        var candidatePage = _candidateGenerator.Generate(nodes, pageId, pageName, captureId);
-        var unresolvedCount = candidatePage.Unresolved is JsonElement unresolved
-                              && unresolved.ValueKind == JsonValueKind.Array
-            ? unresolved.GetArrayLength()
-            : 0;
 
         var captureDocument = new Dictionary<string, object?>
         {

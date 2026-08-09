@@ -439,6 +439,387 @@ public class Phase3ObjectRepositoryTests
         Assert.Contains("mutually exclusive", parsed.Error, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("validate-object-repository", "--file")]
+    [InlineData("resolve-object", "--file")]
+    [InlineData("capture-page", "--file")]
+    [InlineData("verify-object-repository", "--file")]
+    public void CommandLine_Parse_PreservesJsonOnMissingFlagValues(string command, string flag)
+    {
+        var parsed = CommandLine.Parse([command, flag, "--json"]);
+        Assert.True(parsed.Json);
+        Assert.NotNull(parsed.Error);
+    }
+
+    [Fact]
+    public void PlanObjectReferenceExpander_RejectsMalformedMarkerInLocator()
+    {
+        var snapshot = BuildSnapshot();
+        var plan = new PlanManifest
+        {
+            SchemaVersion = 1,
+            CatalogSchemaVersion = 2,
+            PlanId = "test",
+            Name = "Test",
+            ObjectRepository = "object-repository/repository.json",
+            Steps =
+            [
+                new PlanStep
+                {
+                    Id = "click-submit",
+                    Operation = "click",
+                    Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                    {
+                        ["locator"] = JsonSerializer.SerializeToElement(new Dictionary<string, string>
+                        {
+                            ["$objectRef"] = "login.submit",
+                            ["extra"] = "nope"
+                        })
+                    }
+                }
+            ]
+        };
+
+        var expander = new PlanObjectReferenceExpander(new ObjectReferenceResolver());
+        var result = expander.Expand(plan, snapshot, "plans/test.plan.json");
+
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, e => e.Contains("exactly one property", StringComparison.OrdinalIgnoreCase));
+        Assert.True(plan.Steps![0].Arguments!["locator"].TryGetProperty("$objectRef", out _));
+    }
+
+    [Fact]
+    public void PlanObjectReferenceExpander_RejectsNestedObjectRefInsideRawLocator()
+    {
+        var snapshot = BuildSnapshot();
+        var plan = new PlanManifest
+        {
+            SchemaVersion = 1,
+            CatalogSchemaVersion = 2,
+            PlanId = "test",
+            Name = "Test",
+            ObjectRepository = "object-repository/repository.json",
+            Steps =
+            [
+                new PlanStep
+                {
+                    Id = "click-submit",
+                    Operation = "click",
+                    Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                    {
+                        ["locator"] = JsonSerializer.SerializeToElement(new Dictionary<string, object>
+                        {
+                            ["automationId"] = "submit",
+                            ["nested"] = new Dictionary<string, string> { ["$objectRef"] = "login.submit" }
+                        })
+                    }
+                }
+            ]
+        };
+
+        var expander = new PlanObjectReferenceExpander(new ObjectReferenceResolver());
+        var result = expander.Expand(plan, snapshot, "plans/test.plan.json");
+
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, e => e.Contains("only allowed", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ResolveObject_MakesNoHttpCalls()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        SetupActiveRepository(workspace);
+        var repoPath = Path.Combine(workspace.RootPath, "object-repository", "repository.json");
+
+        var calls = 0;
+        var handler = new FakeHttpMessageHandler(_ =>
+        {
+            calls++;
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+
+        var exit = await RunAsync(
+            ["resolve-object", "--file", repoPath, "--ref", "login.submit", "--json"],
+            options,
+            workspace,
+            handler);
+
+        Assert.Equal(ExitCodes.Success, exit.ExitCode);
+        Assert.Equal(0, calls);
+        Assert.Contains("\"success\": true", exit.Stdout, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RunPlan_ExpandedObjectRef_DoesNotReachHttpPayload()
+    {
+        var options = TestSupport.CreateOptions(
+            baseUrl: "http://127.0.0.1:33201",
+            bearerToken: "secret-token");
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        SetupActiveRepository(workspace);
+
+        var planPath = TestSupport.WritePlan(options, "object-ref.plan.json", """
+            {
+              "schemaVersion": 1,
+              "catalogSchemaVersion": 2,
+              "planId": "login.click",
+              "name": "Click submit",
+              "objectRepository": "object-repository/repository.json",
+              "steps": [
+                {
+                  "id": "click-submit",
+                  "operation": "finduia",
+                  "arguments": {
+                    "locator": { "$objectRef": "login.submit" }
+                  }
+                }
+              ]
+            }
+            """);
+
+        string? postBody = null;
+        var handler = new FakeHttpMessageHandler(async (req, _) =>
+        {
+            if (req.Method == HttpMethod.Post)
+            {
+                postBody = await req.Content!.ReadAsStringAsync();
+                return FakeHttpMessageHandler.Json(new { success = true, value = new { ok = true } });
+            }
+
+            if (req.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.OrdinalIgnoreCase))
+            {
+                return FakeHttpMessageHandler.Json(new
+                {
+                    status = 0,
+                    value = new { ready = true, message = "ok", build = new { version = "1.0.105" } }
+                });
+            }
+
+            return FakeHttpMessageHandler.Json(new { success = true, value = CatalogFixtures.Phase2Catalog() });
+        });
+
+        var exit = await RunAsync(
+            ["run-plan", "--file", planPath, "--json"],
+            options,
+            workspace,
+            handler);
+
+        Assert.Equal(ExitCodes.Success, exit.ExitCode);
+        Assert.NotNull(postBody);
+        Assert.DoesNotContain("$objectRef", postBody, StringComparison.Ordinal);
+        Assert.Contains("\"automationId\":\"submit\"", postBody, StringComparison.Ordinal);
+        Assert.Contains("\"objectRepositorySha256\"", exit.Stdout, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CapturePage_TimeoutCreatesNoCandidate()
+    {
+        var options = TestSupport.CreateOptions(
+            baseUrl: "http://127.0.0.1:33201",
+            bearerToken: "secret-token");
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var repoPath = Path.Combine(workspace.RootPath, "object-repository", "repository.json");
+
+        var handler = new FakeHttpMessageHandler(req =>
+        {
+            if (req.Method == HttpMethod.Post)
+            {
+                return FakeHttpMessageHandler.Json(new
+                {
+                    success = false,
+                    value = new
+                    {
+                        operation = "dumpuia",
+                        success = false,
+                        reason = "timeout",
+                        partialResults = Array.Empty<object>(),
+                        nodes = Array.Empty<object>()
+                    }
+                });
+            }
+
+            if (req.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.OrdinalIgnoreCase))
+            {
+                return FakeHttpMessageHandler.Json(new
+                {
+                    status = 0,
+                    value = new { ready = true, message = "ok", build = new { version = "1.0.105" } }
+                });
+            }
+
+            return FakeHttpMessageHandler.Json(new { success = true, value = CatalogFixtures.Phase2Catalog() });
+        });
+
+        var exit = await RunAsync(
+            [
+                "capture-page",
+                "--file", repoPath,
+                "--page", "login",
+                "--name", "Login Page",
+                "--json"
+            ],
+            options,
+            workspace,
+            handler);
+
+        Assert.Equal(ExitCodes.ExecutionFailure, exit.ExitCode);
+        Assert.Empty(Directory.GetFiles(
+            Path.Combine(workspace.RootPath, "object-repository", "candidates"),
+            "*",
+            SearchOption.AllDirectories));
+        Assert.Empty(Directory.GetFiles(
+            Path.Combine(workspace.RootPath, "object-repository", "captures"),
+            "*",
+            SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task VerifyObjectRepository_FoundIndexUsesMatchCountWithoutIndex()
+    {
+        var options = TestSupport.CreateOptions(
+            baseUrl: "http://127.0.0.1:33201",
+            bearerToken: "secret-token");
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var pagesDir = Path.Combine(workspace.RootPath, "object-repository", "pages");
+        Directory.CreateDirectory(pagesDir);
+        File.WriteAllText(Path.Combine(workspace.RootPath, "object-repository", "repository.json"), """
+            {
+              "schemaVersion": 1,
+              "repositoryId": "default",
+              "name": "Test",
+              "pages": [
+                { "pageId": "login", "file": "pages/login.page.json" }
+              ]
+            }
+            """);
+        File.WriteAllText(Path.Combine(pagesDir, "login.page.json"), """
+            {
+              "schemaVersion": 1,
+              "pageId": "login",
+              "name": "Login",
+              "state": "active",
+              "elements": {
+                "submit": {
+                  "locator": { "automationId": "submit", "controlType": "Button", "foundIndex": 0 },
+                  "quality": { "grade": "weak", "warnings": [] },
+                  "source": { "kind": "manual" }
+                }
+              }
+            }
+            """);
+
+        string? postBody = null;
+        var handler = new FakeHttpMessageHandler(async (req, _) =>
+        {
+            if (req.Method == HttpMethod.Post)
+            {
+                postBody = await req.Content!.ReadAsStringAsync();
+                return FakeHttpMessageHandler.Json(new
+                {
+                    success = true,
+                    value = new
+                    {
+                        operation = "finduia",
+                        success = true,
+                        found = true,
+                        matchCount = 3,
+                        matches = new[]
+                        {
+                            new { automationId = "submit" },
+                            new { automationId = "submit" },
+                            new { automationId = "submit" }
+                        }
+                    }
+                });
+            }
+
+            if (req.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.OrdinalIgnoreCase))
+            {
+                return FakeHttpMessageHandler.Json(new
+                {
+                    status = 0,
+                    value = new { ready = true, message = "ok", build = new { version = "1.0.105" } }
+                });
+            }
+
+            return FakeHttpMessageHandler.Json(new { success = true, value = CatalogFixtures.Phase2Catalog() });
+        });
+
+        var exit = await RunAsync(
+            [
+                "verify-object-repository",
+                "--file", Path.Combine(workspace.RootPath, "object-repository", "repository.json"),
+                "--ref", "login.submit",
+                "--json"
+            ],
+            options,
+            workspace,
+            handler);
+
+        Assert.Equal(ExitCodes.Success, exit.ExitCode);
+        Assert.NotNull(postBody);
+        Assert.DoesNotContain("foundIndex", postBody, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"fragile\": 1", exit.Stdout, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ObjectRepositoryReader_RejectsActivePageWithUnresolved()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var pagesDir = Path.Combine(workspace.RootPath, "object-repository", "pages");
+        Directory.CreateDirectory(pagesDir);
+        File.WriteAllText(Path.Combine(workspace.RootPath, "object-repository", "repository.json"), """
+            {
+              "schemaVersion": 1,
+              "repositoryId": "default",
+              "name": "Test",
+              "pages": [
+                { "pageId": "login", "file": "pages/login.page.json" }
+              ]
+            }
+            """);
+        File.WriteAllText(Path.Combine(pagesDir, "login.page.json"), """
+            {
+              "schemaVersion": 1,
+              "pageId": "login",
+              "name": "Login",
+              "state": "active",
+              "elements": {
+                "submit": {
+                  "locator": { "automationId": "submit", "controlType": "Button" },
+                  "source": { "kind": "manual" }
+                }
+              },
+              "unresolved": [ { "path": "Window/Static" } ]
+            }
+            """);
+
+        var reader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
+        var result = reader.Read("object-repository/repository.json");
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("unresolved", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void WorkspaceManager_AgentSettingsExample_IncludesObjectRepository()
+    {
+        var workspace = TestSupport.CreateWorkspace(TestSupport.CreateOptions());
+        workspace.Initialize();
+        var generated = File.ReadAllText(Path.Combine(workspace.RootPath, "config", "agentsettings.example.json"));
+        var expected = File.ReadAllText("/workspace/automation/config/agentsettings.example.json");
+        Assert.Equal(expected, generated);
+        Assert.Contains("ObjectRepository", generated, StringComparison.Ordinal);
+    }
+
     private static void SetupActiveRepository(WorkspaceManager workspace)
     {
         var pagesDir = Path.Combine(workspace.RootPath, "object-repository", "pages");
