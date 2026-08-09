@@ -52,6 +52,13 @@ and `authorizationHeader`, then builds:
 
 `http://127.0.0.1:{port}/`
 
+Verify discovery is **loopback-only**. A remote `VerifyUrl` is rejected even when
+`AllowRemoteDriver=true`. For a remote driver, configure `BaseUrl` and
+`BearerToken` explicitly. `AllowRemoteDriver` only relaxes explicit BaseUrl checks.
+
+`doctor --json` writes a single JSON document to stdout. Structured logs always
+go to stderr so CI parsers are not polluted.
+
 ### Citrix username validation
 
 Because port 9102 may belong to another user on a shared Citrix/RDS host, the

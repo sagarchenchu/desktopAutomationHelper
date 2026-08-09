@@ -81,6 +81,15 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
                 Errors = [$"{fullPath}: invalid JSON ({ex.Message})."]
             };
         }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new SuiteValidationResult
+            {
+                FilePath = fullPath,
+                SuiteName = string.Empty,
+                Errors = [$"{fullPath}: failed to read suite file ({ex.Message})."]
+            };
+        }
 
         if (manifest is null)
         {
@@ -104,17 +113,29 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
         if (manifest.TestCases is null)
         {
             errors.Add($"{fullPath}: 'testCases' is required.");
-            manifest.TestCases = [];
+            return new SuiteValidationResult
+            {
+                FilePath = fullPath,
+                SuiteName = manifest.Name ?? string.Empty,
+                SuiteEnabled = manifest.Enabled,
+                TotalCount = 0,
+                EnabledCount = 0,
+                DisabledCount = 0,
+                DuplicateCount = 0,
+                EnabledJiraKeys = [],
+                Errors = errors
+            };
         }
 
+        var testCases = manifest.TestCases;
         var seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var enabledKeys = new List<string>();
         var disabledCount = 0;
         var duplicateCount = 0;
 
-        for (var i = 0; i < manifest.TestCases.Count; i++)
+        for (var i = 0; i < testCases.Count; i++)
         {
-            var entry = manifest.TestCases[i];
+            var entry = testCases[i];
             var location = $"{fullPath}: testCases[{i}]";
             var entryValid = true;
 
@@ -157,7 +178,7 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
             FilePath = fullPath,
             SuiteName = manifest.Name ?? string.Empty,
             SuiteEnabled = manifest.Enabled,
-            TotalCount = manifest.TestCases.Count,
+            TotalCount = testCases.Count,
             EnabledCount = enabledKeys.Count,
             DisabledCount = disabledCount,
             DuplicateCount = duplicateCount,
@@ -170,12 +191,22 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
     {
         ArgumentNullException.ThrowIfNull(keys);
 
+        var materialised = keys.ToArray();
+        if (materialised.Length == 0)
+        {
+            return new KeyValidationResult
+            {
+                ValidKeys = [],
+                Errors = ["At least one Jira key is required."]
+            };
+        }
+
         var errors = new List<string>();
         var valid = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var index = 0;
 
-        foreach (var raw in keys)
+        foreach (var raw in materialised)
         {
             var location = $"keys[{index}]";
             index++;

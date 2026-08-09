@@ -125,6 +125,54 @@ public class SuiteManifestReaderTests
     }
 
     [Fact]
+    public void OmittedTestCasesProperty_Fails()
+    {
+        var (options, root) = CreateWorkspaceWithSuite(
+            """
+            {
+              "schemaVersion": 1,
+              "name": "smoke",
+              "enabled": true
+            }
+            """);
+
+        var result = TestSupport.CreateSuiteReader(options).ValidateFile("suites/smoke.json");
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("'testCases' is required", StringComparison.Ordinal));
+        Directory.Delete(root, recursive: true);
+    }
+
+    [Fact]
+    public void ExplicitEmptyTestCasesArray_Succeeds()
+    {
+        var (options, root) = CreateWorkspaceWithSuite(
+            """
+            {
+              "schemaVersion": 1,
+              "name": "smoke",
+              "enabled": true,
+              "testCases": []
+            }
+            """);
+
+        var result = TestSupport.CreateSuiteReader(options).ValidateFile("suites/smoke.json");
+        Assert.True(result.IsValid);
+        Assert.Equal(0, result.TotalCount);
+        Directory.Delete(root, recursive: true);
+    }
+
+    [Fact]
+    public void ValidateKeys_EmptyInput_Fails()
+    {
+        var options = TestSupport.CreateOptions();
+        Directory.CreateDirectory(options.Workspace.Root);
+        var result = TestSupport.CreateSuiteReader(options).ValidateKeys(Array.Empty<string>());
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("At least one", StringComparison.OrdinalIgnoreCase));
+        Directory.Delete(options.Workspace.Root, recursive: true);
+    }
+
+    [Fact]
     public void ValidateKeys_AcceptsValidAndRejectsInvalid()
     {
         var options = TestSupport.CreateOptions();

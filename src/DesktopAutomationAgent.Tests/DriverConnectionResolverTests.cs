@@ -120,6 +120,18 @@ public class DriverConnectionResolverTests
         AgentOptionsValidator.ValidateDriverOptions(options.Driver);
     }
 
+    [Fact]
+    public void RemoteVerifyUrl_IsRejectedEvenWhenAllowRemoteDriverEnabled()
+    {
+        var options = TestSupport.CreateOptions(
+            allowRemote: true,
+            verifyUrl: "http://example.com:9102/verify");
+
+        var ex = Assert.Throws<AgentConfigurationException>(() =>
+            AgentOptionsValidator.ValidateDriverOptions(options.Driver));
+        Assert.Contains("Remote driver URL", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("alice", "alice", true)]
     [InlineData("DOMAIN\\alice", "alice", true)]

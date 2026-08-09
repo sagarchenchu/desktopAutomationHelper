@@ -11,7 +11,11 @@ public sealed class SuiteManifest
 
     public bool Enabled { get; set; } = true;
 
-    public List<SuiteTestCase> TestCases { get; set; } = [];
+    /// <summary>
+    /// Required suite property. Null means the JSON omitted <c>testCases</c>
+    /// (or set it to null). An empty array is valid and means no cases yet.
+    /// </summary>
+    public List<SuiteTestCase>? TestCases { get; set; }
 
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? ExtensionData { get; set; }

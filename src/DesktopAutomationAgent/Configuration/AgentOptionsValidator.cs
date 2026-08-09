@@ -76,7 +76,12 @@ public static class AgentOptionsValidator
             DriverUrlRules.EnsureAllowed(driver.BaseUrl!, driver.AllowRemoteDriver);
 
         if (!hasUrl)
-            DriverUrlRules.EnsureAllowed(driver.VerifyUrl, driver.AllowRemoteDriver);
+        {
+            // Verify discovery always targets a loopback probe and then builds
+            // http://127.0.0.1:{port}/. Remote verify hosts are rejected even when
+            // AllowRemoteDriver is true; use explicit BaseUrl+BearerToken instead.
+            DriverUrlRules.EnsureAllowed(driver.VerifyUrl, allowRemote: false);
+        }
     }
 }
 
