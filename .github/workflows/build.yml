@@ -2,7 +2,7 @@ name: Build and Test
 
 on:
   push:
-    branches: [ main, 'copilot/**' ]
+    branches: [ main, 'copilot/**', 'feature/**' ]
   pull_request:
     branches: [ main ]
 
@@ -28,14 +28,23 @@ jobs:
       - name: Build solution
         run: dotnet build DesktopAutomationHelper.slnx --configuration Release --no-restore
 
-      - name: Run tests
+      - name: Run driver tests
         run: >
           dotnet test
           src/DesktopAutomationDriver.Tests/DesktopAutomationDriver.Tests.csproj
           --configuration Release
           --no-build
           --verbosity normal
-          --logger "trx;LogFileName=TestResults.trx"
+          --logger "trx;LogFileName=DriverTestResults.trx"
+
+      - name: Run agent tests
+        run: >
+          dotnet test
+          src/DesktopAutomationAgent.Tests/DesktopAutomationAgent.Tests.csproj
+          --configuration Release
+          --no-build
+          --verbosity normal
+          --logger "trx;LogFileName=AgentTestResults.trx"
 
       - name: Upload test results
         if: always()
