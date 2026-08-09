@@ -220,6 +220,33 @@ public sealed class PlanValidator
             if (RequiresExpected(assertion.Operator) && assertion.Expected is null)
             {
                 errors.Add($"{location}: expected is required for operator '{assertion.Operator}'.");
+                continue;
+            }
+
+            if (string.Equals(assertion.Operator, "matchesRegex", StringComparison.Ordinal))
+            {
+                if (assertion.Expected is null
+                    || assertion.Expected.Value.ValueKind != System.Text.Json.JsonValueKind.String)
+                {
+                    errors.Add($"{location}: expected must be a string for operator 'matchesRegex'.");
+                    continue;
+                }
+
+                var pattern = assertion.Expected.Value.GetString();
+                if (string.IsNullOrEmpty(pattern))
+                {
+                    errors.Add($"{location}: expected regex pattern must be nonempty.");
+                    continue;
+                }
+
+                try
+                {
+                    _ = new Regex(pattern, RegexOptions.CultureInvariant);
+                }
+                catch (ArgumentException ex)
+                {
+                    errors.Add($"{location}: expected regex pattern is invalid ({ex.Message}).");
+                }
             }
         }
     }

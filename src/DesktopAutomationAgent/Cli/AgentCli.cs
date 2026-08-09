@@ -38,10 +38,21 @@ public static class AgentCli
         CancellationToken cancellationToken = default)
     {
         var parsed = CommandLine.Parse(args);
+        var jsonStdoutMode = parsed.Json
+            && parsed.Kind is AgentCommandKind.Doctor or AgentCommandKind.ValidatePlan or AgentCommandKind.RunPlan;
+
         if (parsed.Error is not null)
         {
-            await Console.Error.WriteLineAsync(SecretRedactor.Redact(parsed.Error)).ConfigureAwait(false);
-            await Console.Error.WriteLineAsync(CommandLine.HelpText).ConfigureAwait(false);
+            if (jsonStdoutMode)
+            {
+                WriteJsonError(ExitCodes.UsageOrConfiguration, parsed.Error);
+            }
+            else
+            {
+                await Console.Error.WriteLineAsync(SecretRedactor.Redact(parsed.Error)).ConfigureAwait(false);
+                await Console.Error.WriteLineAsync(CommandLine.HelpText).ConfigureAwait(false);
+            }
+
             return ExitCodes.UsageOrConfiguration;
         }
 
@@ -51,8 +62,6 @@ public static class AgentCli
             return ExitCodes.Success;
         }
 
-        var jsonStdoutMode = parsed.Json
-            && parsed.Kind is AgentCommandKind.Doctor or AgentCommandKind.ValidatePlan or AgentCommandKind.RunPlan;
         using var host = hostBuilder(parsed.ConfigurationArgs, jsonStdoutMode);
 
         try
@@ -77,14 +86,41 @@ public static class AgentCli
         }
         catch (AgentConfigurationException ex)
         {
-            await Console.Error.WriteLineAsync(SecretRedactor.Redact(ex.Message)).ConfigureAwait(false);
+            if (jsonStdoutMode)
+            {
+                WriteJsonError(ExitCodes.UsageOrConfiguration, ex.Message);
+            }
+            else
+            {
+                await Console.Error.WriteLineAsync(SecretRedactor.Redact(ex.Message)).ConfigureAwait(false);
+            }
+
             return ExitCodes.UsageOrConfiguration;
         }
         catch (WorkspaceException ex)
         {
-            await Console.Error.WriteLineAsync(ex.Message).ConfigureAwait(false);
+            if (jsonStdoutMode)
+            {
+                WriteJsonError(ExitCodes.SuiteOrWorkspace, ex.Message);
+            }
+            else
+            {
+                await Console.Error.WriteLineAsync(ex.Message).ConfigureAwait(false);
+            }
+
             return ExitCodes.SuiteOrWorkspace;
         }
+    }
+
+    private static void WriteJsonError(int exitCode, string message)
+    {
+        var payload = new
+        {
+            success = false,
+            exitCode,
+            error = SecretRedactor.Redact(message)
+        };
+        Console.WriteLine(JsonSerializer.Serialize(payload, JsonOutputOptions));
     }
 
     internal static IHost BuildHost(string[] configurationArgs, bool jsonStdoutMode = false)
@@ -279,7 +315,8 @@ public static class AgentCli
 
         if (json)
         {
-            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(report, JsonOutputOptions)));
+            var redacted = RunArtifactWriter.RedactReport(report);
+            Console.WriteLine(JsonSerializer.Serialize(redacted, JsonOutputOptions));
         }
         else
         {
@@ -299,7 +336,8 @@ public static class AgentCli
 
             if (report.Failure is not null)
             {
-                Console.Error.WriteLine($"Failure [{report.Failure.Classification}]: {report.Failure.Message}");
+                Console.Error.WriteLine(
+                    $"Failure [{report.Failure.Classification}]: {SecretRedactor.Redact(report.Failure.Message)}");
             }
         }
 

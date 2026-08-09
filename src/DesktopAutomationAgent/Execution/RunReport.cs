@@ -83,6 +83,9 @@ public sealed class StepRunResult
 
     public string? ScreenshotPath { get; init; }
 
+    /// <summary>Preserved driver/UI failure classification when the step failed.</summary>
+    public UiFailureClassification? Classification { get; init; }
+
     public IReadOnlyList<AssertionRunResult> Assertions { get; init; } = Array.Empty<AssertionRunResult>();
 
     public TimeSpan Duration { get; init; }

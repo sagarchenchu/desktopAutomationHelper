@@ -52,7 +52,7 @@
     },
     "onFailureSteps": {
       "type": "array",
-      "maxItems": 1000,
+      "maxItems": 999,
       "items": {
         "$ref": "#/$defs/cleanupStep"
       }
@@ -82,13 +82,16 @@
           "additionalProperties": true,
           "propertyNames": {
             "not": {
-              "enum": [
-                "operation",
-                "authorization",
-                "bearerToken",
-                "Operation",
-                "Authorization",
-                "BearerToken"
+              "anyOf": [
+                {
+                  "pattern": "(?i)^operation$"
+                },
+                {
+                  "pattern": "(?i)^authorization$"
+                },
+                {
+                  "pattern": "(?i)^bearertoken$"
+                }
               ]
             }
           }
@@ -132,13 +135,16 @@
           "additionalProperties": true,
           "propertyNames": {
             "not": {
-              "enum": [
-                "operation",
-                "authorization",
-                "bearerToken",
-                "Operation",
-                "Authorization",
-                "BearerToken"
+              "anyOf": [
+                {
+                  "pattern": "(?i)^operation$"
+                },
+                {
+                  "pattern": "(?i)^authorization$"
+                },
+                {
+                  "pattern": "(?i)^bearertoken$"
+                }
               ]
             }
           }
@@ -205,5 +211,6 @@
         }
       ]
     }
-  }
+  },
+  "$comment": "Combined length of steps and onFailureSteps must be <= 1000 (enforced by DesktopAutomationAgent PlanValidator). Reserved argument names are rejected case-insensitively by PlanValidator; the propertyNames patterns below mirror that rule for common casings."
 }

@@ -46,13 +46,19 @@ public sealed class DriverUiClient : IDriverUiClient
 
         var payload = BuildFlattenedPayload(step);
         var json = JsonSerializer.Serialize(payload);
-        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "ui")
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
 
         HttpResponseMessage response;
         try
         {
             // Exactly one POST /ui per attempted step. No retries.
-            response = await client.PostAsync("ui", content, cancellationToken).ConfigureAwait(false);
+            // Headers-read avoids buffering the entire body before size checks.
+            response = await client
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
@@ -82,9 +88,20 @@ public sealed class DriverUiClient : IDriverUiClient
 
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
+                // Drain/dispose without retaining body content for auth failures.
+                response.Content?.Dispose();
                 throw new UiExecutionException(
                     UiFailureClassification.Authentication,
                     $"Driver authentication failed for step '{step.Id}' (HTTP {statusCode}).");
+            }
+
+            if (response.Content?.Headers.ContentLength is long contentLength
+                && contentLength > _runnerOptions.MaxResponseBytes)
+            {
+                response.Content.Dispose();
+                throw new UiExecutionException(
+                    UiFailureClassification.OperationFailure,
+                    $"Driver response Content-Length {contentLength} exceeded maximum size of {_runnerOptions.MaxResponseBytes} bytes.");
             }
 
             byte[] bodyBytes;
@@ -164,6 +181,9 @@ public sealed class DriverUiClient : IDriverUiClient
         HttpResponseMessage response,
         CancellationToken cancellationToken)
     {
+        if (response.Content is null)
+            return [];
+
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var memory = new MemoryStream();
         var buffer = new byte[8192];

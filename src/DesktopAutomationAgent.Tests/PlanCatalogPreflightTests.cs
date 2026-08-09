@@ -115,6 +115,36 @@ public class PlanCatalogPreflightTests
     }
 
     [Fact]
+    public void RejectsQuitOnlyPlanWithoutSession()
+    {
+        var manifest = Manifest(("q1", "quit", "{}"));
+        var errors = _preflight.Validate(manifest, "p.json");
+        Assert.Contains(errors, e => e.Contains("requires an active session", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void RejectsCloseOnlyPlanWithoutSession()
+    {
+        var manifest = Manifest(("c1", "close", "{}"));
+        var errors = _preflight.Validate(manifest, "p.json");
+        Assert.Contains(errors, e => e.Contains("requires an active session", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void RejectsSecondQuitAfterClosing()
+    {
+        var manifest = Manifest(
+            ("l1", "launch", """{"value":"C:\\\\App.exe"}"""),
+            ("q1", "quit", "{}"),
+            ("q2", "quit", "{}"));
+        manifest.OnFailureSteps = [Step("cleanup", "quit", "{}")];
+        var errors = _preflight.Validate(manifest, "p.json");
+        Assert.Contains(errors, e =>
+            e.Contains("q2", StringComparison.OrdinalIgnoreCase)
+            && e.Contains("requires an active session", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void RejectsDoubleLaunch()
     {
         var manifest = Manifest(

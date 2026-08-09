@@ -146,6 +146,10 @@ public sealed class DriverCatalogClient : IDriverCatalogClient
         {
             return await client.GetAsync(relativePath, cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             throw new DriverConnectionException(

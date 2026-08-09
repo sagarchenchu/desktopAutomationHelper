@@ -81,12 +81,22 @@ public sealed class PlanManifestReader
 
         var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
-        var duplicateErrors = JsonDuplicatePropertyDetector.DetectDuplicates(bytes)
-            .Select(message => $"{relativePath}: {message}")
-            .ToList();
-        if (duplicateErrors.Count > 0)
+        try
         {
-            return Failure(relativePath, sha256, duplicateErrors);
+            var duplicateErrors = JsonDuplicatePropertyDetector.DetectDuplicates(bytes)
+                .Select(message => $"{relativePath}: {message}")
+                .ToList();
+            if (duplicateErrors.Count > 0)
+            {
+                return Failure(relativePath, sha256, duplicateErrors);
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or ArgumentException or InvalidOperationException)
+        {
+            return Failure(
+                relativePath,
+                sha256,
+                [$"{relativePath}: invalid JSON ({ex.Message})."]);
         }
 
         PlanManifest? manifest;
@@ -95,6 +105,13 @@ public sealed class PlanManifestReader
             manifest = JsonSerializer.Deserialize<PlanManifest>(bytes, JsonOptions);
         }
         catch (JsonException ex)
+        {
+            return Failure(
+                relativePath,
+                sha256,
+                [$"{relativePath}: invalid JSON ({ex.Message})."]);
+        }
+        catch (NotSupportedException ex)
         {
             return Failure(
                 relativePath,
