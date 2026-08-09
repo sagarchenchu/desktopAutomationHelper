@@ -71,6 +71,13 @@ public static class ObjectLocatorValidator
         RejectBlankString(locator.ControlType, "controlType", location, errors);
         RejectBlankString(locator.MatchMode, "matchMode", location, errors);
 
+        if (!string.IsNullOrWhiteSpace(locator.ControlType)
+            && !LocatorMatchNormalizer.IsKnownControlType(locator.ControlType))
+        {
+            errors.Add(
+                $"{location}: controlType '{locator.ControlType}' is not a recognized UIA control type.");
+        }
+
         if (!string.IsNullOrWhiteSpace(locator.MatchMode)
             && !AllowedMatchModes.Contains(locator.MatchMode))
         {

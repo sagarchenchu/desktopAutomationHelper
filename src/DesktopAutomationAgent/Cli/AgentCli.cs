@@ -550,7 +550,11 @@ public static class AgentCli
             new ObjectVerificationOptions
             {
                 PageId = parsed.PageId,
-                ObjectRef = parsed.ObjectRef
+                ObjectRef = parsed.ObjectRef,
+                View = parsed.View ?? "control",
+                Root = parsed.Root ?? "activeWindow",
+                MaxDepth = parsed.MaxDepth,
+                IncludeOffscreen = parsed.IncludeOffscreen
             },
             cancellationToken).ConfigureAwait(false);
 

@@ -61,9 +61,21 @@ public sealed class ObjectRepositoryValidator
             var reference = manifest.Pages[i];
             var location = $"{repositoryPath}: pages[{i}]";
 
+            if (reference is null)
+            {
+                errors.Add($"{location}: page reference must not be null.");
+                continue;
+            }
+
+            if (reference.ExtensionData is { Count: > 0 })
+            {
+                foreach (var key in reference.ExtensionData.Keys)
+                    errors.Add($"{location}: unknown property '{key}'.");
+            }
+
             if (string.IsNullOrWhiteSpace(reference.PageId) || !IdentifierPattern.IsMatch(reference.PageId))
             {
-                errors.Add($"{location}: pageId must match ^[a-z][a-z0-9-]{{0,63}}$. ");
+                errors.Add($"{location}: pageId must match ^[a-z][a-z0-9-]{{0,63}}$.");
                 continue;
             }
 
@@ -149,7 +161,7 @@ public sealed class ObjectRepositoryValidator
 
         if (string.IsNullOrWhiteSpace(manifest.RepositoryId) || !IdentifierPattern.IsMatch(manifest.RepositoryId))
         {
-            errors.Add($"{repositoryPath}: repositoryId must match ^[a-z][a-z0-9-]{{0,63}}$. ");
+            errors.Add($"{repositoryPath}: repositoryId must match ^[a-z][a-z0-9-]{{0,63}}$.");
         }
 
         if (string.IsNullOrWhiteSpace(manifest.Name))
@@ -195,7 +207,7 @@ public sealed class ObjectRepositoryValidator
 
         if (string.IsNullOrWhiteSpace(page.PageId) || !IdentifierPattern.IsMatch(page.PageId))
         {
-            errors.Add($"{pagePath}: pageId must match ^[a-z][a-z0-9-]{{0,63}}$. ");
+            errors.Add($"{pagePath}: pageId must match ^[a-z][a-z0-9-]{{0,63}}$.");
         }
         else if (!string.Equals(page.PageId, expectedPageId, StringComparison.Ordinal))
         {
@@ -250,7 +262,7 @@ public sealed class ObjectRepositoryValidator
 
             if (string.IsNullOrWhiteSpace(elementId) || !IdentifierPattern.IsMatch(elementId))
             {
-                errors.Add($"{location}: element id must match ^[a-z][a-z0-9-]{{0,63}}$. ");
+                errors.Add($"{location}: element id must match ^[a-z][a-z0-9-]{{0,63}}$.");
                 continue;
             }
 
@@ -263,8 +275,38 @@ public sealed class ObjectRepositoryValidator
                 seenElementIds[elementId] = location;
             }
 
+            if (element is null)
+            {
+                errors.Add($"{location}: element definition must not be null.");
+                continue;
+            }
+
             ValidateElement(element, location, page.State, errors, warnings);
         }
+    }
+
+    public ObjectRepositoryValidationResult ValidateCandidatePage(
+        PageObjectDocument page,
+        string pagePath,
+        ObjectRepositoryOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        ArgumentNullException.ThrowIfNull(options);
+
+        var errors = new List<string>();
+        var warnings = new List<string>();
+        var totalElements = 0;
+        ValidatePage(
+            page,
+            pagePath,
+            page.PageId,
+            manifestReferenced: false,
+            options,
+            errors,
+            warnings,
+            ref totalElements);
+
+        return BuildResult(errors, warnings, pagePath);
     }
 
     private static bool HasNonEmptyUnresolved(JsonElement? unresolved)
@@ -309,6 +351,12 @@ public sealed class ObjectRepositoryValidator
 
         if (element.Quality is not null)
         {
+            if (element.Quality.ExtensionData is { Count: > 0 })
+            {
+                foreach (var key in element.Quality.ExtensionData.Keys)
+                    errors.Add($"{location}.quality: unknown property '{key}'.");
+            }
+
             if (!string.IsNullOrWhiteSpace(element.Quality.Grade)
                 && !AllowedQualityGrades.Contains(element.Quality.Grade))
             {
@@ -318,6 +366,12 @@ public sealed class ObjectRepositoryValidator
 
         if (element.Source is not null)
         {
+            if (element.Source.ExtensionData is { Count: > 0 })
+            {
+                foreach (var key in element.Source.ExtensionData.Keys)
+                    errors.Add($"{location}.source: unknown property '{key}'.");
+            }
+
             if (string.IsNullOrWhiteSpace(element.Source.Kind)
                 || !AllowedSourceKinds.Contains(element.Source.Kind))
             {
