@@ -761,6 +761,42 @@ Content-Type: application/json
 `GET /ui` is also routed to the same handler, but normal clients should use `POST`
 because the operation data is supplied as JSON in the request body.
 
+### GET /ui/operations — Operation catalog
+
+Returns a machine-readable catalog of every public `/ui` operation recognized by the driver.
+Requires Bearer authentication. Does **not** require an active UI session and does not launch an application.
+
+```http
+GET http://127.0.0.1:{user-port}/ui/operations
+Authorization: Bearer <token>
+```
+
+Success response (`UiResponse` envelope):
+
+```json
+{
+  "success": true,
+  "value": {
+    "schemaVersion": 1,
+    "driverVersion": "1.0.105",
+    "operations": [
+      {
+        "name": "click",
+        "aliases": [],
+        "deprecatedAliases": [],
+        "category": "element-action",
+        "operationType": "action",
+        "requiresSession": true,
+        "requiredInputs": ["locator"],
+        "deprecated": false
+      }
+    ]
+  }
+}
+```
+
+Operations are listed in alphabetical order by canonical `name`. Legacy aliases (including misspellings such as `switchwinodw`) remain executable and appear under `aliases`; deprecated aliases are also listed in `deprecatedAliases`.
+
 ### Request envelope
 
 The POST `/ui` endpoint accepts a rich, consolidated JSON payload (`UiRequest`) allowing for powerful single-endpoint execution and high-performance, low-latency UI Automation.
