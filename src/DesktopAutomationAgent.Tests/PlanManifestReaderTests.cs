@@ -331,8 +331,9 @@ public class PlanManifestReaderTests
         Assert.Contains("matchesRegex", schema);
         Assert.Contains("cleanupStep", schema);
         Assert.DoesNotContain("\"cleanupSteps\"", schema);
-        Assert.Contains("Combined length of steps and onFailureSteps must be <= 1000", schema);
-        Assert.Contains("(?i)^operation$", schema);
+        Assert.DoesNotContain("(?i)", schema);
+        Assert.Contains("AUTHORITATIVE combined step limit", schema);
+        Assert.Contains("^[Oo][Pp][Ee][Rr][Aa][Tt][Ii][Oo][Nn]$", schema);
 
         Assert.True(PlanValidator.IsValidJsonPointer(""));
         Assert.True(PlanValidator.IsValidJsonPointer("/a/0"));

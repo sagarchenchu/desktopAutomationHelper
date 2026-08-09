@@ -238,6 +238,25 @@ public class ReviewGapFixTests
             $"Expected bounded streaming read; bytesRead={tracking.BytesRead}");
     }
 
+    [Theory]
+    [InlineData("run-plan", "--json")]
+    [InlineData("run-plan", "--json", "--file")]
+    [InlineData("validate-plan", "--json", "--bogus")]
+    public async Task UsageErrorsWithJsonFlag_EmitOneJsonDocument(params string[] args)
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+
+        var result = await RunCliAsync(args, options, workspace, handler);
+        Assert.Equal(ExitCodes.UsageOrConfiguration, result.ExitCode);
+        using var doc = JsonDocument.Parse(result.Stdout.Trim());
+        Assert.False(doc.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal(ExitCodes.UsageOrConfiguration, doc.RootElement.GetProperty("exitCode").GetInt32());
+        Assert.Empty(handler.Requests);
+    }
+
     [Fact]
     public void ExamplePlan_AssertsRootValueNotWindowsPath()
     {

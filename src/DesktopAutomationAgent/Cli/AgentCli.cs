@@ -38,7 +38,11 @@ public static class AgentCli
         CancellationToken cancellationToken = default)
     {
         var parsed = CommandLine.Parse(args);
-        var jsonStdoutMode = parsed.Json
+        // Also honor a raw --json flag so usage errors never fall back to plain text
+        // when the caller requested machine-readable output.
+        var jsonRequested = parsed.Json
+            || args.Any(arg => string.Equals(arg, "--json", StringComparison.Ordinal));
+        var jsonStdoutMode = jsonRequested
             && parsed.Kind is AgentCommandKind.Doctor or AgentCommandKind.ValidatePlan or AgentCommandKind.RunPlan;
 
         if (parsed.Error is not null)

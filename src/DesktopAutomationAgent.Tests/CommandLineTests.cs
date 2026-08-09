@@ -57,4 +57,15 @@ public class CommandLineTests
         Assert.NotNull(parsed.Error);
         Assert.Contains("--file", parsed.Error, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Theory]
+    [InlineData("run-plan", "--json")]
+    [InlineData("run-plan", "--json", "--file")]
+    [InlineData("validate-plan", "--json", "--bogus")]
+    public void Parse_PreservesJsonFlagOnUsageErrors(params string[] args)
+    {
+        var parsed = CommandLine.Parse(args);
+        Assert.NotNull(parsed.Error);
+        Assert.True(parsed.Json, $"Expected Json=true for args: {string.Join(' ', args)}");
+    }
 }

@@ -119,7 +119,7 @@ public class DriverUiClientTests
     }
 
     [Fact]
-    public async Task HandlesTimeout()
+    public async Task HandlesTimeoutBeforeHeaders()
     {
         var handler = new FakeHttpMessageHandler(async (_, ct) =>
         {
@@ -136,6 +136,31 @@ public class DriverUiClientTests
         var ex = await Assert.ThrowsAsync<UiExecutionException>(() =>
             client.ExecuteStepAsync(Connection(), Step()));
         Assert.Equal(UiFailureClassification.ExecutionTimeout, ex.Classification);
+    }
+
+    [Fact]
+    public async Task HandlesTimeoutAfterHeadersWhileBodyStalls()
+    {
+        var handler = new FakeHttpMessageHandler(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new StallUntilCancelledStream())
+            };
+            response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            return response;
+        });
+        var options = TestSupport.CreateOptions(baseUrl: "http://127.0.0.1:33201", bearerToken: "test-token");
+        options.Runner.StepTransportTimeoutSeconds = 1;
+        var client = new DriverUiClient(
+            TestSupport.Wrap(options),
+            TestSupport.CreateFactory(handler),
+            NullLogger<DriverUiClient>.Instance);
+
+        var ex = await Assert.ThrowsAsync<UiExecutionException>(() =>
+            client.ExecuteStepAsync(Connection(), Step()));
+        Assert.Equal(UiFailureClassification.ExecutionTimeout, ex.Classification);
+        Assert.Contains("timed out", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -208,4 +233,34 @@ public class DriverUiClientTests
             Operation = "listwindows",
             Arguments = new Dictionary<string, JsonElement>()
         };
+
+    private sealed class StallUntilCancelledStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => 0;
+            set => throw new NotSupportedException();
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException("Use ReadAsync.");
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
 }
