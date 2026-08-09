@@ -197,9 +197,11 @@ public sealed class WorkspaceManager : IWorkspaceManager
         {
             ["config/agentsettings.example.json"] = AgentSettingsExample,
             ["schemas/suite.schema.json"] = SuiteSchema,
+            ["schemas/plan.schema.json"] = PlanSchema,
             ["suites/smoke.json"] = EmptySuite("smoke"),
             ["suites/regression.json"] = EmptySuite("regression"),
             ["plans/README.md"] = PlansReadme,
+            ["plans/example.plan.json"] = ExamplePlan,
             ["object-repository/README.md"] = ObjectRepositoryReadme,
             ["runs/.gitignore"] = RunsGitIgnore
         };
@@ -220,6 +222,13 @@ public sealed class WorkspaceManager : IWorkspaceManager
           },
           "Suites": {
             "JiraKeyPattern": "^[A-Z][A-Z0-9_]*-[0-9]+$"
+          },
+          "Runner": {
+            "StepTransportTimeoutSeconds": 60,
+            "CleanupTimeoutSeconds": 15,
+            "MaxPlanBytes": 1048576,
+            "MaxResponseBytes": 10485760,
+            "RegexTimeoutMilliseconds": 500
           }
         }
         """;
@@ -270,8 +279,274 @@ public sealed class WorkspaceManager : IWorkspaceManager
         """
         # Plans
 
-        Reserved for reusable compiled command plans in a later phase.
-        Do not store secrets here.
+        Plans are compiled executable artifacts for the Desktop Automation Agent
+        deterministic runner (Phase 2).
+
+        ## Layout
+
+        - `example.plan.json` — session-free smoke example that calls `listwindows` only.
+        - `../schemas/plan.schema.json` — JSON Schema (Draft 2020-12) for offline validation.
+
+        ## Phase 2 authoring
+
+        - Phase 2 supports **manually authored** plans.
+        - Later phases will compile Jira BDD into the same format.
+        - Existing valid plans execute without AI, Jira, object-repository, or database access.
+        - `schemaVersion` must be `1` and `catalogSchemaVersion` must be `2`.
+        - `planId` must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`.
+        - `steps` is required and must contain at least one step. `onFailureSteps` is optional.
+        - Combined `steps` + `onFailureSteps` count must not exceed `1000`.
+        - Step `id` values must be unique (case-insensitive) across all step lists.
+        - Each step requires `operation` (no leading/trailing whitespace) and an `arguments` object.
+        - Do not place `operation`, `authorization`, or `bearerToken` inside `arguments`.
+        - Cleanup steps must not define `assertions` or `captureResponse`.
+        - Plans that call `launch` must end with `close` or `quit`, and `onFailureSteps` must include `close` or `quit`. `closewindow` does not end a session.
+        - Plans must not contain credentials. Password-entry steps must use `sensitive: true`.
+
+        ```bash
+        dotnet run --project src/DesktopAutomationAgent -- validate-plan --file automation/plans/example.plan.json
+        dotnet run --project src/DesktopAutomationAgent -- run-plan --file automation/plans/example.plan.json --dry-run
+        ```
+        """;
+
+    private const string ExamplePlan =
+        """
+        {
+          "schemaVersion": 1,
+          "catalogSchemaVersion": 2,
+          "planId": "example.listwindows",
+          "name": "List visible windows",
+          "steps": [
+            {
+              "id": "list-windows",
+              "operation": "listwindows",
+              "arguments": {
+                "limit": 25,
+                "includeDesktopDescendants": false
+              },
+              "captureResponse": true,
+              "assertions": [
+                {
+                  "path": "/windows",
+                  "operator": "isNotNull"
+                }
+              ]
+            }
+          ]
+        }
+        """;
+
+    private const string PlanSchema =
+        """
+        {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "$id": "https://local/desktop-automation-agent/plan.schema.json",
+          "title": "DesktopAutomationAgent Plan Manifest",
+          "type": "object",
+          "required": [
+            "schemaVersion",
+            "catalogSchemaVersion",
+            "planId",
+            "name",
+            "steps"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "$schema": {
+              "type": "string"
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "catalogSchemaVersion": {
+              "const": 2
+            },
+            "planId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": {
+              "type": "string"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "metadata": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "steps": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1000,
+              "items": {
+                "$ref": "#/$defs/mainStep"
+              }
+            },
+            "onFailureSteps": {
+              "type": "array",
+              "maxItems": 1000,
+              "items": {
+                "$ref": "#/$defs/cleanupStep"
+              }
+            }
+          },
+          "$defs": {
+            "mainStep": {
+              "type": "object",
+              "required": [
+                "id",
+                "operation",
+                "arguments"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "operation": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^\\S(.*\\S)?$"
+                },
+                "arguments": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "propertyNames": {
+                    "not": {
+                      "enum": [
+                        "operation",
+                        "authorization",
+                        "bearerToken",
+                        "Operation",
+                        "Authorization",
+                        "BearerToken"
+                      ]
+                    }
+                  }
+                },
+                "assertions": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/planAssertion"
+                  }
+                },
+                "sensitive": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "captureResponse": {
+                  "type": "boolean",
+                  "default": false
+                }
+              }
+            },
+            "cleanupStep": {
+              "type": "object",
+              "required": [
+                "id",
+                "operation",
+                "arguments"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "operation": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^\\S(.*\\S)?$"
+                },
+                "arguments": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "propertyNames": {
+                    "not": {
+                      "enum": [
+                        "operation",
+                        "authorization",
+                        "bearerToken",
+                        "Operation",
+                        "Authorization",
+                        "BearerToken"
+                      ]
+                    }
+                  }
+                },
+                "sensitive": {
+                  "type": "boolean",
+                  "default": false
+                }
+              }
+            },
+            "planAssertion": {
+              "type": "object",
+              "required": [
+                "operator"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "default": ""
+                },
+                "operator": {
+                  "type": "string",
+                  "enum": [
+                    "equals",
+                    "notEquals",
+                    "contains",
+                    "matchesRegex",
+                    "isTrue",
+                    "isFalse",
+                    "isNull",
+                    "isNotNull"
+                  ]
+                },
+                "expected": {},
+                "ignoreCase": {
+                  "type": "boolean",
+                  "default": false
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operator": {
+                        "enum": [
+                          "equals",
+                          "notEquals",
+                          "contains",
+                          "matchesRegex"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "operator"
+                    ]
+                  },
+                  "then": {
+                    "required": [
+                      "operator",
+                      "expected"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
         """;
 
     private const string ObjectRepositoryReadme =

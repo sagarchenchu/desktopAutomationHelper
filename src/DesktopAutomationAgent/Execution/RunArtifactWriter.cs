@@ -26,7 +26,8 @@ public sealed class RunArtifactWriter
         "accessToken",
         "refreshToken",
         "credential",
-        "credentials"
+        "credentials",
+        "connectionString"
     };
 
     public void WriteRunReport(string runDirectory, RunReport report)
@@ -36,17 +37,50 @@ public sealed class RunArtifactWriter
 
         Directory.CreateDirectory(runDirectory);
         var targetPath = Path.Combine(runDirectory, "run.json");
-        var tempPath = targetPath + ".tmp";
+        if (File.Exists(targetPath))
+        {
+            throw new IOException($"Run report already exists at '{targetPath}' and must not be overwritten.");
+        }
 
-        var redacted = RedactReport(report);
-        var json = JsonSerializer.Serialize(redacted, JsonOptions);
-        File.WriteAllText(tempPath, json);
-        File.Move(tempPath, targetPath, overwrite: true);
+        var tempPath = Path.Combine(runDirectory, $".run.{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            var redacted = RedactReport(report);
+            redacted.ArtifactWriteStatus = "written";
+            var json = JsonSerializer.Serialize(redacted, JsonOptions);
+            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream))
+            {
+                writer.Write(json);
+                writer.Flush();
+                stream.Flush(true);
+            }
+
+            File.Move(tempPath, targetPath);
+            report.ArtifactWriteStatus = "written";
+        }
+        catch
+        {
+            report.ArtifactWriteStatus = "failed";
+            try
+            {
+                if (File.Exists(tempPath))
+                    File.Delete(tempPath);
+            }
+            catch
+            {
+                // best-effort temp cleanup
+            }
+
+            throw;
+        }
     }
 
     internal static RunReport RedactReport(RunReport report) =>
         new()
         {
+            ReportSchemaVersion = report.ReportSchemaVersion,
             RunId = report.RunId,
             Status = report.Status,
             ExitCode = report.ExitCode,
@@ -56,9 +90,12 @@ public sealed class RunArtifactWriter
             PlanSha256 = report.PlanSha256,
             DryRun = report.DryRun,
             DriverBaseUrl = report.DriverBaseUrl,
+            DiscoveryMethod = report.DiscoveryMethod,
+            DriverVersion = report.DriverVersion,
             CatalogSchemaVersion = report.CatalogSchemaVersion,
             StartedAtUtc = report.StartedAtUtc,
             FinishedAtUtc = report.FinishedAtUtc,
+            DurationMilliseconds = report.DurationMilliseconds,
             Steps = report.Steps.Select(RedactStep).ToArray(),
             OnFailureSteps = report.OnFailureSteps.Select(RedactStep).ToArray(),
             Failure = report.Failure is null
@@ -68,28 +105,38 @@ public sealed class RunArtifactWriter
                     Classification = report.Failure.Classification,
                     Message = SecretRedactor.Redact(report.Failure.Message),
                     StepId = report.Failure.StepId,
+                    DriverReason = SecretRedactor.Redact(report.Failure.DriverReason),
                     ScreenshotPath = report.Failure.ScreenshotPath
-                }
+                },
+            ArtifactWriteStatus = report.ArtifactWriteStatus
         };
 
-    private static StepRunResult RedactStep(StepRunResult step) =>
-        new()
+    private static StepRunResult RedactStep(StepRunResult step)
+    {
+        var captureValue = step.CaptureResponse && !step.Sensitive;
+        return new StepRunResult
         {
+            Sequence = step.Sequence,
             Id = step.Id,
             Operation = step.Operation,
             Phase = step.Phase,
+            Status = step.Status,
             Success = step.Success,
             Sensitive = step.Sensitive,
             CaptureResponse = step.CaptureResponse,
             Skipped = step.Skipped,
             SkipReason = step.SkipReason,
+            HttpStatusCode = step.HttpStatusCode,
+            StartedAtUtc = step.StartedAtUtc,
             Arguments = step.Sensitive ? null : RedactJsonMap(step.Arguments),
-            ResponseValue = step.CaptureResponse ? RedactJsonElement(step.ResponseValue) : null,
+            ResponseValue = captureValue ? RedactJsonElement(step.ResponseValue) : null,
             Error = SecretRedactor.Redact(step.Error),
+            DriverReason = SecretRedactor.Redact(step.DriverReason),
             ScreenshotPath = step.ScreenshotPath,
             Assertions = step.Assertions.Select(assertion => RedactAssertion(assertion, step.Sensitive)).ToArray(),
             Duration = step.Duration
         };
+    }
 
     private static AssertionRunResult RedactAssertion(AssertionRunResult assertion, bool stepSensitive) =>
         new()

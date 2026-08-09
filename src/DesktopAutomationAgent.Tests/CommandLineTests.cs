@@ -35,4 +35,26 @@ public class CommandLineTests
         Assert.NotNull(parsed.Error);
         Assert.Contains("at least one", parsed.Error, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void Parse_ValidatePlanAndRunPlan()
+    {
+        var validate = CommandLine.Parse(["validate-plan", "--file", "p.json", "--json"]);
+        Assert.Equal(AgentCommandKind.ValidatePlan, validate.Kind);
+        Assert.True(validate.Json);
+        Assert.Equal("p.json", validate.PlanFile);
+
+        var run = CommandLine.Parse(["run-plan", "--file", "p.json", "--dry-run", "--json"]);
+        Assert.Equal(AgentCommandKind.RunPlan, run.Kind);
+        Assert.True(run.DryRun);
+        Assert.True(run.Json);
+    }
+
+    [Fact]
+    public void Parse_RunPlanRequiresFile()
+    {
+        var parsed = CommandLine.Parse(["run-plan"]);
+        Assert.NotNull(parsed.Error);
+        Assert.Contains("--file", parsed.Error, StringComparison.OrdinalIgnoreCase);
+    }
 }
