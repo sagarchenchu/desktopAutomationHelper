@@ -123,6 +123,18 @@ public sealed class ObjectVerificationService
                 validation.Snapshot.AggregateSha256);
         }
 
+        var maxChildren = options.MaxChildren ?? 200;
+        if (maxChildren is < 1 or > 1000)
+        {
+            return Failure(
+                "maxChildren must be between 1 and 1000.",
+                ExitCodes.UsageOrConfiguration,
+                stopwatch,
+                validation.RepositoryPath,
+                validation.Snapshot.Manifest.RepositoryId,
+                validation.Snapshot.AggregateSha256);
+        }
+
         var includeOffscreen = options.IncludeOffscreen ?? false;
 
         DriverConnection connection;
@@ -225,6 +237,7 @@ public sealed class ObjectVerificationService
                         view,
                         root,
                         maxDepth,
+                        maxChildren,
                         includeOffscreen,
                         cancellationToken)
                     .ConfigureAwait(false);
@@ -307,6 +320,7 @@ public sealed class ObjectVerificationService
         string view,
         string root,
         int maxDepth,
+        int maxChildren,
         bool includeOffscreen,
         CancellationToken cancellationToken)
     {
@@ -328,6 +342,7 @@ public sealed class ObjectVerificationService
             ["root"] = JsonSerializer.SerializeToElement(root),
             ["view"] = JsonSerializer.SerializeToElement(view),
             ["maxDepth"] = JsonSerializer.SerializeToElement(maxDepth),
+            ["maxChildren"] = JsonSerializer.SerializeToElement(maxChildren),
             ["includeOffscreen"] = JsonSerializer.SerializeToElement(includeOffscreen),
             ["includePath"] = JsonSerializer.SerializeToElement(true),
             ["timeoutMs"] = JsonSerializer.SerializeToElement(_options.ObjectRepository.DiagnosticTimeoutMilliseconds)

@@ -65,5 +65,7 @@ public sealed class ObjectVerificationOptions
 
     public int? MaxDepth { get; init; }
 
+    public int? MaxChildren { get; init; }
+
     public bool? IncludeOffscreen { get; init; }
 }

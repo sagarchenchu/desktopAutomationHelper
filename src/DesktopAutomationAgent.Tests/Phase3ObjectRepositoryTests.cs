@@ -828,7 +828,7 @@ public class Phase3ObjectRepositoryTests
     {
         var used = new HashSet<string>(StringComparer.Ordinal);
         var id = ObjectCandidateGenerator.ResolveElementId(
-            new ObjectCandidateGenerator.DumpNode(null, automationId, null, "Button", null, 0),
+            new ObjectCandidateGenerator.DumpNode(null, automationId, null, "Button", 50000, null, 0),
             used);
 
         Assert.Matches("^[a-z][a-z0-9-]{0,63}$", id);
@@ -842,10 +842,10 @@ public class Phase3ObjectRepositoryTests
         var longId = new string('a', 80) + "Button";
         var used = new HashSet<string>(StringComparer.Ordinal);
         var first = ObjectCandidateGenerator.ResolveElementId(
-            new ObjectCandidateGenerator.DumpNode(null, longId, null, "Button", null, 0),
+            new ObjectCandidateGenerator.DumpNode(null, longId, null, "Button", 50000, null, 0),
             used);
         var second = ObjectCandidateGenerator.ResolveElementId(
-            new ObjectCandidateGenerator.DumpNode(null, longId, null, "Button", null, 0),
+            new ObjectCandidateGenerator.DumpNode(null, longId, null, "Button", 50000, null, 0),
             used);
 
         Assert.Matches("^[a-z][a-z0-9-]{0,63}$", first);
@@ -1018,7 +1018,10 @@ public class Phase3ObjectRepositoryTests
         var result = reader.Read("object-repository/repository.json");
 
         Assert.False(result.IsValid);
-        Assert.Contains(result.Errors, e => e.Contains("name is required", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result.Errors, e =>
+            e.Contains("name", StringComparison.OrdinalIgnoreCase)
+            && (e.Contains("must not be null", StringComparison.OrdinalIgnoreCase)
+                || e.Contains("is required", StringComparison.OrdinalIgnoreCase)));
     }
 
     [Fact]
@@ -1107,11 +1110,8 @@ public class Phase3ObjectRepositoryTests
     }
 
     [Fact]
-    public void ObjectRepositoryPathSafety_RejectsSymlinkEscape_WhenSupported()
+    public void ObjectRepositoryPathSafety_RejectsDirectorySymlinkEscape_WhenSupported()
     {
-        if (OperatingSystem.IsWindows())
-            return;
-
         var root = Path.Combine(Path.GetTempPath(), "da-or-symlink-" + Guid.NewGuid().ToString("N"));
         var outside = Path.Combine(Path.GetTempPath(), "da-or-outside-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -1121,7 +1121,10 @@ public class Phase3ObjectRepositoryTests
 
         try
         {
-            File.CreateSymbolicLink(linkPath, outside);
+            if (OperatingSystem.IsWindows())
+                Directory.CreateSymbolicLink(linkPath, outside);
+            else
+                Directory.CreateSymbolicLink(linkPath, outside);
         }
         catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
         {
@@ -1133,13 +1136,212 @@ public class Phase3ObjectRepositoryTests
             var target = Path.Combine(linkPath, "secret.json");
             var thrown = Assert.Throws<RepositoryPathException>(() =>
                 ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(target, root));
-            Assert.Contains("symbolic link", thrown.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("reparse point", thrown.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
             try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
             try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
         }
+    }
+
+    [Fact]
+    public void ObjectRepositoryPathSafety_RejectsChainedFileSymlinkEscape_WhenSupported()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "da-or-chain-" + Guid.NewGuid().ToString("N"));
+        var outside = Path.Combine(Path.GetTempPath(), "da-or-chain-out-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        var outsideFile = Path.Combine(outside, "secret.json");
+        File.WriteAllText(outsideFile, "{}");
+        var mid = Path.Combine(root, "mid.json");
+        var entry = Path.Combine(root, "page.json");
+
+        try
+        {
+            File.CreateSymbolicLink(mid, outsideFile);
+            File.CreateSymbolicLink(entry, mid);
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        try
+        {
+            var thrown = Assert.Throws<RepositoryPathException>(() =>
+                ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(entry, root));
+            Assert.Contains("outside", thrown.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            try { File.Delete(entry); } catch { /* ignore */ }
+            try { File.Delete(mid); } catch { /* ignore */ }
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void ObjectRepositoryPathSafety_RejectsWindowsJunctionEscape_WhenSupported()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var root = Path.Combine(Path.GetTempPath(), "da-or-junc-" + Guid.NewGuid().ToString("N"));
+        var outside = Path.Combine(Path.GetTempPath(), "da-or-junc-out-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "secret.json"), "{}");
+        var junction = Path.Combine(root, "pages");
+
+        try
+        {
+            // Prefer cmd mklink /J so the test works on runtimes without Directory.CreateJunction.
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/c mklink /J \"{junction}\" \"{outside}\"",
+                CreateNoWindow = true,
+                UseShellExecute = false
+            };
+            using var process = System.Diagnostics.Process.Start(psi);
+            process?.WaitForExit(5000);
+            if (process is null || process.ExitCode != 0 || !Directory.Exists(junction))
+                return;
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        try
+        {
+            var target = Path.Combine(junction, "secret.json");
+            Assert.Throws<RepositoryPathException>(() =>
+                ObjectRepositoryPathSafety.EnsureNotSymlinkEscape(target, root));
+        }
+        finally
+        {
+            try { Directory.Delete(junction); } catch { /* ignore */ }
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void ObjectCandidateGenerator_EmitsControlTypeIdWhenTextDoesNotRoundTrip()
+    {
+        var nodes = new List<JsonElement>
+        {
+            JsonSerializer.SerializeToElement(new
+            {
+                path = "Window/Custom",
+                automationId = "custom-1",
+                controlType = "Custom",
+                controlTypeId = 50026
+            })
+        };
+
+        var page = new ObjectCandidateGenerator().Generate(nodes, "login", "Login", "cap-1");
+        Assert.Single(page.Elements!);
+        var locator = page.Elements!.Values.First().Locator!;
+        Assert.Equal("ControlType(50026)", locator.ControlType);
+        Assert.Equal(50026, LocatorMatchNormalizer.ParseControlTypeId(locator.ControlType));
+    }
+
+    [Fact]
+    public void ObjectRepositoryReader_RejectsExplicitNullOptionalProperties()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var pagesDir = Path.Combine(workspace.RootPath, "object-repository", "pages");
+        Directory.CreateDirectory(pagesDir);
+        File.WriteAllText(Path.Combine(workspace.RootPath, "object-repository", "repository.json"), """
+            {
+              "schemaVersion": 1,
+              "repositoryId": "default",
+              "name": "Test",
+              "pages": [ { "pageId": "login", "file": "pages/login.page.json" } ]
+            }
+            """);
+        File.WriteAllText(Path.Combine(pagesDir, "login.page.json"), """
+            {
+              "schemaVersion": 1,
+              "pageId": "login",
+              "name": "Login",
+              "state": "active",
+              "$schema": null,
+              "elements": {
+                "submit": {
+                  "locator": { "automationId": "submit", "controlType": "Button", "name": null },
+                  "quality": null,
+                  "source": null
+                }
+              }
+            }
+            """);
+
+        var reader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
+        var result = reader.Read("object-repository/repository.json");
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("$schema", StringComparison.Ordinal) && e.Contains("null", StringComparison.Ordinal));
+        Assert.Contains(result.Errors, e => e.Contains("quality", StringComparison.Ordinal) && e.Contains("null", StringComparison.Ordinal));
+        Assert.Contains(result.Errors, e => e.Contains("source", StringComparison.Ordinal) && e.Contains("null", StringComparison.Ordinal));
+        Assert.Contains(result.Errors, e => e.Contains("name", StringComparison.Ordinal) && e.Contains("null", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LocatorMatchNormalizer_ControlTypeForLocator_PreservesRoundTrippingCustom()
+    {
+        Assert.Equal("Custom", LocatorMatchNormalizer.ControlTypeForLocator(50025, "Custom"));
+        Assert.Equal("ControlType(50026)", LocatorMatchNormalizer.ControlTypeForLocator(50026, "Custom"));
+    }
+
+    [Fact]
+    public void CommandLine_Parse_RejectsCapturePageRef()
+    {
+        var parsed = CommandLine.Parse(
+        [
+            "capture-page",
+            "--file", "object-repository/repository.json",
+            "--page", "login",
+            "--name", "Login",
+            "--ref", "login.submit",
+            "--json"
+        ]);
+
+        Assert.NotNull(parsed.Error);
+        Assert.Contains("--ref", parsed.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.True(parsed.Json);
+    }
+
+    [Fact]
+    public void CommandLine_Parse_AllowsMaxChildrenOnCaptureAndVerify()
+    {
+        var capture = CommandLine.Parse(
+        [
+            "capture-page",
+            "--file", "object-repository/repository.json",
+            "--page", "login",
+            "--name", "Login",
+            "--max-children", "50",
+            "--json"
+        ]);
+        Assert.Null(capture.Error);
+        Assert.Equal(50, capture.MaxChildren);
+
+        var verify = CommandLine.Parse(
+        [
+            "verify-object-repository",
+            "--file", "object-repository/repository.json",
+            "--max-children", "50",
+            "--json"
+        ]);
+        Assert.Null(verify.Error);
+        Assert.Equal(50, verify.MaxChildren);
     }
 
     private static string NormalizeNewlines(string value) =>

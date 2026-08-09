@@ -59,6 +59,8 @@ public static class LocatorMatchNormalizer
         [50023] = "Tree",
         [50024] = "TreeItem",
         [50025] = "Custom",
+        // Driver also maps 50026 → "Custom"; keep it for round-trip-safe locator emission.
+        [50026] = "Custom",
         [50028] = "DataGrid",
         [50029] = "DataItem",
         [50032] = "Window",
@@ -107,6 +109,9 @@ public static class LocatorMatchNormalizer
     public static bool IsKnownControlType(string? controlType) =>
         ParseControlTypeId(controlType) is not null;
 
+    public static bool IsKnownControlType(int? controlTypeId, string? controlTypeText) =>
+        controlTypeId is > 0 || IsKnownControlType(controlTypeText);
+
     public static string CanonicalControlType(string? controlType)
     {
         var id = ParseControlTypeId(controlType);
@@ -116,6 +121,28 @@ public static class LocatorMatchNormalizer
         return ControlTypeNames.TryGetValue(id.Value, out var name)
             ? name
             : $"ControlType({id.Value})";
+    }
+
+    /// <summary>
+    /// Chooses a locator controlType that round-trips through driver parse/match.
+    /// When the textual name maps to a different ID (e.g. 50026 → "Custom" → 50025),
+    /// emit <c>ControlType(id)</c> so finduia matches the original element.
+    /// </summary>
+    public static string ControlTypeForLocator(int? controlTypeId, string? controlTypeText)
+    {
+        if (controlTypeId is int id and > 0)
+        {
+            if (ControlTypeNames.TryGetValue(id, out var textualName))
+            {
+                var roundTripId = ParseControlTypeId(textualName);
+                if (roundTripId == id)
+                    return textualName;
+            }
+
+            return $"ControlType({id})";
+        }
+
+        return CanonicalControlType(controlTypeText);
     }
 
     public static string StrategyKey(string kind, params string?[] parts)
