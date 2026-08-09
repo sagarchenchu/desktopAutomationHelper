@@ -21,7 +21,18 @@ public sealed class UiOperationDescriptor
 
     public bool RequiresSession { get; init; }
 
+    /// <summary>
+    /// Inputs that are always required. When <see cref="RequiredInputAlternatives"/> is
+    /// non-empty, this is typically the intersection of those alternatives (common inputs).
+    /// </summary>
     public IReadOnlyList<string> RequiredInputs { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Accepted alternative input combinations. Clients must satisfy at least one
+    /// complete alternative. Empty when a single fixed input set applies.
+    /// </summary>
+    public IReadOnlyList<IReadOnlyList<string>> RequiredInputAlternatives { get; init; } =
+        Array.Empty<IReadOnlyList<string>>();
 
     public bool Deprecated { get; init; }
 }

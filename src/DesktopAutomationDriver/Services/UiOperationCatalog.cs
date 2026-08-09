@@ -18,7 +18,7 @@ public sealed class UiOperationCatalog : IUiOperationCatalog
     public UiOperationCatalogResponse GetCatalog() =>
         new()
         {
-            SchemaVersion = 1,
+            SchemaVersion = 2,
             DriverVersion = ResolveDriverVersion(),
             Operations = GetOperations()
         };
@@ -27,9 +27,13 @@ public sealed class UiOperationCatalog : IUiOperationCatalog
 
     public IReadOnlyCollection<string> GetAllRecognizedNames() => RecognizedNames;
 
+    /// <summary>
+    /// Matches <see cref="UiService.Execute"/> name recognition: case-insensitive,
+    /// without trimming. Leading/trailing whitespace is therefore not considered known.
+    /// </summary>
     public bool IsKnownOperation(string? operation) =>
-        !string.IsNullOrWhiteSpace(operation)
-        && RecognizedNames.Contains(operation.Trim().ToLowerInvariant());
+        !string.IsNullOrEmpty(operation)
+        && RecognizedNames.Contains(operation.ToLowerInvariant());
 
     private static string ResolveDriverVersion()
     {
@@ -49,7 +53,7 @@ public sealed class UiOperationCatalog : IUiOperationCatalog
     {
         var ops = new List<UiOperationDescriptor>
         {
-Op("alertcancel", "popup-alert", "action", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
+        Op("alertcancel", "popup-alert", "action", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
         Op("alertclose", "popup-alert", "action", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
         Op("alertok", "popup-alert", "action", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
         Op("check", "element-action", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
@@ -67,12 +71,13 @@ Op("alertcancel", "popup-alert", "action", requiresSession: true, requiredInputs
         Op("close", "session-window", "session", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
         Op("closewindow", "session-window", "action", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
         Op("collapsetreeitem", "element-action", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
-        Op("contextmenupath", "menu", "action", requiresSession: true, requiredInputs: ["value"], aliases: [], deprecatedAliases: []),
+        Op("contextmenupath", "menu", "action", requiresSession: true, requiredInputs: ["locator", "value"], aliases: [], deprecatedAliases: []),
         Op("doubleclick", "element-action", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("doubleclickgridcell", "grid-table", "action", requiresSession: true, requiredInputs: ["locator", "index", "columnIndex"], aliases: [], deprecatedAliases: []),
         Op("doubleclickuia", "native-uia", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("draganddrop", "mouse-keyboard", "action", requiresSession: true, requiredInputs: ["locator", "locator2"], aliases: [], deprecatedAliases: []),
-        Op("dragbyoffset", "mouse-keyboard", "action", requiresSession: true, requiredInputs: ["locator", "offsetX", "offsetY"], aliases: [], deprecatedAliases: []),
+        Op("dragbyoffset", "mouse-keyboard", "action", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: [],
+            requiredInputAlternatives: new string[][] { new[] { "locator", "offsetX" }, new[] { "locator", "offsetY" }, new[] { "locator", "offsetX", "offsetY" }, new[] { "x", "y", "offsetX" }, new[] { "x", "y", "offsetY" }, new[] { "x", "y", "offsetX", "offsetY" }, new[] { "fromX", "fromY", "toX", "toY" } }),
         Op("dragcoordinates", "mouse-keyboard", "action", requiresSession: true, requiredInputs: ["fromX", "fromY", "toX", "toY"], aliases: [], deprecatedAliases: []),
         Op("dumpcontrols", "diagnostic", "diagnostic", requiresSession: true, requiredInputs: [], aliases: ["printcontrolidentifiers"], deprecatedAliases: []),
         Op("dumpmenus", "menu", "diagnostic", requiresSession: true, requiredInputs: [], aliases: ["dumplogicalmenus"], deprecatedAliases: []),
@@ -81,20 +86,20 @@ Op("alertcancel", "popup-alert", "action", requiresSession: true, requiredInputs
         Op("exists", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("existsuia", "native-uia", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("expandtreeitem", "element-action", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
-        Op("expandtreepath", "element-action", "action", requiresSession: true, requiredInputs: ["value"], aliases: [], deprecatedAliases: []),
+        Op("expandtreepath", "element-action", "action", requiresSession: true, requiredInputs: ["locator", "value"], aliases: [], deprecatedAliases: []),
         Op("findall", "diagnostic", "diagnostic", requiresSession: true, requiredInputs: [], aliases: ["findmany", "resolvemany"], deprecatedAliases: []),
         Op("findcomboboxuia", "native-uia", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("findelement", "diagnostic", "diagnostic", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("findelements", "diagnostic", "diagnostic", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("findlocator", "diagnostic", "diagnostic", requiresSession: true, requiredInputs: ["locator"], aliases: ["inspectlocator"], deprecatedAliases: []),
-        Op("finduia", "native-uia", "diagnostic", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
+        Op("finduia", "native-uia", "diagnostic", requiresSession: false, requiredInputs: [], aliases: [], deprecatedAliases: []),
         Op("focus", "element-action", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("focusuia", "native-uia", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("getcontroltype", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("getcurrentroot", "session-window", "query", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
         Op("getgriduia", "native-uia", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("getname", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
-        Op("getposition", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
+        Op("getposition", "element-query", "query", requiresSession: true, requiredInputs: ["locator", "locator2"], aliases: [], deprecatedAliases: []),
         Op("getselected", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("gettable", "grid-table", "query", requiresSession: true, requiredInputs: ["locator"], aliases: ["gettabledata"], deprecatedAliases: []),
         Op("gettableheaders", "grid-table", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
@@ -102,7 +107,7 @@ Op("alertcancel", "popup-alert", "action", requiresSession: true, requiredInputs
         Op("getvalue", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("getvalueuia", "native-uia", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("hover", "element-action", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
-        Op("inspectcombobox", "native-uia", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
+        Op("inspectcombobox", "native-uia", "diagnostic", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("inspectelement", "diagnostic", "diagnostic", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("inspectlogicalmenu", "menu", "diagnostic", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
         Op("inspectmenupathcandidates", "menu", "diagnostic", requiresSession: true, requiredInputs: ["value"], aliases: [], deprecatedAliases: []),
@@ -110,14 +115,14 @@ Op("alertcancel", "popup-alert", "action", requiresSession: true, requiredInputs
         Op("isbelow", "element-query", "query", requiresSession: true, requiredInputs: ["locator", "locator2"], aliases: [], deprecatedAliases: []),
         Op("ischecked", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("isclickable", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
-        Op("iseditable", "grid-table", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
+        Op("iseditable", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("isenabled", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("isfocused", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: ["hasfocus"], deprecatedAliases: []),
         Op("isleftof", "element-query", "query", requiresSession: true, requiredInputs: ["locator", "locator2"], aliases: [], deprecatedAliases: []),
         Op("isrightof", "element-query", "query", requiresSession: true, requiredInputs: ["locator", "locator2"], aliases: [], deprecatedAliases: []),
         Op("isvisible", "element-query", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("iswindowactive", "element-query", "query", requiresSession: true, requiredInputs: [], aliases: ["isactive"], deprecatedAliases: []),
-        Op("launch", "session-window", "session", requiresSession: false, requiredInputs: [], aliases: [], deprecatedAliases: []),
+        Op("launch", "session-window", "session", requiresSession: false, requiredInputs: ["value"], aliases: [], deprecatedAliases: []),
         Op("listelements", "diagnostic", "diagnostic", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
         Op("listheaderdropdownitems", "grid-table", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("listopendropdownitems", "element-action", "query", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
@@ -139,22 +144,27 @@ Op("alertcancel", "popup-alert", "action", requiresSession: true, requiredInputs
         Op("rightclickuia", "native-uia", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
         Op("screenshot", "session-window", "query", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
         Op("screenshotelementuia", "native-uia", "query", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
-        Op("scroll", "mouse-keyboard", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
+        Op("scroll", "mouse-keyboard", "action", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: [],
+            requiredInputAlternatives: new string[][] { new[] { "locator" }, new[] { "locator", "direction" }, new[] { "locator", "amount" }, new[] { "locator", "direction", "amount" }, new[] { "containerLocator", "locator" }, new[] { "x", "y" } }),
         Op("scrollintoview", "mouse-keyboard", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
-        Op("select", "element-action", "action", requiresSession: true, requiredInputs: ["locator", "value"], aliases: ["selectcomboboxitem"], deprecatedAliases: []),
+        Op("select", "element-action", "action", requiresSession: true, requiredInputs: ["locator"], aliases: ["selectcomboboxitem"], deprecatedAliases: [],
+            requiredInputAlternatives: new string[][] { new[] { "locator", "value" }, new[] { "locator", "index" } }),
         Op("selectaid", "element-action", "action", requiresSession: true, requiredInputs: ["locator", "value"], aliases: [], deprecatedAliases: []),
         Op("selectcomboboxuia", "native-uia", "action", requiresSession: true, requiredInputs: ["locator", "value"], aliases: [], deprecatedAliases: []),
         Op("selectdynamicmenuitem", "menu", "action", requiresSession: true, requiredInputs: ["locator", "value"], aliases: [], deprecatedAliases: []),
         Op("selectdynamicmenupath", "menu", "action", requiresSession: true, requiredInputs: ["locator", "value"], aliases: [], deprecatedAliases: []),
-        Op("selectgridrowuia", "native-uia", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
+        Op("selectgridrowuia", "native-uia", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: [],
+            requiredInputAlternatives: new string[][] { new[] { "locator", "index" }, new[] { "locator", "value" } }),
         Op("selectheaderdropdownitem", "grid-table", "action", requiresSession: true, requiredInputs: ["locator", "value"], aliases: [], deprecatedAliases: []),
         Op("selectopendropdownitem", "element-action", "action", requiresSession: true, requiredInputs: ["value"], aliases: ["clickopendropdownitem"], deprecatedAliases: []),
-        Op("selecttabuia", "native-uia", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
+        Op("selecttabuia", "native-uia", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: [],
+            requiredInputAlternatives: new string[][] { new[] { "locator", "value" }, new[] { "locator", "index" } }),
         Op("selecttreeitem", "element-action", "action", requiresSession: true, requiredInputs: ["locator"], aliases: [], deprecatedAliases: []),
-        Op("selecttreepath", "element-action", "action", requiresSession: true, requiredInputs: ["value"], aliases: [], deprecatedAliases: []),
+        Op("selecttreepath", "element-action", "action", requiresSession: true, requiredInputs: ["locator", "value"], aliases: [], deprecatedAliases: []),
         Op("sendkeys", "mouse-keyboard", "action", requiresSession: true, requiredInputs: ["value"], aliases: [], deprecatedAliases: []),
-        Op("sendkeysuia", "native-uia", "action", requiresSession: false, requiredInputs: ["value"], aliases: [], deprecatedAliases: []),
-        Op("switchwindow", "session-window", "session", requiresSession: true, requiredInputs: ["value"], aliases: ["switch_window", "switchto", "switchwinodw"], deprecatedAliases: ["switchwinodw"]),
+        Op("sendkeysuia", "native-uia", "action", requiresSession: true, requiredInputs: ["value"], aliases: [], deprecatedAliases: []),
+        Op("switchwindow", "session-window", "session", requiresSession: false, requiredInputs: [], aliases: ["switch_window", "switchto", "switchwinodw"], deprecatedAliases: ["switchwinodw"],
+            requiredInputAlternatives: new string[][] { new[] { "value" }, new[] { "hwnd" }, new[] { "className" } }),
         Op("topwindow", "popup-alert", "query", requiresSession: true, requiredInputs: [], aliases: [], deprecatedAliases: []),
         Op("type", "element-action", "action", requiresSession: true, requiredInputs: ["locator", "value"], aliases: [], deprecatedAliases: []),
         Op("typeandselect", "element-action", "action", requiresSession: true, requiredInputs: ["locator", "value"], aliases: [], deprecatedAliases: []),
@@ -181,6 +191,7 @@ Op("alertcancel", "popup-alert", "action", requiresSession: true, requiredInputs
         string[] requiredInputs,
         string[] aliases,
         string[] deprecatedAliases,
+        string[][]? requiredInputAlternatives = null,
         bool deprecated = false) =>
         new()
         {
@@ -189,6 +200,8 @@ Op("alertcancel", "popup-alert", "action", requiresSession: true, requiredInputs
             OperationType = operationType,
             RequiresSession = requiresSession,
             RequiredInputs = requiredInputs,
+            RequiredInputAlternatives = requiredInputAlternatives
+                ?? Array.Empty<IReadOnlyList<string>>(),
             Aliases = aliases,
             DeprecatedAliases = deprecatedAliases,
             Deprecated = deprecated

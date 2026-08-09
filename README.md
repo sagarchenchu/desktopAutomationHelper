@@ -777,17 +777,21 @@ Success response (`UiResponse` envelope):
 {
   "success": true,
   "value": {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "driverVersion": "1.0.105",
     "operations": [
       {
-        "name": "click",
-        "aliases": [],
+        "name": "select",
+        "aliases": ["selectcomboboxitem"],
         "deprecatedAliases": [],
         "category": "element-action",
         "operationType": "action",
         "requiresSession": true,
         "requiredInputs": ["locator"],
+        "requiredInputAlternatives": [
+          ["locator", "value"],
+          ["locator", "index"]
+        ],
         "deprecated": false
       }
     ]
@@ -795,7 +799,7 @@ Success response (`UiResponse` envelope):
 }
 ```
 
-Operations are listed in alphabetical order by canonical `name`. Legacy aliases (including misspellings such as `switchwinodw`) remain executable and appear under `aliases`; deprecated aliases are also listed in `deprecatedAliases`.
+Operations are listed in alphabetical order by canonical `name`. Legacy aliases (including misspellings such as `switchwinodw`) remain executable and appear under `aliases`; deprecated aliases are also listed in `deprecatedAliases`. When an operation accepts more than one valid input shape, `requiredInputAlternatives` lists each complete combination; clients must satisfy at least one.
 
 ### Request envelope
 

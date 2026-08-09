@@ -59,6 +59,15 @@ public class UiOperationCatalogParityTests
     }
 
     [Fact]
+    public void Catalog_DoesNotTrimOperationNames_MatchingUiService()
+    {
+        Assert.True(_catalog.IsKnownOperation("click"));
+        Assert.False(_catalog.IsKnownOperation(" click "));
+        Assert.False(_catalog.IsKnownOperation("click "));
+        Assert.False(_catalog.IsKnownOperation(" click"));
+    }
+
+    [Fact]
     public void Catalog_CoversEveryUiServiceSwitchOperation()
     {
         var switchOps = ExtractUiServiceSwitchOperations();
@@ -135,7 +144,7 @@ public class UiOperationCatalogParityTests
         var root = doc.RootElement;
         Assert.True(root.GetProperty("success").GetBoolean());
         var value = root.GetProperty("value");
-        Assert.Equal(1, value.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(2, value.GetProperty("schemaVersion").GetInt32());
         Assert.True(value.TryGetProperty("driverVersion", out var version));
         Assert.False(string.IsNullOrWhiteSpace(version.GetString()));
         Assert.Equal(JsonValueKind.Array, value.GetProperty("operations").ValueKind);
@@ -147,6 +156,7 @@ public class UiOperationCatalogParityTests
         Assert.True(first.TryGetProperty("operationType", out _));
         Assert.True(first.TryGetProperty("requiresSession", out _));
         Assert.True(first.TryGetProperty("requiredInputs", out _));
+        Assert.True(first.TryGetProperty("requiredInputAlternatives", out _));
         Assert.True(first.TryGetProperty("deprecated", out _));
 
         var names = value.GetProperty("operations").EnumerateArray()
@@ -164,6 +174,45 @@ public class UiOperationCatalogParityTests
         Assert.Contains(switchWindow.Aliases, a => a.Equals("switchwinodw", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(switchWindow.DeprecatedAliases, a => a.Equals("switchwinodw", StringComparison.OrdinalIgnoreCase));
         Assert.False(switchWindow.Deprecated);
+        Assert.False(switchWindow.RequiresSession);
+        Assert.Contains(switchWindow.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "value" }));
+        Assert.Contains(switchWindow.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "hwnd" }));
+        Assert.Contains(switchWindow.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "className" }));
+    }
+
+    [Fact]
+    public void Catalog_Select_HasValueOrIndexAlternatives()
+    {
+        var select = _catalog.GetOperations().Single(o => o.Name == "select");
+        Assert.Equal(new[] { "locator" }, select.RequiredInputs);
+        Assert.Contains(select.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "locator", "value" }));
+        Assert.Contains(select.RequiredInputAlternatives, alt => alt.SequenceEqual(new[] { "locator", "index" }));
+    }
+
+    [Fact]
+    public void Catalog_Metadata_MatchesReviewedHandlers()
+    {
+        var launch = _catalog.GetOperations().Single(o => o.Name == "launch");
+        Assert.Equal(new[] { "value" }, launch.RequiredInputs);
+
+        var isEditable = _catalog.GetOperations().Single(o => o.Name == "iseditable");
+        Assert.Equal("element-query", isEditable.Category);
+        Assert.Equal("query", isEditable.OperationType);
+
+        var inspect = _catalog.GetOperations().Single(o => o.Name == "inspectcombobox");
+        Assert.Equal("diagnostic", inspect.OperationType);
+
+        var findUia = _catalog.GetOperations().Single(o => o.Name == "finduia");
+        Assert.False(findUia.RequiresSession);
+
+        var sendKeysUia = _catalog.GetOperations().Single(o => o.Name == "sendkeysuia");
+        Assert.True(sendKeysUia.RequiresSession);
+
+        var getPosition = _catalog.GetOperations().Single(o => o.Name == "getposition");
+        Assert.Equal(new[] { "locator", "locator2" }, getPosition.RequiredInputs);
+
+        var contextMenu = _catalog.GetOperations().Single(o => o.Name == "contextmenupath");
+        Assert.Equal(new[] { "locator", "value" }, contextMenu.RequiredInputs);
     }
 
     private static List<string> ExtractUiServiceSwitchOperations()
