@@ -7,7 +7,8 @@ public enum OptionsValidationScope
     Workspace,
     Suites,
     Driver,
-    Runner
+    Runner,
+    ObjectRepository
 }
 
 public sealed class AgentConfigurationException : Exception
@@ -49,9 +50,50 @@ public static class AgentOptionsValidator
             ValidateDriverOptions(options.Driver);
         }
 
-        if (scope is OptionsValidationScope.Runner or OptionsValidationScope.Driver)
+        if (scope is OptionsValidationScope.Runner or OptionsValidationScope.Driver or OptionsValidationScope.ObjectRepository)
         {
             ValidateRunnerOptions(options.Runner);
+        }
+
+        if (scope is OptionsValidationScope.ObjectRepository)
+        {
+            ValidateObjectRepositoryOptions(options.ObjectRepository);
+        }
+    }
+
+    public static void ValidateObjectRepositoryOptions(ObjectRepositoryOptions repository)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+
+        const int maxFiftyMegabytes = 52_428_800;
+
+        if (repository.MaxFileBytes <= 0 || repository.MaxFileBytes > maxFiftyMegabytes)
+        {
+            throw new AgentConfigurationException(
+                $"ObjectRepository:MaxFileBytes must be between 1 and {maxFiftyMegabytes}.");
+        }
+
+        if (repository.MaxPages <= 0 || repository.MaxPages > 10_000)
+        {
+            throw new AgentConfigurationException("ObjectRepository:MaxPages must be between 1 and 10000.");
+        }
+
+        if (repository.MaxElementsPerPage <= 0 || repository.MaxElementsPerPage > 100_000)
+        {
+            throw new AgentConfigurationException(
+                "ObjectRepository:MaxElementsPerPage must be between 1 and 100000.");
+        }
+
+        if (repository.MaxTotalElements <= 0 || repository.MaxTotalElements > 1_000_000)
+        {
+            throw new AgentConfigurationException(
+                "ObjectRepository:MaxTotalElements must be between 1 and 1000000.");
+        }
+
+        if (repository.DiagnosticTimeoutMilliseconds < 500 || repository.DiagnosticTimeoutMilliseconds > 15_000)
+        {
+            throw new AgentConfigurationException(
+                "ObjectRepository:DiagnosticTimeoutMilliseconds must be between 500 and 15000.");
         }
     }
 

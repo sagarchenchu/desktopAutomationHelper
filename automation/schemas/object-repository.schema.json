@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/desktop-automation-agent/object-repository.schema.json",
+  "title": "DesktopAutomationAgent Object Repository Manifest",
+  "$comment": "AUTHORITATIVE limits: DesktopAutomationAgent ObjectRepositoryValidator enforces MaxPages, MaxElementsPerPage, and MaxTotalElements from configuration. Identifier pattern is lowercase-only and enforced by ObjectRepositoryValidator.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "repositoryId",
+    "name",
+    "pages"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "repositoryId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pages": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "$ref": "#/$defs/pageReference"
+      }
+    }
+  },
+  "$defs": {
+    "pageReference": {
+      "type": "object",
+      "required": [
+        "pageId",
+        "file"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "pageId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
