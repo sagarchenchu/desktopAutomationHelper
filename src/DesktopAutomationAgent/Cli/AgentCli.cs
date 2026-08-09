@@ -2,6 +2,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
+using DesktopAutomationAgent.Execution;
+using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Readiness;
 using DesktopAutomationAgent.Suites;
 using DesktopAutomationAgent.Workspace;
@@ -123,8 +125,13 @@ public static class AgentCli
 
         builder.Services.AddSingleton<IWorkspaceManager, WorkspaceManager>();
         builder.Services.AddSingleton<ISuiteManifestReader, SuiteManifestReader>();
+        builder.Services.AddSingleton<PlanManifestReader>();
         builder.Services.AddSingleton<IDriverConnectionResolver, DriverConnectionResolver>();
         builder.Services.AddSingleton<IDriverCatalogClient, DriverCatalogClient>();
+        builder.Services.AddSingleton<IDriverUiClient, DriverUiClient>();
+        builder.Services.AddSingleton<AssertionEvaluator>();
+        builder.Services.AddSingleton<RunArtifactWriter>();
+        builder.Services.AddSingleton<IDeterministicPlanRunner, DeterministicPlanRunner>();
         builder.Services.AddSingleton<IAgentReadinessService, AgentReadinessService>();
 
         return builder.Build();

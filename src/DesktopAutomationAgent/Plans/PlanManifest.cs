@@ -5,6 +5,9 @@ namespace DesktopAutomationAgent.Plans;
 
 public sealed class PlanManifest
 {
+    [JsonPropertyName("$schema")]
+    public string? Schema { get; set; }
+
     public int SchemaVersion { get; set; }
 
     public int CatalogSchemaVersion { get; set; }
@@ -13,23 +16,21 @@ public sealed class PlanManifest
 
     public string Name { get; set; } = string.Empty;
 
+    public string? Description { get; set; }
+
+    public List<string>? Tags { get; set; }
+
+    public Dictionary<string, JsonElement>? Metadata { get; set; }
+
     /// <summary>
-    /// Required plan property. Null means the JSON omitted <c>steps</c>
-    /// (or set it to null).
+    /// Required. Null means the JSON omitted <c>steps</c>.
     /// </summary>
     public List<PlanStep>? Steps { get; set; }
 
     /// <summary>
-    /// Optional failure-handling steps. Null means the JSON omitted
-    /// <c>onFailureSteps</c> (or set it to null).
+    /// Optional failure cleanup steps. Null means omitted.
     /// </summary>
     public List<PlanStep>? OnFailureSteps { get; set; }
-
-    /// <summary>
-    /// Optional cleanup steps. Null means the JSON omitted
-    /// <c>cleanupSteps</c> (or set it to null).
-    /// </summary>
-    public List<PlanStep>? CleanupSteps { get; set; }
 
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? ExtensionData { get; set; }
