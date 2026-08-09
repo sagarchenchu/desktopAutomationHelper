@@ -23,8 +23,8 @@ public class Phase3ObjectRepositoryTests
     [Fact]
     public void ObjectRepositorySchemas_ValidateAgainstDraft202012()
     {
-        var repoSchemaText = File.ReadAllText("/workspace/automation/schemas/object-repository.schema.json");
-        var pageSchemaText = File.ReadAllText("/workspace/automation/schemas/page-object.schema.json");
+        var repoSchemaText = ReadRepoFile("automation/schemas/object-repository.schema.json");
+        var pageSchemaText = ReadRepoFile("automation/schemas/page-object.schema.json");
 
         Assert.Contains("draft/2020-12/schema", repoSchemaText, StringComparison.Ordinal);
         Assert.Contains("draft/2020-12/schema", pageSchemaText, StringComparison.Ordinal);
@@ -43,18 +43,18 @@ public class Phase3ObjectRepositoryTests
 
         var templates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["schemas/object-repository.schema.json"] = "/workspace/automation/schemas/object-repository.schema.json",
-            ["schemas/page-object.schema.json"] = "/workspace/automation/schemas/page-object.schema.json",
-            ["schemas/plan.schema.json"] = "/workspace/automation/schemas/plan.schema.json",
-            ["object-repository/repository.json"] = "/workspace/automation/object-repository/repository.json",
-            ["object-repository/README.md"] = "/workspace/automation/object-repository/README.md",
-            ["object-repository/.gitignore"] = "/workspace/automation/object-repository/.gitignore"
+            ["schemas/object-repository.schema.json"] = "automation/schemas/object-repository.schema.json",
+            ["schemas/page-object.schema.json"] = "automation/schemas/page-object.schema.json",
+            ["schemas/plan.schema.json"] = "automation/schemas/plan.schema.json",
+            ["object-repository/repository.json"] = "automation/object-repository/repository.json",
+            ["object-repository/README.md"] = "automation/object-repository/README.md",
+            ["object-repository/.gitignore"] = "automation/object-repository/.gitignore"
         };
 
         foreach (var (relative, source) in templates)
         {
-            var generated = File.ReadAllText(Path.Combine(workspace.RootPath, relative));
-            var expected = File.ReadAllText(source);
+            var generated = NormalizeNewlines(File.ReadAllText(Path.Combine(workspace.RootPath, relative)));
+            var expected = NormalizeNewlines(ReadRepoFile(source));
             Assert.Equal(expected, generated);
         }
     }
@@ -814,10 +814,32 @@ public class Phase3ObjectRepositoryTests
     {
         var workspace = TestSupport.CreateWorkspace(TestSupport.CreateOptions());
         workspace.Initialize();
-        var generated = File.ReadAllText(Path.Combine(workspace.RootPath, "config", "agentsettings.example.json"));
-        var expected = File.ReadAllText("/workspace/automation/config/agentsettings.example.json");
+        var generated = NormalizeNewlines(
+            File.ReadAllText(Path.Combine(workspace.RootPath, "config", "agentsettings.example.json")));
+        var expected = NormalizeNewlines(ReadRepoFile("automation/config/agentsettings.example.json"));
         Assert.Equal(expected, generated);
         Assert.Contains("ObjectRepository", generated, StringComparison.Ordinal);
+    }
+
+    private static string NormalizeNewlines(string value) =>
+        value.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+    private static string ReadRepoFile(string relativePath)
+    {
+        var candidates = new[]
+        {
+            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), relativePath)),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", relativePath)),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", relativePath))
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate))
+                return File.ReadAllText(candidate);
+        }
+
+        throw new FileNotFoundException($"Unable to locate repository file '{relativePath}'.");
     }
 
     private static void SetupActiveRepository(WorkspaceManager workspace)
