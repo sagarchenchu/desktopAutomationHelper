@@ -40,9 +40,15 @@ public sealed class DriverUiClient : IDriverUiClient
 
         using var client = _httpClientFactory.CreateClient("driver-authenticated");
         client.BaseAddress = connection.BaseUri;
-        client.Timeout = TimeSpan.FromSeconds(_runnerOptions.StepTransportTimeoutSeconds);
+        // Own the full transport deadline (headers + body). HttpClient.Timeout only
+        // covers up to response headers when using ResponseHeadersRead.
+        client.Timeout = Timeout.InfiniteTimeSpan;
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", connection.BearerToken);
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(_runnerOptions.StepTransportTimeoutSeconds));
+        var transportToken = timeoutCts.Token;
 
         var payload = BuildFlattenedPayload(step);
         var json = JsonSerializer.Serialize(payload);
@@ -57,7 +63,7 @@ public sealed class DriverUiClient : IDriverUiClient
             // Exactly one POST /ui per attempted step. No retries.
             // Headers-read avoids buffering the entire body before size checks.
             response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, transportToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
@@ -67,7 +73,7 @@ public sealed class DriverUiClient : IDriverUiClient
                 $"Step '{step.Id}' was cancelled.",
                 innerException: ex);
         }
-        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex)
         {
             throw new UiExecutionException(
                 UiFailureClassification.ExecutionTimeout,
@@ -88,7 +94,6 @@ public sealed class DriverUiClient : IDriverUiClient
 
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
-                // Drain/dispose without retaining body content for auth failures.
                 response.Content?.Dispose();
                 throw new UiExecutionException(
                     UiFailureClassification.Authentication,
@@ -107,7 +112,7 @@ public sealed class DriverUiClient : IDriverUiClient
             byte[] bodyBytes;
             try
             {
-                bodyBytes = await ReadLimitedBodyAsync(response, cancellationToken).ConfigureAwait(false);
+                bodyBytes = await ReadLimitedBodyAsync(response, transportToken).ConfigureAwait(false);
             }
             catch (UiExecutionException)
             {
@@ -118,6 +123,13 @@ public sealed class DriverUiClient : IDriverUiClient
                 throw new UiExecutionException(
                     UiFailureClassification.Cancelled,
                     $"Step '{step.Id}' was cancelled while reading the response.",
+                    innerException: ex);
+            }
+            catch (OperationCanceledException ex)
+            {
+                throw new UiExecutionException(
+                    UiFailureClassification.ExecutionTimeout,
+                    $"Step '{step.Id}' timed out after {_runnerOptions.StepTransportTimeoutSeconds} seconds while reading the response.",
                     innerException: ex);
             }
 

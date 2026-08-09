@@ -345,6 +345,7 @@ public sealed class WorkspaceManager : IWorkspaceManager
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "$id": "https://local/desktop-automation-agent/plan.schema.json",
           "title": "DesktopAutomationAgent Plan Manifest",
+          "$comment": "AUTHORITATIVE combined step limit: DesktopAutomationAgent PlanValidator enforces (steps + onFailureSteps) <= 1000. Per-array maxItems below are editor hints only and do not replace that combined rule. Reserved argument names are also rejected case-insensitively by PlanValidator; propertyNames patterns use portable ECMA-262 character classes.",
           "type": "object",
           "required": [
             "schemaVersion",
@@ -402,6 +403,19 @@ public sealed class WorkspaceManager : IWorkspaceManager
             }
           },
           "$defs": {
+            "reservedArgumentName": {
+              "anyOf": [
+                {
+                  "pattern": "^[Oo][Pp][Ee][Rr][Aa][Tt][Ii][Oo][Nn]$"
+                },
+                {
+                  "pattern": "^[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]$"
+                },
+                {
+                  "pattern": "^[Bb][Ee][Aa][Rr][Ee][Rr][Tt][Oo][Kk][Ee][Nn]$"
+                }
+              ]
+            },
             "mainStep": {
               "type": "object",
               "required": [
@@ -425,14 +439,7 @@ public sealed class WorkspaceManager : IWorkspaceManager
                   "additionalProperties": true,
                   "propertyNames": {
                     "not": {
-                      "enum": [
-                        "operation",
-                        "authorization",
-                        "bearerToken",
-                        "Operation",
-                        "Authorization",
-                        "BearerToken"
-                      ]
+                      "$ref": "#/$defs/reservedArgumentName"
                     }
                   }
                 },
@@ -475,14 +482,7 @@ public sealed class WorkspaceManager : IWorkspaceManager
                   "additionalProperties": true,
                   "propertyNames": {
                     "not": {
-                      "enum": [
-                        "operation",
-                        "authorization",
-                        "bearerToken",
-                        "Operation",
-                        "Authorization",
-                        "BearerToken"
-                      ]
+                      "$ref": "#/$defs/reservedArgumentName"
                     }
                   }
                 },

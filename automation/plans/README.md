@@ -18,7 +18,8 @@ deterministic runner (Phase 2).
 - `schemaVersion` must be `1` and `catalogSchemaVersion` must be `2`.
 - `planId` must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`.
 - `steps` is required and must contain at least one step. `onFailureSteps` is optional.
-- Combined `steps` + `onFailureSteps` count must not exceed `1000`.
+- Combined `steps` + `onFailureSteps` count must not exceed `1000`
+  (authoritative rule enforced by the C# `PlanValidator`; schema `maxItems` are editor hints only).
 - Step `id` values must be unique (case-insensitive) across all step lists.
 - Each step requires `operation` (no leading/trailing whitespace) and an `arguments` object.
 - Do not place `operation`, `authorization`, or `bearerToken` inside `arguments`.

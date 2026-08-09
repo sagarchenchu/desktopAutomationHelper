@@ -53,6 +53,7 @@ public static class CommandLine
             _ => new ParsedCommand
             {
                 Kind = AgentCommandKind.Help,
+                Json = HasFlag(rest, "--json") || HasFlag(args, "--json"),
                 Error = $"Unknown command '{args[0]}'."
             }
         };
@@ -210,7 +211,7 @@ public static class CommandLine
 
     private static ParsedCommand ParseDoctor(string[] rest)
     {
-        var json = false;
+        var json = HasFlag(rest, "--json");
         var config = new List<string>();
         var unknown = new List<string>();
 
@@ -218,10 +219,7 @@ public static class CommandLine
         {
             var arg = rest[i];
             if (arg is "--json")
-            {
-                json = true;
                 continue;
-            }
 
             if (TryTakeConfigArg(rest, ref i, config))
                 continue;
@@ -234,6 +232,7 @@ public static class CommandLine
             return new ParsedCommand
             {
                 Kind = AgentCommandKind.Doctor,
+                Json = json,
                 Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
                 ConfigurationArgs = config.ToArray()
             };
@@ -249,8 +248,9 @@ public static class CommandLine
 
     private static ParsedCommand ParseValidatePlan(string[] rest)
     {
+        // Scan flags before detailed parsing so early error returns still preserve --json.
+        var json = HasFlag(rest, "--json");
         string? file = null;
-        var json = false;
         var config = new List<string>();
         var unknown = new List<string>();
 
@@ -264,7 +264,9 @@ public static class CommandLine
                     return new ParsedCommand
                     {
                         Kind = AgentCommandKind.ValidatePlan,
-                        Error = "--file requires a path."
+                        Json = json,
+                        Error = "--file requires a path.",
+                        ConfigurationArgs = config.ToArray()
                     };
                 }
 
@@ -273,10 +275,7 @@ public static class CommandLine
             }
 
             if (arg is "--json")
-            {
-                json = true;
                 continue;
-            }
 
             if (TryTakeConfigArg(rest, ref i, config))
                 continue;
@@ -289,6 +288,7 @@ public static class CommandLine
             return new ParsedCommand
             {
                 Kind = AgentCommandKind.ValidatePlan,
+                Json = json,
                 Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
                 ConfigurationArgs = config.ToArray()
             };
@@ -299,6 +299,7 @@ public static class CommandLine
             return new ParsedCommand
             {
                 Kind = AgentCommandKind.ValidatePlan,
+                Json = json,
                 Error = "validate-plan requires --file <path>.",
                 ConfigurationArgs = config.ToArray()
             };
@@ -315,9 +316,10 @@ public static class CommandLine
 
     private static ParsedCommand ParseRunPlan(string[] rest)
     {
+        // Scan flags before detailed parsing so early error returns still preserve --json.
+        var json = HasFlag(rest, "--json");
+        var dryRun = HasFlag(rest, "--dry-run");
         string? file = null;
-        var json = false;
-        var dryRun = false;
         var config = new List<string>();
         var unknown = new List<string>();
 
@@ -331,7 +333,10 @@ public static class CommandLine
                     return new ParsedCommand
                     {
                         Kind = AgentCommandKind.RunPlan,
-                        Error = "--file requires a path."
+                        Json = json,
+                        DryRun = dryRun,
+                        Error = "--file requires a path.",
+                        ConfigurationArgs = config.ToArray()
                     };
                 }
 
@@ -339,17 +344,8 @@ public static class CommandLine
                 continue;
             }
 
-            if (arg is "--json")
-            {
-                json = true;
+            if (arg is "--json" or "--dry-run")
                 continue;
-            }
-
-            if (arg is "--dry-run")
-            {
-                dryRun = true;
-                continue;
-            }
 
             if (TryTakeConfigArg(rest, ref i, config))
                 continue;
@@ -362,6 +358,8 @@ public static class CommandLine
             return new ParsedCommand
             {
                 Kind = AgentCommandKind.RunPlan,
+                Json = json,
+                DryRun = dryRun,
                 Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
                 ConfigurationArgs = config.ToArray()
             };
@@ -372,6 +370,8 @@ public static class CommandLine
             return new ParsedCommand
             {
                 Kind = AgentCommandKind.RunPlan,
+                Json = json,
+                DryRun = dryRun,
                 Error = "run-plan requires --file <path>.",
                 ConfigurationArgs = config.ToArray()
             };
@@ -386,6 +386,9 @@ public static class CommandLine
             ConfigurationArgs = config.ToArray()
         };
     }
+
+    private static bool HasFlag(string[] args, string flag) =>
+        args.Any(arg => string.Equals(arg, flag, StringComparison.Ordinal));
 
     private static (string[] ConfigArgs, List<string> Unknown) SplitConfigArgs(string[] rest)
     {

@@ -45,6 +45,11 @@ Required top-level fields: `schemaVersion` (`1`), `catalogSchemaVersion` (`2`),
 
 Optional: `$schema`, `description`, `tags`, `metadata`, `onFailureSteps`.
 
+The checked-in JSON Schema documents shape for editors. The **authoritative**
+combined limit `(steps + onFailureSteps) <= 1000` is enforced by
+`PlanValidator` in C#; per-array `maxItems` hints in the schema are not a
+substitute for that combined rule.
+
 Example (session-free): `automation/plans/example.plan.json`.
 
 When sending `POST /ui`, arguments are flattened:
