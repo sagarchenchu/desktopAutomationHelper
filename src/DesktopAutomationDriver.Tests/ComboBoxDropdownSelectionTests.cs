@@ -39,6 +39,7 @@ public class ComboBoxDropdownSelectionTests
 
         _controller = new UiController(
             _uiMock.Object,
+            new UiOperationCatalog(),
             NullLogger<UiController>.Instance,
             configMock.Object);
         _controller.ControllerContext = new ControllerContext
