@@ -43,7 +43,11 @@ dotnet test src/DesktopAutomationDriver.Tests/DesktopAutomationDriver.Tests.cspr
 - `IsKnownOperation` no longer trims (matches `UiService.Execute`).
 - Audited metadata for launch, switchwindow, select, scroll, dragbyoffset, getposition, contextmenupath/tree paths, sendkeysuia, inspectcombobox, iseditable, finduia.
 - `dumpuia` and all `popup-alert` ops: `requiresSession: false` (processId / desktop discovery).
-- `findlocator` alternatives: locator | locatorPath | criteria; `finduia` alternatives: locator | nameContains | hwnd | className.
+- `findlocator` alternatives: locator | locatorPath | criteria; `finduia` alternatives: locator | nameContains | bestMatch | hwnd | className.
+- Session-optional coordinate/global paths: `closewindow`, `listtrackedwindows`, `scroll`, `mousescroll`, `dragbyoffset`, `dragcoordinates`, `mouse`, `sendkeysuia`.
+- `clickmenu` requires `value`; `popupok` alternatives: value | hwnd | className.
+- value/index alternatives: `selectcomboboxuia`, `selectopendropdownitem`, `clickheaderdropdownitem`, `selectheaderdropdownitem`.
+- `mousescroll`: locator | x+y; `mouse`: action+x+y | action+fromX+fromY+toX+toY.
 - `UiOperationCatalogResponse.SchemaVersion` default aligned to 2.
 
 ## Public API compatibility statement
