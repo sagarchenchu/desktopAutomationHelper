@@ -1,0 +1,16 @@
+{
+  "Driver": {
+    "BaseUrl": "http://127.0.0.1:33201",
+    "BearerToken": "REPLACE_WITH_TOKEN_FROM_VERIFY",
+    "VerifyUrl": "http://localhost:9102/verify",
+    "RequestTimeoutSeconds": 20,
+    "ExpectedCatalogSchemaVersion": 2,
+    "AllowRemoteDriver": false
+  },
+  "Workspace": {
+    "Root": "automation"
+  },
+  "Suites": {
+    "JiraKeyPattern": "^[A-Z][A-Z0-9_]*-[0-9]+$"
+  }
+}
