@@ -1755,8 +1755,11 @@ Workspace init, suite/key validation, verify discovery, status/catalog readiness
 ### Phase 2 — deterministic plan runner
 
 Validates and executes already-compiled JSON plans through `POST /ui`.
-Phase 2 performs no Jira, BDD, AI, object-repository, database, scheduling or
-suite orchestration work.
+
+### Phase 3 — object repository
+
+Object repository validation, capture (`dumpuia`), verify (`finduia`), offline
+`$objectRef` expansion in plans, and promotion workflow for page objects.
 
 ```cmd
 dotnet run --project src/DesktopAutomationAgent -- init
@@ -1765,14 +1768,19 @@ dotnet run --project src/DesktopAutomationAgent -- validate-keys --keys SAMPLE-1
 dotnet run --project src/DesktopAutomationAgent -- validate-plan --file automation/plans/example.plan.json
 dotnet run --project src/DesktopAutomationAgent -- run-plan --file automation/plans/example.plan.json --dry-run
 dotnet run --project src/DesktopAutomationAgent -- run-plan --file automation/plans/example.plan.json
+dotnet run --project src/DesktopAutomationAgent -- validate-object-repository --file automation/object-repository/repository.json
+dotnet run --project src/DesktopAutomationAgent -- resolve-object --file automation/object-repository/repository.json --ref page.element
+dotnet run --project src/DesktopAutomationAgent -- capture-page --file automation/object-repository/repository.json --page login --name "Login"
+dotnet run --project src/DesktopAutomationAgent -- verify-object-repository --file automation/object-repository/repository.json
 dotnet run --project src/DesktopAutomationAgent -- doctor
 dotnet run --project src/DesktopAutomationAgent -- doctor --json
 ```
 
 Configuration precedence: `appsettings.json` → `automation/config/agentsettings.local.json`
 → `DA_AGENT__*` environment variables → command-line. See
-[`docs/phase1-agent-foundation.md`](docs/phase1-agent-foundation.md) and
-[`docs/phase2-deterministic-runner.md`](docs/phase2-deterministic-runner.md).
+[`docs/phase1-agent-foundation.md`](docs/phase1-agent-foundation.md),
+[`docs/phase2-deterministic-runner.md`](docs/phase2-deterministic-runner.md), and
+[`docs/phase3-object-repository.md`](docs/phase3-object-repository.md).
 
 ---
 

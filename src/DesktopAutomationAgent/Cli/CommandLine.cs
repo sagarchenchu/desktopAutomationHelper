@@ -8,7 +8,11 @@ public enum AgentCommandKind
     ValidateKeys,
     Doctor,
     ValidatePlan,
-    RunPlan
+    RunPlan,
+    ValidateObjectRepository,
+    ResolveObject,
+    CapturePage,
+    VerifyObjectRepository
 }
 
 public sealed class ParsedCommand
@@ -18,6 +22,24 @@ public sealed class ParsedCommand
     public string? SuiteFile { get; init; }
 
     public string? PlanFile { get; init; }
+
+    public string? RepositoryFile { get; init; }
+
+    public string? ObjectRef { get; init; }
+
+    public string? PageId { get; init; }
+
+    public string? PageName { get; init; }
+
+    public string? View { get; init; }
+
+    public string? Root { get; init; }
+
+    public int? MaxDepth { get; init; }
+
+    public int? MaxChildren { get; init; }
+
+    public bool? IncludeOffscreen { get; init; }
 
     public IReadOnlyList<string> Keys { get; init; } = Array.Empty<string>();
 
@@ -50,6 +72,10 @@ public static class CommandLine
             "doctor" => ParseDoctor(rest),
             "validate-plan" => ParseValidatePlan(rest),
             "run-plan" => ParseRunPlan(rest),
+            "validate-object-repository" => ParseValidateObjectRepository(rest),
+            "resolve-object" => ParseResolveObject(rest),
+            "capture-page" => ParseCapturePage(rest),
+            "verify-object-repository" => ParseVerifyObjectRepository(rest),
             _ => new ParsedCommand
             {
                 Kind = AgentCommandKind.Help,
@@ -248,7 +274,6 @@ public static class CommandLine
 
     private static ParsedCommand ParseValidatePlan(string[] rest)
     {
-        // Scan flags before detailed parsing so early error returns still preserve --json.
         var json = HasFlag(rest, "--json");
         string? file = null;
         var config = new List<string>();
@@ -316,7 +341,6 @@ public static class CommandLine
 
     private static ParsedCommand ParseRunPlan(string[] rest)
     {
-        // Scan flags before detailed parsing so early error returns still preserve --json.
         var json = HasFlag(rest, "--json");
         var dryRun = HasFlag(rest, "--dry-run");
         string? file = null;
@@ -387,6 +411,197 @@ public static class CommandLine
         };
     }
 
+    private static ParsedCommand ParseValidateObjectRepository(string[] rest) =>
+        ParseRepositoryCommand(AgentCommandKind.ValidateObjectRepository, rest, requireRef: false, requirePage: false);
+
+    private static ParsedCommand ParseResolveObject(string[] rest) =>
+        ParseRepositoryCommand(AgentCommandKind.ResolveObject, rest, requireRef: true, requirePage: false);
+
+    private static ParsedCommand ParseCapturePage(string[] rest) =>
+        ParseRepositoryCommand(AgentCommandKind.CapturePage, rest, requireRef: false, requirePage: true, requireName: true);
+
+    private static ParsedCommand ParseVerifyObjectRepository(string[] rest) =>
+        ParseRepositoryCommand(AgentCommandKind.VerifyObjectRepository, rest, requireRef: false, requirePage: false);
+
+    private static ParsedCommand ParseRepositoryCommand(
+        AgentCommandKind kind,
+        string[] rest,
+        bool requireRef,
+        bool requirePage,
+        bool requireName = false)
+    {
+        var json = HasFlag(rest, "--json");
+        string? file = null;
+        string? objectRef = null;
+        string? pageId = null;
+        string? pageName = null;
+        string? view = null;
+        string? root = null;
+        int? maxDepth = null;
+        int? maxChildren = null;
+        bool? includeOffscreen = null;
+        var config = new List<string>();
+        var unknown = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            switch (arg)
+            {
+                case "--file" or "-f":
+                    if (i + 1 >= rest.Length)
+                        return Error(kind, json, "--file requires a path.", config);
+                    if (!seen.Add("file"))
+                        return Error(kind, json, "--file may not be repeated.", config);
+                    file = rest[++i];
+                    continue;
+                case "--ref":
+                    if (i + 1 >= rest.Length)
+                        return Error(kind, json, "--ref requires a page.element reference.", config);
+                    if (!seen.Add("ref"))
+                        return Error(kind, json, "--ref may not be repeated.", config);
+                    objectRef = rest[++i];
+                    continue;
+                case "--page":
+                    if (i + 1 >= rest.Length)
+                        return Error(kind, json, "--page requires a page id.", config);
+                    if (!seen.Add("page"))
+                        return Error(kind, json, "--page may not be repeated.", config);
+                    pageId = rest[++i];
+                    continue;
+                case "--name":
+                    if (i + 1 >= rest.Length)
+                        return Error(kind, json, "--name requires a page name.", config);
+                    if (!seen.Add("name"))
+                        return Error(kind, json, "--name may not be repeated.", config);
+                    pageName = rest[++i];
+                    continue;
+                case "--view":
+                    if (i + 1 >= rest.Length)
+                        return Error(kind, json, "--view requires a value.", config);
+                    if (!seen.Add("view"))
+                        return Error(kind, json, "--view may not be repeated.", config);
+                    view = rest[++i];
+                    continue;
+                case "--root":
+                    if (i + 1 >= rest.Length)
+                        return Error(kind, json, "--root requires a value.", config);
+                    if (!seen.Add("root"))
+                        return Error(kind, json, "--root may not be repeated.", config);
+                    root = rest[++i];
+                    continue;
+                case "--max-depth":
+                    if (i + 1 >= rest.Length)
+                        return Error(kind, json, "--max-depth requires a value.", config);
+                    if (!seen.Add("max-depth"))
+                        return Error(kind, json, "--max-depth may not be repeated.", config);
+                    if (!int.TryParse(rest[++i], out var depth))
+                        return Error(kind, json, "--max-depth requires an integer.", config);
+                    maxDepth = depth;
+                    continue;
+                case "--max-children":
+                    if (i + 1 >= rest.Length)
+                        return Error(kind, json, "--max-children requires a value.", config);
+                    if (!seen.Add("max-children"))
+                        return Error(kind, json, "--max-children may not be repeated.", config);
+                    if (!int.TryParse(rest[++i], out var children))
+                        return Error(kind, json, "--max-children requires an integer.", config);
+                    maxChildren = children;
+                    continue;
+                case "--include-offscreen":
+                    if (!seen.Add("include-offscreen"))
+                        return Error(kind, json, "--include-offscreen may not be repeated.", config);
+                    includeOffscreen = true;
+                    continue;
+                case "--json":
+                    continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = kind,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(file))
+        {
+            return Error(kind, json, $"{CommandName(kind)} requires --file <path>.", config);
+        }
+
+        if (requireRef && string.IsNullOrWhiteSpace(objectRef))
+        {
+            return Error(kind, json, $"{CommandName(kind)} requires --ref <page.element>.", config);
+        }
+
+        if (requirePage && string.IsNullOrWhiteSpace(pageId))
+        {
+            return Error(kind, json, $"{CommandName(kind)} requires --page <page-id>.", config);
+        }
+
+        if (requireName && string.IsNullOrWhiteSpace(pageName))
+        {
+            return Error(kind, json, $"{CommandName(kind)} requires --name <page-name>.", config);
+        }
+
+        if (kind == AgentCommandKind.VerifyObjectRepository
+            && !string.IsNullOrWhiteSpace(pageId)
+            && !string.IsNullOrWhiteSpace(objectRef))
+        {
+            return Error(kind, json, "--page and --ref are mutually exclusive.", config);
+        }
+
+        return new ParsedCommand
+        {
+            Kind = kind,
+            RepositoryFile = file,
+            ObjectRef = objectRef,
+            PageId = pageId,
+            PageName = pageName,
+            View = view,
+            Root = root,
+            MaxDepth = maxDepth,
+            MaxChildren = maxChildren,
+            IncludeOffscreen = includeOffscreen,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand Error(
+        AgentCommandKind kind,
+        bool json,
+        string message,
+        List<string> config) =>
+        new()
+        {
+            Kind = kind,
+            Json = json,
+            Error = message,
+            ConfigurationArgs = config.ToArray()
+        };
+
+    private static string CommandName(AgentCommandKind kind) =>
+        kind switch
+        {
+            AgentCommandKind.ValidateObjectRepository => "validate-object-repository",
+            AgentCommandKind.ResolveObject => "resolve-object",
+            AgentCommandKind.CapturePage => "capture-page",
+            AgentCommandKind.VerifyObjectRepository => "verify-object-repository",
+            _ => kind.ToString()
+        };
+
     private static bool HasFlag(string[] args, string flag) =>
         args.Any(arg => string.Equals(arg, flag, StringComparison.Ordinal));
 
@@ -411,10 +626,12 @@ public static class CommandLine
             || arg.StartsWith("--Workspace:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("--Suites:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("--Runner:", StringComparison.OrdinalIgnoreCase)
+            || arg.StartsWith("--ObjectRepository:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Driver__", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Workspace__", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Suites__", StringComparison.OrdinalIgnoreCase)
-            || arg.StartsWith("Runner__", StringComparison.OrdinalIgnoreCase))
+            || arg.StartsWith("Runner__", StringComparison.OrdinalIgnoreCase)
+            || arg.StartsWith("ObjectRepository__", StringComparison.OrdinalIgnoreCase))
         {
             config.Add(arg);
             if (!arg.Contains('=', StringComparison.Ordinal) && index + 1 < args.Length)
@@ -433,7 +650,7 @@ public static class CommandLine
 
     public static string HelpText =>
         """
-        Desktop Automation Agent (Phase 2)
+        Desktop Automation Agent (Phase 3)
 
         Commands:
           init
@@ -446,11 +663,27 @@ public static class CommandLine
               Validate ad-hoc Jira keys. Does not call Jira.
 
           validate-plan --file <path> [--json]
-              Offline plan validation. Makes no HTTP calls and writes no run artifacts.
+              Offline plan validation, including optional object-repository expansion.
+              Makes no HTTP calls and writes no run artifacts.
 
           run-plan --file <path> [--dry-run] [--json]
               Preflight against the live driver catalog, then execute the plan through POST /ui.
               --dry-run validates only (GET /status and /ui/operations); never calls POST /ui.
+
+          validate-object-repository --file <repository.json> [--json]
+              Offline object repository validation. Makes no HTTP calls.
+
+          resolve-object --file <repository.json> --ref <page.element> [--json]
+              Offline object reference resolution. Makes no HTTP calls.
+
+          capture-page --file <repository.json> --page <page-id> --name <page-name>
+              [--view control|content|raw] [--root activeWindow|processWindows|desktopChildren]
+              [--max-depth N] [--max-children N] [--include-offscreen] [--json]
+              Capture UI nodes via dumpuia and write capture/candidate artifacts.
+
+          verify-object-repository --file <repository.json>
+              [--page <page-id> | --ref <page.element>] [--json]
+              Verify active repository objects via finduia.
 
           doctor [--json]
               Run configuration, workspace, driver discovery, status, and catalog checks.
@@ -463,10 +696,10 @@ public static class CommandLine
           2 usage or configuration error
           3 driver unavailable or unsafe discovery
           4 authentication or catalog incompatibility
-          5 suite, plan, workspace or artifact validation failure
-          6 UI operation, timeout or assertion failure
+          5 suite, plan, workspace, object repository or artifact validation failure
+          6 UI operation, timeout, capture/verify or assertion failure
           7 execution cancelled
 
-        Phase 2 performs no Jira, BDD, AI, object-repository, database, scheduling or suite orchestration work.
+        Phase 3 adds object-repository capture, verify, resolve, and plan $objectRef expansion.
         """;
 }

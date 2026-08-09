@@ -65,6 +65,12 @@ public static class ObjectLocatorValidator
             }
         }
 
+        RejectBlankString(locator.AutomationId, "automationId", location, errors);
+        RejectBlankString(locator.Name, "name", location, errors);
+        RejectBlankString(locator.ClassName, "className", location, errors);
+        RejectBlankString(locator.ControlType, "controlType", location, errors);
+        RejectBlankString(locator.MatchMode, "matchMode", location, errors);
+
         if (!string.IsNullOrWhiteSpace(locator.MatchMode)
             && !AllowedMatchModes.Contains(locator.MatchMode))
         {
@@ -124,4 +130,16 @@ public static class ObjectLocatorValidator
     }
 
     private static bool HasValue(string? value) => !string.IsNullOrWhiteSpace(value);
+
+    private static void RejectBlankString(
+        string? value,
+        string propertyName,
+        string location,
+        List<string> errors)
+    {
+        if (value is not null && string.IsNullOrWhiteSpace(value))
+        {
+            errors.Add($"{location}: {propertyName} must not be blank or whitespace.");
+        }
+    }
 }

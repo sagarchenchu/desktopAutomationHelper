@@ -56,7 +56,7 @@ public sealed class WorkspaceManager : IWorkspaceManager
                     continue;
                 }
 
-                File.WriteAllText(full, contents);
+                File.WriteAllText(full, contents.EndsWith('\n') ? contents : contents + "\n");
                 created.Add(relativePath);
             }
 
@@ -189,6 +189,9 @@ public sealed class WorkspaceManager : IWorkspaceManager
         "suites",
         "plans",
         "object-repository",
+        "object-repository/pages",
+        "object-repository/candidates",
+        "object-repository/captures",
         "runs"
     ];
 
@@ -203,6 +206,10 @@ public sealed class WorkspaceManager : IWorkspaceManager
             ["plans/README.md"] = PlansReadme,
             ["plans/example.plan.json"] = ExamplePlan,
             ["object-repository/README.md"] = ObjectRepositoryReadme,
+            ["object-repository/repository.json"] = ObjectRepositoryManifest,
+            ["object-repository/.gitignore"] = ObjectRepositoryGitIgnore,
+            ["schemas/object-repository.schema.json"] = ObjectRepositorySchema,
+            ["schemas/page-object.schema.json"] = PageObjectSchema,
             ["runs/.gitignore"] = RunsGitIgnore
         };
 
@@ -229,6 +236,13 @@ public sealed class WorkspaceManager : IWorkspaceManager
             "MaxPlanBytes": 1048576,
             "MaxResponseBytes": 10485760,
             "RegexTimeoutMilliseconds": 500
+          },
+          "ObjectRepository": {
+            "MaxFileBytes": 5242880,
+            "MaxPages": 500,
+            "MaxElementsPerPage": 5000,
+            "MaxTotalElements": 50000,
+            "DiagnosticTimeoutMilliseconds": 15000
           }
         }
         """;
@@ -385,6 +399,10 @@ public sealed class WorkspaceManager : IWorkspaceManager
             "metadata": {
               "type": "object",
               "additionalProperties": true
+            },
+            "objectRepository": {
+              "type": "string",
+              "minLength": 1
             },
             "steps": {
               "type": "array",
@@ -554,10 +572,345 @@ public sealed class WorkspaceManager : IWorkspaceManager
 
     private const string ObjectRepositoryReadme =
         """
-        # Object repository
+        # Object repository (Phase 3)
 
-        Reserved for page and element definitions in a later phase.
+        The object repository stores **approved, versioned UI locators** for deterministic plan execution.
+
+        ## Layout
+
+        ```text
+        object-repository/
+          repository.json          # manifest (tracked)
+          pages/                   # active page-object documents (tracked)
+          candidates/              # draft page objects awaiting promotion (gitignored)
+          captures/                # raw capture output from tooling (gitignored)
+        ```
+
+        ## CLI workflow
+
+        ```bash
+        # Offline validation
+        dotnet run --project src/DesktopAutomationAgent -- validate-object-repository \
+          --file automation/object-repository/repository.json
+
+        # Offline resolve one reference
+        dotnet run --project src/DesktopAutomationAgent -- resolve-object \
+          --file automation/object-repository/repository.json --ref login.submit
+
+        # Live capture (dumpuia) — writes captures/ and candidates/
+        dotnet run --project src/DesktopAutomationAgent -- capture-page \
+          --file automation/object-repository/repository.json \
+          --page login --name "Login page" \
+          [--view control|content|raw] \
+          [--root activeWindow|processWindows|desktopChildren] \
+          [--max-depth 8] [--max-children 200] [--include-offscreen] \
+          [--json]
+
+        # Live verify (finduia) — all active objects, or filter
+        dotnet run --project src/DesktopAutomationAgent -- verify-object-repository \
+          --file automation/object-repository/repository.json \
+          [--page login | --ref login.submit] [--json]
+        ```
+
+        Plans may reference repository objects via `$objectRef` in locator arguments when
+        `objectRepository` is set on the plan. See `docs/phase3-object-repository.md`.
+
+        ## Captures vs approved objects
+
+        | Area | Purpose | Git |
+        |------|---------|-----|
+        | `captures/` | Raw, machine-generated locator snapshots from a capture session | Ignored |
+        | `candidates/` | Human-reviewed drafts promoted from captures | Ignored |
+        | `pages/` | Active page-object JSON referenced by `repository.json` | Tracked |
+
+        **Captures are never executed directly.** Operators review captures, curate locators,
+        and **manually promote** approved definitions into `pages/` with `state: "active"`.
+
+        ## PII and secrets
+
+        - Do **not** store passwords, tokens, customer data, or other PII in page objects.
+        - Prefer stable `automationId` and structural locators over visible text that may contain names.
+        - Review capture output before promotion; redact or generalize sensitive `name` values.
+
+        ## Locator rules (enforced by the agent)
+
+        Allowed locator fields:
+
+        - `automationId`
+        - `name` + `controlType`
+        - `className` + `controlType`
+        - `matchMode`: `exact`, `contains`, or `startswith`
+        - `foundIndex` (discouraged; adds fragility warnings)
+
+        Volatile fields (handles, coordinates, runtime IDs, bounding boxes, etc.) are **rejected**.
+
+        `automationId` alone is sufficient. Without it, `name` and `controlType` **or** `className` and
+        `controlType` are required.
+
+        ## Manual promotion workflow
+
+        1. Run `capture-page` to write artifacts under `captures/` and `candidates/`.
+        2. Review and edit locators; iterate in `candidates/` if needed.
+        3. Set `state` to `active`, `source.kind` to `manual` or `approved`, and add the page to
+           `repository.json` under `pages/`.
+        4. Run `verify-object-repository` against the promoted page.
+        5. Commit only the manifest and `pages/` files. Never commit `captures/` or `candidates/`.
+
+        Active pages must not contain `source.kind: "capture"` elements.
+
+        ## Identifiers
+
+        `repositoryId`, `pageId`, and element keys must match:
+
+        ```text
+        ^[a-z][a-z0-9-]{0,63}$
+        ```
+
+        Object references use `pageId.elementId` (for example `login.submit-button`).
+
+        ## Schemas
+
+        - `schemas/object-repository.schema.json` — manifest
+        - `schemas/page-object.schema.json` — page documents
+
         Do not store secrets here.
+        """;
+
+    private const string ObjectRepositoryManifest =
+        """
+        {
+          "$schema": "../schemas/object-repository.schema.json",
+          "schemaVersion": 1,
+          "repositoryId": "default",
+          "name": "Default object repository",
+          "pages": []
+        }
+        """;
+
+    private const string ObjectRepositoryGitIgnore =
+        """
+        captures/**
+        candidates/**
+        """;
+
+    private const string ObjectRepositorySchema =
+        """
+        {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "$id": "https://local/desktop-automation-agent/object-repository.schema.json",
+          "title": "DesktopAutomationAgent Object Repository Manifest",
+          "$comment": "AUTHORITATIVE limits: DesktopAutomationAgent ObjectRepositoryValidator enforces MaxPages, MaxElementsPerPage, and MaxTotalElements from configuration. Identifier pattern is lowercase-only and enforced by ObjectRepositoryValidator.",
+          "type": "object",
+          "required": [
+            "schemaVersion",
+            "repositoryId",
+            "name",
+            "pages"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "$schema": {
+              "type": "string"
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "repositoryId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,63}$"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pages": {
+              "type": "array",
+              "maxItems": 500,
+              "items": {
+                "$ref": "#/$defs/pageReference"
+              }
+            }
+          },
+          "$defs": {
+            "pageReference": {
+              "type": "object",
+              "required": [
+                "pageId",
+                "file"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "pageId": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                },
+                "file": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+        """;
+
+    private const string PageObjectSchema =
+        """
+        {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "$id": "https://local/desktop-automation-agent/page-object.schema.json",
+          "title": "DesktopAutomationAgent Page Object Document",
+          "$comment": "AUTHORITATIVE locator rules: DesktopAutomationAgent ObjectLocatorValidator enforces allowed locator fields, volatile property rejection, and combination rules. Active pages must not contain capture-sourced elements.",
+          "type": "object",
+          "required": [
+            "schemaVersion",
+            "pageId",
+            "name",
+            "state",
+            "elements"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "$schema": {
+              "type": "string"
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "pageId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,63}$"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "candidate",
+                "active"
+              ]
+            },
+            "elements": {
+              "type": "object",
+              "maxProperties": 5000,
+              "propertyNames": {
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/element"
+              }
+            },
+            "unresolved": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          },
+          "$defs": {
+            "element": {
+              "type": "object",
+              "required": [
+                "locator"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "locator": {
+                  "$ref": "#/$defs/locator"
+                },
+                "quality": {
+                  "$ref": "#/$defs/quality"
+                },
+                "source": {
+                  "$ref": "#/$defs/source"
+                }
+              }
+            },
+            "locator": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "automationId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "className": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "controlType": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "matchMode": {
+                  "type": "string",
+                  "enum": [
+                    "exact",
+                    "contains",
+                    "startswith"
+                  ]
+                },
+                "foundIndex": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "quality": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "grade": {
+                  "type": "string",
+                  "enum": [
+                    "strong",
+                    "medium",
+                    "weak"
+                  ]
+                },
+                "warnings": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "source": {
+              "type": "object",
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "capture",
+                    "manual",
+                    "approved"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "metadata": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
         """;
 
     private const string RunsGitIgnore =
@@ -565,6 +918,7 @@ public sealed class WorkspaceManager : IWorkspaceManager
         *
         !.gitignore
         """;
+
 }
 
 public sealed class WorkspaceException : Exception
