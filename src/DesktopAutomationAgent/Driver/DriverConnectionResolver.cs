@@ -85,6 +85,10 @@ public sealed class DriverConnectionResolver : IDriverConnectionResolver
         {
             response = await client.GetAsync(verifyUri, cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             throw new DriverConnectionException(

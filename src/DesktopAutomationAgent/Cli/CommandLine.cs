@@ -6,7 +6,9 @@ public enum AgentCommandKind
     Init,
     ValidateSuite,
     ValidateKeys,
-    Doctor
+    Doctor,
+    ValidatePlan,
+    RunPlan
 }
 
 public sealed class ParsedCommand
@@ -15,9 +17,13 @@ public sealed class ParsedCommand
 
     public string? SuiteFile { get; init; }
 
+    public string? PlanFile { get; init; }
+
     public IReadOnlyList<string> Keys { get; init; } = Array.Empty<string>();
 
     public bool Json { get; init; }
+
+    public bool DryRun { get; init; }
 
     public string? Error { get; init; }
 
@@ -42,9 +48,12 @@ public static class CommandLine
             "validate-suite" => ParseValidateSuite(rest),
             "validate-keys" => ParseValidateKeys(rest),
             "doctor" => ParseDoctor(rest),
+            "validate-plan" => ParseValidatePlan(rest),
+            "run-plan" => ParseRunPlan(rest),
             _ => new ParsedCommand
             {
                 Kind = AgentCommandKind.Help,
+                Json = HasFlag(rest, "--json") || HasFlag(args, "--json"),
                 Error = $"Unknown command '{args[0]}'."
             }
         };
@@ -202,7 +211,7 @@ public static class CommandLine
 
     private static ParsedCommand ParseDoctor(string[] rest)
     {
-        var json = false;
+        var json = HasFlag(rest, "--json");
         var config = new List<string>();
         var unknown = new List<string>();
 
@@ -210,10 +219,7 @@ public static class CommandLine
         {
             var arg = rest[i];
             if (arg is "--json")
-            {
-                json = true;
                 continue;
-            }
 
             if (TryTakeConfigArg(rest, ref i, config))
                 continue;
@@ -226,6 +232,7 @@ public static class CommandLine
             return new ParsedCommand
             {
                 Kind = AgentCommandKind.Doctor,
+                Json = json,
                 Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
                 ConfigurationArgs = config.ToArray()
             };
@@ -238,6 +245,150 @@ public static class CommandLine
             ConfigurationArgs = config.ToArray()
         };
     }
+
+    private static ParsedCommand ParseValidatePlan(string[] rest)
+    {
+        // Scan flags before detailed parsing so early error returns still preserve --json.
+        var json = HasFlag(rest, "--json");
+        string? file = null;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--file" or "-f")
+            {
+                if (i + 1 >= rest.Length)
+                {
+                    return new ParsedCommand
+                    {
+                        Kind = AgentCommandKind.ValidatePlan,
+                        Json = json,
+                        Error = "--file requires a path.",
+                        ConfigurationArgs = config.ToArray()
+                    };
+                }
+
+                file = rest[++i];
+                continue;
+            }
+
+            if (arg is "--json")
+                continue;
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.ValidatePlan,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(file))
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.ValidatePlan,
+                Json = json,
+                Error = "validate-plan requires --file <path>.",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.ValidatePlan,
+            PlanFile = file,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand ParseRunPlan(string[] rest)
+    {
+        // Scan flags before detailed parsing so early error returns still preserve --json.
+        var json = HasFlag(rest, "--json");
+        var dryRun = HasFlag(rest, "--dry-run");
+        string? file = null;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--file" or "-f")
+            {
+                if (i + 1 >= rest.Length)
+                {
+                    return new ParsedCommand
+                    {
+                        Kind = AgentCommandKind.RunPlan,
+                        Json = json,
+                        DryRun = dryRun,
+                        Error = "--file requires a path.",
+                        ConfigurationArgs = config.ToArray()
+                    };
+                }
+
+                file = rest[++i];
+                continue;
+            }
+
+            if (arg is "--json" or "--dry-run")
+                continue;
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.RunPlan,
+                Json = json,
+                DryRun = dryRun,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(file))
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.RunPlan,
+                Json = json,
+                DryRun = dryRun,
+                Error = "run-plan requires --file <path>.",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.RunPlan,
+            PlanFile = file,
+            Json = json,
+            DryRun = dryRun,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static bool HasFlag(string[] args, string flag) =>
+        args.Any(arg => string.Equals(arg, flag, StringComparison.Ordinal));
 
     private static (string[] ConfigArgs, List<string> Unknown) SplitConfigArgs(string[] rest)
     {
@@ -259,9 +410,11 @@ public static class CommandLine
         if (arg.StartsWith("--Driver:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("--Workspace:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("--Suites:", StringComparison.OrdinalIgnoreCase)
+            || arg.StartsWith("--Runner:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Driver__", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Workspace__", StringComparison.OrdinalIgnoreCase)
-            || arg.StartsWith("Suites__", StringComparison.OrdinalIgnoreCase))
+            || arg.StartsWith("Suites__", StringComparison.OrdinalIgnoreCase)
+            || arg.StartsWith("Runner__", StringComparison.OrdinalIgnoreCase))
         {
             config.Add(arg);
             if (!arg.Contains('=', StringComparison.Ordinal) && index + 1 < args.Length)
@@ -280,7 +433,7 @@ public static class CommandLine
 
     public static string HelpText =>
         """
-        Desktop Automation Agent (Phase 1)
+        Desktop Automation Agent (Phase 2)
 
         Commands:
           init
@@ -292,6 +445,13 @@ public static class CommandLine
           validate-keys --keys <KEY-1,KEY-2>
               Validate ad-hoc Jira keys. Does not call Jira.
 
+          validate-plan --file <path> [--json]
+              Offline plan validation. Makes no HTTP calls and writes no run artifacts.
+
+          run-plan --file <path> [--dry-run] [--json]
+              Preflight against the live driver catalog, then execute the plan through POST /ui.
+              --dry-run validates only (GET /status and /ui/operations); never calls POST /ui.
+
           doctor [--json]
               Run configuration, workspace, driver discovery, status, and catalog checks.
 
@@ -299,10 +459,14 @@ public static class CommandLine
           appsettings.json -> automation/config/agentsettings.local.json -> DA_AGENT__* env -> CLI
 
         Exit codes:
-          0 success
+          0 success or successful dry run
           2 usage or configuration error
           3 driver unavailable or unsafe discovery
           4 authentication or catalog incompatibility
-          5 suite or workspace validation failure
+          5 suite, plan, workspace or artifact validation failure
+          6 UI operation, timeout or assertion failure
+          7 execution cancelled
+
+        Phase 2 performs no Jira, BDD, AI, object-repository, database, scheduling or suite orchestration work.
         """;
 }

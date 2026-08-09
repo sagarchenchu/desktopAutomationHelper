@@ -12,6 +12,8 @@ public class WorkspaceManagerTests
 
         var first = workspace.Initialize();
         Assert.Contains(first.CreatedPaths, p => p.Replace('\\', '/') == "suites/smoke.json");
+        Assert.Contains(first.CreatedPaths, p => p.Replace('\\', '/') == "schemas/plan.schema.json");
+        Assert.Contains(first.CreatedPaths, p => p.Replace('\\', '/') == "plans/example.plan.json");
 
         var marker = "custom-user-content";
         var smokePath = Path.Combine(workspace.RootPath, "suites", "smoke.json");
@@ -19,6 +21,7 @@ public class WorkspaceManagerTests
 
         var second = workspace.Initialize();
         Assert.Contains(second.SkippedExistingPaths, p => p.Replace('\\', '/') == "suites/smoke.json");
+        Assert.Contains(second.SkippedExistingPaths, p => p.Replace('\\', '/') == "schemas/plan.schema.json");
         Assert.Equal(marker, File.ReadAllText(smokePath));
 
         Directory.Delete(options.Workspace.Root, recursive: true);
