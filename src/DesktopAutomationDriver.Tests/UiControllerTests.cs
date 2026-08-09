@@ -28,6 +28,7 @@ public class UiControllerTests
 
         _controller = new UiController(
             _uiServiceMock.Object,
+            new UiOperationCatalog(),
             NullLogger<UiController>.Instance,
             configMock.Object);
         _controller.ControllerContext = new ControllerContext

@@ -49,6 +49,7 @@ builder.Services.AddSingleton<INativeUiaComboBoxService, NativeUiaComboBoxServic
 builder.Services.AddSingleton<INativeUiaBasicOperationService, NativeUiaBasicOperationService>();
 builder.Services.AddSingleton<INativeUiaGridService, NativeUiaGridService>();
 builder.Services.AddSingleton<INativeUiaTreeDiagnosticService, NativeUiaTreeDiagnosticService>();
+builder.Services.AddSingleton<IUiOperationCatalog, UiOperationCatalog>();
 builder.Services.AddSingleton<IUiService, UiService>();
 
 builder.Logging.AddConsole();
