@@ -21,8 +21,8 @@ The agent may call only:
 | `GET` | `/ui/operations` | Operation catalog |
 | `POST` | `/ui` | Execute one deterministic plan step |
 
-`validate-plan` makes **no** HTTP calls.  
-`run-plan --dry-run` may call `/verify`, `/status`, and `/ui/operations`, but never `POST /ui`.  
+`validate-plan` makes **no** HTTP calls.
+`run-plan --dry-run` may call `/verify`, `/status`, and `/ui/operations`, but never `POST /ui`.
 Only a real `run-plan` may call `POST /ui`.
 
 ## Deterministic guarantees
@@ -114,9 +114,9 @@ dotnet run --project src/DesktopAutomationAgent -- run-plan --file automation/pl
 | 6 | UI operation, timeout or assertion failure |
 | 7 | Execution cancelled |
 
-Unsupported operations and missing required inputs are code `5`.  
-An invalid driver catalog itself is code `4`.  
-Cleanup failure does not replace an established primary exit code.  
+Unsupported operations and missing required inputs are code `5`.
+An invalid driver catalog itself is code `4`.
+Cleanup failure does not replace an established primary exit code.
 Failure to persist `run.json` is code `5` and never reports success.
 
 ## Run reports
