@@ -1743,13 +1743,36 @@ requests.delete(f"{BASE}/session/{session_id}", headers=AUTH)
 
 ---
 
+## Desktop Automation Agent
+
+Phase 1 foundation for a project-specific testing agent that talks to this driver
+**only over HTTP**. It never references driver internals and does not execute UI
+operations yet.
+
+```cmd
+dotnet run --project src/DesktopAutomationAgent -- init
+dotnet run --project src/DesktopAutomationAgent -- validate-suite --file automation/suites/smoke.json
+dotnet run --project src/DesktopAutomationAgent -- validate-keys --keys SAMPLE-1,SAMPLE-2
+dotnet run --project src/DesktopAutomationAgent -- doctor
+dotnet run --project src/DesktopAutomationAgent -- doctor --json
+```
+
+Configuration precedence: `appsettings.json` → `automation/config/agentsettings.local.json`
+→ `DA_AGENT__*` environment variables → command-line. See
+[`docs/phase1-agent-foundation.md`](docs/phase1-agent-foundation.md) for discovery
+rules, Citrix username safety, suite manifests, and exit codes.
+
+---
+
 ## Building from Source
 
-> **Note:** Building and running requires **Windows** (UIA2/UIA3 are Windows-only APIs).
+> **Note:** Building and running the **driver** requires **Windows** (UIA2/UIA3 are Windows-only APIs).
+> The **agent** targets `net8.0` and can be built/tested on non-Windows hosts.
 
 ```cmd
 dotnet build DesktopAutomationHelper.slnx --configuration Release
 dotnet test src/DesktopAutomationDriver.Tests --configuration Release
+dotnet test src/DesktopAutomationAgent.Tests --configuration Release
 ```
 
 ### Publish standalone EXE
