@@ -93,17 +93,53 @@ public sealed class PlanObjectReferenceExpander
             {
                 if (AllowedLocatorKeys.Contains(key))
                 {
-                    if (TryGetObjectRef(value, out var reference))
-                    {
-                        hasObjectRefs = true;
-                        ValidateReferenceFormat(reference, $"{location}.arguments.{key}", errors);
-                    }
-
+                    ValidateLocatorArgument(value, $"{location}.arguments.{key}", errors, ref hasObjectRefs);
                     continue;
                 }
 
                 ScanForForbiddenMarkers(value, $"{location}.arguments.{key}", errors, ref hasObjectRefs);
             }
+        }
+    }
+
+    private static void ValidateLocatorArgument(
+        JsonElement value,
+        string location,
+        List<string> errors,
+        ref bool hasObjectRefs)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                if (ContainsObjectRefProperty(value))
+                {
+                    hasObjectRefs = true;
+                    if (!TryGetObjectRef(value, out var reference))
+                    {
+                        errors.Add(
+                            $"{location}: $objectRef marker must be an object with exactly one property '$objectRef' (string).");
+                        return;
+                    }
+
+                    ValidateReferenceFormat(reference, location, errors);
+                    return;
+                }
+
+                // Raw locator object: reject nested $objectRef anywhere inside.
+                foreach (var property in value.EnumerateObject())
+                {
+                    ScanForForbiddenMarkers(
+                        property.Value,
+                        $"{location}.{property.Name}",
+                        errors,
+                        ref hasObjectRefs);
+                }
+
+                break;
+
+            case JsonValueKind.Array:
+                ScanForForbiddenMarkers(value, location, errors, ref hasObjectRefs);
+                break;
         }
     }
 
@@ -166,16 +202,19 @@ public sealed class PlanObjectReferenceExpander
         switch (element.ValueKind)
         {
             case JsonValueKind.Object:
-                if (element.TryGetProperty("$objectRef", out var objectRef))
+                if (ContainsObjectRefProperty(element))
                 {
                     hasObjectRefs = true;
-                    if (element.EnumerateObject().Count() != 1)
+                    if (element.EnumerateObject().Count() != 1
+                        || !element.TryGetProperty("$objectRef", out var objectRef)
+                        || objectRef.ValueKind != JsonValueKind.String)
                     {
                         errors.Add($"{location}: $objectRef marker must be an object with exactly one property.");
                     }
                     else
                     {
-                        errors.Add($"{location}: $objectRef is only allowed in locator, locator2, parentLocator, or containerLocator.");
+                        errors.Add(
+                            $"{location}: $objectRef is only allowed as the direct value of locator, locator2, parentLocator, or containerLocator.");
                     }
 
                     return;
@@ -198,6 +237,20 @@ public sealed class PlanObjectReferenceExpander
 
                 break;
         }
+    }
+
+    private static bool ContainsObjectRefProperty(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+            return false;
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.NameEquals("$objectRef"))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool TryGetObjectRef(JsonElement element, out string reference)

@@ -37,7 +37,7 @@ public sealed class PlanObjectRepositoryIntegrator
             if (!repositoryResult.IsValid || repositoryResult.Snapshot is null)
             {
                 errors.AddRange(repositoryResult.Errors);
-                return Rebuild(validation, errors, warnings, null, null);
+                return Rebuild(validation, errors, warnings, null, null, attachRepositoryAudit: false);
             }
 
             snapshot = repositoryResult.Snapshot;
@@ -46,7 +46,7 @@ public sealed class PlanObjectRepositoryIntegrator
         if (snapshot is null)
         {
             errors.Add($"{validation.PlanPath}: object repository is required when the plan contains $objectRef markers.");
-            return Rebuild(validation, errors, warnings, null, null);
+            return Rebuild(validation, errors, warnings, null, null, attachRepositoryAudit: false);
         }
 
         var expansion = _expander.Expand(plan, snapshot, validation.PlanPath);
@@ -54,10 +54,16 @@ public sealed class PlanObjectRepositoryIntegrator
         if (!expansion.Success)
         {
             errors.AddRange(expansion.Errors);
-            return Rebuild(validation, errors, warnings, expansion, null);
+            return Rebuild(validation, errors, warnings, expansion, null, attachRepositoryAudit: false);
         }
 
-        return Rebuild(validation, errors, warnings, expansion, plan);
+        return Rebuild(
+            validation,
+            errors,
+            warnings,
+            expansion,
+            plan,
+            attachRepositoryAudit: expansion.ResolvedObjectReferences.Count > 0);
     }
 
     private static bool RequiresIntegration(PlanManifest plan)
@@ -122,7 +128,8 @@ public sealed class PlanObjectRepositoryIntegrator
         List<string> errors,
         List<string> warnings,
         PlanObjectReferenceExpansionResult? expansion,
-        PlanManifest? plan) =>
+        PlanManifest? plan,
+        bool attachRepositoryAudit) =>
         new()
         {
             PlanPath = validation.PlanPath,
@@ -136,9 +143,9 @@ public sealed class PlanObjectRepositoryIntegrator
             Errors = errors,
             Warnings = warnings,
             Plan = errors.Count == 0 ? (plan ?? validation.Plan) : null,
-            ObjectRepositoryPath = expansion?.RepositoryPath,
-            ObjectRepositoryId = expansion?.RepositoryId,
-            ObjectRepositorySha256 = expansion?.RepositorySha256,
-            ResolvedObjectReferences = expansion?.ResolvedObjectReferences
+            ObjectRepositoryPath = attachRepositoryAudit ? expansion?.RepositoryPath : null,
+            ObjectRepositoryId = attachRepositoryAudit ? expansion?.RepositoryId : null,
+            ObjectRepositorySha256 = attachRepositoryAudit ? expansion?.RepositorySha256 : null,
+            ResolvedObjectReferences = attachRepositoryAudit ? expansion?.ResolvedObjectReferences : null
         };
 }

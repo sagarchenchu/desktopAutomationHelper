@@ -84,6 +84,12 @@ Volatile fields (handles, coordinates, runtime IDs, bounding boxes, etc.) are **
 
 Active pages must not contain `source.kind: "capture"` elements.
 
+## No AI in Phase 3
+
+Phase 3 does **not** call AI providers, perform self-healing, or rewrite locators automatically.
+Validation, capture, verification, resolution, and plan expansion are fully deterministic.
+All approved objects are human-reviewed. GitLab/XAML/WinForms source extraction remains future work.
+
 ## Identifiers
 
 `repositoryId`, `pageId`, and element keys must match:

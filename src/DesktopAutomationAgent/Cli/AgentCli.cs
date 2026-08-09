@@ -407,7 +407,7 @@ public static class AgentCli
                 result.Errors,
                 result.Warnings
             };
-            Console.WriteLine(JsonSerializer.Serialize(payload, JsonOutputOptions));
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
         }
         else
         {
@@ -419,7 +419,7 @@ public static class AgentCli
             {
                 Console.Error.WriteLine("Object repository validation failed:");
                 foreach (var error in result.Errors)
-                    Console.Error.WriteLine($"  - {error}");
+                    Console.Error.WriteLine($"  - {SecretRedactor.Redact(error)}");
             }
             else
             {
@@ -427,7 +427,7 @@ public static class AgentCli
             }
 
             foreach (var warning in result.Warnings)
-                Console.Error.WriteLine($"Warning: {warning}");
+                Console.Error.WriteLine($"Warning: {SecretRedactor.Redact(warning)}");
         }
 
         return result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
@@ -451,7 +451,7 @@ public static class AgentCli
             else
             {
                 foreach (var error in validation.Errors)
-                    Console.Error.WriteLine(error);
+                    Console.Error.WriteLine(SecretRedactor.Redact(error));
             }
 
             return ExitCodes.SuiteOrWorkspace;
@@ -464,18 +464,18 @@ public static class AgentCli
             {
                 success = resolution.IsResolved,
                 reference = resolution.Reference,
+                repositoryId = validation.Snapshot.Manifest.RepositoryId,
+                repositorySha256 = validation.Snapshot.AggregateSha256,
                 pageId = resolution.PageId,
                 elementId = resolution.ElementId,
                 locator = resolution.Locator is null
                     ? (JsonElement?)null
                     : ObjectLocatorSerializer.ToJsonElement(resolution.Locator),
-                errors = resolution.Errors,
                 warnings = resolution.Warnings,
-                repositoryPath = validation.RepositoryPath,
-                repositoryId = validation.Snapshot.Manifest.RepositoryId,
-                repositorySha256 = validation.Snapshot.AggregateSha256
+                errors = resolution.Errors,
+                repositoryPath = validation.RepositoryPath
             };
-            Console.WriteLine(JsonSerializer.Serialize(payload, JsonOutputOptions));
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
         }
         else
         {
@@ -484,12 +484,12 @@ public static class AgentCli
                 Console.WriteLine($"Locator    : {JsonSerializer.Serialize(resolution.Locator, JsonOutputOptions)}");
 
             foreach (var warning in resolution.Warnings)
-                Console.Error.WriteLine($"Warning: {warning}");
+                Console.Error.WriteLine($"Warning: {SecretRedactor.Redact(warning)}");
 
             if (!resolution.IsResolved)
             {
                 foreach (var error in resolution.Errors)
-                    Console.Error.WriteLine(error);
+                    Console.Error.WriteLine(SecretRedactor.Redact(error));
             }
         }
 

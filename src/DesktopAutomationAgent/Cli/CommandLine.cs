@@ -450,62 +450,62 @@ public static class CommandLine
             switch (arg)
             {
                 case "--file" or "-f":
-                    if (i + 1 >= rest.Length)
+                    if (!TryReadFlagValue(rest, ref i, out var fileValue))
                         return Error(kind, json, "--file requires a path.", config);
                     if (!seen.Add("file"))
                         return Error(kind, json, "--file may not be repeated.", config);
-                    file = rest[++i];
+                    file = fileValue;
                     continue;
                 case "--ref":
-                    if (i + 1 >= rest.Length)
+                    if (!TryReadFlagValue(rest, ref i, out var refValue))
                         return Error(kind, json, "--ref requires a page.element reference.", config);
                     if (!seen.Add("ref"))
                         return Error(kind, json, "--ref may not be repeated.", config);
-                    objectRef = rest[++i];
+                    objectRef = refValue;
                     continue;
                 case "--page":
-                    if (i + 1 >= rest.Length)
+                    if (!TryReadFlagValue(rest, ref i, out var pageValue))
                         return Error(kind, json, "--page requires a page id.", config);
                     if (!seen.Add("page"))
                         return Error(kind, json, "--page may not be repeated.", config);
-                    pageId = rest[++i];
+                    pageId = pageValue;
                     continue;
                 case "--name":
-                    if (i + 1 >= rest.Length)
+                    if (!TryReadFlagValue(rest, ref i, out var nameValue))
                         return Error(kind, json, "--name requires a page name.", config);
                     if (!seen.Add("name"))
                         return Error(kind, json, "--name may not be repeated.", config);
-                    pageName = rest[++i];
+                    pageName = nameValue;
                     continue;
                 case "--view":
-                    if (i + 1 >= rest.Length)
+                    if (!TryReadFlagValue(rest, ref i, out var viewValue))
                         return Error(kind, json, "--view requires a value.", config);
                     if (!seen.Add("view"))
                         return Error(kind, json, "--view may not be repeated.", config);
-                    view = rest[++i];
+                    view = viewValue;
                     continue;
                 case "--root":
-                    if (i + 1 >= rest.Length)
+                    if (!TryReadFlagValue(rest, ref i, out var rootValue))
                         return Error(kind, json, "--root requires a value.", config);
                     if (!seen.Add("root"))
                         return Error(kind, json, "--root may not be repeated.", config);
-                    root = rest[++i];
+                    root = rootValue;
                     continue;
                 case "--max-depth":
-                    if (i + 1 >= rest.Length)
+                    if (!TryReadFlagValue(rest, ref i, out var depthRaw))
                         return Error(kind, json, "--max-depth requires a value.", config);
                     if (!seen.Add("max-depth"))
                         return Error(kind, json, "--max-depth may not be repeated.", config);
-                    if (!int.TryParse(rest[++i], out var depth))
+                    if (!int.TryParse(depthRaw, out var depth))
                         return Error(kind, json, "--max-depth requires an integer.", config);
                     maxDepth = depth;
                     continue;
                 case "--max-children":
-                    if (i + 1 >= rest.Length)
+                    if (!TryReadFlagValue(rest, ref i, out var childrenRaw))
                         return Error(kind, json, "--max-children requires a value.", config);
                     if (!seen.Add("max-children"))
                         return Error(kind, json, "--max-children may not be repeated.", config);
-                    if (!int.TryParse(rest[++i], out var children))
+                    if (!int.TryParse(childrenRaw, out var children))
                         return Error(kind, json, "--max-children requires an integer.", config);
                     maxChildren = children;
                     continue;
@@ -604,6 +604,26 @@ public static class CommandLine
 
     private static bool HasFlag(string[] args, string flag) =>
         args.Any(arg => string.Equals(arg, flag, StringComparison.Ordinal));
+
+    private static bool TryReadFlagValue(string[] args, ref int index, out string value)
+    {
+        if (index + 1 >= args.Length)
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        var candidate = args[index + 1];
+        if (candidate.StartsWith("--", StringComparison.Ordinal))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        index++;
+        value = candidate;
+        return true;
+    }
 
     private static (string[] ConfigArgs, List<string> Unknown) SplitConfigArgs(string[] rest)
     {
