@@ -42,7 +42,7 @@ public sealed class UiOperationDescriptor
 /// </summary>
 public sealed class UiOperationCatalogResponse
 {
-    public int SchemaVersion { get; init; } = 1;
+    public int SchemaVersion { get; init; } = 2;
 
     public string DriverVersion { get; init; } = string.Empty;
 
