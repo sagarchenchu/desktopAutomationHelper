@@ -9,6 +9,7 @@ namespace DesktopAutomationDriver.Controllers;
 /// Unified entry point for all UI automation operations.
 ///
 /// POST (or GET) http://127.0.0.1:{port}/ui
+/// GET http://127.0.0.1:{port}/ui/operations
 ///
 /// Request body:
 /// <code>
@@ -28,12 +29,18 @@ namespace DesktopAutomationDriver.Controllers;
 public class UiController : ControllerBase
 {
     private readonly IUiService _uiService;
+    private readonly IUiOperationCatalog _operationCatalog;
     private readonly ILogger<UiController> _logger;
     private readonly string _failureScreenshotDirectory;
 
-    public UiController(IUiService uiService, ILogger<UiController> logger, IConfiguration configuration)
+    public UiController(
+        IUiService uiService,
+        IUiOperationCatalog operationCatalog,
+        ILogger<UiController> logger,
+        IConfiguration configuration)
     {
         _uiService = uiService;
+        _operationCatalog = operationCatalog;
         _logger = logger;
 
         // Directory is configurable via appsettings.json ("FailureScreenshotDirectory").
@@ -45,6 +52,14 @@ public class UiController : ControllerBase
                 ? configPath
                 : Path.Combine(Directory.GetCurrentDirectory(), configPath);
     }
+
+    /// <summary>
+    /// GET /ui/operations — machine-readable catalog of supported /ui operations.
+    /// Does not require an active UI session or launch an application.
+    /// </summary>
+    [HttpGet("operations")]
+    public IActionResult GetOperations() =>
+        Ok(UiResponse.Ok(_operationCatalog.GetCatalog()));
 
     /// <summary>
     /// Executes the requested UI automation operation.
