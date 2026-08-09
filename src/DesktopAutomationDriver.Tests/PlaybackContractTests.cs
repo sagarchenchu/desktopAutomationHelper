@@ -36,8 +36,8 @@ public class PlaybackContractTests
             {
               "actionType": "click",
               "mode": "assistive",
-              "element": { "automationId": "btnOk", "controlType": "Button" },
-              "description": "Click OK"
+              "element": { "automationId": "btnSubmit", "controlType": "Button" },
+              "description": "Click Submit"
             }
           ]
         }
@@ -82,7 +82,7 @@ public class PlaybackContractTests
           "recording": {
             "actions": [
               {
-                "actionType": "focus",
+                "actionType": "hover",
                 "mode": "assistive",
                 "element": { "name": "Field" }
               }
@@ -221,7 +221,8 @@ public class PlaybackContractTests
         var result = _service.Play(payload);
         Assert.False(result.Completed);
         Assert.Equal(1, result.FailedActions);
-        Assert.Equal(2, result.Actions.Count);
+        // Playback returns immediately after the first failure when continueOnError is false.
+        Assert.Equal(1, result.Actions.Count);
         _ui.Verify(s => s.Execute(It.IsAny<UiRequest>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 

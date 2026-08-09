@@ -33,10 +33,15 @@ dotnet test src/DesktopAutomationDriver.Tests/DesktopAutomationDriver.Tests.cspr
 |-------|--------|
 | `dotnet build ...DesktopAutomationDriver.csproj -c Release` | Succeeded |
 | `dotnet build ...DesktopAutomationDriver.Tests.csproj -c Release` | Succeeded (0 errors) |
-| `dotnet test ... -c Release` | Aborted (missing WindowsDesktop runtime) |
+| `dotnet test ... -c Release` | Aborted (missing WindowsDesktop runtime); Windows CI is authoritative |
 | Catalog ↔ `UiService` switch parity (static) | 137 / 137 names covered |
 
-No commit, push, branch, or pull request was created (not authorized for this phase).
+## Follow-up corrections (PR #128 review)
+
+- Fixed three playback contract tests (`Click Submit`, supported `hover` ActionType, `continueOnError:false` action count = 1).
+- Catalog `schemaVersion` = 2 with `requiredInputAlternatives` for multi-shape inputs.
+- `IsKnownOperation` no longer trims (matches `UiService.Execute`).
+- Audited metadata for launch, switchwindow, select, scroll, dragbyoffset, getposition, contextmenupath/tree paths, sendkeysuia, inspectcombobox, iseditable, finduia.
 
 ## Public API compatibility statement
 
