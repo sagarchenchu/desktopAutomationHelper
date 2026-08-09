@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/desktop-automation-agent/suite.schema.json",
+  "title": "DesktopAutomationAgent Suite Manifest",
+  "type": "object",
+  "required": [ "schemaVersion", "name", "testCases" ],
+  "additionalProperties": true,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "enabled": { "type": "boolean", "default": true },
+    "testCases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [ "jiraKey" ],
+        "additionalProperties": true,
+        "properties": {
+          "jiraKey": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*-[0-9]+$"
+          },
+          "enabled": { "type": "boolean", "default": true }
+        }
+      }
+    }
+  }
+}
