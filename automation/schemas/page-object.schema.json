@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/desktop-automation-agent/page-object.schema.json",
+  "title": "DesktopAutomationAgent Page Object Document",
+  "$comment": "AUTHORITATIVE locator rules: DesktopAutomationAgent ObjectLocatorValidator enforces allowed locator fields, volatile property rejection, and combination rules. Active pages must not contain capture-sourced elements.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "pageId",
+    "name",
+    "state",
+    "elements"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "pageId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "candidate",
+        "active"
+      ]
+    },
+    "elements": {
+      "type": "object",
+      "maxProperties": 5000,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/element"
+      }
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "$defs": {
+    "element": {
+      "type": "object",
+      "required": [
+        "locator"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "locator": {
+          "$ref": "#/$defs/locator"
+        },
+        "quality": {
+          "$ref": "#/$defs/quality"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        }
+      }
+    },
+    "locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "automationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "className": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "matchMode": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "contains",
+            "startswith"
+          ]
+        },
+        "foundIndex": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "grade": {
+          "type": "string",
+          "enum": [
+            "strong",
+            "moderate",
+            "weak"
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "capture",
+            "manual",
+            "approved"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

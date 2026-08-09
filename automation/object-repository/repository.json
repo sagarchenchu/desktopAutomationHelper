@@ -1,0 +1,7 @@
+{
+  "$schema": "../schemas/object-repository.schema.json",
+  "schemaVersion": 1,
+  "repositoryId": "default",
+  "name": "Default object repository",
+  "pages": []
+}
