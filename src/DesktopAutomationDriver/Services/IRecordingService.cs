@@ -119,4 +119,38 @@ public interface IRecordingService
     /// <see cref="IsElementInRecordingTarget"/> checks accept elements inside it.
     /// </summary>
     void SetRecordingTargetWindow(IntPtr hwnd, int? processId = null, string? reason = null);
+
+    // ---- Assistive Jira / BDD annotation (session metadata; not RecordedActions) ----
+
+    /// <summary>Stable recording id for the active session, if any.</summary>
+    string? RecordingId { get; }
+
+    /// <summary>Canonical Jira key for the active Assistive Jira scope, if set.</summary>
+    string? JiraKey { get; }
+
+    /// <summary>Safe overlay status fragment for Jira/BDD state (no statement text).</summary>
+    string AssistiveAnnotationStatus { get; }
+
+    /// <summary>Starts or replaces the Jira key before any Jira-scoped action is recorded.</summary>
+    bool TryStartJiraRecording(string? rawKey, out string canonical, out string error);
+
+    /// <summary>Arms a BDD statement for the next action or until finished.</summary>
+    bool TryArmBddStatement(string? statement, BddScope scope, out string groupId, out string error);
+
+    /// <summary>Finishes a multiple-action BDD group so later actions are not associated.</summary>
+    bool TryFinishBddStatement(out string message);
+
+    /// <summary>Cancels a pending BDD group that has not yet associated any actions.</summary>
+    bool TryCancelBddStatement(out string message);
+
+    /// <summary>
+    /// Stores capture context to be consumed by the next Assistive
+    /// <see cref="AddAction"/> / <see cref="RecordAssistiveAction"/> call.
+    /// </summary>
+    void SetPendingAssistiveCaptureContext(AssistiveActionCaptureContext? context);
+
+    /// <summary>
+    /// Central Assistive recording path: assigns event/sequence, Jira/BDD, window/page/object refs.
+    /// </summary>
+    void RecordAssistiveAction(RecordedAction action, AssistiveActionCaptureContext? context = null);
 }

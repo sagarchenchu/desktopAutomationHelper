@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using DesktopAutomationDriver.Models.Recording;
+using DesktopAutomationDriver.Services.Assistive;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
@@ -282,6 +283,9 @@ public sealed class RecordingOverlayWindow : Form
     private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
 
     private const uint GA_ROOT = 2;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -1092,6 +1096,14 @@ public sealed class RecordingOverlayWindow : Form
 
         var sourceLabel = ElementInfo.GetLabel(sourceInfo);
         var targetLabel = ElementInfo.GetLabel(targetInfo);
+        AutomationElement? targetElement = null;
+        try
+        {
+            targetElement = _automation.FromPoint(pt);
+        }
+        catch { /* best effort */ }
+
+        _service.SetPendingAssistiveCaptureContext(CaptureAssistiveContext(targetElement));
         _service.AddAction(new RecordedAction
         {
             ActionType = ActionType.DragAndDrop,
@@ -1573,6 +1585,8 @@ public sealed class RecordingOverlayWindow : Form
         }
 
         menu.Items.Add(new ToolStripSeparator());
+
+        AddJiraBddRecordingMenu(menu);
 
         var capturedClickPoint = pt;
         var capturedClickHwnd = capturedHwnd;
@@ -4840,6 +4854,7 @@ public sealed class RecordingOverlayWindow : Form
     {
         var targetInfo = elementInfo ?? (targetElement == null ? null : BuildElementInfo(targetElement));
 
+        _service.SetPendingAssistiveCaptureContext(CaptureAssistiveContext(targetElement));
         _service.AddAction(new RecordedAction
         {
             ActionType = ActionType.MenuPathClick,
@@ -10915,9 +10930,11 @@ public sealed class RecordingOverlayWindow : Form
             RunAssistiveActionAfterMenuClose(label, () =>
             {
                 var success = false;
+                var captureContext = CaptureAssistiveContext(element);
 
                 try
                 {
+                    _service.SetPendingAssistiveCaptureContext(captureContext);
                     perform();
                     success = true;
                 }
@@ -10956,6 +10973,7 @@ public sealed class RecordingOverlayWindow : Form
 
                 if (!success)
                 {
+                    _service.SetPendingAssistiveCaptureContext(null);
                     _logger.LogWarning(
                         "Assistive action '{Label}' was not recorded because execution failed. Element={Element}",
                         label,
@@ -11000,6 +11018,7 @@ public sealed class RecordingOverlayWindow : Form
             try { result = evaluate(); }
             catch { result = false; }
 
+            _service.SetPendingAssistiveCaptureContext(CaptureAssistiveContext(element));
             _service.AddAction(new RecordedAction
             {
                 ActionType = actionType,
@@ -11351,7 +11370,10 @@ public sealed class RecordingOverlayWindow : Form
             _assistiveActionCount,
             detail);
 
-        _statusLabel.Text = $"  ✓ Recorded: {detail}  │  Ctrl+S = Stop  ";
+        var annotation = _service.AssistiveAnnotationStatus;
+        _statusLabel.Text = string.IsNullOrWhiteSpace(annotation)
+            ? $"  ✓ Recorded: {detail}  │  Ctrl+S = Stop  "
+            : $"  ✓ Recorded: {detail}  │  {annotation}  │  Ctrl+S = Stop  ";
         // Revert to mode label after 2 s
         var timer = new System.Windows.Forms.Timer { Interval = 2000 };
         timer.Tick += (_, _) =>
@@ -11359,11 +11381,263 @@ public sealed class RecordingOverlayWindow : Form
             timer.Stop();
             timer.Dispose();
             if (_service.CurrentMode == RecordingMode.Assistive)
-                _statusLabel.Text = "  Assistive ACTIVE  │  Right-click element  │  Ctrl+Right-click for window actions  │  Ctrl+P = Passive  │  Ctrl+S = Stop  ";
+            {
+                var suffix = _service.AssistiveAnnotationStatus;
+                _statusLabel.Text = string.IsNullOrWhiteSpace(suffix)
+                    ? "  Assistive ACTIVE  │  Right-click element  │  Ctrl+Right-click for window actions  │  Ctrl+P = Passive  │  Ctrl+S = Stop  "
+                    : $"  Assistive ACTIVE  │  {suffix}  │  Right-click element  │  Ctrl+S = Stop  ";
+            }
             else if (_service.CurrentMode == RecordingMode.Passive)
                 _statusLabel.Text = "  Passive ACTIVE  │  Recording clicks & keys  │  Ctrl+A = Assistive  │  Ctrl+S = Stop  ";
         };
         timer.Start();
+    }
+
+    private void AddJiraBddRecordingMenu(ContextMenuStrip menu)
+    {
+        var jiraKey = _service.JiraKey;
+        var hasJira = !string.IsNullOrWhiteSpace(jiraKey);
+        var submenu = new ToolStripMenuItem("Jira / BDD Recording");
+
+        if (!hasJira)
+        {
+            var start = new ToolStripMenuItem("Start Jira Recording…");
+            start.Click += (_, _) => PromptStartJiraRecording();
+            submenu.DropDownItems.Add(start);
+            submenu.DropDownItems.Add(new ToolStripMenuItem("Current Jira: Not set") { Enabled = false });
+            submenu.DropDownItems.Add(new ToolStripMenuItem("Take BDD Statement (Next Action)…") { Enabled = false });
+            submenu.DropDownItems.Add(new ToolStripMenuItem("Take BDD Statement (Multiple Actions)…") { Enabled = false });
+            submenu.DropDownItems.Add(new ToolStripMenuItem("Finish Current BDD Statement") { Enabled = false });
+            submenu.DropDownItems.Add(new ToolStripMenuItem("Cancel Pending BDD Statement") { Enabled = false });
+        }
+        else
+        {
+            submenu.DropDownItems.Add(new ToolStripMenuItem($"Current Jira: {jiraKey}") { Enabled = false });
+
+            var next = new ToolStripMenuItem("Take BDD Statement (Next Action)…");
+            next.Click += (_, _) => PromptArmBdd(BddScope.NextAction);
+            submenu.DropDownItems.Add(next);
+
+            var multi = new ToolStripMenuItem("Take BDD Statement (Multiple Actions)…");
+            multi.Click += (_, _) => PromptArmBdd(BddScope.UntilFinished);
+            submenu.DropDownItems.Add(multi);
+
+            var finish = new ToolStripMenuItem("Finish Current BDD Statement");
+            finish.Click += (_, _) =>
+            {
+                if (_service.TryFinishBddStatement(out var message))
+                    _statusLabel.Text = $"  {message}  │  {_service.AssistiveAnnotationStatus}  ";
+                else
+                    MessageBox.Show(this, message, "BDD Statement", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            };
+            submenu.DropDownItems.Add(finish);
+
+            var cancel = new ToolStripMenuItem("Cancel Pending BDD Statement");
+            cancel.Click += (_, _) =>
+            {
+                if (_service.TryCancelBddStatement(out var message))
+                    _statusLabel.Text = $"  {message}  ";
+                else
+                    MessageBox.Show(this, message, "BDD Statement", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            };
+            submenu.DropDownItems.Add(cancel);
+        }
+
+        menu.Items.Add(submenu);
+        menu.Items.Add(new ToolStripSeparator());
+    }
+
+    private void PromptStartJiraRecording()
+    {
+        while (true)
+        {
+            var input = PromptForText("Start Jira Recording", "Enter Jira key (e.g. ABC-1234):", _service.JiraKey ?? string.Empty);
+            if (input is null)
+                return;
+
+            if (_service.TryStartJiraRecording(input, out var canonical, out var error))
+            {
+                _statusLabel.Text = $"  Jira {canonical}  │  BDD not armed  │  Right-click to continue  ";
+                return;
+            }
+
+            var retry = MessageBox.Show(
+                this,
+                error + Environment.NewLine + Environment.NewLine + "Try again?",
+                "Invalid Jira Key",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (retry != DialogResult.Yes)
+                return;
+        }
+    }
+
+    private void PromptArmBdd(BddScope scope)
+    {
+        while (true)
+        {
+            var title = scope == BddScope.NextAction
+                ? "BDD Statement (Next Action)"
+                : "BDD Statement (Multiple Actions)";
+            var input = PromptForText(title, "Enter BDD statement:", string.Empty);
+            if (input is null)
+                return;
+
+            if (_service.TryArmBddStatement(input, scope, out var groupId, out var error))
+            {
+                _logger.LogInformation(
+                    "BDD {GroupId} armed from overlay ({Scope}, {CharCount} chars).",
+                    groupId,
+                    scope,
+                    input.Trim().Length);
+                _statusLabel.Text = $"  {_service.AssistiveAnnotationStatus}  ";
+                return;
+            }
+
+            var retry = MessageBox.Show(
+                this,
+                error + Environment.NewLine + Environment.NewLine + "Try again?",
+                "Invalid BDD Statement",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (retry != DialogResult.Yes)
+                return;
+        }
+    }
+
+    private string? PromptForText(string title, string prompt, string defaultValue)
+    {
+        using var dialog = new Form
+        {
+            Text = title,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterScreen,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ShowInTaskbar = false,
+            ClientSize = new Size(420, 140),
+            TopMost = true
+        };
+
+        var label = new WinLabel
+        {
+            Text = prompt,
+            AutoSize = false,
+            Location = new Point(12, 12),
+            Size = new Size(396, 24)
+        };
+        var box = new System.Windows.Forms.TextBox
+        {
+            Location = new Point(12, 40),
+            Size = new Size(396, 23),
+            Text = defaultValue
+        };
+        var ok = new System.Windows.Forms.Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Location = new Point(252, 80),
+            Size = new Size(75, 28)
+        };
+        var cancel = new System.Windows.Forms.Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Location = new Point(333, 80),
+            Size = new Size(75, 28)
+        };
+
+        dialog.Controls.Add(label);
+        dialog.Controls.Add(box);
+        dialog.Controls.Add(ok);
+        dialog.Controls.Add(cancel);
+        dialog.AcceptButton = ok;
+        dialog.CancelButton = cancel;
+
+        return dialog.ShowDialog(this) == DialogResult.OK ? box.Text : null;
+    }
+
+    private AssistiveActionCaptureContext CaptureAssistiveContext(AutomationElement? element)
+    {
+        var window = CaptureWindowContext(element);
+        return new AssistiveActionCaptureContext
+        {
+            Window = window,
+            PageId = null
+        };
+    }
+
+    private RecordedWindowContext? CaptureWindowContext(AutomationElement? element)
+    {
+        try
+        {
+            AutomationElement? windowElement = null;
+            if (element != null)
+                windowElement = FindWindowAncestorOrSelf(element);
+
+            string? title = null;
+            int? processId = null;
+            IntPtr hwnd = IntPtr.Zero;
+
+            if (windowElement != null)
+            {
+                try { title = windowElement.Name; } catch { /* fallback below */ }
+                try { processId = windowElement.Properties.ProcessId.Value; } catch { }
+                try
+                {
+                    var raw = windowElement.Properties.NativeWindowHandle.ValueOrDefault;
+                    if (raw != 0)
+                        hwnd = new IntPtr(raw);
+                }
+                catch { }
+            }
+
+            if (hwnd == IntPtr.Zero && element != null)
+            {
+                try
+                {
+                    var raw = element.Properties.NativeWindowHandle.ValueOrDefault;
+                    if (raw != 0)
+                        hwnd = GetAncestor(new IntPtr(raw), GA_ROOT);
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrWhiteSpace(title) && hwnd != IntPtr.Zero)
+                title = TryGetWin32WindowTitle(hwnd);
+
+            if (processId is null)
+                processId = _service.GetRecordingTargetProcessId();
+
+            if (string.IsNullOrWhiteSpace(title) && hwnd == IntPtr.Zero && processId is null)
+                return null;
+
+            return new RecordedWindowContext
+            {
+                Title = title,
+                NormalizedTitle = DeterministicPageIdGenerator.NormalizeTitle(title),
+                ProcessId = processId,
+                NativeWindowHandle = hwnd == IntPtr.Zero ? null : $"0x{hwnd.ToInt64():X8}"
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to capture Assistive window context.");
+            return null;
+        }
+    }
+
+    private static string? TryGetWin32WindowTitle(IntPtr hwnd)
+    {
+        try
+        {
+            var buffer = new System.Text.StringBuilder(512);
+            return GetWindowText(hwnd, buffer, buffer.Capacity) > 0 ? buffer.ToString() : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
