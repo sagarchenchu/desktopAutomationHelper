@@ -386,52 +386,6 @@ public sealed class RecordingService : IRecordingService, IDisposable
         return BuildExport();
     }
 
-    /// <inheritdoc />
-    public bool TryDiscardFailedRecording(out string message)
-    {
-        lock (_lock)
-        {
-            if (_exportState == RecordingExportState.InProgress)
-            {
-                message = "Cannot discard while export is still in progress.";
-                return false;
-            }
-
-            if (_lifecycle == RecordingLifecycleState.Active || _isActive)
-            {
-                message = "Recording is still active. Call stop first, or discard only after a failed export.";
-                return false;
-            }
-
-            if (_lifecycle != RecordingLifecycleState.Stopping
-                || _exportState == RecordingExportState.Completed)
-            {
-                message = "No failed recording export to discard.";
-                return false;
-            }
-
-            // Stopping + NotStarted (primary write failed or never completed) — abandon.
-            _actions.Clear();
-            _exportFilePath = null;
-            _artifactsSummary = null;
-            _exportState = RecordingExportState.NotStarted;
-            _lifecycle = RecordingLifecycleState.Idle;
-            _stoppedAt = null;
-            _isActive = false;
-            _currentMode = RecordingMode.None;
-            _assistive.Reset($"discarded-{Guid.NewGuid():N}");
-            _recordingTargetProcessId = null;
-            _recordingTargetMainHwnd = IntPtr.Zero;
-            _recordingTargetExePath = null;
-            _allowedTargetWindows.Clear();
-            Monitor.PulseAll(_lock);
-
-            message = "Failed recording export discarded. A new recording may be started.";
-            _logger.LogWarning("Discarded failed recording export session.");
-            return true;
-        }
-    }
-
     public RecordingExport GetCurrentState() => BuildExport();
 
     public void SetMode(RecordingMode mode)
@@ -1034,7 +988,8 @@ public sealed class RecordingService : IRecordingService, IDisposable
             {
                 if (_exportState == RecordingExportState.InProgress)
                     _exportState = RecordingExportState.NotStarted;
-                // Intentionally leave _lifecycle == Stopping until export succeeds or discard.
+                // Intentionally leave _lifecycle == Stopping until export retry succeeds.
+                // Failed recordings stay protected; a new start cannot clear the session.
                 Monitor.PulseAll(_lock);
             }
 

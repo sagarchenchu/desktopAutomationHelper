@@ -32,13 +32,6 @@ public interface IRecordingService
     /// </summary>
     RecordingExport StopRecording();
 
-    /// <summary>
-    /// Abandons a recording that is stuck in stop/export after a failed primary write
-    /// (lifecycle <c>Stopping</c>, export not completed). Clears actions and IDs so a
-    /// new <see cref="StartRecording"/> can proceed.
-    /// </summary>
-    bool TryDiscardFailedRecording(out string message);
-
     /// <summary>Returns the current state (including all recorded actions so far).</summary>
     RecordingExport GetCurrentState();
 

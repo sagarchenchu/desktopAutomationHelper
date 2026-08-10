@@ -148,7 +148,7 @@ Without a Jira key:
 - Export is single-flight (`NotStarted` → `InProgress` → `Completed`); concurrent `/record/status` waits for or reuses the same export.
 - Recording lifecycle is `Idle` → `Active` → `Stopping` → `Idle`; starts are rejected for the whole stop/export window, not only after export `InProgress`.
 - `POST /record/stop` claims `Stopping` and runs export itself (does not depend on the overlay existing or closing).
-- Failed primary export keeps `Stopping` until retry succeeds; `POST /record/discard` abandons a failed export so a new start is allowed.
+- Failed primary export keeps `Stopping` until retry succeeds (session cannot be erased by a new start).
 - A new recording cannot start while a previous export is still in progress.
 - Sidecar creation failures are reported separately from primary-summary rewrite failures (and do not claim sidecars were written when they were not).
 - Partial staging directories are cleaned on failure.
