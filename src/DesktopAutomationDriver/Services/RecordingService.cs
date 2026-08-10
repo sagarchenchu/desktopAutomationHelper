@@ -85,7 +85,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
     private readonly AssistiveArtifactBuilder _artifactBuilder = new();
     private AssistiveArtifactWriter _artifactWriter = new();
     private RecordingArtifactsSummary? _artifactsSummary;
-    private bool _exportCompleted;
+    private RecordingExportState _exportState = RecordingExportState.NotStarted;
 
     /// <summary>Test seam: replaces the default artifact writer (path-safety / failure injection).</summary>
     internal AssistiveArtifactWriter ArtifactWriterForTests
@@ -97,7 +97,13 @@ public sealed class RecordingService : IRecordingService, IDisposable
     /// <summary>Test seam: inspect export-completed flag.</summary>
     internal bool ExportCompletedForTests
     {
-        get { lock (_lock) return _exportCompleted; }
+        get { lock (_lock) return _exportState == RecordingExportState.Completed; }
+    }
+
+    /// <summary>Test seam: inspect export state machine.</summary>
+    internal RecordingExportState ExportStateForTests
+    {
+        get { lock (_lock) return _exportState; }
     }
 
     /// <summary>Test seam: inspect primary export path.</summary>
@@ -105,6 +111,9 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     /// <summary>Test seam: invoked immediately before the primary recording atomic write.</summary>
     internal Action<string>? BeforePrimaryWriteForTests { get; set; }
+
+    /// <summary>Test seam: invoked after sidecars succeed, before primary summary rewrite.</summary>
+    internal Action? BeforePrimarySummaryRewriteForTests { get; set; }
 
     // ── Recording target (process/window to which Assistive mode is scoped) ──
     private int? _recordingTargetProcessId;
@@ -178,10 +187,18 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
         lock (_lock)
         {
+            if (_exportState == RecordingExportState.InProgress)
+            {
+                return new StartRecordingResult
+                {
+                    Error = "Cannot start a new recording while the previous export is still in progress."
+                };
+            }
+
             _actions.Clear();
             _exportFilePath = null;
             _artifactsSummary = null;
-            _exportCompleted = false;
+            _exportState = RecordingExportState.NotStarted;
             _stoppedAt = null;
             _currentMode = RecordingMode.None;
             _outputPath = request?.OutputPath;
@@ -404,7 +421,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
             _actions.Clear();
             _exportFilePath = null;
             _artifactsSummary = null;
-            _exportCompleted = false;
+            _exportState = RecordingExportState.NotStarted;
             _outputPath = outputDirectory;
             _startedAt = DateTimeOffset.UtcNow;
             _stoppedAt = null;
@@ -858,10 +875,41 @@ public sealed class RecordingService : IRecordingService, IDisposable
     {
         lock (_lock)
         {
-            if (_exportCompleted)
+            while (_exportState == RecordingExportState.InProgress)
+                Monitor.Wait(_lock);
+
+            if (_exportState == RecordingExportState.Completed)
                 return;
+
+            _exportState = RecordingExportState.InProgress;
         }
 
+        try
+        {
+            ExportJsonCore();
+
+            lock (_lock)
+            {
+                _exportState = RecordingExportState.Completed;
+                Monitor.PulseAll(_lock);
+            }
+        }
+        catch
+        {
+            // Primary write failed before a recoverable artifact outcome — allow retry.
+            lock (_lock)
+            {
+                if (_exportState == RecordingExportState.InProgress)
+                    _exportState = RecordingExportState.NotStarted;
+                Monitor.PulseAll(_lock);
+            }
+
+            throw;
+        }
+    }
+
+    private void ExportJsonCore()
+    {
         var dir = ResolveOutputDirectory();
         Directory.CreateDirectory(dir);
         AssistivePathSafety.EnsureWritablePathInside(dir, dir);
@@ -902,20 +950,13 @@ public sealed class RecordingService : IRecordingService, IDisposable
             Actions = snapshot
         };
 
-        // Primary recording must succeed even if sidecars fail. Never mark completed before this write.
-        try
-        {
-            BeforePrimaryWriteForTests?.Invoke(exportFilePath);
-            AssistiveAtomicIO.ReplaceFileAtomic(
-                exportFilePath,
-                JsonSerializer.Serialize(export, JsonOpts));
-        }
-        catch
-        {
-            // Leave _exportCompleted false so a later Stop/export can retry.
-            throw;
-        }
+        // Primary recording must succeed even if sidecars fail.
+        BeforePrimaryWriteForTests?.Invoke(exportFilePath);
+        AssistiveAtomicIO.ReplaceFileAtomic(
+            exportFilePath,
+            JsonSerializer.Serialize(export, JsonOpts));
 
+        RecordingArtifactsSummary? artifactSummary = null;
         try
         {
             var build = _artifactBuilder.Build(
@@ -927,44 +968,51 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
             if (build.Pages.Count > 0 || build.BddActionMap is not null)
             {
-                _artifactsSummary = _artifactWriter.Write(
+                artifactSummary = _artifactWriter.Write(
                     dir,
                     recordingFileName,
                     recordingId,
                     jiraKey,
                     build);
-                export.Artifacts = _artifactsSummary;
-                AssistiveAtomicIO.ReplaceFileAtomic(
-                    exportFilePath,
-                    JsonSerializer.Serialize(export, JsonOpts));
             }
-
-            lock (_lock)
-                _exportCompleted = true;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Assistive artifact export failed; primary recording was preserved.");
-            _artifactsSummary = new RecordingArtifactsSummary
+            artifactSummary = new RecordingArtifactsSummary
             {
                 Warnings = ["Assistive artifact export failed. Primary recording was preserved."]
             };
-            export.Artifacts = _artifactsSummary;
-            try
+        }
+
+        if (artifactSummary is null)
+            return;
+
+        _artifactsSummary = artifactSummary;
+        export.Artifacts = artifactSummary;
+
+        try
+        {
+            BeforePrimarySummaryRewriteForTests?.Invoke();
+            AssistiveAtomicIO.ReplaceFileAtomic(
+                exportFilePath,
+                JsonSerializer.Serialize(export, JsonOpts));
+        }
+        catch (Exception rewriteEx)
+        {
+            // Sidecars (when present) already exist; do not reclassify as artifact export failure.
+            _logger.LogWarning(
+                rewriteEx,
+                "Assistive sidecars were written but rewriting the primary recording with the artifact summary failed. Primary contents from the initial write remain intact.");
+
+            if (!artifactSummary.Warnings.Any(w =>
+                    w.Contains("rewriting the primary", StringComparison.OrdinalIgnoreCase)))
             {
-                AssistiveAtomicIO.ReplaceFileAtomic(
-                    exportFilePath,
-                    JsonSerializer.Serialize(export, JsonOpts));
-            }
-            catch (Exception rewriteEx)
-            {
-                // Atomic replace leaves the prior primary contents intact on failure.
-                _logger.LogWarning(rewriteEx, "Failed to rewrite recording export with artifact warning.");
+                artifactSummary.Warnings.Add(
+                    "Assistive sidecars were written but the primary recording could not be updated with the artifact summary.");
             }
 
-            // Recoverable: primary JSON exists from the first atomic write.
-            lock (_lock)
-                _exportCompleted = true;
+            _artifactsSummary = artifactSummary;
         }
     }
 
@@ -1070,11 +1118,11 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     private RecordingExport BuildExport()
     {
-        bool shouldRetryExport;
+        bool shouldExport;
         lock (_lock)
-            shouldRetryExport = !_exportCompleted && _stoppedAt is not null;
+            shouldExport = _exportState != RecordingExportState.Completed && _stoppedAt is not null;
 
-        if (shouldRetryExport)
+        if (shouldExport)
         {
             try
             {

@@ -932,6 +932,118 @@ public class AssistiveBddRecordingTests
         }
     }
 
+    [Fact]
+    public void Export_IsSingleFlight_ConcurrentCallersShareOneExport()
+    {
+        var output = Path.Combine(Path.GetTempPath(), "da-export-sf-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(output);
+        var session = new Mock<IUiSessionContext>();
+        session.SetupGet(s => s.ActiveSession).Returns((AutomationSession?)null);
+        var service = new RecordingService(NullLogger<RecordingService>.Instance, session.Object);
+
+        try
+        {
+            service.ConfigureAssistiveSessionForTests(output, "rec-single-flight");
+            service.RecordAssistiveAction(Click("ok", "OK"), Window("Welcome"));
+
+            var enteredStaging = new ManualResetEventSlim(false);
+            var releaseStaging = new ManualResetEventSlim(false);
+            var stagingEntries = 0;
+
+            service.ArtifactWriterForTests = new AssistiveArtifactWriter
+            {
+                BeforeCommitStaging = (_, _) =>
+                {
+                    Interlocked.Increment(ref stagingEntries);
+                    enteredStaging.Set();
+                    if (!releaseStaging.Wait(TimeSpan.FromSeconds(10)))
+                        throw new TimeoutException("Release staging timed out.");
+                }
+            };
+
+            var exportTask = Task.Run(() => service.ExportForTests());
+            Assert.True(enteredStaging.Wait(TimeSpan.FromSeconds(10)));
+            Assert.Equal(RecordingExportState.InProgress, service.ExportStateForTests);
+
+            var startWhileExporting = service.StartRecording(new Models.Request.StartRecordingRequest
+            {
+                OutputPath = output
+            });
+            Assert.NotNull(startWhileExporting.Error);
+            Assert.Contains("export is still in progress", startWhileExporting.Error, StringComparison.OrdinalIgnoreCase);
+
+            var statusTask = Task.Run(() => service.GetCurrentState());
+            Thread.Sleep(200);
+            Assert.False(statusTask.IsCompleted);
+
+            releaseStaging.Set();
+            Assert.True(exportTask.Wait(TimeSpan.FromSeconds(10)));
+            var status = statusTask.Result;
+
+            Assert.True(service.ExportCompletedForTests);
+            Assert.Equal(1, stagingEntries);
+            Assert.NotNull(status.ExportedFilePath);
+            Assert.True(Directory.Exists(Path.Combine(output, "assistive-artifacts", "unassigned", "rec-single-flight")));
+        }
+        finally
+        {
+            service.Dispose();
+            try { Directory.Delete(output, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void Export_SummaryRewriteFailure_DoesNotReportArtifactExportFailure()
+    {
+        var output = Path.Combine(Path.GetTempPath(), "da-export-rewrite-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(output);
+        var session = new Mock<IUiSessionContext>();
+        session.SetupGet(s => s.ActiveSession).Returns((AutomationSession?)null);
+        var service = new RecordingService(NullLogger<RecordingService>.Instance, session.Object);
+
+        try
+        {
+            service.ConfigureAssistiveSessionForTests(output, "rec-rewrite");
+            service.RecordAssistiveAction(Click("ok", "OK"), Window("Welcome"));
+            service.BeforePrimarySummaryRewriteForTests = () =>
+                throw new IOException("injected summary rewrite failure");
+
+            service.ExportForTests();
+
+            Assert.True(service.ExportCompletedForTests);
+            Assert.True(Directory.Exists(Path.Combine(output, "assistive-artifacts", "unassigned", "rec-rewrite")));
+            Assert.NotNull(service.GetCurrentState().Artifacts);
+            Assert.Contains(
+                service.GetCurrentState().Artifacts!.Warnings,
+                w => w.Contains("could not be updated with the artifact summary", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(
+                service.GetCurrentState().Artifacts!.Warnings,
+                w => w.Contains("Assistive artifact export failed", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            service.Dispose();
+            try { Directory.Delete(output, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void CaptureContext_IsImmutable_AndUsedAtRecordTime()
+    {
+        var coordinator = new AssistiveRecordingCoordinator();
+        coordinator.Reset("rec-immutable");
+        var preCaptured = Window("Orders");
+        // Mutating a different window title after capture must not affect the recorded page.
+        var action = new RecordedAction
+        {
+            ActionType = ActionType.Click,
+            Element = new ElementInfo { AutomationId = "ok", ControlType = "Button" }
+        };
+        coordinator.EnrichAssistiveAction(action, preCaptured);
+        Assert.Equal("Orders", action.Window!.Title);
+        Assert.Equal("orders", action.PageId);
+    }
+
     private static AssistiveArtifactBuilder.BuildResult MinimalBuild(string recordingId) =>
         new()
         {
