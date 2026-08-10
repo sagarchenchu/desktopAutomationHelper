@@ -83,9 +83,28 @@ public sealed class RecordingService : IRecordingService, IDisposable
     private readonly object _lock = new();
     private readonly AssistiveRecordingCoordinator _assistive = new();
     private readonly AssistiveArtifactBuilder _artifactBuilder = new();
-    private readonly AssistiveArtifactWriter _artifactWriter = new();
+    private AssistiveArtifactWriter _artifactWriter = new();
     private RecordingArtifactsSummary? _artifactsSummary;
     private bool _exportCompleted;
+
+    /// <summary>Test seam: replaces the default artifact writer (path-safety / failure injection).</summary>
+    internal AssistiveArtifactWriter ArtifactWriterForTests
+    {
+        get => _artifactWriter;
+        set => _artifactWriter = value ?? throw new ArgumentNullException(nameof(value));
+    }
+
+    /// <summary>Test seam: inspect export-completed flag.</summary>
+    internal bool ExportCompletedForTests
+    {
+        get { lock (_lock) return _exportCompleted; }
+    }
+
+    /// <summary>Test seam: inspect primary export path.</summary>
+    internal string? ExportFilePathForTests => _exportFilePath;
+
+    /// <summary>Test seam: invoked immediately before the primary recording atomic write.</summary>
+    internal Action<string>? BeforePrimaryWriteForTests { get; set; }
 
     // ── Recording target (process/window to which Assistive mode is scoped) ──
     private int? _recordingTargetProcessId;
@@ -313,12 +332,8 @@ public sealed class RecordingService : IRecordingService, IDisposable
     {
         if (_currentMode == RecordingMode.Assistive)
         {
-            AssistiveActionCaptureContext? context;
-            lock (_lock)
-                context = _assistive.TakePendingCaptureContext();
-
-            RecordAssistiveAction(action, context);
-            return;
+            throw new InvalidOperationException(
+                "Assistive actions must be recorded via RecordAssistiveAction with capture context.");
         }
 
         action.Timestamp = DateTimeOffset.UtcNow;
@@ -338,14 +353,11 @@ public sealed class RecordingService : IRecordingService, IDisposable
             action.ActionType, action.Element?.ControlType ?? "?");
     }
 
-    public void SetPendingAssistiveCaptureContext(AssistiveActionCaptureContext? context)
+    public void RecordAssistiveAction(RecordedAction action, AssistiveActionCaptureContext captureContext)
     {
-        lock (_lock)
-            _assistive.SetPendingCaptureContext(context);
-    }
+        ArgumentNullException.ThrowIfNull(action);
+        ArgumentNullException.ThrowIfNull(captureContext);
 
-    public void RecordAssistiveAction(RecordedAction action, AssistiveActionCaptureContext? context = null)
-    {
         action.Timestamp = DateTimeOffset.UtcNow;
 
         if (string.IsNullOrEmpty(action.Description))
@@ -358,8 +370,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
         lock (_lock)
         {
-            var effectiveContext = context ?? _assistive.TakePendingCaptureContext();
-            _assistive.EnrichAssistiveAction(action, effectiveContext);
+            _assistive.EnrichAssistiveAction(action, captureContext);
             _actions.Add(action);
 
             if (action.Bdd != null)
@@ -378,6 +389,41 @@ public sealed class RecordingService : IRecordingService, IDisposable
                     action.PageId ?? "(none)");
             }
         }
+    }
+
+    /// <summary>
+    /// Test seam: configures an Assistive session without starting the overlay.
+    /// </summary>
+    internal void ConfigureAssistiveSessionForTests(string outputDirectory, string recordingId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recordingId);
+
+        lock (_lock)
+        {
+            _actions.Clear();
+            _exportFilePath = null;
+            _artifactsSummary = null;
+            _exportCompleted = false;
+            _outputPath = outputDirectory;
+            _startedAt = DateTimeOffset.UtcNow;
+            _stoppedAt = null;
+            _isActive = true;
+            _currentMode = RecordingMode.Assistive;
+            _assistive.Reset(recordingId);
+        }
+    }
+
+    /// <summary>Test seam: runs the export pipeline (idempotent / retry-safe).</summary>
+    internal void ExportForTests()
+    {
+        lock (_lock)
+        {
+            _stoppedAt ??= DateTimeOffset.UtcNow;
+            _isActive = false;
+        }
+
+        ExportJson();
     }
 
     public bool TryStartJiraRecording(string? rawKey, out string canonical, out string error)
@@ -814,14 +860,22 @@ public sealed class RecordingService : IRecordingService, IDisposable
         {
             if (_exportCompleted)
                 return;
-            _exportCompleted = true;
         }
 
         var dir = ResolveOutputDirectory();
         Directory.CreateDirectory(dir);
+        AssistivePathSafety.EnsureWritablePathInside(dir, dir);
 
         var stamp = (_stoppedAt ?? DateTimeOffset.UtcNow).ToString("yyyyMMdd_HHmmss");
-        _exportFilePath = Path.Combine(dir, $"recording_{stamp}.json");
+        string exportFilePath;
+        lock (_lock)
+        {
+            // Retry must rewrite the same primary path so a failed export can recover.
+            _exportFilePath ??= Path.Combine(dir, $"recording_{stamp}.json");
+            exportFilePath = _exportFilePath;
+        }
+
+        AssistivePathSafety.EnsureWritablePathInside(exportFilePath, dir);
 
         List<RecordedAction> snapshot;
         string? recordingId;
@@ -834,7 +888,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
         }
 
         recordingId ??= $"rec-{stamp}-{Guid.NewGuid().ToString("N")[..8]}";
-        var recordingFileName = Path.GetFileName(_exportFilePath);
+        var recordingFileName = Path.GetFileName(exportFilePath);
 
         var export = new RecordingExport
         {
@@ -843,13 +897,24 @@ public sealed class RecordingService : IRecordingService, IDisposable
             Mode = _currentMode.ToString(),
             Screen = _screenInfo,
             Launch = _launchInfo,
-            ExportedFilePath = _exportFilePath,
+            ExportedFilePath = exportFilePath,
             RecordingId = recordingId,
             Actions = snapshot
         };
 
-        // Primary recording must succeed even if sidecars fail.
-        File.WriteAllText(_exportFilePath, JsonSerializer.Serialize(export, JsonOpts));
+        // Primary recording must succeed even if sidecars fail. Never mark completed before this write.
+        try
+        {
+            BeforePrimaryWriteForTests?.Invoke(exportFilePath);
+            AssistiveAtomicIO.ReplaceFileAtomic(
+                exportFilePath,
+                JsonSerializer.Serialize(export, JsonOpts));
+        }
+        catch
+        {
+            // Leave _exportCompleted false so a later Stop/export can retry.
+            throw;
+        }
 
         try
         {
@@ -869,8 +934,13 @@ public sealed class RecordingService : IRecordingService, IDisposable
                     jiraKey,
                     build);
                 export.Artifacts = _artifactsSummary;
-                File.WriteAllText(_exportFilePath, JsonSerializer.Serialize(export, JsonOpts));
+                AssistiveAtomicIO.ReplaceFileAtomic(
+                    exportFilePath,
+                    JsonSerializer.Serialize(export, JsonOpts));
             }
+
+            lock (_lock)
+                _exportCompleted = true;
         }
         catch (Exception ex)
         {
@@ -882,12 +952,19 @@ public sealed class RecordingService : IRecordingService, IDisposable
             export.Artifacts = _artifactsSummary;
             try
             {
-                File.WriteAllText(_exportFilePath, JsonSerializer.Serialize(export, JsonOpts));
+                AssistiveAtomicIO.ReplaceFileAtomic(
+                    exportFilePath,
+                    JsonSerializer.Serialize(export, JsonOpts));
             }
             catch (Exception rewriteEx)
             {
+                // Atomic replace leaves the prior primary contents intact on failure.
                 _logger.LogWarning(rewriteEx, "Failed to rewrite recording export with artifact warning.");
             }
+
+            // Recoverable: primary JSON exists from the first atomic write.
+            lock (_lock)
+                _exportCompleted = true;
         }
     }
 
@@ -993,6 +1070,22 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     private RecordingExport BuildExport()
     {
+        bool shouldRetryExport;
+        lock (_lock)
+            shouldRetryExport = !_exportCompleted && _stoppedAt is not null;
+
+        if (shouldRetryExport)
+        {
+            try
+            {
+                ExportJson();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to export recording JSON on retry");
+            }
+        }
+
         List<RecordedAction> snapshot;
         string? recordingId;
         lock (_lock)

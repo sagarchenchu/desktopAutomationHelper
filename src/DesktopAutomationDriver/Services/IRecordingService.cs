@@ -144,13 +144,8 @@ public interface IRecordingService
     bool TryCancelBddStatement(out string message);
 
     /// <summary>
-    /// Stores capture context to be consumed by the next Assistive
-    /// <see cref="AddAction"/> / <see cref="RecordAssistiveAction"/> call.
-    /// </summary>
-    void SetPendingAssistiveCaptureContext(AssistiveActionCaptureContext? context);
-
-    /// <summary>
     /// Central Assistive recording path: assigns event/sequence, Jira/BDD, window/page/object refs.
+    /// Every Assistive action must provide capture context from the target element/window.
     /// </summary>
-    void RecordAssistiveAction(RecordedAction action, AssistiveActionCaptureContext? context = null);
+    void RecordAssistiveAction(RecordedAction action, AssistiveActionCaptureContext captureContext);
 }

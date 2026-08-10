@@ -35,7 +35,6 @@ public sealed class AssistiveRecordingCoordinator
     private readonly Dictionary<string, string> _normalizedTitleToPageId = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HashSet<string>> _pageElementIds = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _locatorKeyToObjectRef = new(StringComparer.Ordinal);
-    private AssistiveActionCaptureContext? _pendingCaptureContext;
 
     public string? RecordingId { get; private set; }
 
@@ -80,17 +79,6 @@ public sealed class AssistiveRecordingCoordinator
         _normalizedTitleToPageId.Clear();
         _pageElementIds.Clear();
         _locatorKeyToObjectRef.Clear();
-        _pendingCaptureContext = null;
-    }
-
-    public void SetPendingCaptureContext(AssistiveActionCaptureContext? context) =>
-        _pendingCaptureContext = context;
-
-    public AssistiveActionCaptureContext? TakePendingCaptureContext()
-    {
-        var ctx = _pendingCaptureContext;
-        _pendingCaptureContext = null;
-        return ctx;
     }
 
     public bool TryStartJiraRecording(string? rawKey, out string canonical, out string error)
@@ -129,6 +117,22 @@ public sealed class AssistiveRecordingCoordinator
         if (string.IsNullOrWhiteSpace(_jiraKey))
         {
             error = "Start Jira recording before entering a BDD statement.";
+            return false;
+        }
+
+        if (_pendingBdd is { Completed: false }
+            && _bddState == BddArmState.ActiveUntilFinished
+            && _pendingBdd.AssociatedActionCount > 0)
+        {
+            error = $"BDD {_pendingBdd.GroupId} is still active for multiple actions. Finish or Cancel it before arming a new statement.";
+            return false;
+        }
+
+        if (_pendingBdd is { Completed: false }
+            && _bddState is BddArmState.ArmedNextAction or BddArmState.ActiveUntilFinished
+            && _pendingBdd.AssociatedActionCount == 0)
+        {
+            error = $"BDD {_pendingBdd.GroupId} is already pending. Finish or Cancel it before arming a new statement.";
             return false;
         }
 
@@ -184,26 +188,29 @@ public sealed class AssistiveRecordingCoordinator
         return true;
     }
 
-    public void EnrichAssistiveAction(RecordedAction action, AssistiveActionCaptureContext? context)
+    public void EnrichAssistiveAction(RecordedAction action, AssistiveActionCaptureContext context)
     {
+        ArgumentNullException.ThrowIfNull(action);
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(context.Window);
+
         _nextSequence++;
         action.Sequence = _nextSequence;
         action.EventId = $"evt-{_nextSequence:D6}";
         action.Mode = RecordingMode.Assistive;
 
-        var window = context?.Window;
-        var pageId = context?.PageId;
+        var window = context.Window;
+        var pageId = context.PageId;
         if (string.IsNullOrWhiteSpace(pageId))
         {
-            var normalized = DeterministicPageIdGenerator.NormalizeTitle(window?.Title);
-            pageId = DeterministicPageIdGenerator.FromWindowTitle(window?.Title, _normalizedTitleToPageId);
+            var normalized = DeterministicPageIdGenerator.NormalizeTitle(window.Title);
+            pageId = DeterministicPageIdGenerator.FromWindowTitle(window.Title, _normalizedTitleToPageId);
             _normalizedTitleToPageId[normalized] = pageId;
-            if (window != null)
-                window.NormalizedTitle = string.IsNullOrWhiteSpace(window.NormalizedTitle)
-                    ? normalized
-                    : window.NormalizedTitle;
+            window.NormalizedTitle = string.IsNullOrWhiteSpace(window.NormalizedTitle)
+                ? normalized
+                : window.NormalizedTitle;
         }
-        else if (window != null)
+        else
         {
             var normalized = DeterministicPageIdGenerator.NormalizeTitle(window.Title);
             _normalizedTitleToPageId[normalized] = pageId!;
@@ -226,8 +233,7 @@ public sealed class AssistiveRecordingCoordinator
                 action.TargetObjectRef = ResolveObjectRef(pageId!, action.TargetElement);
         }
 
-        var deferBdd = context?.DeferBddConsumption == true;
-        if (!deferBdd)
+        if (context.DeferBddConsumption != true)
             AttachAndMaybeConsumeBdd(action);
     }
 
@@ -277,10 +283,18 @@ public sealed class AssistiveRecordingCoordinator
         return objectRef;
     }
 
-    private static bool HasUsableLocator(ElementInfo element) =>
-        !string.IsNullOrWhiteSpace(element.AutomationId)
-        || (!string.IsNullOrWhiteSpace(element.Name) && !string.IsNullOrWhiteSpace(element.ControlType))
-        || (!string.IsNullOrWhiteSpace(element.ClassName) && !string.IsNullOrWhiteSpace(element.ControlType));
+    private static bool HasUsableLocator(ElementInfo element)
+    {
+        if (!string.IsNullOrWhiteSpace(element.AutomationId))
+            return true;
+
+        // Name/className require a Phase-3-recognized controlType when AutomationId is absent.
+        if (!Phase3KnownControlTypes.IsKnown(element.ControlType))
+            return false;
+
+        return !string.IsNullOrWhiteSpace(element.Name)
+               || !string.IsNullOrWhiteSpace(element.ClassName);
+    }
 
     private static string LocatorKey(string pageId, ElementInfo element) =>
         string.Join(

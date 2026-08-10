@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -18,6 +17,12 @@ public sealed class AssistiveArtifactWriter
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
+    /// <summary>
+    /// Test seam: invoked after staging content is written and path-checked,
+    /// immediately before renaming the staging directory into place.
+    /// </summary>
+    internal Action<string /*stagingDir*/, string /*finalDir*/>? BeforeCommitStaging { get; set; }
+
     public RecordingArtifactsSummary Write(
         string outputDirectory,
         string recordingFileName,
@@ -31,81 +36,74 @@ public sealed class AssistiveArtifactWriter
 
         var scope = string.IsNullOrWhiteSpace(jiraKey) ? "unassigned" : jiraKey!;
         var artifactsRoot = Path.Combine(outputDirectory, "assistive-artifacts", scope, recordingId);
-        EnsureInside(outputDirectory, artifactsRoot);
+        AssistivePathSafety.EnsureWritablePathInside(artifactsRoot, outputDirectory);
 
         if (Directory.Exists(artifactsRoot))
             throw new IOException($"Assistive artifact directory already exists for recording '{recordingId}'.");
 
-        Directory.CreateDirectory(artifactsRoot);
-        var pageDir = Path.Combine(artifactsRoot, "page-objects");
-        Directory.CreateDirectory(pageDir);
+        var stagingRoot = Path.Combine(
+            outputDirectory,
+            "assistive-artifacts",
+            scope,
+            $".staging-{recordingId}-{Guid.NewGuid():N}");
 
-        var pageFiles = new List<string>();
-        foreach (var page in buildResult.Pages.OrderBy(p => p.PageId, StringComparer.Ordinal))
-        {
-            var pagePath = Path.Combine(pageDir, $"{page.PageId}.page.json");
-            EnsureInside(outputDirectory, pagePath);
-            WriteAtomic(pagePath, JsonSerializer.Serialize(page, JsonOpts));
-            pageFiles.Add(pagePath);
-        }
-
-        string? mapPath = null;
-        if (buildResult.BddActionMap is not null)
-        {
-            mapPath = Path.Combine(artifactsRoot, "bdd-action-map.json");
-            EnsureInside(outputDirectory, mapPath);
-            WriteAtomic(mapPath, JsonSerializer.Serialize(buildResult.BddActionMap, JsonOpts));
-        }
-
-        return new RecordingArtifactsSummary
-        {
-            Directory = artifactsRoot,
-            BddActionMapFile = mapPath,
-            PageObjectFiles = pageFiles,
-            Warnings = warnings
-        };
-    }
-
-    private static void WriteAtomic(string destinationPath, string contents)
-    {
-        var directory = Path.GetDirectoryName(destinationPath)
-            ?? throw new InvalidOperationException("Destination directory is required.");
-        Directory.CreateDirectory(directory);
-
-        var tempPath = Path.Combine(directory, $".tmp-{Guid.NewGuid():N}.json");
         try
         {
-            File.WriteAllText(tempPath, contents, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            File.Move(tempPath, destinationPath);
+            AssistivePathSafety.EnsureWritablePathInside(stagingRoot, outputDirectory);
+            Directory.CreateDirectory(stagingRoot);
+
+            var pageDir = Path.Combine(stagingRoot, "page-objects");
+            Directory.CreateDirectory(pageDir);
+
+            var stagedPageFiles = new List<string>();
+            foreach (var page in buildResult.Pages.OrderBy(p => p.PageId, StringComparer.Ordinal))
+            {
+                var pagePath = Path.Combine(pageDir, $"{page.PageId}.page.json");
+                AssistivePathSafety.EnsureWritablePathInside(pagePath, outputDirectory);
+                AssistiveAtomicIO.ReplaceFileAtomic(
+                    pagePath,
+                    JsonSerializer.Serialize(page, JsonOpts));
+                stagedPageFiles.Add(pagePath);
+            }
+
+            string? stagedMapPath = null;
+            if (buildResult.BddActionMap is not null)
+            {
+                stagedMapPath = Path.Combine(stagingRoot, "bdd-action-map.json");
+                AssistivePathSafety.EnsureWritablePathInside(stagedMapPath, outputDirectory);
+                AssistiveAtomicIO.ReplaceFileAtomic(
+                    stagedMapPath,
+                    JsonSerializer.Serialize(buildResult.BddActionMap, JsonOpts));
+            }
+
+            // Final destination parents must also be free of reparse-point escapes.
+            var scopeDir = Path.GetDirectoryName(artifactsRoot)!;
+            Directory.CreateDirectory(scopeDir);
+            AssistivePathSafety.EnsureWritablePathInside(artifactsRoot, outputDirectory);
+
+            BeforeCommitStaging?.Invoke(stagingRoot, artifactsRoot);
+
+            Directory.Move(stagingRoot, artifactsRoot);
+
+            var pageFiles = stagedPageFiles
+                .Select(p => Path.Combine(artifactsRoot, "page-objects", Path.GetFileName(p)))
+                .ToList();
+            string? mapPath = stagedMapPath is null
+                ? null
+                : Path.Combine(artifactsRoot, "bdd-action-map.json");
+
+            return new RecordingArtifactsSummary
+            {
+                Directory = artifactsRoot,
+                BddActionMapFile = mapPath,
+                PageObjectFiles = pageFiles,
+                Warnings = warnings
+            };
         }
         catch
         {
-            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* ignore */ }
+            AssistiveAtomicIO.TryDeleteDirectory(stagingRoot);
             throw;
         }
     }
-
-    private static void EnsureInside(string root, string candidate)
-    {
-        var normalizedRoot = Path.GetFullPath(root)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var normalizedCandidate = Path.GetFullPath(candidate);
-        if (WorkspacePathsEqual(normalizedCandidate, normalizedRoot))
-            return;
-
-        var relative = Path.GetRelativePath(normalizedRoot, normalizedCandidate);
-        if (Path.IsPathRooted(relative)
-            || relative == ".."
-            || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
-            || relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException("Assistive artifact path escapes the recording output directory.");
-        }
-    }
-
-    private static bool WorkspacePathsEqual(string left, string right) =>
-        string.Equals(
-            left.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-            right.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 }
