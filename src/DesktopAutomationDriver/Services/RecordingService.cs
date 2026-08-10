@@ -86,6 +86,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
     private AssistiveArtifactWriter _artifactWriter = new();
     private RecordingArtifactsSummary? _artifactsSummary;
     private RecordingExportState _exportState = RecordingExportState.NotStarted;
+    private RecordingLifecycleState _lifecycle = RecordingLifecycleState.Idle;
 
     /// <summary>Test seam: replaces the default artifact writer (path-safety / failure injection).</summary>
     internal AssistiveArtifactWriter ArtifactWriterForTests
@@ -106,6 +107,12 @@ public sealed class RecordingService : IRecordingService, IDisposable
         get { lock (_lock) return _exportState; }
     }
 
+    /// <summary>Test seam: inspect recording lifecycle (Idle/Active/Stopping).</summary>
+    internal RecordingLifecycleState LifecycleStateForTests
+    {
+        get { lock (_lock) return _lifecycle; }
+    }
+
     /// <summary>Test seam: inspect primary export path.</summary>
     internal string? ExportFilePathForTests => _exportFilePath;
 
@@ -114,6 +121,18 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     /// <summary>Test seam: invoked after sidecars succeed, before primary summary rewrite.</summary>
     internal Action? BeforePrimarySummaryRewriteForTests { get; set; }
+
+    /// <summary>
+    /// Test seam: invoked after the session is atomically marked Stopping/inactive,
+    /// before <see cref="ExportJson"/> runs.
+    /// </summary>
+    internal Action? AfterBeginStopBeforeExportForTests { get; set; }
+
+    /// <summary>
+    /// Test seam: when true, <see cref="StartRecording"/> skips the STA overlay thread
+    /// so lifecycle races can be tested without WinForms.
+    /// </summary>
+    internal bool SuppressOverlayForTests { get; set; }
 
     // ── Recording target (process/window to which Assistive mode is scoped) ──
     private int? _recordingTargetProcessId;
@@ -159,11 +178,21 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     // ── IRecordingService ────────────────────────────────────────────────────
 
-    public bool IsActive => _isActive;
+    public bool IsActive
+    {
+        get { lock (_lock) return _lifecycle == RecordingLifecycleState.Active; }
+    }
 
     public RecordingMode CurrentMode => _currentMode;
 
-    public DateTimeOffset? StartedAt => _isActive ? _startedAt : null;
+    public DateTimeOffset? StartedAt
+    {
+        get
+        {
+            lock (_lock)
+                return _lifecycle == RecordingLifecycleState.Active ? _startedAt : null;
+        }
+    }
 
     public string? RecordingId
     {
@@ -182,16 +211,17 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     public StartRecordingResult StartRecording(StartRecordingRequest? request = null)
     {
-        if (_isActive)
-            return new StartRecordingResult { Error = "Recording is already active." };
-
         lock (_lock)
         {
-            if (_exportState == RecordingExportState.InProgress)
+            if (_lifecycle == RecordingLifecycleState.Active || _isActive)
+                return new StartRecordingResult { Error = "Recording is already active." };
+
+            if (_lifecycle == RecordingLifecycleState.Stopping
+                || _exportState == RecordingExportState.InProgress)
             {
                 return new StartRecordingResult
                 {
-                    Error = "Cannot start a new recording while the previous export is still in progress."
+                    Error = "Cannot start a new recording while stop/export is still pending."
                 };
             }
 
@@ -199,6 +229,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
             _exportFilePath = null;
             _artifactsSummary = null;
             _exportState = RecordingExportState.NotStarted;
+            _lifecycle = RecordingLifecycleState.Active;
             _stoppedAt = null;
             _currentMode = RecordingMode.None;
             _outputPath = request?.OutputPath;
@@ -264,51 +295,54 @@ public sealed class RecordingService : IRecordingService, IDisposable
         }
 
         // ── Start the overlay on a dedicated STA thread ───────────────────────
-        _overlayThread = new Thread(() =>
+        if (!SuppressOverlayForTests)
         {
-            WinForms.Application.EnableVisualStyles();
-            WinForms.Application.SetCompatibleTextRenderingDefault(false);
-
-            // Create UIA automation on the STA thread so COM apartment is correct
-            try
+            _overlayThread = new Thread(() =>
             {
-                _automation = new UIA3Automation();
+                WinForms.Application.EnableVisualStyles();
+                WinForms.Application.SetCompatibleTextRenderingDefault(false);
+
+                // Create UIA automation on the STA thread so COM apartment is correct
+                try
+                {
+                    _automation = new UIA3Automation();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not create UIA3Automation on overlay thread");
+                }
+
+                _overlayWindow = new RecordingOverlayWindow(this, _logger);
+                WinForms.Application.Run(_overlayWindow);
+
+                // Clean up after the form closes
+                _automation?.Dispose();
+                _automation = null;
+                _overlayWindow = null;
+
+                // Show the "stopped" notification in the top-right corner on this STA thread
+                var notif = new RecordingStoppedNotification(_exportFilePath);
+                WinForms.Application.Run(notif);
+            })
+            {
+                IsBackground = true,
+                Name = "RecordingOverlay-STA"
+            };
+            _overlayThread.SetApartmentState(ApartmentState.STA);
+            _overlayThread.Start();
+
+            // ── Optional: schedule auto-stop after waitSeconds ────────────────────
+            if (request?.WaitSeconds is > 0)
+            {
+                const int MillisecondsPerSecond = 1000;
+                var ms = request.WaitSeconds.Value * MillisecondsPerSecond;
+                _autoStopTimer = new System.Threading.Timer(_ =>
+                {
+                    _autoStopTimer?.Dispose();
+                    _autoStopTimer = null;
+                    StopRecording();
+                }, null, ms, Timeout.Infinite);
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not create UIA3Automation on overlay thread");
-            }
-
-            _overlayWindow = new RecordingOverlayWindow(this, _logger);
-            WinForms.Application.Run(_overlayWindow);
-
-            // Clean up after the form closes
-            _automation?.Dispose();
-            _automation = null;
-            _overlayWindow = null;
-
-            // Show the "stopped" notification in the top-right corner on this STA thread
-            var notif = new RecordingStoppedNotification(_exportFilePath);
-            WinForms.Application.Run(notif);
-        })
-        {
-            IsBackground = true,
-            Name = "RecordingOverlay-STA"
-        };
-        _overlayThread.SetApartmentState(ApartmentState.STA);
-        _overlayThread.Start();
-
-        // ── Optional: schedule auto-stop after waitSeconds ────────────────────
-        if (request?.WaitSeconds is > 0)
-        {
-            const int MillisecondsPerSecond = 1000;
-            var ms = request.WaitSeconds.Value * MillisecondsPerSecond;
-            _autoStopTimer = new System.Threading.Timer(_ =>
-            {
-                _autoStopTimer?.Dispose();
-                _autoStopTimer = null;
-                StopRecording();
-            }, null, ms, Timeout.Infinite);
         }
 
         _logger.LogInformation("Recording session started at {Time}", _startedAt);
@@ -422,6 +456,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
             _exportFilePath = null;
             _artifactsSummary = null;
             _exportState = RecordingExportState.NotStarted;
+            _lifecycle = RecordingLifecycleState.Active;
             _outputPath = outputDirectory;
             _startedAt = DateTimeOffset.UtcNow;
             _stoppedAt = null;
@@ -436,11 +471,38 @@ public sealed class RecordingService : IRecordingService, IDisposable
     {
         lock (_lock)
         {
+            if (_lifecycle == RecordingLifecycleState.Active || _isActive)
+            {
+                _lifecycle = RecordingLifecycleState.Stopping;
+                _isActive = false;
+            }
+
             _stoppedAt ??= DateTimeOffset.UtcNow;
-            _isActive = false;
         }
 
+        AfterBeginStopBeforeExportForTests?.Invoke();
         ExportJson();
+    }
+
+    /// <summary>
+    /// Atomically marks an active session Stopping and inactive so concurrent starts are rejected
+    /// before export enters <see cref="RecordingExportState.InProgress"/>.
+    /// </summary>
+    private bool TryBeginStopFromActive()
+    {
+        lock (_lock)
+        {
+            if (_lifecycle == RecordingLifecycleState.Stopping)
+                return false;
+
+            if (_lifecycle != RecordingLifecycleState.Active && !_isActive)
+                return false;
+
+            _lifecycle = RecordingLifecycleState.Stopping;
+            _isActive = false;
+            _stoppedAt ??= DateTimeOffset.UtcNow;
+            return true;
+        }
     }
 
     public bool TryStartJiraRecording(string? rawKey, out string canonical, out string error)
@@ -623,12 +685,12 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     public void OnOverlayClosed()
     {
-        if (!_isActive) return;
+        if (!TryBeginStopFromActive())
+            return;
 
-        _isActive = false;
-        _stoppedAt = DateTimeOffset.UtcNow;
+        AfterBeginStopBeforeExportForTests?.Invoke();
 
-        // Export JSON (idempotent)
+        // Export JSON (idempotent / single-flight)
         try
         {
             ExportJson();
@@ -891,6 +953,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
             lock (_lock)
             {
                 _exportState = RecordingExportState.Completed;
+                _lifecycle = RecordingLifecycleState.Idle;
                 Monitor.PulseAll(_lock);
             }
         }
@@ -901,6 +964,11 @@ public sealed class RecordingService : IRecordingService, IDisposable
             {
                 if (_exportState == RecordingExportState.InProgress)
                     _exportState = RecordingExportState.NotStarted;
+                // Leave Stopping until a successful/recoverable export completes, so Start cannot
+                // clear the session during a failed primary write + retry window unless Idle.
+                // After primary failure, release Stopping so a new recording or BuildExport retry can proceed.
+                if (_lifecycle == RecordingLifecycleState.Stopping)
+                    _lifecycle = RecordingLifecycleState.Idle;
                 Monitor.PulseAll(_lock);
             }
 
@@ -957,6 +1025,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
             JsonSerializer.Serialize(export, JsonOpts));
 
         RecordingArtifactsSummary? artifactSummary = null;
+        var sidecarsWritten = false;
         try
         {
             var build = _artifactBuilder.Build(
@@ -974,6 +1043,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
                     recordingId,
                     jiraKey,
                     build);
+                sidecarsWritten = true;
             }
         }
         catch (Exception ex)
@@ -1000,16 +1070,31 @@ public sealed class RecordingService : IRecordingService, IDisposable
         }
         catch (Exception rewriteEx)
         {
-            // Sidecars (when present) already exist; do not reclassify as artifact export failure.
-            _logger.LogWarning(
-                rewriteEx,
-                "Assistive sidecars were written but rewriting the primary recording with the artifact summary failed. Primary contents from the initial write remain intact.");
-
-            if (!artifactSummary.Warnings.Any(w =>
-                    w.Contains("rewriting the primary", StringComparison.OrdinalIgnoreCase)))
+            if (sidecarsWritten)
             {
-                artifactSummary.Warnings.Add(
-                    "Assistive sidecars were written but the primary recording could not be updated with the artifact summary.");
+                _logger.LogWarning(
+                    rewriteEx,
+                    "Assistive sidecars were written but rewriting the primary recording with the artifact summary failed. Primary contents from the initial write remain intact.");
+
+                if (!artifactSummary.Warnings.Any(w =>
+                        w.Contains("could not be updated with the artifact summary", StringComparison.OrdinalIgnoreCase)))
+                {
+                    artifactSummary.Warnings.Add(
+                        "Assistive sidecars were written but the primary recording could not be updated with the artifact summary.");
+                }
+            }
+            else
+            {
+                _logger.LogWarning(
+                    rewriteEx,
+                    "Failed to rewrite the primary recording with the Assistive artifact summary. Primary contents from the initial write remain intact.");
+
+                if (!artifactSummary.Warnings.Any(w =>
+                        w.Contains("could not be updated with the artifact summary", StringComparison.OrdinalIgnoreCase)))
+                {
+                    artifactSummary.Warnings.Add(
+                        "The primary recording could not be updated with the Assistive artifact summary.");
+                }
             }
 
             _artifactsSummary = artifactSummary;

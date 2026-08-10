@@ -970,7 +970,7 @@ public class AssistiveBddRecordingTests
                 OutputPath = output
             });
             Assert.NotNull(startWhileExporting.Error);
-            Assert.Contains("export is still in progress", startWhileExporting.Error, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("stop/export is still pending", startWhileExporting.Error, StringComparison.OrdinalIgnoreCase);
 
             var statusTask = Task.Run(() => service.GetCurrentState());
             Thread.Sleep(200);
@@ -1042,6 +1042,152 @@ public class AssistiveBddRecordingTests
         coordinator.EnrichAssistiveAction(action, preCaptured);
         Assert.Equal("Orders", action.Window!.Title);
         Assert.Equal("orders", action.PageId);
+    }
+
+    [Fact]
+    public void StartRecording_RejectedDuringStopToExportTransition()
+    {
+        var output = Path.Combine(Path.GetTempPath(), "da-stop-gap-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(output);
+        var session = new Mock<IUiSessionContext>();
+        session.SetupGet(s => s.ActiveSession).Returns((AutomationSession?)null);
+        var service = new RecordingService(NullLogger<RecordingService>.Instance, session.Object);
+
+        try
+        {
+            service.SuppressOverlayForTests = true;
+            service.ConfigureAssistiveSessionForTests(output, "rec-stop-gap");
+            service.RecordAssistiveAction(Click("ok", "OK"), Window("Welcome"));
+            var originalRecordingId = service.RecordingId;
+
+            var enteredGap = new ManualResetEventSlim(false);
+            var releaseGap = new ManualResetEventSlim(false);
+
+            service.AfterBeginStopBeforeExportForTests = () =>
+            {
+                Assert.Equal(RecordingLifecycleState.Stopping, service.LifecycleStateForTests);
+                Assert.False(service.IsActive);
+                Assert.Equal(RecordingExportState.NotStarted, service.ExportStateForTests);
+                enteredGap.Set();
+                if (!releaseGap.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("Release stop-gap timed out.");
+            };
+
+            var exportTask = Task.Run(() => service.ExportForTests());
+            Assert.True(enteredGap.Wait(TimeSpan.FromSeconds(10)));
+
+            var startDuringGap = service.StartRecording(new Models.Request.StartRecordingRequest
+            {
+                OutputPath = output
+            });
+            Assert.NotNull(startDuringGap.Error);
+            Assert.Contains("stop/export is still pending", startDuringGap.Error, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(originalRecordingId, service.RecordingId);
+            Assert.Equal(RecordingLifecycleState.Stopping, service.LifecycleStateForTests);
+
+            releaseGap.Set();
+            Assert.True(exportTask.Wait(TimeSpan.FromSeconds(10)));
+            Assert.True(service.ExportCompletedForTests);
+            Assert.Equal(RecordingLifecycleState.Idle, service.LifecycleStateForTests);
+        }
+        finally
+        {
+            service.Dispose();
+            try { Directory.Delete(output, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void StartRecording_TwoSimultaneousStarts_ExactlyOneSucceeds()
+    {
+        var output = Path.Combine(Path.GetTempPath(), "da-dual-start-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(output);
+        var session = new Mock<IUiSessionContext>();
+        session.SetupGet(s => s.ActiveSession).Returns((AutomationSession?)null);
+        var service = new RecordingService(NullLogger<RecordingService>.Instance, session.Object);
+
+        try
+        {
+            service.SuppressOverlayForTests = true;
+
+            var barrier = new Barrier(2);
+            StartRecordingResult? r1 = null;
+            StartRecordingResult? r2 = null;
+
+            var t1 = Task.Run(() =>
+            {
+                barrier.SignalAndWait(TimeSpan.FromSeconds(10));
+                r1 = service.StartRecording(new Models.Request.StartRecordingRequest { OutputPath = output });
+            });
+            var t2 = Task.Run(() =>
+            {
+                barrier.SignalAndWait(TimeSpan.FromSeconds(10));
+                r2 = service.StartRecording(new Models.Request.StartRecordingRequest { OutputPath = output });
+            });
+
+            Assert.True(Task.WaitAll([t1, t2], TimeSpan.FromSeconds(15)));
+            Assert.NotNull(r1);
+            Assert.NotNull(r2);
+
+            var successCount = (r1!.Error is null ? 1 : 0) + (r2!.Error is null ? 1 : 0);
+            var failureCount = (r1.Error is not null ? 1 : 0) + (r2.Error is not null ? 1 : 0);
+            Assert.Equal(1, successCount);
+            Assert.Equal(1, failureCount);
+
+            var failed = r1.Error is not null ? r1 : r2;
+            Assert.Contains("already active", failed.Error, StringComparison.OrdinalIgnoreCase);
+            Assert.True(service.IsActive);
+            Assert.Equal(RecordingLifecycleState.Active, service.LifecycleStateForTests);
+            Assert.NotNull(service.RecordingId);
+        }
+        finally
+        {
+            // Reset lifecycle so Dispose is quiet.
+            service.ConfigureAssistiveSessionForTests(output, "rec-cleanup");
+            service.ExportForTests();
+            service.Dispose();
+            try { Directory.Delete(output, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void Export_SummaryRewriteFailure_WithoutSidecars_DoesNotClaimSidecarsWereWritten()
+    {
+        var output = Path.Combine(Path.GetTempPath(), "da-export-nosidecar-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(output);
+        var session = new Mock<IUiSessionContext>();
+        session.SetupGet(s => s.ActiveSession).Returns((AutomationSession?)null);
+        var service = new RecordingService(NullLogger<RecordingService>.Instance, session.Object);
+
+        try
+        {
+            service.ConfigureAssistiveSessionForTests(output, "rec-nosidecar");
+            service.RecordAssistiveAction(Click("ok", "OK"), Window("Welcome"));
+            service.ArtifactWriterForTests = new AssistiveArtifactWriter
+            {
+                BeforeCommitStaging = (_, _) => throw new IOException("injected sidecar failure")
+            };
+            service.BeforePrimarySummaryRewriteForTests = () =>
+                throw new IOException("injected summary rewrite failure");
+
+            service.ExportForTests();
+
+            Assert.True(service.ExportCompletedForTests);
+            var warnings = service.GetCurrentState().Artifacts!.Warnings;
+            Assert.Contains(warnings, w => w.Contains("Assistive artifact export failed", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(
+                warnings,
+                w => w.Contains("could not be updated with the Assistive artifact summary", StringComparison.OrdinalIgnoreCase)
+                     || w.Contains("could not be updated with the artifact summary", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(
+                warnings,
+                w => w.Contains("sidecars were written", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            service.Dispose();
+            try { Directory.Delete(output, true); } catch { /* ignore */ }
+        }
     }
 
     private static AssistiveArtifactBuilder.BuildResult MinimalBuild(string recordingId) =>
