@@ -43,7 +43,7 @@ Checked-in schema: `automation/schemas/plan.schema.json` (JSON Schema Draft 2020
 Required top-level fields: `schemaVersion` (`1`), `catalogSchemaVersion` (`2`),
 `planId`, `name`, `steps`.
 
-Optional: `$schema`, `description`, `tags`, `metadata`, `onFailureSteps`.
+Optional: `$schema`, `description`, `tags`, `metadata`, `objectRepository`, `onFailureSteps`.
 
 The checked-in JSON Schema documents shape for editors. The **authoritative**
 combined limit `(steps + onFailureSteps) <= 1000` is enforced by
@@ -63,6 +63,13 @@ When sending `POST /ui`, arguments are flattened:
 ```
 
 Do not nest arguments under an `arguments` property in the HTTP body.
+
+### Object references (`$objectRef`)
+
+Plans may set `objectRepository` to a repository manifest path and use `$objectRef` markers
+in `locator`, `locator2`, `parentLocator`, or `containerLocator` step arguments. The agent
+expands these offline before catalog preflight and never sends `$objectRef` to the driver.
+See [Phase 3 object repository](phase3-object-repository.md).
 
 ## Main versus cleanup steps
 

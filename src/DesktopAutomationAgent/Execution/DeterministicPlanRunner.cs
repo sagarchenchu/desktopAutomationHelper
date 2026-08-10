@@ -4,6 +4,7 @@ using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Driver.Models;
+using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Workspace;
 using Microsoft.Extensions.Logging;
@@ -15,6 +16,7 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
 {
     private readonly AgentOptions _options;
     private readonly PlanManifestReader _planReader;
+    private readonly PlanObjectRepositoryIntegrator _objectRepositoryIntegrator;
     private readonly IWorkspaceManager _workspace;
     private readonly IDriverConnectionResolver _connectionResolver;
     private readonly IDriverCatalogClient _catalogClient;
@@ -26,6 +28,7 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
     public DeterministicPlanRunner(
         IOptions<AgentOptions> options,
         PlanManifestReader planReader,
+        PlanObjectRepositoryIntegrator objectRepositoryIntegrator,
         IWorkspaceManager workspace,
         IDriverConnectionResolver connectionResolver,
         IDriverCatalogClient catalogClient,
@@ -36,6 +39,7 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
     {
         _options = options.Value;
         _planReader = planReader;
+        _objectRepositoryIntegrator = objectRepositoryIntegrator;
         _workspace = workspace;
         _connectionResolver = connectionResolver;
         _catalogClient = catalogClient;
@@ -125,6 +129,28 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                 {
                     Classification = UiFailureClassification.PlanValidation,
                     Message = validation.Errors.FirstOrDefault() ?? "Plan validation failed."
+                });
+
+            return PersistReport(runDirectory, invalidReport);
+        }
+
+        validation = _objectRepositoryIntegrator.Integrate(validation);
+        if (!validation.IsValid || validation.Plan is null)
+        {
+            var invalidReport = BuildReport(
+                runId,
+                validation,
+                dryRun,
+                startedAt,
+                DateTimeOffset.UtcNow,
+                status: "failed",
+                exitCode: ExitCodes.SuiteOrWorkspace,
+                steps: [],
+                onFailureSteps: [],
+                failure: new RunFailure
+                {
+                    Classification = UiFailureClassification.PlanValidation,
+                    Message = validation.Errors.FirstOrDefault() ?? "Object repository integration failed."
                 });
 
             return PersistReport(runDirectory, invalidReport);
@@ -371,6 +397,10 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                 PlanId = report.PlanId,
                 PlanName = report.PlanName,
                 PlanSha256 = report.PlanSha256,
+                ObjectRepositoryPath = report.ObjectRepositoryPath,
+                ObjectRepositoryId = report.ObjectRepositoryId,
+                ObjectRepositorySha256 = report.ObjectRepositorySha256,
+                ResolvedObjectReferences = report.ResolvedObjectReferences,
                 DryRun = report.DryRun,
                 DriverBaseUrl = report.DriverBaseUrl,
                 DiscoveryMethod = report.DiscoveryMethod,
@@ -661,6 +691,10 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             PlanId = validation.PlanId,
             PlanName = validation.Name,
             PlanSha256 = validation.Sha256,
+            ObjectRepositoryPath = validation.ObjectRepositoryPath,
+            ObjectRepositoryId = validation.ObjectRepositoryId,
+            ObjectRepositorySha256 = validation.ObjectRepositorySha256,
+            ResolvedObjectReferences = validation.ResolvedObjectReferences,
             DryRun = dryRun,
             DriverBaseUrl = driverBaseUrl,
             DiscoveryMethod = discoveryMethod,

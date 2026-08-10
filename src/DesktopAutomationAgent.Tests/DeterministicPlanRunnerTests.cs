@@ -4,6 +4,7 @@ using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
+using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -419,6 +420,9 @@ public class DeterministicPlanRunnerTests
         return new DeterministicPlanRunner(
             TestSupport.Wrap(options),
             TestSupport.CreatePlanReader(options, workspace),
+            new PlanObjectRepositoryIntegrator(
+                new ObjectRepositoryReader(TestSupport.Wrap(options), workspace),
+                new PlanObjectReferenceExpander(new ObjectReferenceResolver())),
             workspace,
             new DriverConnectionResolver(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverConnectionResolver>.Instance),
             new DriverCatalogClient(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverCatalogClient>.Instance),

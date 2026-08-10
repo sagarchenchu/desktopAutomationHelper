@@ -21,6 +21,14 @@ public sealed class RunReport
 
     public string? PlanSha256 { get; init; }
 
+    public string? ObjectRepositoryPath { get; init; }
+
+    public string? ObjectRepositoryId { get; init; }
+
+    public string? ObjectRepositorySha256 { get; init; }
+
+    public IReadOnlyList<string>? ResolvedObjectReferences { get; init; }
+
     public bool DryRun { get; init; }
 
     public string? DriverBaseUrl { get; init; }
