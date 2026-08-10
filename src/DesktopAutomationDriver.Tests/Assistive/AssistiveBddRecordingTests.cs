@@ -520,21 +520,524 @@ public class AssistiveBddRecordingTests
     }
 
     [Fact]
-    public void OperationResolver_MatchesPlaybackContract()
+    public void ArmBdd_RejectsReplaceWhileMultiActionActive()
     {
-        Assert.Equal(
-            "doubleclick",
-            RecordedActionOperationResolver.ResolveOperation(new RecordedAction { ActionType = ActionType.DoubleClick }));
-        Assert.Equal(
-            "clicklogicalmenupath",
-            RecordedActionOperationResolver.ResolveOperation(new RecordedAction { ActionType = ActionType.MenuPathClick }));
-        Assert.Equal(
-            "alertok",
-            RecordedActionOperationResolver.ResolveOperation(new RecordedAction
+        var coordinator = new AssistiveRecordingCoordinator();
+        coordinator.Reset("rec-1");
+        coordinator.TryStartJiraRecording("ABC-1234", out _, out _);
+        Assert.True(coordinator.TryArmBdd("When group A", BddScope.UntilFinished, out var g1, out _));
+        coordinator.EnrichAssistiveAction(Click("a", "A"), Window("Welcome"));
+
+        Assert.False(coordinator.TryArmBdd("When group B", BddScope.NextAction, out _, out var error));
+        Assert.Contains("Finish or Cancel", error, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(g1, coordinator.ActiveBddGroupId);
+    }
+
+    [Fact]
+    public void ArmBdd_RejectsReplaceWhilePendingUnused()
+    {
+        var coordinator = new AssistiveRecordingCoordinator();
+        coordinator.Reset("rec-1");
+        coordinator.TryStartJiraRecording("ABC-1234", out _, out _);
+        Assert.True(coordinator.TryArmBdd("And click OK", BddScope.NextAction, out var g1, out _));
+        Assert.False(coordinator.TryArmBdd("And click Save", BddScope.NextAction, out _, out var error));
+        Assert.Contains("pending", error, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(g1, coordinator.ActiveBddGroupId);
+    }
+
+    [Fact]
+    public void UnsupportedOperations_AreUnmappedWithWarning_NotInventedFallbacks()
+    {
+        var coordinator = new AssistiveRecordingCoordinator();
+        coordinator.Reset("rec-unsupported");
+        coordinator.TryStartJiraRecording("ABC-1234", out _, out _);
+        coordinator.TryArmBdd("Then assert something", BddScope.NextAction, out _, out _);
+
+        var assertAction = new RecordedAction
+        {
+            ActionType = ActionType.Assert,
+            Element = new ElementInfo { AutomationId = "x", ControlType = "Button" }
+        };
+        coordinator.EnrichAssistiveAction(assertAction, Window("Welcome"));
+
+        var disabled = new RecordedAction
+        {
+            ActionType = ActionType.IsDisabled,
+            Element = new ElementInfo { AutomationId = "y", ControlType = "Button" }
+        };
+        coordinator.EnrichAssistiveAction(disabled, Window("Welcome"));
+
+        Assert.Null(RecordedActionOperationResolver.ResolveOperation(assertAction));
+        Assert.Null(RecordedActionOperationResolver.ResolveOperation(disabled));
+
+        var build = new AssistiveArtifactBuilder().Build(
+            "rec-unsupported",
+            "recording.json",
+            DateTimeOffset.UtcNow,
+            "ABC-1234",
+            [assertAction, disabled]);
+
+        Assert.NotNull(build.BddActionMap);
+        Assert.Contains("evt-000001", build.BddActionMap!.UnmappedEventIds);
+        Assert.Contains("evt-000002", build.BddActionMap.UnmappedEventIds);
+        Assert.Empty(build.BddActionMap.BddGroups);
+        Assert.Contains(
+            build.BddActionMap.Warnings ?? [],
+            w => w.Contains("unsupported", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(
+            JsonSerializer.Serialize(build.BddActionMap, JsonOpts),
+            "\"operation\":\"assert\"",
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            JsonSerializer.Serialize(build.BddActionMap, JsonOpts),
+            "isDisabled",
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(ActionType.Type)]
+    [InlineData(ActionType.TypeAndSelect)]
+    [InlineData(ActionType.GetTableHeaders)]
+    [InlineData(ActionType.GetTableData)]
+    [InlineData(ActionType.SwitchWindow)]
+    [InlineData(ActionType.Select)]
+    public void AssistiveActions_AcrossTwoWindowTitles_KeepDistinctPageIds(ActionType actionType)
+    {
+        var coordinator = new AssistiveRecordingCoordinator();
+        coordinator.Reset("rec-windows");
+
+        var a1 = new RecordedAction
+        {
+            ActionType = actionType,
+            Element = new ElementInfo { AutomationId = "ctrl-a", Name = "Control A", ControlType = "Edit" },
+            Value = actionType is ActionType.Type or ActionType.TypeAndSelect ? "typed" : null
+        };
+        var a2 = new RecordedAction
+        {
+            ActionType = actionType,
+            Element = new ElementInfo { AutomationId = "ctrl-b", Name = "Control B", ControlType = "ComboBox" },
+            Value = actionType is ActionType.Type or ActionType.TypeAndSelect ? "typed" : null
+        };
+
+        coordinator.EnrichAssistiveAction(a1, Window("Orders"));
+        coordinator.EnrichAssistiveAction(a2, Window("Reports"));
+
+        Assert.NotNull(a1.Window);
+        Assert.NotNull(a2.Window);
+        Assert.Equal("Orders", a1.Window!.Title);
+        Assert.Equal("Reports", a2.Window!.Title);
+        Assert.NotEqual(a1.PageId, a2.PageId);
+        Assert.Equal("orders", a1.PageId);
+        Assert.Equal("reports", a2.PageId);
+    }
+
+    [Fact]
+    public void PopupAction_AcrossTwoWindows_KeepsDistinctPageIds()
+    {
+        var coordinator = new AssistiveRecordingCoordinator();
+        coordinator.Reset("rec-popup");
+
+        var popup1 = new RecordedAction
+        {
+            ActionType = ActionType.Click,
+            Element = new ElementInfo { AutomationId = "ok", Name = "OK", ControlType = "Button" },
+            Description = "Click OK on Popup"
+        };
+        var popup2 = new RecordedAction
+        {
+            ActionType = ActionType.Click,
+            Element = new ElementInfo { AutomationId = "cancel", Name = "Cancel", ControlType = "Button" },
+            Description = "Click Cancel on Popup"
+        };
+
+        coordinator.EnrichAssistiveAction(popup1, Window("Confirm Delete"));
+        coordinator.EnrichAssistiveAction(popup2, Window("Save Changes"));
+        Assert.NotEqual(popup1.PageId, popup2.PageId);
+    }
+
+    [Fact]
+    public void Phase3LocatorContract_HeaderItem_OmitsUnsupportedControlType_WhenAutomationIdPresent()
+    {
+        var coordinator = new AssistiveRecordingCoordinator();
+        coordinator.Reset("rec-header");
+        var action = new RecordedAction
+        {
+            ActionType = ActionType.GetTableHeaders,
+            Element = new ElementInfo
             {
-                ActionType = ActionType.Click,
-                Description = "Click OK on Popup"
-            }));
+                AutomationId = "colAmount",
+                Name = "Amount",
+                ControlType = "HeaderItem"
+            }
+        };
+        coordinator.EnrichAssistiveAction(action, Window("Grid"));
+
+        var build = new AssistiveArtifactBuilder().Build(
+            "rec-header",
+            "recording.json",
+            DateTimeOffset.UtcNow,
+            null,
+            [action]);
+
+        Assert.Single(build.Pages);
+        var element = Assert.Single(build.Pages[0].Elements);
+        Assert.Equal("colAmount", element.Value.Locator["automationId"]);
+        Assert.False(element.Value.Locator.ContainsKey("controlType"));
+        Assert.True(Phase3LocatorContract.IsValid(element.Value.Locator, out _), "locator must pass Phase 3 contract");
+        AssertNullOrEmptyUnresolved(build.Pages[0]);
+    }
+
+    [Theory]
+    [InlineData("HeaderItem")]
+    [InlineData("TabItem")]
+    [InlineData("TitleBar")]
+    [InlineData("TotallyUnknownType")]
+    public void Phase3LocatorContract_UnsupportedControlTypeWithoutAutomationId_GoesUnresolved(string controlType)
+    {
+        var coordinator = new AssistiveRecordingCoordinator();
+        coordinator.Reset("rec-unresolved-ct");
+        var action = new RecordedAction
+        {
+            ActionType = ActionType.Click,
+            Element = new ElementInfo
+            {
+                Name = "Label",
+                ControlType = controlType
+            }
+        };
+        coordinator.EnrichAssistiveAction(action, Window("Welcome"));
+        Assert.Null(action.ObjectRef);
+
+        var build = new AssistiveArtifactBuilder().Build(
+            "rec-unresolved-ct",
+            "recording.json",
+            DateTimeOffset.UtcNow,
+            null,
+            [action]);
+
+        Assert.Single(build.Pages);
+        Assert.Empty(build.Pages[0].Elements);
+        Assert.NotNull(build.Pages[0].Unresolved);
+        Assert.Contains(
+            build.Pages[0].Unresolved!,
+            u => (u.TryGetValue("reason", out var reason) ? reason?.ToString() : null)?
+                .Contains("not recognized", StringComparison.OrdinalIgnoreCase) == true);
+    }
+
+    [Fact]
+    public void Phase3LocatorContract_AutomationIdOnly_IsValidWithoutControlType()
+    {
+        var locator = new Dictionary<string, object?>
+        {
+            ["automationId"] = "only-id"
+        };
+        Assert.True(Phase3LocatorContract.IsValid(locator, out var error), error);
+    }
+
+    [Fact]
+    public void AssistivePathSafety_RejectsDirectorySymlinkEscape()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "da-as-symlink-" + Guid.NewGuid().ToString("N"));
+        var outside = Path.Combine(Path.GetTempPath(), "da-as-outside-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "secret.json"), "{}");
+        var linkPath = Path.Combine(root, "assistive-artifacts");
+
+        try
+        {
+            RequireSymbolicLink(() => Directory.CreateSymbolicLink(linkPath, outside), linkPath);
+            var target = Path.Combine(linkPath, "secret.json");
+            var thrown = Assert.Throws<IOException>(() =>
+                AssistivePathSafety.EnsureNotSymlinkEscape(target, root));
+            Assert.Contains("reparse point", thrown.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void AssistivePathSafety_RejectsChainedFileSymlinkEscape()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "da-as-chain-" + Guid.NewGuid().ToString("N"));
+        var outside = Path.Combine(Path.GetTempPath(), "da-as-chain-out-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        var outsideFile = Path.Combine(outside, "secret.json");
+        File.WriteAllText(outsideFile, "{}");
+        var mid = Path.Combine(root, "mid.json");
+        var entry = Path.Combine(root, "page.json");
+
+        try
+        {
+            RequireSymbolicLink(() => File.CreateSymbolicLink(mid, outsideFile), mid);
+            RequireSymbolicLink(() => File.CreateSymbolicLink(entry, mid), entry);
+
+            var thrown = Assert.Throws<IOException>(() =>
+                AssistivePathSafety.EnsureNotSymlinkEscape(entry, root));
+            Assert.Contains("outside", thrown.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            try { File.Delete(entry); } catch { /* ignore */ }
+            try { File.Delete(mid); } catch { /* ignore */ }
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [WindowsFact]
+    public void AssistivePathSafety_RejectsWindowsJunctionEscape()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "da-as-junc-" + Guid.NewGuid().ToString("N"));
+        var outside = Path.Combine(Path.GetTempPath(), "da-as-junc-out-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "secret.json"), "{}");
+        var junction = Path.Combine(root, "assistive-artifacts");
+
+        try
+        {
+            RequireWindowsJunction(junction, outside);
+            var target = Path.Combine(junction, "secret.json");
+            var thrown = Assert.Throws<IOException>(() =>
+                AssistivePathSafety.EnsureNotSymlinkEscape(target, root));
+            Assert.Contains("reparse point", thrown.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            try { Directory.Delete(junction); } catch { /* ignore */ }
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void ArtifactWriter_CleansStaging_OnInjectedWriteFailure()
+    {
+        var output = Path.Combine(Path.GetTempPath(), "da-art-fail-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(output);
+        try
+        {
+            var build = MinimalBuild("rec-fail");
+            var writer = new AssistiveArtifactWriter
+            {
+                BeforeCommitStaging = (_, _) => throw new IOException("injected staging failure")
+            };
+
+            var thrown = Assert.Throws<IOException>(() =>
+                writer.Write(output, "recording.json", "rec-fail", "ABC-1234", build));
+            Assert.Contains("injected", thrown.Message, StringComparison.Ordinal);
+
+            var artifactsRoot = Path.Combine(output, "assistive-artifacts", "ABC-1234");
+            if (Directory.Exists(artifactsRoot))
+            {
+                Assert.Empty(Directory.GetDirectories(artifactsRoot, "rec-fail"));
+                Assert.Empty(Directory.GetDirectories(artifactsRoot, ".staging-*"));
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(output, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void Export_PreservesPrimary_OnArtifactFailure_AndAllowsPrimaryWriteRetry()
+    {
+        var output = Path.Combine(Path.GetTempPath(), "da-export-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(output);
+            var session = new Mock<IUiSessionContext>();
+        session.SetupGet(s => s.ActiveSession).Returns((AutomationSession?)null);
+        var service = new RecordingService(NullLogger<RecordingService>.Instance, session.Object);
+
+        try
+        {
+            service.ConfigureAssistiveSessionForTests(output, "rec-export-1");
+            service.RecordAssistiveAction(
+                new RecordedAction
+                {
+                    ActionType = ActionType.Type,
+                    Element = new ElementInfo { AutomationId = "name", ControlType = "Edit" },
+                    Value = "secret"
+                },
+                Window("Welcome"));
+
+            service.ArtifactWriterForTests = new AssistiveArtifactWriter
+            {
+                BeforeCommitStaging = (_, _) => throw new IOException("injected artifact failure")
+            };
+
+            service.ExportForTests();
+            Assert.True(service.ExportCompletedForTests);
+            Assert.NotNull(service.ExportFilePathForTests);
+            Assert.True(File.Exists(service.ExportFilePathForTests));
+            var primary = File.ReadAllText(service.ExportFilePathForTests!);
+            Assert.Contains("evt-000001", primary, StringComparison.Ordinal);
+            Assert.Contains("Primary recording was preserved", primary, StringComparison.OrdinalIgnoreCase);
+            Assert.False(
+                Directory.Exists(Path.Combine(output, "assistive-artifacts", "unassigned", "rec-export-1")));
+
+            // Primary write failure leaves export incomplete and retryable.
+            service.ConfigureAssistiveSessionForTests(output, "rec-export-2");
+            service.RecordAssistiveAction(
+                Click("ok", "OK"),
+                Window("Welcome"));
+            var failOnce = true;
+            service.BeforePrimaryWriteForTests = _ =>
+            {
+                if (failOnce)
+                {
+                    failOnce = false;
+                    throw new IOException("injected primary failure");
+                }
+            };
+
+            Assert.Throws<IOException>(() => service.ExportForTests());
+            Assert.False(service.ExportCompletedForTests);
+
+            service.ExportForTests();
+            Assert.True(service.ExportCompletedForTests);
+            Assert.True(File.Exists(service.ExportFilePathForTests));
+            Assert.Contains("evt-000001", File.ReadAllText(service.ExportFilePathForTests!), StringComparison.Ordinal);
+        }
+        finally
+        {
+            service.Dispose();
+            try { Directory.Delete(output, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void AddAction_InAssistiveMode_RequiresRecordAssistiveAction()
+    {
+        var session = new Mock<IUiSessionContext>();
+        session.SetupGet(s => s.ActiveSession).Returns((AutomationSession?)null);
+        var service = new RecordingService(NullLogger<RecordingService>.Instance, session.Object);
+        try
+        {
+            service.ConfigureAssistiveSessionForTests(
+                Path.Combine(Path.GetTempPath(), "da-add-" + Guid.NewGuid().ToString("N")),
+                "rec-add");
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                service.AddAction(new RecordedAction { ActionType = ActionType.Click }));
+            Assert.Contains("RecordAssistiveAction", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            service.Dispose();
+        }
+    }
+
+    private static AssistiveArtifactBuilder.BuildResult MinimalBuild(string recordingId) =>
+        new()
+        {
+            Pages =
+            [
+                new AssistiveArtifactBuilder.PageCandidateDocument
+                {
+                    PageId = "welcome",
+                    Name = "Welcome",
+                    Elements =
+                    {
+                        ["abc"] = new AssistiveArtifactBuilder.PageCandidateElement
+                        {
+                            Description = "ABC",
+                            Locator = new Dictionary<string, object?>
+                            {
+                                ["automationId"] = "btnABC",
+                                ["controlType"] = "Button"
+                            },
+                            Quality = new AssistiveArtifactBuilder.PageCandidateQuality { Grade = "strong" },
+                            Source = new AssistiveArtifactBuilder.PageCandidateSource
+                            {
+                                Kind = "capture",
+                                Path = "recording.json",
+                                Metadata = new Dictionary<string, object?> { ["recordingId"] = recordingId }
+                            }
+                        }
+                    }
+                }
+            ],
+            BddActionMap = new BddActionMapDocument
+            {
+                RecordingId = recordingId,
+                JiraKey = "ABC-1234",
+                SourceRecording = "recording.json",
+                CreatedAt = DateTimeOffset.UtcNow,
+                Pages =
+                [
+                    new BddActionMapPageRef
+                    {
+                        PageId = "welcome",
+                        WindowTitle = "Welcome",
+                        File = "page-objects/welcome.page.json"
+                    }
+                ]
+            }
+        };
+
+    private static void AssertNullOrEmptyUnresolved(AssistiveArtifactBuilder.PageCandidateDocument page) =>
+        Assert.True(page.Unresolved is null || page.Unresolved.Count == 0);
+
+    private static void RequireSymbolicLink(Action create, string path)
+    {
+        try
+        {
+            create();
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
+        {
+            Assert.Fail(
+                $"Unable to create symbolic link '{path}' required for path-safety coverage. {ex.GetType().Name}: {ex.Message}");
+        }
+
+        if (!File.Exists(path) && !Directory.Exists(path))
+            Assert.Fail($"Symbolic link '{path}' was not created.");
+    }
+
+    private static void RequireWindowsJunction(string junctionPath, string targetPath)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/c mklink /J \"{junctionPath}\" \"{targetPath}\"",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using var process = System.Diagnostics.Process.Start(psi);
+            Assert.NotNull(process);
+            process.WaitForExit(5000);
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            if (process.ExitCode != 0 || !Directory.Exists(junctionPath))
+            {
+                Assert.Fail(
+                    $"Unable to create Windows junction '{junctionPath}' -> '{targetPath}' " +
+                    $"(exit {process.ExitCode}). stdout: {stdout} stderr: {stderr}");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
+        {
+            Assert.Fail(
+                $"Unable to create Windows junction '{junctionPath}' required for path-safety coverage. {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private sealed class WindowsFactAttribute : FactAttribute
+    {
+        public WindowsFactAttribute()
+        {
+            if (!OperatingSystem.IsWindows())
+                Skip = "Windows-only junction coverage.";
+        }
     }
 
     private static RecordedAction Click(string automationId, string name) =>

@@ -34,6 +34,7 @@ Entering Jira/BDD text never creates a `RecordedAction`. Only a later successful
 - **Next Action:** the next successfully recorded Assistive action receives the BDD group, then the group ends.
 - **Multiple Actions:** every subsequent Assistive action shares the same `groupId` until **Finish Current BDD Statement**.
 - Cancel removes an unused pending group only. Associations already written into events are never deleted.
+- A new BDD statement cannot replace an active or pending group; **Finish** or **Cancel** is required first.
 - Drag-and-drop consumes BDD on the final `DragAndDrop` action, not when selecting the source.
 - Application context-menu recording associates the final `MenuPathClick` / recorded action, not the internal right-click used to open the menu.
 - Passive Mode actions never inherit Assistive BDD metadata.
@@ -119,6 +120,7 @@ Without a Jira key:
 - Never writes `automation/object-repository/repository.json` or `pages/`.
 - Never auto-promotes to active/approved.
 - Locators use Phase 3 fields only (no bounding rectangles / coordinates / SuggestedXPath).
+- Candidate locators are validated against Phase 3 runtime controlType rules (not only JSON Schema). Unsupported types such as `HeaderItem` omit `controlType` when `automationId` is present; otherwise the element is listed under `unresolved`.
 - Schema: `automation/schemas/page-object.schema.json`.
 
 ## BDD action map
@@ -141,16 +143,21 @@ Without a Jira key:
 - Runtime recordings, maps, and candidates may contain PII and remain gitignored.
 - Do not log full BDD statements, typed values, or credentials.
 - Artifact paths are containment-checked under the recording output directory.
-- Sidecars are written atomically; primary recording JSON is preserved if sidecar export fails.
+- Symlink / junction / reparse-point escapes under `assistive-artifacts` are rejected.
+- Sidecars are staged then renamed into place; primary recording JSON is replaced atomically.
+- `_exportCompleted` is set only after a successful or recoverable export (primary preserved).
+- Partial staging directories are cleaned on failure.
 
 ## Manual Windows acceptance checklist
+
+Unit tests do **not** exercise the real overlay/menu workflow. After merges, run this interactive checklist on Windows:
 
 1. Launch a simple WPF/WinForms test app.
 2. Start recording; press Ctrl+A.
 3. Start Jira recording with `ABC-1234`.
 4. Arm a next-action BDD; double-click a button; confirm association on that action only.
 5. Arm a multiple-action BDD; perform two actions; finish; perform another action without BDD.
-6. Switch to a second titled window; perform an action.
+6. Switch to a second titled window; perform Type, Type-and-Select, table, popup, Switch Window, and dropdown actions; confirm distinct page files.
 7. Press Ctrl+S.
 8. Confirm recording JSON, one candidate page per title, and BDD map grouping.
 9. Replay via `/playback` and confirm behavior is unchanged.

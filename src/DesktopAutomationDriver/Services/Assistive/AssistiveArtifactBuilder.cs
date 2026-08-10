@@ -123,6 +123,32 @@ public sealed class AssistiveArtifactBuilder
             .ToList();
     }
 
+    private static Dictionary<string, object?> BuildLocator(ElementInfo element)
+    {
+        var locator = new Dictionary<string, object?>(StringComparer.Ordinal);
+        var hasAutomationId = !string.IsNullOrWhiteSpace(element.AutomationId);
+        var hasName = !string.IsNullOrWhiteSpace(element.Name);
+        var hasClassName = !string.IsNullOrWhiteSpace(element.ClassName);
+        var controlTypeKnown = Phase3KnownControlTypes.IsKnown(element.ControlType);
+
+        if (hasAutomationId)
+            locator["automationId"] = element.AutomationId;
+
+        // Phase 3 rejects unrecognized controlType values. When AutomationId is present,
+        // omit an unsupported controlType so the candidate remains valid.
+        if (!string.IsNullOrWhiteSpace(element.ControlType) && controlTypeKnown)
+            locator["controlType"] = element.ControlType;
+
+        // Without AutomationId, name/className are only useful when paired with a known controlType.
+        if (hasName && (hasAutomationId || controlTypeKnown))
+            locator["name"] = element.Name;
+
+        if (hasClassName && (hasAutomationId || controlTypeKnown))
+            locator["className"] = element.ClassName;
+
+        return locator;
+    }
+
     private static void RegisterElement(
         PageBuildState state,
         RecordedAction action,
@@ -137,15 +163,28 @@ public sealed class AssistiveArtifactBuilder
         if (element == null)
             return;
 
-        if (string.IsNullOrWhiteSpace(objectRef) || !objectRef.Contains('.'))
+        var hasAutomationId = !string.IsNullOrWhiteSpace(element.AutomationId);
+        var controlTypeKnown = Phase3KnownControlTypes.IsKnown(element.ControlType);
+        var locator = BuildLocator(element);
+
+        if (!Phase3LocatorContract.IsValid(locator, out var contractError)
+            || string.IsNullOrWhiteSpace(objectRef)
+            || !objectRef.Contains('.'))
         {
+            var reason = !controlTypeKnown && !hasAutomationId
+                ? $"controlType '{element.ControlType}' is not recognized by Phase 3 locator validation."
+                : string.IsNullOrWhiteSpace(contractError)
+                    ? "Insufficient stable locator for Assistive page-object candidate."
+                    : contractError;
+
             state.Unresolved.Add(new Dictionary<string, object?>
             {
                 ["eventId"] = eventId,
                 ["pageId"] = state.PageId,
-                ["reason"] = "Insufficient stable locator for Assistive page-object candidate.",
+                ["reason"] = reason,
                 ["automationId"] = element.AutomationId,
-                ["controlType"] = element.ControlType
+                ["controlType"] = element.ControlType,
+                ["name"] = element.Name
             });
             return;
         }
@@ -153,19 +192,6 @@ public sealed class AssistiveArtifactBuilder
         var elementId = objectRef[(objectRef.IndexOf('.') + 1)..];
         if (!state.Elements.TryGetValue(elementId, out var entry))
         {
-            var locator = BuildLocator(element);
-            if (locator.Count == 0)
-            {
-                state.Unresolved.Add(new Dictionary<string, object?>
-                {
-                    ["eventId"] = eventId,
-                    ["pageId"] = state.PageId,
-                    ["reason"] = "No Phase-3-compatible locator fields were available.",
-                    ["controlType"] = element.ControlType
-                });
-                return;
-            }
-
             entry = new ElementBuildState
             {
                 ElementId = elementId,
@@ -183,20 +209,6 @@ public sealed class AssistiveArtifactBuilder
         entry.RecordingId = recordingId;
         entry.JiraKey = jiraKey;
         entry.WindowTitle = action.Window?.Title;
-    }
-
-    private static Dictionary<string, object?> BuildLocator(ElementInfo element)
-    {
-        var locator = new Dictionary<string, object?>(StringComparer.Ordinal);
-        if (!string.IsNullOrWhiteSpace(element.AutomationId))
-            locator["automationId"] = element.AutomationId;
-        if (!string.IsNullOrWhiteSpace(element.Name))
-            locator["name"] = element.Name;
-        if (!string.IsNullOrWhiteSpace(element.ClassName))
-            locator["className"] = element.ClassName;
-        if (!string.IsNullOrWhiteSpace(element.ControlType))
-            locator["controlType"] = element.ControlType;
-        return locator;
     }
 
     private static PageCandidateDocument ToDocument(PageBuildState state)
@@ -292,6 +304,16 @@ public sealed class AssistiveArtifactBuilder
         foreach (var action in jiraActions)
         {
             var eventId = action.EventId ?? string.Empty;
+            var operation = RecordedActionOperationResolver.ResolveOperation(action);
+            if (string.IsNullOrWhiteSpace(operation))
+            {
+                if (!string.IsNullOrWhiteSpace(eventId))
+                    unmapped.Add(eventId);
+                warnings.Add(
+                    $"Event {eventId} has unsupported playback operation for actionType '{action.ActionType}'.");
+                continue;
+            }
+
             if (action.Bdd is null)
             {
                 if (!string.IsNullOrWhiteSpace(eventId))
@@ -309,9 +331,6 @@ public sealed class AssistiveArtifactBuilder
                 groups[action.Bdd.GroupId] = group;
                 groupOrder.Add(action.Bdd.GroupId);
             }
-
-            var operation = RecordedActionOperationResolver.ResolveOperation(action)
-                ?? ToCamel(action.ActionType.ToString());
 
             var actionRef = new BddActionMapActionRef
             {
@@ -350,11 +369,6 @@ public sealed class AssistiveArtifactBuilder
             Warnings = warnings.Count == 0 ? null : warnings.Distinct(StringComparer.Ordinal).ToList()
         };
     }
-
-    private static string ToCamel(string value) =>
-        string.IsNullOrEmpty(value)
-            ? value
-            : char.ToLowerInvariant(value[0]) + value[1..];
 
     private sealed class PageBuildState
     {
