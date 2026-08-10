@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
+using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Readiness;
 using DesktopAutomationAgent.Suites;
@@ -43,7 +44,13 @@ public static class AgentCli
         var jsonRequested = parsed.Json
             || args.Any(arg => string.Equals(arg, "--json", StringComparison.Ordinal));
         var jsonStdoutMode = jsonRequested
-            && parsed.Kind is AgentCommandKind.Doctor or AgentCommandKind.ValidatePlan or AgentCommandKind.RunPlan;
+            && parsed.Kind is AgentCommandKind.Doctor
+                or AgentCommandKind.ValidatePlan
+                or AgentCommandKind.RunPlan
+                or AgentCommandKind.ValidateObjectRepository
+                or AgentCommandKind.ResolveObject
+                or AgentCommandKind.CapturePage
+                or AgentCommandKind.VerifyObjectRepository;
 
         if (parsed.Error is not null)
         {
@@ -84,6 +91,25 @@ public static class AgentCli
                         cancellationToken)
                     .ConfigureAwait(false),
                 AgentCommandKind.Doctor => await RunDoctorAsync(host.Services, parsed.Json, cancellationToken)
+                    .ConfigureAwait(false),
+                AgentCommandKind.ValidateObjectRepository => RunValidateObjectRepository(
+                    host.Services,
+                    parsed.RepositoryFile!,
+                    parsed.Json),
+                AgentCommandKind.ResolveObject => RunResolveObject(
+                    host.Services,
+                    parsed.RepositoryFile!,
+                    parsed.ObjectRef!,
+                    parsed.Json),
+                AgentCommandKind.CapturePage => await RunCapturePageAsync(
+                        host.Services,
+                        parsed,
+                        cancellationToken)
+                    .ConfigureAwait(false),
+                AgentCommandKind.VerifyObjectRepository => await RunVerifyObjectRepositoryAsync(
+                        host.Services,
+                        parsed,
+                        cancellationToken)
                     .ConfigureAwait(false),
                 _ => ExitCodes.UsageOrConfiguration
             };
@@ -182,6 +208,14 @@ public static class AgentCli
         builder.Services.AddSingleton<RunArtifactWriter>();
         builder.Services.AddSingleton<IDeterministicPlanRunner, DeterministicPlanRunner>();
         builder.Services.AddSingleton<IAgentReadinessService, AgentReadinessService>();
+        builder.Services.AddSingleton<ObjectRepositoryReader>();
+        builder.Services.AddSingleton<ObjectReferenceResolver>();
+        builder.Services.AddSingleton<PlanObjectReferenceExpander>();
+        builder.Services.AddSingleton<PlanObjectRepositoryIntegrator>();
+        builder.Services.AddSingleton<ObjectArtifactWriter>();
+        builder.Services.AddSingleton<ObjectCandidateGenerator>();
+        builder.Services.AddSingleton<ObjectCaptureService>();
+        builder.Services.AddSingleton<ObjectVerificationService>();
 
         return builder.Build();
     }
@@ -258,7 +292,8 @@ public static class AgentCli
             OptionsValidationScope.Runner);
 
         var reader = services.GetRequiredService<PlanManifestReader>();
-        var result = reader.Read(file);
+        var integrator = services.GetRequiredService<PlanObjectRepositoryIntegrator>();
+        var result = integrator.Integrate(reader.Read(file));
 
         if (json)
         {
@@ -272,6 +307,10 @@ public static class AgentCli
                 result.OnFailureStepCount,
                 result.TotalStepCount,
                 result.Sha256,
+                result.ObjectRepositoryPath,
+                result.ObjectRepositoryId,
+                result.ObjectRepositorySha256,
+                result.ResolvedObjectReferences,
                 result.Errors,
                 result.Warnings
             };
@@ -346,6 +385,199 @@ public static class AgentCli
         }
 
         return report.ExitCode;
+    }
+
+    private static int RunValidateObjectRepository(IServiceProvider services, string file, bool json)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.ObjectRepository);
+
+        var reader = services.GetRequiredService<ObjectRepositoryReader>();
+        var result = reader.Read(file);
+
+        if (json)
+        {
+            var payload = new
+            {
+                result.IsValid,
+                result.RepositoryPath,
+                result.ManifestSha256,
+                result.AggregateSha256,
+                result.Errors,
+                result.Warnings
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine($"Repository : {result.RepositoryPath}");
+            if (!string.IsNullOrWhiteSpace(result.AggregateSha256))
+                Console.WriteLine($"SHA-256    : {result.AggregateSha256}");
+
+            if (!result.IsValid)
+            {
+                Console.Error.WriteLine("Object repository validation failed:");
+                foreach (var error in result.Errors)
+                    Console.Error.WriteLine($"  - {SecretRedactor.Redact(error)}");
+            }
+            else
+            {
+                Console.WriteLine("Object repository validation succeeded.");
+            }
+
+            foreach (var warning in result.Warnings)
+                Console.Error.WriteLine($"Warning: {SecretRedactor.Redact(warning)}");
+        }
+
+        return result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
+    }
+
+    private static int RunResolveObject(IServiceProvider services, string file, string objectRef, bool json)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.ObjectRepository);
+
+        var reader = services.GetRequiredService<ObjectRepositoryReader>();
+        var resolver = services.GetRequiredService<ObjectReferenceResolver>();
+        var validation = reader.Read(file);
+        if (!validation.IsValid || validation.Snapshot is null)
+        {
+            if (json)
+            {
+                WriteJsonError(ExitCodes.SuiteOrWorkspace, validation.Errors.FirstOrDefault() ?? "Repository validation failed.");
+            }
+            else
+            {
+                foreach (var error in validation.Errors)
+                    Console.Error.WriteLine(SecretRedactor.Redact(error));
+            }
+
+            return ExitCodes.SuiteOrWorkspace;
+        }
+
+        var resolution = resolver.Resolve(validation.Snapshot, objectRef);
+        if (json)
+        {
+            var payload = new
+            {
+                success = resolution.IsResolved,
+                reference = resolution.Reference,
+                repositoryId = validation.Snapshot.Manifest.RepositoryId,
+                repositorySha256 = validation.Snapshot.AggregateSha256,
+                pageId = resolution.PageId,
+                elementId = resolution.ElementId,
+                locator = resolution.Locator is null
+                    ? (JsonElement?)null
+                    : ObjectLocatorSerializer.ToJsonElement(resolution.Locator),
+                warnings = resolution.Warnings,
+                errors = resolution.Errors,
+                repositoryPath = validation.RepositoryPath
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine($"Reference  : {resolution.Reference}");
+            if (resolution.Locator is not null)
+                Console.WriteLine($"Locator    : {JsonSerializer.Serialize(resolution.Locator, JsonOutputOptions)}");
+
+            foreach (var warning in resolution.Warnings)
+                Console.Error.WriteLine($"Warning: {SecretRedactor.Redact(warning)}");
+
+            if (!resolution.IsResolved)
+            {
+                foreach (var error in resolution.Errors)
+                    Console.Error.WriteLine(SecretRedactor.Redact(error));
+            }
+        }
+
+        return resolution.IsResolved ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
+    }
+
+    private static async Task<int> RunCapturePageAsync(
+        IServiceProvider services,
+        ParsedCommand parsed,
+        CancellationToken cancellationToken)
+    {
+        var service = services.GetRequiredService<ObjectCaptureService>();
+        var result = await service.CaptureAsync(
+            parsed.RepositoryFile!,
+            parsed.PageId!,
+            parsed.PageName!,
+            new ObjectCaptureOptions
+            {
+                View = parsed.View ?? "control",
+                Root = parsed.Root ?? "activeWindow",
+                MaxDepth = parsed.MaxDepth,
+                MaxChildren = parsed.MaxChildren,
+                IncludeOffscreen = parsed.IncludeOffscreen
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        if (parsed.Json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(result, JsonOutputOptions));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — capture-page");
+            Console.WriteLine($"Success    : {result.Success}");
+            Console.WriteLine($"Capture ID : {result.CaptureId}");
+            Console.WriteLine($"Nodes      : {result.NodeCount}");
+            Console.WriteLine($"Elements   : {result.ElementCount}");
+            Console.WriteLine($"Unresolved : {result.UnresolvedCount}");
+            if (!string.IsNullOrWhiteSpace(result.CaptureFilePath))
+                Console.WriteLine($"Capture    : {result.CaptureFilePath}");
+            if (!string.IsNullOrWhiteSpace(result.CandidateFilePath))
+                Console.WriteLine($"Candidate  : {result.CandidateFilePath}");
+            if (!string.IsNullOrWhiteSpace(result.Error))
+                Console.Error.WriteLine(result.Error);
+        }
+
+        return result.ExitCode;
+    }
+
+    private static async Task<int> RunVerifyObjectRepositoryAsync(
+        IServiceProvider services,
+        ParsedCommand parsed,
+        CancellationToken cancellationToken)
+    {
+        var service = services.GetRequiredService<ObjectVerificationService>();
+        var result = await service.VerifyAsync(
+            parsed.RepositoryFile!,
+            new ObjectVerificationOptions
+            {
+                PageId = parsed.PageId,
+                ObjectRef = parsed.ObjectRef,
+                View = parsed.View ?? "control",
+                Root = parsed.Root ?? "activeWindow",
+                MaxDepth = parsed.MaxDepth,
+                MaxChildren = parsed.MaxChildren,
+                IncludeOffscreen = parsed.IncludeOffscreen
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        if (parsed.Json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(result, JsonOutputOptions));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — verify-object-repository");
+            Console.WriteLine($"Success    : {result.Success}");
+            Console.WriteLine($"Total      : {result.Total}");
+            Console.WriteLine($"Passed     : {result.Passed}");
+            Console.WriteLine($"Missing    : {result.Missing}");
+            Console.WriteLine($"Ambiguous  : {result.Ambiguous}");
+            Console.WriteLine($"Fragile    : {result.Fragile}");
+            Console.WriteLine($"Failed     : {result.Failed}");
+            if (!string.IsNullOrWhiteSpace(result.Error))
+                Console.Error.WriteLine(result.Error);
+        }
+
+        return result.ExitCode;
     }
 
     private static async Task<int> RunDoctorAsync(

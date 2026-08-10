@@ -13,4 +13,6 @@ public sealed class AgentOptions
     public SuiteOptions Suites { get; set; } = new();
 
     public RunnerOptions Runner { get; set; } = new();
+
+    public ObjectRepositoryOptions ObjectRepository { get; set; } = new();
 }

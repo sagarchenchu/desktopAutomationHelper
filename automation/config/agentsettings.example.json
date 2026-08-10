@@ -19,5 +19,12 @@
     "MaxPlanBytes": 1048576,
     "MaxResponseBytes": 10485760,
     "RegexTimeoutMilliseconds": 500
+  },
+  "ObjectRepository": {
+    "MaxFileBytes": 5242880,
+    "MaxPages": 500,
+    "MaxElementsPerPage": 5000,
+    "MaxTotalElements": 50000,
+    "DiagnosticTimeoutMilliseconds": 15000
   }
 }

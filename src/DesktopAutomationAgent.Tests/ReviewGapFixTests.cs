@@ -6,6 +6,7 @@ using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
+using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Suites;
 using DesktopAutomationAgent.Workspace;
@@ -311,6 +312,15 @@ public class ReviewGapFixTests
                 new SuiteManifestReader(Options.Create(options), workspace));
             builder.Services.AddSingleton<PlanManifestReader>(_ =>
                 new PlanManifestReader(Options.Create(options), workspace));
+            builder.Services.AddSingleton<ObjectRepositoryReader>(_ =>
+                new ObjectRepositoryReader(Options.Create(options), workspace));
+            builder.Services.AddSingleton<ObjectReferenceResolver>();
+            builder.Services.AddSingleton<PlanObjectReferenceExpander>();
+            builder.Services.AddSingleton<PlanObjectRepositoryIntegrator>();
+            builder.Services.AddSingleton<ObjectArtifactWriter>();
+            builder.Services.AddSingleton<ObjectCandidateGenerator>();
+            builder.Services.AddSingleton<ObjectCaptureService>();
+            builder.Services.AddSingleton<ObjectVerificationService>();
             builder.Services.AddSingleton<IDriverConnectionResolver>(_ =>
                 new DriverConnectionResolver(Options.Create(options), factory, NullLogger<DriverConnectionResolver>.Instance));
             builder.Services.AddSingleton<IDriverCatalogClient>(_ =>

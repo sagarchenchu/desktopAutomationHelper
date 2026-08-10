@@ -46,6 +46,14 @@ internal static class TestSupport
                 StepTransportTimeoutSeconds = 5,
                 CleanupTimeoutSeconds = 2,
                 RegexTimeoutMilliseconds = 50
+            },
+            ObjectRepository = new ObjectRepositoryOptions
+            {
+                MaxFileBytes = 5_242_880,
+                MaxPages = 500,
+                MaxElementsPerPage = 5000,
+                MaxTotalElements = 50_000,
+                DiagnosticTimeoutMilliseconds = 15_000
             }
         };
     }
@@ -284,6 +292,22 @@ internal static class CatalogFixtures
                 OperationType = "action",
                 RequiresSession = false,
                 Deprecated = true
+            },
+            new OperationDescriptorDto
+            {
+                Name = "dumpuia",
+                Aliases = [],
+                Category = "native-uia",
+                OperationType = "diagnostic",
+                RequiresSession = false
+            },
+            new OperationDescriptorDto
+            {
+                Name = "finduia",
+                Aliases = [],
+                Category = "native-uia",
+                OperationType = "diagnostic",
+                RequiresSession = false
             }
         ]
     };

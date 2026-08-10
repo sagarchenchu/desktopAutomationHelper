@@ -5,6 +5,7 @@ using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
+using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Suites;
 using DesktopAutomationAgent.Workspace;
@@ -121,11 +122,11 @@ public class Phase2CliTests
     }
 
     [Fact]
-    public void HelpText_IsPhase2()
+    public void HelpText_IsPhase3()
     {
-        Assert.Contains("Phase 2", CommandLine.HelpText, StringComparison.Ordinal);
-        Assert.Contains("validate-plan", CommandLine.HelpText, StringComparison.Ordinal);
-        Assert.Contains("run-plan", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("Phase 3", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("validate-object-repository", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("capture-page", CommandLine.HelpText, StringComparison.Ordinal);
     }
 
     private static FakeHttpMessageHandler ReadyHandler() =>
@@ -183,6 +184,15 @@ public class Phase2CliTests
                 new SuiteManifestReader(Options.Create(options), workspace));
             builder.Services.AddSingleton<PlanManifestReader>(_ =>
                 new PlanManifestReader(Options.Create(options), workspace));
+            builder.Services.AddSingleton<ObjectRepositoryReader>(_ =>
+                new ObjectRepositoryReader(Options.Create(options), workspace));
+            builder.Services.AddSingleton<ObjectReferenceResolver>();
+            builder.Services.AddSingleton<PlanObjectReferenceExpander>();
+            builder.Services.AddSingleton<PlanObjectRepositoryIntegrator>();
+            builder.Services.AddSingleton<ObjectArtifactWriter>();
+            builder.Services.AddSingleton<ObjectCandidateGenerator>();
+            builder.Services.AddSingleton<ObjectCaptureService>();
+            builder.Services.AddSingleton<ObjectVerificationService>();
             builder.Services.AddSingleton<IDriverConnectionResolver>(_ =>
                 new DriverConnectionResolver(Options.Create(options), factory, NullLogger<DriverConnectionResolver>.Instance));
             builder.Services.AddSingleton<IDriverCatalogClient>(_ =>
