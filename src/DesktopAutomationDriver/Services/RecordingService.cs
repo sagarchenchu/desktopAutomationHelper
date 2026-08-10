@@ -364,11 +364,72 @@ public sealed class RecordingService : IRecordingService, IDisposable
         _autoStopTimer?.Dispose();
         _autoStopTimer = null;
 
-        // Close the overlay if it is still open (thread-safe)
+        var shouldExport = TryClaimStop(out var newlyClaimed);
+        if (newlyClaimed)
+            AfterBeginStopBeforeExportForTests?.Invoke();
+
+        // Close the overlay if present; export must not depend on this succeeding.
         CloseOverlayIfOpen();
 
-        // If already stopped by Ctrl+S, just return current state
+        if (shouldExport)
+        {
+            try
+            {
+                ExportJson();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to export recording JSON on stop");
+            }
+        }
+
         return BuildExport();
+    }
+
+    /// <inheritdoc />
+    public bool TryDiscardFailedRecording(out string message)
+    {
+        lock (_lock)
+        {
+            if (_exportState == RecordingExportState.InProgress)
+            {
+                message = "Cannot discard while export is still in progress.";
+                return false;
+            }
+
+            if (_lifecycle == RecordingLifecycleState.Active || _isActive)
+            {
+                message = "Recording is still active. Call stop first, or discard only after a failed export.";
+                return false;
+            }
+
+            if (_lifecycle != RecordingLifecycleState.Stopping
+                || _exportState == RecordingExportState.Completed)
+            {
+                message = "No failed recording export to discard.";
+                return false;
+            }
+
+            // Stopping + NotStarted (primary write failed or never completed) — abandon.
+            _actions.Clear();
+            _exportFilePath = null;
+            _artifactsSummary = null;
+            _exportState = RecordingExportState.NotStarted;
+            _lifecycle = RecordingLifecycleState.Idle;
+            _stoppedAt = null;
+            _isActive = false;
+            _currentMode = RecordingMode.None;
+            _assistive.Reset($"discarded-{Guid.NewGuid():N}");
+            _recordingTargetProcessId = null;
+            _recordingTargetMainHwnd = IntPtr.Zero;
+            _recordingTargetExePath = null;
+            _allowedTargetWindows.Clear();
+            Monitor.PulseAll(_lock);
+
+            message = "Failed recording export discarded. A new recording may be started.";
+            _logger.LogWarning("Discarded failed recording export session.");
+            return true;
+        }
     }
 
     public RecordingExport GetCurrentState() => BuildExport();
@@ -469,39 +530,47 @@ public sealed class RecordingService : IRecordingService, IDisposable
     /// <summary>Test seam: runs the export pipeline (idempotent / retry-safe).</summary>
     internal void ExportForTests()
     {
-        lock (_lock)
-        {
-            if (_lifecycle == RecordingLifecycleState.Active || _isActive)
-            {
-                _lifecycle = RecordingLifecycleState.Stopping;
-                _isActive = false;
-            }
+        if (!TryClaimStop(out var newlyClaimed))
+            return;
 
-            _stoppedAt ??= DateTimeOffset.UtcNow;
-        }
+        if (newlyClaimed)
+            AfterBeginStopBeforeExportForTests?.Invoke();
 
-        AfterBeginStopBeforeExportForTests?.Invoke();
         ExportJson();
     }
 
     /// <summary>
-    /// Atomically marks an active session Stopping and inactive so concurrent starts are rejected
-    /// before export enters <see cref="RecordingExportState.InProgress"/>.
+    /// Atomically marks the session Stopping (from Active) or reports that stop/export
+    /// is already pending. Returns <c>false</c> only when there is nothing to export.
     /// </summary>
-    private bool TryBeginStopFromActive()
+    private bool TryClaimStop(out bool newlyClaimed)
     {
         lock (_lock)
         {
-            if (_lifecycle == RecordingLifecycleState.Stopping)
-                return false;
+            newlyClaimed = false;
 
-            if (_lifecycle != RecordingLifecycleState.Active && !_isActive)
+            if (_exportState == RecordingExportState.Completed
+                && _lifecycle == RecordingLifecycleState.Idle)
+            {
                 return false;
+            }
 
-            _lifecycle = RecordingLifecycleState.Stopping;
-            _isActive = false;
-            _stoppedAt ??= DateTimeOffset.UtcNow;
-            return true;
+            if (_lifecycle == RecordingLifecycleState.Active || _isActive)
+            {
+                _lifecycle = RecordingLifecycleState.Stopping;
+                _isActive = false;
+                _stoppedAt ??= DateTimeOffset.UtcNow;
+                newlyClaimed = true;
+                return true;
+            }
+
+            if (_lifecycle == RecordingLifecycleState.Stopping
+                && _exportState != RecordingExportState.Completed)
+            {
+                return true;
+            }
+
+            return false;
         }
     }
 
@@ -685,12 +754,13 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     public void OnOverlayClosed()
     {
-        if (!TryBeginStopFromActive())
+        if (!TryClaimStop(out var newlyClaimed))
             return;
 
-        AfterBeginStopBeforeExportForTests?.Invoke();
+        if (newlyClaimed)
+            AfterBeginStopBeforeExportForTests?.Invoke();
 
-        // Export JSON (idempotent / single-flight)
+        // Export JSON (idempotent / single-flight). StopRecording may already own export.
         try
         {
             ExportJson();
@@ -959,16 +1029,12 @@ public sealed class RecordingService : IRecordingService, IDisposable
         }
         catch
         {
-            // Primary write failed before a recoverable artifact outcome — allow retry.
+            // Primary write failed — keep Stopping so Start cannot erase the retryable session.
             lock (_lock)
             {
                 if (_exportState == RecordingExportState.InProgress)
                     _exportState = RecordingExportState.NotStarted;
-                // Leave Stopping until a successful/recoverable export completes, so Start cannot
-                // clear the session during a failed primary write + retry window unless Idle.
-                // After primary failure, release Stopping so a new recording or BuildExport retry can proceed.
-                if (_lifecycle == RecordingLifecycleState.Stopping)
-                    _lifecycle = RecordingLifecycleState.Idle;
+                // Intentionally leave _lifecycle == Stopping until export succeeds or discard.
                 Monitor.PulseAll(_lock);
             }
 

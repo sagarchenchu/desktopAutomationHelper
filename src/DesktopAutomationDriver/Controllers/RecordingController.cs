@@ -103,6 +103,7 @@ public class RecordingController : ControllerBase
     ///
     /// Stops the active recording session, writes the JSON export file and returns the result.
     /// Idempotent — safe to call even if recording was already stopped (e.g. via Ctrl+S).
+    /// Claims stop/export even when the overlay was never created or failed to close.
     /// </summary>
     [HttpPost("stop")]
     public IActionResult Stop()
@@ -115,6 +116,29 @@ public class RecordingController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error stopping recording");
+            return StatusCode(500, WebDriverResponse<ErrorDetail>.Error(13, ex.Message, "unknown error"));
+        }
+    }
+
+    /// <summary>
+    /// POST /record/discard
+    ///
+    /// Abandons a recording stuck after a failed primary export so a new session can start.
+    /// Rejected while export is in progress or while recording is still active.
+    /// </summary>
+    [HttpPost("discard")]
+    public IActionResult Discard()
+    {
+        try
+        {
+            if (!_recordingService.TryDiscardFailedRecording(out var message))
+                return Conflict(WebDriverResponse<ErrorDetail>.Error(9, message, "discard not allowed"));
+
+            return Ok(new { success = true, message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error discarding recording");
             return StatusCode(500, WebDriverResponse<ErrorDetail>.Error(13, ex.Message, "unknown error"));
         }
     }

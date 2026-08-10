@@ -27,9 +27,17 @@ public interface IRecordingService
 
     /// <summary>
     /// Stops the active recording, writes the JSON export file and returns the result.
-    /// Safe to call even if recording has already stopped.
+    /// Safe to call even if recording was already stopped (e.g. via Ctrl+S).
+    /// Does not depend on the overlay existing or closing successfully.
     /// </summary>
     RecordingExport StopRecording();
+
+    /// <summary>
+    /// Abandons a recording that is stuck in stop/export after a failed primary write
+    /// (lifecycle <c>Stopping</c>, export not completed). Clears actions and IDs so a
+    /// new <see cref="StartRecording"/> can proceed.
+    /// </summary>
+    bool TryDiscardFailedRecording(out string message);
 
     /// <summary>Returns the current state (including all recorded actions so far).</summary>
     RecordingExport GetCurrentState();
