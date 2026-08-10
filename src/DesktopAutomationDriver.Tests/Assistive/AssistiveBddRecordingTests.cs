@@ -1142,9 +1142,7 @@ public class AssistiveBddRecordingTests
         }
         finally
         {
-            // Reset lifecycle so Dispose is quiet.
-            service.ConfigureAssistiveSessionForTests(output, "rec-cleanup");
-            service.ExportForTests();
+            try { service.StopRecording(); } catch { /* ignore */ }
             service.Dispose();
             try { Directory.Delete(output, true); } catch { /* ignore */ }
         }
@@ -1185,6 +1183,134 @@ public class AssistiveBddRecordingTests
         }
         finally
         {
+            service.Dispose();
+            try { Directory.Delete(output, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void PublicStopRecording_WithOverlaySuppressed_ExportsAndBecomesIdle()
+    {
+        var output = Path.Combine(Path.GetTempPath(), "da-public-stop-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(output);
+        var session = new Mock<IUiSessionContext>();
+        session.SetupGet(s => s.ActiveSession).Returns((AutomationSession?)null);
+        var service = new RecordingService(NullLogger<RecordingService>.Instance, session.Object);
+
+        try
+        {
+            service.SuppressOverlayForTests = true;
+            var start = service.StartRecording(new Models.Request.StartRecordingRequest { OutputPath = output });
+            Assert.Null(start.Error);
+            Assert.True(service.IsActive);
+            Assert.Equal(RecordingLifecycleState.Active, service.LifecycleStateForTests);
+
+            service.RecordAssistiveAction(Click("ok", "OK"), Window("Welcome"));
+            var recordingId = service.RecordingId;
+
+            var export = service.StopRecording();
+            Assert.False(service.IsActive);
+            Assert.Equal(RecordingLifecycleState.Idle, service.LifecycleStateForTests);
+            Assert.True(service.ExportCompletedForTests);
+            Assert.Equal(recordingId, export.RecordingId);
+            Assert.NotNull(export.ExportedFilePath);
+            Assert.True(File.Exists(export.ExportedFilePath));
+            Assert.Contains("evt-000001", File.ReadAllText(export.ExportedFilePath!), StringComparison.Ordinal);
+        }
+        finally
+        {
+            service.Dispose();
+            try { Directory.Delete(output, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void PrimaryExportFailure_KeepsStopping_RejectsStart_UntilRetryOrDiscard()
+    {
+        var output = Path.Combine(Path.GetTempPath(), "da-primary-keep-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(output);
+        var session = new Mock<IUiSessionContext>();
+        session.SetupGet(s => s.ActiveSession).Returns((AutomationSession?)null);
+        var service = new RecordingService(NullLogger<RecordingService>.Instance, session.Object);
+
+        try
+        {
+            service.SuppressOverlayForTests = true;
+            Assert.Null(service.StartRecording(new Models.Request.StartRecordingRequest { OutputPath = output }).Error);
+            service.RecordAssistiveAction(Click("ok", "OK"), Window("Welcome"));
+            var originalId = service.RecordingId;
+            Assert.NotNull(originalId);
+
+            var failOnce = true;
+            service.BeforePrimaryWriteForTests = _ =>
+            {
+                if (failOnce)
+                {
+                    failOnce = false;
+                    throw new IOException("injected primary failure");
+                }
+            };
+
+            Assert.Throws<IOException>(() => service.ExportForTests());
+            Assert.Equal(RecordingLifecycleState.Stopping, service.LifecycleStateForTests);
+            Assert.False(service.ExportCompletedForTests);
+            Assert.Equal(originalId, service.RecordingId);
+
+            var blocked = service.StartRecording(new Models.Request.StartRecordingRequest { OutputPath = output });
+            Assert.NotNull(blocked.Error);
+            Assert.Contains("stop/export is still pending", blocked.Error, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(originalId, service.RecordingId);
+
+            // Retry succeeds without clearing the session.
+            service.ExportForTests();
+            Assert.True(service.ExportCompletedForTests);
+            Assert.Equal(RecordingLifecycleState.Idle, service.LifecycleStateForTests);
+            Assert.Equal(originalId, service.GetCurrentState().RecordingId);
+
+            var allowed = service.StartRecording(new Models.Request.StartRecordingRequest { OutputPath = output });
+            Assert.Null(allowed.Error);
+            Assert.True(service.IsActive);
+            Assert.NotEqual(originalId, service.RecordingId);
+        }
+        finally
+        {
+            try { service.StopRecording(); } catch { /* ignore */ }
+            service.Dispose();
+            try { Directory.Delete(output, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void DiscardFailedRecording_AllowsNewStartAfterPrimaryFailure()
+    {
+        var output = Path.Combine(Path.GetTempPath(), "da-discard-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(output);
+        var session = new Mock<IUiSessionContext>();
+        session.SetupGet(s => s.ActiveSession).Returns((AutomationSession?)null);
+        var service = new RecordingService(NullLogger<RecordingService>.Instance, session.Object);
+
+        try
+        {
+            service.SuppressOverlayForTests = true;
+            Assert.Null(service.StartRecording(new Models.Request.StartRecordingRequest { OutputPath = output }).Error);
+            service.RecordAssistiveAction(Click("ok", "OK"), Window("Welcome"));
+            var originalId = service.RecordingId;
+
+            service.BeforePrimaryWriteForTests = _ => throw new IOException("injected primary failure");
+            Assert.Throws<IOException>(() => service.ExportForTests());
+            Assert.Equal(RecordingLifecycleState.Stopping, service.LifecycleStateForTests);
+
+            Assert.True(service.TryDiscardFailedRecording(out var message), message);
+            Assert.Equal(RecordingLifecycleState.Idle, service.LifecycleStateForTests);
+            Assert.Contains("discarded", message, StringComparison.OrdinalIgnoreCase);
+
+            var start = service.StartRecording(new Models.Request.StartRecordingRequest { OutputPath = output });
+            Assert.Null(start.Error);
+            Assert.NotEqual(originalId, service.RecordingId);
+        }
+        finally
+        {
+            try { service.StopRecording(); } catch { /* ignore */ }
             service.Dispose();
             try { Directory.Delete(output, true); } catch { /* ignore */ }
         }
