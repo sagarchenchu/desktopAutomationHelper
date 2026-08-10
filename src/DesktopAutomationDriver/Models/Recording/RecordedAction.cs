@@ -63,4 +63,28 @@ public class RecordedAction
 
     /// <summary>Additional operation-specific values captured for playback/export.</summary>
     public Dictionary<string, string>? Metadata { get; set; }
+
+    /// <summary>Deterministic Assistive event id such as <c>evt-000001</c>.</summary>
+    public string? EventId { get; set; }
+
+    /// <summary>1-based Assistive event sequence within the recording session.</summary>
+    public int? Sequence { get; set; }
+
+    /// <summary>Canonical Jira key when the action was recorded inside a Jira scope.</summary>
+    public string? JiraKey { get; set; }
+
+    /// <summary>Optional BDD association. Omitted when no BDD is active for this action.</summary>
+    public RecordedBddAssociation? Bdd { get; set; }
+
+    /// <summary>Top-level window context captured before Assistive action execution.</summary>
+    public RecordedWindowContext? Window { get; set; }
+
+    /// <summary>Deterministic page id derived from the window title.</summary>
+    public string? PageId { get; set; }
+
+    /// <summary>Phase-3-style object reference such as <c>welcome.abc</c>.</summary>
+    public string? ObjectRef { get; set; }
+
+    /// <summary>Object reference for a drag-and-drop target element.</summary>
+    public string? TargetObjectRef { get; set; }
 }

@@ -1459,6 +1459,12 @@ resolved element locator, optional target element, menu path details, pointer di
 and operation-specific metadata. `/playback` replays Assistive actions only; Passive
 actions are exported for inspection but skipped during playback.
 
+Assistive **Jira / BDD Recording** (optional) adds a right-click submenu to associate a
+Jira key and BDD statements with Assistive actions, then writes candidate Page Object
+files and a BDD-action map beside the normal recording JSON on stop. See
+[`docs/assistive-bdd-recording.md`](docs/assistive-bdd-recording.md). This path is
+deterministic: no Jira API calls, no AI interpretation, and no automatic page promotion.
+
 Assistive dynamic menu example: selecting `File > Recent > Report1` is exported as a
 path-oriented action such as:
 

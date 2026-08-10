@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/desktop-automation-driver/bdd-action-map.schema.json",
+  "title": "DesktopAutomationDriver Assistive BDD Action Map",
+  "$comment": "Maps Assistive recording events to optional BDD statements for a single Jira key. Deterministic, no AI interpretation.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "recordingId",
+    "jiraKey",
+    "sourceRecording",
+    "createdAt",
+    "pages",
+    "bddGroups",
+    "unmappedEventIds"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "recordingId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "jiraKey": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{0,31}-[1-9][0-9]{0,15}$"
+    },
+    "sourceRecording": {
+      "type": "string",
+      "minLength": 1
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/pageRef"
+      }
+    },
+    "bddGroups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/bddGroup"
+      }
+    },
+    "unmappedEventIds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "pageRef": {
+      "type": "object",
+      "required": [
+        "pageId",
+        "windowTitle",
+        "file"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "pageId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "windowTitle": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "bddGroup": {
+      "type": "object",
+      "required": [
+        "groupId",
+        "statement",
+        "actions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "groupId": {
+          "type": "string",
+          "pattern": "^bdd-[0-9]{4}$"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/actionRef"
+          }
+        }
+      }
+    },
+    "actionRef": {
+      "type": "object",
+      "required": [
+        "eventId",
+        "sequence",
+        "pageId",
+        "operation"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pageId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "objectRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "targetObjectRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

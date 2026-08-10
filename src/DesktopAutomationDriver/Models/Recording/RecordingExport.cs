@@ -23,6 +23,12 @@ public class RecordingExport
     /// <summary>Path of the JSON file that was written, if any.</summary>
     public string? ExportedFilePath { get; set; }
 
+    /// <summary>Stable recording id assigned at session start.</summary>
+    public string? RecordingId { get; set; }
+
+    /// <summary>Optional Assistive sidecar artifact summary. Omitted when no sidecars exist.</summary>
+    public RecordingArtifactsSummary? Artifacts { get; set; }
+
     /// <summary>All actions recorded during this session.</summary>
     public List<RecordedAction> Actions { get; set; } = [];
 }

@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DesktopAutomationDriver.Models.Recording;
 using DesktopAutomationDriver.Models.Request;
+using DesktopAutomationDriver.Services.Assistive;
 using FlaUI.Core.AutomationElements;
 using FlaUI.UIA3;
 
@@ -80,6 +81,11 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     private readonly List<RecordedAction> _actions = [];
     private readonly object _lock = new();
+    private readonly AssistiveRecordingCoordinator _assistive = new();
+    private readonly AssistiveArtifactBuilder _artifactBuilder = new();
+    private readonly AssistiveArtifactWriter _artifactWriter = new();
+    private RecordingArtifactsSummary? _artifactsSummary;
+    private bool _exportCompleted;
 
     // ── Recording target (process/window to which Assistive mode is scoped) ──
     private int? _recordingTargetProcessId;
@@ -131,6 +137,21 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     public DateTimeOffset? StartedAt => _isActive ? _startedAt : null;
 
+    public string? RecordingId
+    {
+        get { lock (_lock) return _assistive.RecordingId; }
+    }
+
+    public string? JiraKey
+    {
+        get { lock (_lock) return _assistive.JiraKey; }
+    }
+
+    public string AssistiveAnnotationStatus
+    {
+        get { lock (_lock) return _assistive.OverlayStatusSuffix; }
+    }
+
     public StartRecordingResult StartRecording(StartRecordingRequest? request = null)
     {
         if (_isActive)
@@ -140,6 +161,8 @@ public sealed class RecordingService : IRecordingService, IDisposable
         {
             _actions.Clear();
             _exportFilePath = null;
+            _artifactsSummary = null;
+            _exportCompleted = false;
             _stoppedAt = null;
             _currentMode = RecordingMode.None;
             _outputPath = request?.OutputPath;
@@ -147,6 +170,9 @@ public sealed class RecordingService : IRecordingService, IDisposable
             _isActive = true;
             _screenInfo = CaptureScreenResolution();
             _launchInfo = null;
+
+            var recordingId = $"rec-{_startedAt:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("N")[..8]}";
+            _assistive.Reset(recordingId);
 
             // Reset recording target
             _recordingTargetProcessId = null;
@@ -285,6 +311,16 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     public void AddAction(RecordedAction action)
     {
+        if (_currentMode == RecordingMode.Assistive)
+        {
+            AssistiveActionCaptureContext? context;
+            lock (_lock)
+                context = _assistive.TakePendingCaptureContext();
+
+            RecordAssistiveAction(action, context);
+            return;
+        }
+
         action.Timestamp = DateTimeOffset.UtcNow;
         action.Mode = _currentMode;
 
@@ -300,6 +336,104 @@ public sealed class RecordingService : IRecordingService, IDisposable
         lock (_lock) { _actions.Add(action); }
         _logger.LogDebug("Recorded action: {Type} on [{Element}]",
             action.ActionType, action.Element?.ControlType ?? "?");
+    }
+
+    public void SetPendingAssistiveCaptureContext(AssistiveActionCaptureContext? context)
+    {
+        lock (_lock)
+            _assistive.SetPendingCaptureContext(context);
+    }
+
+    public void RecordAssistiveAction(RecordedAction action, AssistiveActionCaptureContext? context = null)
+    {
+        action.Timestamp = DateTimeOffset.UtcNow;
+
+        if (string.IsNullOrEmpty(action.Description))
+        {
+            var elementLabel = ElementInfo.GetLabel(action.Element);
+            action.Description = action.QueryResult.HasValue
+                ? $"{action.ActionType} check on {elementLabel}: {action.QueryResult}"
+                : $"{action.ActionType} on {elementLabel}";
+        }
+
+        lock (_lock)
+        {
+            var effectiveContext = context ?? _assistive.TakePendingCaptureContext();
+            _assistive.EnrichAssistiveAction(action, effectiveContext);
+            _actions.Add(action);
+
+            if (action.Bdd != null)
+            {
+                _logger.LogInformation(
+                    "Assistive event {EventId} associated with BDD {GroupId} ({CharCount} chars).",
+                    action.EventId,
+                    action.Bdd.GroupId,
+                    action.Bdd.Statement.Length);
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "Assistive event {EventId} recorded without BDD. pageId={PageId}",
+                    action.EventId,
+                    action.PageId ?? "(none)");
+            }
+        }
+    }
+
+    public bool TryStartJiraRecording(string? rawKey, out string canonical, out string error)
+    {
+        lock (_lock)
+        {
+            var ok = _assistive.TryStartJiraRecording(rawKey, out canonical, out error);
+            if (ok)
+            {
+                _logger.LogInformation(
+                    "Jira recording scope set to {JiraKey}. Existing ordinary actions are preserved.",
+                    canonical);
+            }
+
+            return ok;
+        }
+    }
+
+    public bool TryArmBddStatement(string? statement, BddScope scope, out string groupId, out string error)
+    {
+        lock (_lock)
+        {
+            var ok = _assistive.TryArmBdd(statement, scope, out groupId, out error);
+            if (ok)
+            {
+                _logger.LogInformation(
+                    "BDD {GroupId} armed ({Scope}, {CharCount} chars).",
+                    groupId,
+                    scope,
+                    statement?.Trim().Length ?? 0);
+            }
+
+            return ok;
+        }
+    }
+
+    public bool TryFinishBddStatement(out string message)
+    {
+        lock (_lock)
+        {
+            var ok = _assistive.TryFinishBdd(out message);
+            if (ok)
+                _logger.LogInformation("{Message}", message);
+            return ok;
+        }
+    }
+
+    public bool TryCancelBddStatement(out string message)
+    {
+        lock (_lock)
+        {
+            var ok = _assistive.TryCancelBdd(out message);
+            if (ok)
+                _logger.LogInformation("{Message}", message);
+            return ok;
+        }
     }
 
     public void ReplaceLastAction(RecordedAction replacement)
@@ -431,7 +565,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
         _isActive = false;
         _stoppedAt = DateTimeOffset.UtcNow;
 
-        // Export JSON
+        // Export JSON (idempotent)
         try
         {
             ExportJson();
@@ -676,6 +810,13 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     private void ExportJson()
     {
+        lock (_lock)
+        {
+            if (_exportCompleted)
+                return;
+            _exportCompleted = true;
+        }
+
         var dir = ResolveOutputDirectory();
         Directory.CreateDirectory(dir);
 
@@ -683,7 +824,17 @@ public sealed class RecordingService : IRecordingService, IDisposable
         _exportFilePath = Path.Combine(dir, $"recording_{stamp}.json");
 
         List<RecordedAction> snapshot;
-        lock (_lock) { snapshot = [.. _actions]; }
+        string? recordingId;
+        string? jiraKey;
+        lock (_lock)
+        {
+            snapshot = [.. _actions];
+            recordingId = _assistive.RecordingId;
+            jiraKey = _assistive.JiraKey;
+        }
+
+        recordingId ??= $"rec-{stamp}-{Guid.NewGuid().ToString("N")[..8]}";
+        var recordingFileName = Path.GetFileName(_exportFilePath);
 
         var export = new RecordingExport
         {
@@ -693,10 +844,51 @@ public sealed class RecordingService : IRecordingService, IDisposable
             Screen = _screenInfo,
             Launch = _launchInfo,
             ExportedFilePath = _exportFilePath,
+            RecordingId = recordingId,
             Actions = snapshot
         };
 
+        // Primary recording must succeed even if sidecars fail.
         File.WriteAllText(_exportFilePath, JsonSerializer.Serialize(export, JsonOpts));
+
+        try
+        {
+            var build = _artifactBuilder.Build(
+                recordingId,
+                recordingFileName,
+                _stoppedAt ?? DateTimeOffset.UtcNow,
+                jiraKey,
+                snapshot);
+
+            if (build.Pages.Count > 0 || build.BddActionMap is not null)
+            {
+                _artifactsSummary = _artifactWriter.Write(
+                    dir,
+                    recordingFileName,
+                    recordingId,
+                    jiraKey,
+                    build);
+                export.Artifacts = _artifactsSummary;
+                File.WriteAllText(_exportFilePath, JsonSerializer.Serialize(export, JsonOpts));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Assistive artifact export failed; primary recording was preserved.");
+            _artifactsSummary = new RecordingArtifactsSummary
+            {
+                Warnings = ["Assistive artifact export failed. Primary recording was preserved."]
+            };
+            export.Artifacts = _artifactsSummary;
+            try
+            {
+                File.WriteAllText(_exportFilePath, JsonSerializer.Serialize(export, JsonOpts));
+            }
+            catch (Exception rewriteEx)
+            {
+                _logger.LogWarning(rewriteEx, "Failed to rewrite recording export with artifact warning.");
+            }
+        }
     }
 
     /// <summary>
@@ -802,7 +994,12 @@ public sealed class RecordingService : IRecordingService, IDisposable
     private RecordingExport BuildExport()
     {
         List<RecordedAction> snapshot;
-        lock (_lock) { snapshot = [.. _actions]; }
+        string? recordingId;
+        lock (_lock)
+        {
+            snapshot = [.. _actions];
+            recordingId = _assistive.RecordingId;
+        }
 
         return new RecordingExport
         {
@@ -812,6 +1009,8 @@ public sealed class RecordingService : IRecordingService, IDisposable
             Screen = _screenInfo,
             Launch = _launchInfo,
             ExportedFilePath = _exportFilePath,
+            RecordingId = recordingId,
+            Artifacts = _artifactsSummary,
             Actions = snapshot
         };
     }
