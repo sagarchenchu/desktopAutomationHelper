@@ -146,8 +146,9 @@ Without a Jira key:
 - Symlink / junction / reparse-point escapes under `assistive-artifacts` are rejected.
 - Sidecars are staged then renamed into place; primary recording JSON is replaced atomically.
 - Export is single-flight (`NotStarted` → `InProgress` → `Completed`); concurrent `/record/status` waits for or reuses the same export.
+- Recording lifecycle is `Idle` → `Active` → `Stopping` → `Idle`; starts are rejected for the whole stop/export window, not only after export `InProgress`.
 - A new recording cannot start while a previous export is still in progress.
-- Sidecar creation failures are reported separately from primary-summary rewrite failures.
+- Sidecar creation failures are reported separately from primary-summary rewrite failures (and do not claim sidecars were written when they were not).
 - Partial staging directories are cleaned on failure.
 
 ## Manual Windows acceptance checklist
