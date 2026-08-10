@@ -1,8 +1,8 @@
 namespace DesktopAutomationDriver.Models.Recording;
 
 /// <summary>
-/// Pre-captured Assistive context used when enriching a successfully recorded action.
-/// Built before action execution so window changes cannot corrupt page association.
+/// Immutable Assistive context captured from the action target <em>before</em> perform().
+/// Must be passed through async callbacks; never re-resolved from mutable overlay fields.
 /// </summary>
 public sealed class AssistiveActionCaptureContext
 {

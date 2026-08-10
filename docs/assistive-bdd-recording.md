@@ -145,7 +145,9 @@ Without a Jira key:
 - Artifact paths are containment-checked under the recording output directory.
 - Symlink / junction / reparse-point escapes under `assistive-artifacts` are rejected.
 - Sidecars are staged then renamed into place; primary recording JSON is replaced atomically.
-- `_exportCompleted` is set only after a successful or recoverable export (primary preserved).
+- Export is single-flight (`NotStarted` → `InProgress` → `Completed`); concurrent `/record/status` waits for or reuses the same export.
+- A new recording cannot start while a previous export is still in progress.
+- Sidecar creation failures are reported separately from primary-summary rewrite failures.
 - Partial staging directories are cleaned on failure.
 
 ## Manual Windows acceptance checklist
@@ -158,10 +160,13 @@ Unit tests do **not** exercise the real overlay/menu workflow. After merges, run
 4. Arm a next-action BDD; double-click a button; confirm association on that action only.
 5. Arm a multiple-action BDD; perform two actions; finish; perform another action without BDD.
 6. Switch to a second titled window; perform Type, Type-and-Select, table, popup, Switch Window, and dropdown actions; confirm distinct page files.
-7. Press Ctrl+S.
-8. Confirm recording JSON, one candidate page per title, and BDD map grouping.
-9. Replay via `/playback` and confirm behavior is unchanged.
-10. Repeat without Jira/BDD and confirm ordinary Assistive recording still works.
+7. **Click that opens a dialog** — confirm the recorded page/window is the source window, not untitled.
+8. **Click OK / Cancel that closes a popup** — confirm the recorded page/window is the popup title captured before close.
+9. **Close Window** — confirm window title was captured before close.
+10. Press Ctrl+S while concurrently polling `/record/status` (or `/record/actions`) and confirm a single artifact directory with no failure warning from a raced export.
+11. Confirm recording JSON, one candidate page per title, and BDD map grouping.
+12. Replay via `/playback` and confirm behavior is unchanged.
+13. Repeat without Jira/BDD and confirm ordinary Assistive recording still works.
 
 ## Out of scope
 
