@@ -778,7 +778,7 @@ Success response (`UiResponse` envelope):
   "success": true,
   "value": {
     "schemaVersion": 2,
-    "driverVersion": "1.0.105",
+    "driverVersion": "1.0.111",
     "operations": [
       {
         "name": "select",
