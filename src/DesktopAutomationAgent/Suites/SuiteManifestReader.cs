@@ -17,16 +17,16 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
 
     private readonly AgentOptions _options;
     private readonly IWorkspaceManager _workspace;
-    private readonly Regex _jiraKeyRegex;
+    private readonly Regex? _projectRegex;
 
     public SuiteManifestReader(IOptions<AgentOptions> options, IWorkspaceManager workspace)
     {
         _options = options.Value;
         _workspace = workspace;
         AgentOptionsValidator.Validate(_options, OptionsValidationScope.Suites);
-        _jiraKeyRegex = new Regex(
-            _options.Suites.JiraKeyPattern,
-            RegexOptions.CultureInvariant | RegexOptions.Compiled);
+        _projectRegex = string.IsNullOrWhiteSpace(_options.Suites.JiraKeyPattern)
+            ? null
+            : JiraKeyContract.CompileProjectPattern(_options.Suites.JiraKeyPattern);
     }
 
     public SuiteValidationResult ValidateFile(string path)
@@ -137,7 +137,6 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
         {
             var entry = testCases[i];
             var location = $"{fullPath}: testCases[{i}]";
-            var entryValid = true;
 
             if (string.IsNullOrWhiteSpace(entry.JiraKey))
             {
@@ -145,11 +144,17 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
                 continue;
             }
 
-            var key = entry.JiraKey.Trim();
-            if (!_jiraKeyRegex.IsMatch(key))
+            // Suite files: no trim — must agree with suite.schema.json pattern matching.
+            var entryValid = JiraKeyContract.TryValidate(
+                entry.JiraKey,
+                _projectRegex,
+                out var key,
+                out var keyError,
+                trimSurroundingWhitespace: false);
+            if (!entryValid)
             {
-                errors.Add($"{location}: invalid jiraKey '{key}' (pattern: {_options.Suites.JiraKeyPattern}).");
-                entryValid = false;
+                errors.Add($"{location}: {keyError}");
+                key = entry.JiraKey;
             }
 
             if (seen.TryGetValue(key, out var previousIndex))
@@ -211,16 +216,15 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
             var location = $"keys[{index}]";
             index++;
 
-            if (string.IsNullOrWhiteSpace(raw))
+            // CLI validate-keys: trim surrounding whitespace for convenience.
+            if (!JiraKeyContract.TryValidate(
+                    raw,
+                    _projectRegex,
+                    out var key,
+                    out var keyError,
+                    trimSurroundingWhitespace: true))
             {
-                errors.Add($"{location}: jiraKey is required.");
-                continue;
-            }
-
-            var key = raw.Trim();
-            if (!_jiraKeyRegex.IsMatch(key))
-            {
-                errors.Add($"{location}: invalid jiraKey '{key}' (pattern: {_options.Suites.JiraKeyPattern}).");
+                errors.Add($"{location}: {keyError}");
                 continue;
             }
 

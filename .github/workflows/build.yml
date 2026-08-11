@@ -16,11 +16,29 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
+      - name: Whitespace check against PR/merge base
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="${{ github.event.pull_request.base.sha }}"
+          else
+            # For pushes, compare against the previous commit on this branch when available.
+            BASE_REF="${{ github.event.before }}"
+            if [ -z "$BASE_REF" ] || [ "$BASE_REF" = "0000000000000000000000000000000000000000" ]; then
+              BASE_REF="$(git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD~1)"
+            fi
+          fi
+          echo "Checking whitespace for range ${BASE_REF}...HEAD"
+          git diff --check "${BASE_REF}"...HEAD
 
       - name: Restore dependencies
         run: dotnet restore DesktopAutomationHelper.slnx
@@ -54,7 +72,7 @@ jobs:
           path: '**/*.trx'
 
   publish-exe:
-    name: Publish Standalone EXE (Windows)
+    name: Publish Standalone Packages (Windows)
     runs-on: windows-latest
     needs: build-and-test
     permissions:
@@ -69,7 +87,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Publish single-file EXE
+      - name: Publish driver (win-x64 standalone)
         run: >
           dotnet publish
           src/DesktopAutomationDriver/DesktopAutomationDriver.csproj
@@ -78,10 +96,62 @@ jobs:
           --self-contained true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
-          --output ./publish
+          -p:PublishTrimmed=false
+          -p:DebugType=None
+          -p:DebugSymbols=false
+          -p:Version=0.0.0-ci
+          -p:InformationalVersion=0.0.0-ci
+          -p:IncludeSourceRevisionInInformationalVersion=false
+          --output ./publish/driver
 
-      - name: Upload EXE artifact
+      - name: Publish agent (win-x64 standalone)
+        run: >
+          dotnet publish
+          src/DesktopAutomationAgent/DesktopAutomationAgent.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:PublishTrimmed=false
+          -p:DebugType=None
+          -p:DebugSymbols=false
+          -p:Version=0.0.0-ci
+          -p:InformationalVersion=0.0.0-ci
+          -p:IncludeSourceRevisionInInformationalVersion=false
+          --output ./publish/agent
+
+      - name: Verify publish version metadata (not filename-only)
+        shell: pwsh
+        run: |
+          $expected = "0.0.0-ci"
+          function Assert-ProductVersion([string]$path) {
+            if (-not (Test-Path $path)) { throw "Missing published file: $path" }
+            $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $path))
+            $product = $info.ProductVersion
+            if ($product -ne $expected) {
+              throw "Expected ProductVersion '$expected' for $path but was '$product'"
+            }
+            Write-Host "OK $path ProductVersion=$product"
+          }
+          Assert-ProductVersion "./publish/driver/DesktopAutomationDriver.exe"
+          Assert-ProductVersion "./publish/agent/DesktopAutomationAgent.exe"
+          if (-not (Test-Path "./publish/agent/appsettings.json")) {
+            throw "Agent publish output missing appsettings.json"
+          }
+          if (Test-Path "./publish/agent/DesktopAutomationAgent.pdb") {
+            throw "Agent publish unexpectedly includes a PDB; release packaging must exclude debug symbols"
+          }
+
+      - name: Upload driver artifact
         uses: actions/upload-artifact@v4
         with:
           name: DesktopAutomationDriver-win-x64
-          path: ./publish/DesktopAutomationDriver.exe
+          path: ./publish/driver/DesktopAutomationDriver.exe
+
+      - name: Upload agent artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopAutomationAgent-win-x64
+          path: |
+            ./publish/agent/DesktopAutomationAgent.exe
+            ./publish/agent/appsettings.json

@@ -45,7 +45,10 @@ public class SuiteManifestReaderTests
         var result = TestSupport.CreateSuiteReader(options).ValidateFile("suites/smoke.json");
 
         Assert.False(result.IsValid);
-        Assert.Contains(result.Errors, e => e.Contains("testCases[0]", StringComparison.Ordinal) && e.Contains("invalid jiraKey", StringComparison.Ordinal));
+        Assert.Contains(result.Errors, e =>
+            e.Contains("testCases[0]", StringComparison.Ordinal)
+            && e.Contains("invalid jiraKey", StringComparison.Ordinal)
+            && e.Contains("canonical Jira syntax", StringComparison.Ordinal));
         Directory.Delete(root, recursive: true);
     }
 
@@ -184,8 +187,55 @@ public class SuiteManifestReaderTests
 
         var bad = reader.ValidateKeys(["SAMPLE-1", "bad", "SAMPLE-1"]);
         Assert.False(bad.IsValid);
-        Assert.Contains(bad.Errors, e => e.Contains("invalid jiraKey", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(bad.Errors, e => e.Contains("canonical Jira syntax", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(bad.Errors, e => e.Contains("duplicate jiraKey", StringComparison.OrdinalIgnoreCase));
+        Directory.Delete(options.Workspace.Root, recursive: true);
+    }
+
+    [Fact]
+    public void ProjectSpecificPattern_RejectsOtherwiseCanonicalKey()
+    {
+        var options = TestSupport.CreateOptions();
+        options.Suites.JiraKeyPattern = @"^SAMPLE-[1-9][0-9]{0,15}$";
+        Directory.CreateDirectory(options.Workspace.Root);
+        var reader = TestSupport.CreateSuiteReader(options);
+
+        var result = reader.ValidateKeys(["SAMPLE-1", "OTHER-1"]);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e =>
+            e.Contains("OTHER-1", StringComparison.Ordinal)
+            && e.Contains("project-specific pattern", StringComparison.Ordinal));
+        Directory.Delete(options.Workspace.Root, recursive: true);
+    }
+
+    [Fact]
+    public void ValidateFile_RejectsSurroundingWhitespaceInJiraKey()
+    {
+        var (options, root) = CreateWorkspaceWithSuite(
+            """
+            {
+              "schemaVersion": 1,
+              "name": "smoke",
+              "testCases": [ { "jiraKey": " ABC-1 " } ]
+            }
+            """);
+
+        var result = TestSupport.CreateSuiteReader(options).ValidateFile("suites/smoke.json");
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e =>
+            e.Contains("testCases[0]", StringComparison.Ordinal)
+            && e.Contains("leading or trailing whitespace", StringComparison.OrdinalIgnoreCase));
+        Directory.Delete(root, recursive: true);
+    }
+
+    [Fact]
+    public void ValidateKeys_TrimsSurroundingWhitespace()
+    {
+        var options = TestSupport.CreateOptions();
+        Directory.CreateDirectory(options.Workspace.Root);
+        var result = TestSupport.CreateSuiteReader(options).ValidateKeys([" ABC-1 "]);
+        Assert.True(result.IsValid);
+        Assert.Equal(["ABC-1"], result.ValidKeys);
         Directory.Delete(options.Workspace.Root, recursive: true);
     }
 

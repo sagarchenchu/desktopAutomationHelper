@@ -228,7 +228,7 @@ public sealed class WorkspaceManager : IWorkspaceManager
             "Root": "automation"
           },
           "Suites": {
-            "JiraKeyPattern": "^[A-Z][A-Z0-9_]*-[0-9]+$"
+            "JiraKeyPattern": "^[A-Z][A-Z0-9_]{0,31}-[1-9][0-9]{0,15}$"
           },
           "Runner": {
             "StepTransportTimeoutSeconds": 60,
@@ -269,7 +269,7 @@ public sealed class WorkspaceManager : IWorkspaceManager
                 "properties": {
                   "jiraKey": {
                     "type": "string",
-                    "pattern": "^[A-Z][A-Z0-9_]*-[0-9]+$"
+                    "pattern": "^[A-Z][A-Z0-9_]{0,31}-[1-9][0-9]{0,15}$"
                   },
                   "enabled": { "type": "boolean", "default": true }
                 }

@@ -5,11 +5,11 @@ on:
     branches: [ main, master ]
 
 jobs:
-  release:
-    name: Build and Release EXE
+  build-and-test:
+    name: Build and Test (Windows)
     runs-on: windows-latest
     permissions:
-      contents: write   # needed to create tags and releases
+      contents: read
 
     steps:
       - name: Checkout code
@@ -23,7 +23,55 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore DesktopAutomationHelper.slnx
 
-      - name: Publish single-file EXE
+      - name: Build solution
+        run: dotnet build DesktopAutomationHelper.slnx --configuration Release --no-restore
+
+      - name: Run driver tests
+        run: >
+          dotnet test
+          src/DesktopAutomationDriver.Tests/DesktopAutomationDriver.Tests.csproj
+          --configuration Release
+          --no-build
+          --verbosity normal
+
+      - name: Run agent tests
+        run: >
+          dotnet test
+          src/DesktopAutomationAgent.Tests/DesktopAutomationAgent.Tests.csproj
+          --configuration Release
+          --no-build
+          --verbosity normal
+
+  release:
+    name: Publish and Create GitHub Release
+    runs-on: windows-latest
+    needs: build-and-test
+    permissions:
+      contents: write   # needed to create tags and releases
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Compute release version
+        id: version
+        shell: bash
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Release version=${VERSION} tag=${TAG}"
+
+      - name: Restore dependencies
+        run: dotnet restore DesktopAutomationHelper.slnx
+
+      - name: Publish driver (win-x64 standalone)
         run: >
           dotnet publish
           src/DesktopAutomationDriver/DesktopAutomationDriver.csproj
@@ -32,22 +80,115 @@ jobs:
           --self-contained true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
-          --output ./publish
+          -p:PublishTrimmed=false
+          -p:DebugType=None
+          -p:DebugSymbols=false
+          -p:Version=${{ steps.version.outputs.version }}
+          -p:AssemblyVersion=${{ steps.version.outputs.version }}.0
+          -p:FileVersion=${{ steps.version.outputs.version }}.0
+          -p:InformationalVersion=${{ steps.version.outputs.version }}
+          -p:IncludeSourceRevisionInInformationalVersion=false
+          --output ./publish/driver
 
-      - name: Compute release version
-        id: version
-        shell: bash
-        run: echo "tag=v1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+      - name: Publish agent (win-x64 standalone)
+        run: >
+          dotnet publish
+          src/DesktopAutomationAgent/DesktopAutomationAgent.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:PublishTrimmed=false
+          -p:DebugType=None
+          -p:DebugSymbols=false
+          -p:Version=${{ steps.version.outputs.version }}
+          -p:AssemblyVersion=${{ steps.version.outputs.version }}.0
+          -p:FileVersion=${{ steps.version.outputs.version }}.0
+          -p:InformationalVersion=${{ steps.version.outputs.version }}
+          -p:IncludeSourceRevisionInInformationalVersion=false
+          --output ./publish/agent
+
+      - name: Verify published assembly versions
+        shell: pwsh
+        run: |
+          $expected = "${{ steps.version.outputs.version }}"
+          function Assert-ProductVersion([string]$path) {
+            if (-not (Test-Path $path)) { throw "Missing published file: $path" }
+            $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $path))
+            $product = $info.ProductVersion
+            if ($product -ne $expected) {
+              throw "Expected ProductVersion '$expected' for $path but was '$product'"
+            }
+            Write-Host "OK $path ProductVersion=$product"
+          }
+          Assert-ProductVersion "./publish/driver/DesktopAutomationDriver.exe"
+          Assert-ProductVersion "./publish/agent/DesktopAutomationAgent.exe"
+
+      - name: Package release artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ./publish/artifacts | Out-Null
+          Copy-Item ./publish/driver/DesktopAutomationDriver.exe ./publish/artifacts/DesktopAutomationDriver.exe
+
+          if (-not (Test-Path ./publish/agent/DesktopAutomationAgent.exe)) {
+            throw "Agent publish missing DesktopAutomationAgent.exe"
+          }
+          if (-not (Test-Path ./publish/agent/appsettings.json)) {
+            throw "Agent package missing required appsettings.json"
+          }
+
+          $agentStage = "./publish/agent-package"
+          New-Item -ItemType Directory -Force -Path $agentStage | Out-Null
+          Copy-Item ./publish/agent/DesktopAutomationAgent.exe $agentStage/
+          Copy-Item ./publish/agent/appsettings.json $agentStage/
+          # Single-file self-contained: only exe + appsettings are required. Exclude PDBs and extras.
+          Compress-Archive -Path "$agentStage/*" -DestinationPath ./publish/artifacts/DesktopAutomationAgent-win-x64.zip -Force
+
+      - name: Compute SHA-256 checksums
+        shell: pwsh
+        run: |
+          $files = @(
+            "./publish/artifacts/DesktopAutomationDriver.exe",
+            "./publish/artifacts/DesktopAutomationAgent-win-x64.zip"
+          )
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $f).Hash.ToLowerInvariant()
+            $name = Split-Path $f -Leaf
+            "{0}  {1}" -f $hash, $name
+          }
+          $lines | Set-Content -Encoding ascii ./publish/artifacts/SHA256SUMS.txt
+          Get-Content ./publish/artifacts/SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: "Desktop Automation Driver ${{ steps.version.outputs.tag }}"
+          name: "Desktop Automation Helper ${{ steps.version.outputs.tag }}"
           body: |
             Automated release built from commit ${{ github.sha }}.
+            Version: `${{ steps.version.outputs.version }}` (Git tag `${{ steps.version.outputs.tag }}`).
 
-            **How to use:**
-            Download `DesktopAutomationDriver.exe`, place it anywhere and run it directly — no installation required.
-          files: ./publish/DesktopAutomationDriver.exe
+            ## Artifacts
+
+            | Artifact | Description |
+            |---|---|
+            | `DesktopAutomationDriver.exe` | Windows x64 self-contained driver |
+            | `DesktopAutomationAgent-win-x64.zip` | Windows x64 self-contained agent package (`DesktopAutomationAgent.exe`, `appsettings.json`) |
+            | `SHA256SUMS.txt` | SHA-256 checksums for the artifacts above |
+
+            ## How the pieces fit together
+
+            The **driver** and **agent** are **separate processes**.
+            The agent never loads driver internals; it talks to the driver over **loopback HTTP**
+            (discover via `GET /verify`, then call authenticated driver APIs with the bearer token).
+
+            **Driver:** download `DesktopAutomationDriver.exe`, place it anywhere, and run it directly — no installation required.
+
+            **Agent:** unzip `DesktopAutomationAgent-win-x64.zip`, ensure the driver is running locally, then run `DesktopAutomationAgent.exe` (for example `doctor` or `run-plan`).
+
+            Both binaries report informational version `${{ steps.version.outputs.version }}` (same as this tag without the leading `v`).
+          files: |
+            ./publish/artifacts/DesktopAutomationDriver.exe
+            ./publish/artifacts/DesktopAutomationAgent-win-x64.zip
+            ./publish/artifacts/SHA256SUMS.txt
           generate_release_notes: true

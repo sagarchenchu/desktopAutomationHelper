@@ -12,7 +12,9 @@ public class StartRecordingRequest
     public string? ExePath { get; set; }
 
     /// <summary>
-    /// Directory (or full file path) where the recorded JSON file will be saved.
+    /// Output directory where the recorded JSON file will be saved.
+    /// The driver creates a deterministic <c>recording_&lt;timestamp&gt;.json</c> filename
+    /// inside this directory. This value is always treated as a directory (not a file path).
     /// Optional – defaults to %TEMP%\DesktopAutomationHelper\Recordings\.
     /// </summary>
     public string? OutputPath { get; set; }

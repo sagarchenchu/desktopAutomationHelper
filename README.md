@@ -130,6 +130,8 @@ Returns the current running status, username, connection port, fixed probe port 
 
 Checks if the driver is running and ready to accept new sessions. Requires Bearer authentication.
 
+`<release-version>` below is a placeholder for the injected release version (`1.0.<github.run_number>`), not a fixed tag.
+
 - **Request Format:** No request body required.
 - **Success Response (HTTP 200):**
   ```json
@@ -140,7 +142,7 @@ Checks if the driver is running and ready to accept new sessions. Requires Beare
       "ready": true,
       "message": "Desktop Automation Driver is running",
       "build": {
-        "version": "1.0.105",
+        "version": "<release-version>",
         "revision": "",
         "time": "2026-06-14T00:46:12Z"
       }
@@ -778,7 +780,7 @@ Success response (`UiResponse` envelope):
   "success": true,
   "value": {
     "schemaVersion": 2,
-    "driverVersion": "1.0.105",
+    "driverVersion": "<release-version>",
     "operations": [
       {
         "name": "select",
@@ -1412,7 +1414,7 @@ Request body fields are optional:
 | Field | Description |
 |---|---|
 | `exePath` | Full path to an executable to launch before recording. Omit to record the current/active target. |
-| `outputPath` | Directory or full JSON file path for the export. Defaults to `%TEMP%\\DesktopAutomationHelper\\Recordings\\`. |
+| `outputPath` | Output **directory** for the export (always treated as a directory, not a file path). The driver creates a deterministic `recording_<timestamp>.json` filename inside that directory. Defaults to `%TEMP%\\DesktopAutomationHelper\\Recordings\\`. |
 | `waitSeconds` | Optional auto-stop timeout. Omit to stop manually with Ctrl+S or `POST /record/stop`. |
 
 Success response:
@@ -1754,18 +1756,19 @@ requests.delete(f"{BASE}/session/{session_id}", headers=AUTH)
 Project-specific testing agent that talks to this driver **only over HTTP**.
 It never references driver internals (no project reference, no FlaUI).
 
-### Phase 1 — foundation
+### Phase / status
 
-Workspace init, suite/key validation, verify discovery, status/catalog readiness (`doctor`).
+| Phase | Status |
+|---|---|
+| Phase 0 — driver baseline | Complete |
+| Phase 1 — agent foundation | Complete |
+| Phase 2 — deterministic plan runner | Complete |
+| Phase 3 — object repository | Complete |
+| Assistive BDD recording (candidates) | Complete — pending recorded interactive Windows acceptance if not yet executed |
+| Phase 3.5 — post-merge hardening | This work (`docs/phase3-5-post-merge-hardening.md`) |
+| Phase 4 — deterministic BDD compiler | Not started |
 
-### Phase 2 — deterministic plan runner
-
-Validates and executes already-compiled JSON plans through `POST /ui`.
-
-### Phase 3 — object repository
-
-Object repository validation, capture (`dumpuia`), verify (`finduia`), offline
-`$objectRef` expansion in plans, and promotion workflow for page objects.
+The agent does **not** currently read Jira, understand BDD, run/schedule suites, repair failures, or invoke AI.
 
 ```cmd
 dotnet run --project src/DesktopAutomationAgent -- init
@@ -1785,8 +1788,9 @@ dotnet run --project src/DesktopAutomationAgent -- doctor --json
 Configuration precedence: `appsettings.json` → `automation/config/agentsettings.local.json`
 → `DA_AGENT__*` environment variables → command-line. See
 [`docs/phase1-agent-foundation.md`](docs/phase1-agent-foundation.md),
-[`docs/phase2-deterministic-runner.md`](docs/phase2-deterministic-runner.md), and
-[`docs/phase3-object-repository.md`](docs/phase3-object-repository.md).
+[`docs/phase2-deterministic-runner.md`](docs/phase2-deterministic-runner.md),
+[`docs/phase3-object-repository.md`](docs/phase3-object-repository.md), and
+[`docs/phase3-5-post-merge-hardening.md`](docs/phase3-5-post-merge-hardening.md).
 
 ---
 
@@ -1801,7 +1805,11 @@ dotnet test src/DesktopAutomationDriver.Tests --configuration Release
 dotnet test src/DesktopAutomationAgent.Tests --configuration Release
 ```
 
-### Publish standalone EXE
+### Publish standalone packages
+
+Project files use a local development version (`0.0.0-local`). Release CI injects
+`1.0.<github.run_number>` into both binaries so `/status`, the operation catalog, and
+the Git tag (`v1.0.<n>`) stay aligned.
 
 ```cmd
 dotnet publish src/DesktopAutomationDriver ^
@@ -1809,7 +1817,16 @@ dotnet publish src/DesktopAutomationDriver ^
   --runtime win-x64 ^
   --self-contained true ^
   -p:PublishSingleFile=true ^
-  --output ./publish
+  -p:PublishTrimmed=false ^
+  --output ./publish/driver
+
+dotnet publish src/DesktopAutomationAgent ^
+  --configuration Release ^
+  --runtime win-x64 ^
+  --self-contained true ^
+  -p:PublishSingleFile=true ^
+  -p:PublishTrimmed=false ^
+  --output ./publish/agent
 ```
 
 ---
@@ -1817,27 +1834,41 @@ dotnet publish src/DesktopAutomationDriver ^
 ## Architecture
 
 ```
-DesktopAutomationDriver
-+-Controllers/
-|  +-VerifyController.cs         GET /verify  (no auth — bootstrap endpoint)
-|  +-StatusController.cs         GET /status
-|  +-SessionController.cs        POST/GET/DELETE /session
-|  +-ElementController.cs        All /session/{id}/element/* endpoints
-+-Middleware/
-|  +-BearerTokenMiddleware.cs    Validates Authorization: Bearer <token>
-+-Models/
-|  +-Request/                    Request DTOs
-|  +-Response/                   Response DTOs + WebDriverResponse<T> + VerifyResponse
-+-Services/
-|  +-IDriverContext.cs           Per-user context interface (port, token, username)
-|  +-DriverContext.cs            FNV-1a port derivation + random token at startup
-|  +-ISessionManager.cs          Session lifecycle interface
-|  +-SessionManager.cs           Thread-safe session store
-|  +-IAutomationService.cs       Element operations interface
-|  +-AutomationService.cs        FlaUI-backed element finding and actions
-|  +-AutomationSession.cs        Per-session state and element cache
-+-Program.cs                     Host setup, probe-server (port 9102), startup banner
+DesktopAutomationDriver (Windows process)
+  HTTP/API boundary on loopback by default
+    GET  /verify              unauthenticated bootstrap (returns token/port)
+    GET  /status              readiness + build version
+    GET  /ui/operations       operation catalog (schema version 2)
+    POST /ui                  execute one catalog operation
+    /session/*, /element/*    WebDriver-style session APIs
+    /record/*                 Passive / Assistive recording
+    /playback                 replay Assistive recording JSON
+  Recording modes
+    Passive   auto-capture clicks/keys
+    Assistive menu-driven actions + optional Jira/BDD annotations
+  Assistive recording writes
+    primary recording_<timestamp>.json under outputPath (directory)
+    candidate page objects + bdd-action-map.json under assistive-artifacts/
+    candidates never auto-promote into active repository pages
+
+DesktopAutomationAgent (separate process; HTTP client only)
+  Deterministic plan runner (Phase 2) — executes already-compiled JSON plans
+  Object repository (Phase 3) — approved Page Objects under automation/object-repository
+  Suite manifests — Jira-key lists for future suite orchestration (validation only today)
+  Schemas under automation/schemas/
+  Run artifacts under automation/runs/
+  Does not read Jira, compile BDD, schedule suites, self-heal, or call AI
+
+Artifact distinctions
+  Approved Page Objects     automation/object-repository (manual promotion)
+  Assistive candidates      assistive-artifacts/ (manual review required)
+  Phase 2 execution plans   automation/plans/*.plan.json
+  Assistive bdd-action-map  capture sidecar; not a compiled plan
+  Future BDD compiler       Phase 4 — not implemented
 ```
+
+Shared-host discovery limits: [`docs/shared-host-driver-discovery-security.md`](docs/shared-host-driver-discovery-security.md).
+Future Debug Mode boundaries: [`docs/debug-mode-design-boundaries.md`](docs/debug-mode-design-boundaries.md).
 
 ## License
 
