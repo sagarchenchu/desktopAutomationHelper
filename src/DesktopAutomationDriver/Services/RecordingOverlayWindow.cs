@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using DesktopAutomationDriver.Models.Recording;
+using DesktopAutomationDriver.Services.Assistive;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
@@ -282,6 +283,9 @@ public sealed class RecordingOverlayWindow : Form
     private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
 
     private const uint GA_ROOT = 2;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -1092,7 +1096,14 @@ public sealed class RecordingOverlayWindow : Form
 
         var sourceLabel = ElementInfo.GetLabel(sourceInfo);
         var targetLabel = ElementInfo.GetLabel(targetInfo);
-        _service.AddAction(new RecordedAction
+        AutomationElement? targetElement = null;
+        try
+        {
+            targetElement = _automation.FromPoint(pt);
+        }
+        catch { /* best effort */ }
+        var captureContext = CaptureAssistiveContext(targetElement);
+        RecordAssistive(new RecordedAction
         {
             ActionType = ActionType.DragAndDrop,
             Mode = RecordingMode.Assistive,
@@ -1100,7 +1111,7 @@ public sealed class RecordingOverlayWindow : Form
             TargetElement = targetInfo,
             PointerContext = ClonePointerContext(_currentAssistivePointerContext),
             Description = $"Drag from {sourceLabel} to {targetLabel}"
-        });
+        }, captureContext);
         UpdateStatusAfterAction(
             $"Drag [{sourceInfo?.ControlType}] {sourceLabel} → [{targetInfo?.ControlType}] {targetLabel}");
     }
@@ -1574,6 +1585,8 @@ public sealed class RecordingOverlayWindow : Form
 
         menu.Items.Add(new ToolStripSeparator());
 
+        AddJiraBddRecordingMenu(menu);
+
         var capturedClickPoint = pt;
         var capturedClickHwnd = capturedHwnd;
         var inspectPointMappingItem = new ToolStripMenuItem("Inspect Point Mapping");
@@ -1899,6 +1912,7 @@ public sealed class RecordingOverlayWindow : Form
                     var text = ShowTypePrompt(elementInfo?.Name ?? elementInfo?.AutomationId ?? "ComboBox");
                     if (text == null) return; // user cancelled
 
+                    var captureContext = CaptureAssistiveContext(element);
                     var elementLabel = ElementInfo.GetLabel(elementInfo);
                     try
                     {
@@ -1954,14 +1968,14 @@ public sealed class RecordingOverlayWindow : Form
                     }
 
                     var displayText = text.Replace("'", "\\'", StringComparison.Ordinal);
-                    _service.AddAction(new RecordedAction
+                    RecordAssistive(new RecordedAction
                     {
                         ActionType = ActionType.TypeAndSelect,
                         Mode = RecordingMode.Assistive,
                         Element = elementInfo,
                         Value = text,
                         Description = $"Type and select '{displayText}' in {elementLabel}"
-                    });
+                    }, captureContext);
                     UpdateStatusAfterAction($"Type and select into [{elementInfo?.ControlType}] {elementLabel}");
                 };
                 menu.Items.Add(typeAndSelectItem);
@@ -2019,13 +2033,14 @@ public sealed class RecordingOverlayWindow : Form
                 catch { /* best effort – fall back to the header item itself */ }
 
                 var tableLabel = ElementInfo.GetLabel(tableInfo);
-                _service.AddAction(new RecordedAction
+                var captureContext = CaptureAssistiveContext(tableElement);
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.GetTableHeaders,
                     Mode = RecordingMode.Assistive,
                     Element = tableInfo,
                     Description = $"Get table headers from {tableLabel}"
-                });
+                }, captureContext);
                 UpdateStatusAfterAction($"Get Table Headers on [{tableInfo?.ControlType}] {tableLabel}");
             };
             menu.Items.Add(getHeadersItem);
@@ -2041,13 +2056,14 @@ public sealed class RecordingOverlayWindow : Form
             directHeadersItem.Click += (_, _) =>
             {
                 var label = ElementInfo.GetLabel(elementInfo);
-                _service.AddAction(new RecordedAction
+                var captureContext = CaptureAssistiveContext(element);
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.GetTableHeaders,
                     Mode = RecordingMode.Assistive,
                     Element = elementInfo,
                     Description = $"Get table headers from {label}"
-                });
+                }, captureContext);
                 UpdateStatusAfterAction($"Get Table Headers on [{elementInfo?.ControlType}] {label}");
             };
             menu.Items.Add(directHeadersItem);
@@ -2056,13 +2072,14 @@ public sealed class RecordingOverlayWindow : Form
             tableDataItem.Click += (_, _) =>
             {
                 var label = ElementInfo.GetLabel(elementInfo);
-                _service.AddAction(new RecordedAction
+                var captureContext = CaptureAssistiveContext(element);
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.GetTableData,
                     Mode = RecordingMode.Assistive,
                     Element = elementInfo,
                     Description = $"Get table data from {label}"
-                });
+                }, captureContext);
                 UpdateStatusAfterAction($"Get Table Data on [{elementInfo?.ControlType}] {label}");
             };
             menu.Items.Add(tableDataItem);
@@ -2117,14 +2134,15 @@ public sealed class RecordingOverlayWindow : Form
             {
                 var textValue = element.Name ?? string.Empty;
                 var elementLabel = ElementInfo.GetLabel(elementInfo);
-                _service.AddAction(new RecordedAction
+                var captureContext = CaptureAssistiveContext(element);
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.Assert,
                     Mode = RecordingMode.Assistive,
                     Element = elementInfo,
                     Value = textValue,
                     Description = $"Assert text '{textValue}' on {elementLabel}"
-                });
+                }, captureContext);
                 UpdateStatusAfterAction($"Assert '{textValue}' on [{elementInfo?.ControlType}] {elementLabel}");
             };
             menu.Items.Add(assertItem);
@@ -2180,14 +2198,15 @@ public sealed class RecordingOverlayWindow : Form
             switchItem.Click += (_, _) =>
             {
                 var label = ElementInfo.GetLabel(switchInfo);
-                _service.AddAction(new RecordedAction
+                var captureContext = CaptureAssistiveContext(switchTarget);
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.SwitchWindow,
                     Mode = RecordingMode.Assistive,
                     Element = switchInfo,
                     Value = windowTitle,
                     Description = $"Switch window to '{windowTitle}'"
-                });
+                }, captureContext);
                 UpdateStatusAfterAction($"Switch Window [{switchInfo?.ControlType}] {label}");
             };
             menu.Items.Add(switchItem);
@@ -2221,6 +2240,7 @@ public sealed class RecordingOverlayWindow : Form
                 var setValueItem = new ToolStripMenuItem("Set Value…");
                 setValueItem.Click += (_, _) =>
                 {
+                    var captureContext = CaptureAssistiveContext(element);
                     var elemLabel = ElementInfo.GetLabel(elementInfo);
                     var input = ShowValuePrompt(elemLabel,
                         element.Patterns.RangeValue.Pattern.Minimum,
@@ -2237,14 +2257,14 @@ public sealed class RecordingOverlayWindow : Form
                         _logger.LogWarning(ex, "Set Value failed for element \"{Label}\"", elemLabel);
                     }
 
-                    _service.AddAction(new RecordedAction
+                    RecordAssistive(new RecordedAction
                     {
                         ActionType = ActionType.SetValue,
                         Mode = RecordingMode.Assistive,
                         Element = elementInfo,
                         Value = input,
                         Description = $"Set value to '{input}' on {elemLabel}"
-                    });
+                    }, captureContext);
                     UpdateStatusAfterAction($"Set Value '{input}' on [{elementInfo?.ControlType}] {elemLabel}");
                 };
                 menu.Items.Add(setValueItem);
@@ -2325,6 +2345,7 @@ public sealed class RecordingOverlayWindow : Form
 
                         childItem.Click += (_, _) =>
                         {
+                            var captureContext = CaptureAssistiveContext(element);
                             try
                             {
                                 if (child.Patterns.SelectionItem.IsSupported)
@@ -2351,14 +2372,14 @@ public sealed class RecordingOverlayWindow : Form
                                 parentLabel = elementInfo.ClassName;
                             else
                                 parentLabel = ElementInfo.GetLabel(elementInfo);
-                            _service.AddAction(new RecordedAction
+                            RecordAssistive(new RecordedAction
                             {
                                 ActionType = ActionType.Select,
                                 Mode = RecordingMode.Assistive,
                                 Element = elementInfo,
                                 Value = capturedChildInfo.Name,
                                 Description = $"Select '{itemLabel}' from {parentLabel}"
-                            });
+                            }, captureContext);
                             UpdateStatusAfterAction($"Select '{itemLabel}' on [{elementInfo?.ControlType}] {parentLabel}");
                         };
                         childrenMenu.DropDownItems.Add(childItem);
@@ -2403,14 +2424,15 @@ public sealed class RecordingOverlayWindow : Form
                         var capturedSibWin = sibWin;
                         sibWinItem.Click += (_, _) =>
                         {
-                            _service.AddAction(new RecordedAction
+                            var captureContext = CaptureAssistiveContext(capturedSibWin);
+                            RecordAssistive(new RecordedAction
                             {
                                 ActionType = ActionType.SwitchWindow,
                                 Mode = RecordingMode.Assistive,
                                 Element = capturedSibWinInfo,
                                 Value = capturedSibWinTitle,
                                 Description = $"Switch window to '{capturedSibWinTitle}'"
-                            });
+                            }, captureContext);
                             UpdateStatusAfterAction($"Switch Window [Window] {capturedSibWinTitle}");
                         };
 
@@ -2858,18 +2880,19 @@ public sealed class RecordingOverlayWindow : Form
             var clickOkItem = new ToolStripMenuItem("Click OK");
             clickOkItem.Click += (_, _) =>
             {
+                var captureContext = CaptureAssistiveContext(capturedPopupWindow);
                 if (_automation == null) return;
 
                 SafeClickPopupOk();
                 ClearPopupCache();
 
-                _service.AddAction(new RecordedAction
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.Click,
                     Mode = RecordingMode.Assistive,
                     Element = capturedPopupInfo,
                     Description = $"Click OK on '{windowTitle}'"
-                });
+                }, captureContext);
             };
             menu.Items.Add(clickOkItem);
 
@@ -2877,17 +2900,18 @@ public sealed class RecordingOverlayWindow : Form
             var pressEnterItem = new ToolStripMenuItem("Press ↵ Enter");
             pressEnterItem.Click += (_, _) =>
             {
+                var captureContext = CaptureAssistiveContext(capturedPopupWindow);
                 if (capturedHwnd != IntPtr.Zero)
                     SetForegroundWindow(capturedHwnd);
                 System.Windows.Forms.SendKeys.SendWait("{ENTER}");
-                _service.AddAction(new RecordedAction
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.Type,
                     Mode = RecordingMode.Assistive,
                     Element = capturedPopupInfo,
                     Value = "{ENTER}",
                     Description = $"Press Enter on '{windowTitle}'"
-                });
+                }, captureContext);
                 UpdateStatusAfterAction($"Press Enter on [Popup] {windowTitle}");
             };
             menu.Items.Add(pressEnterItem);
@@ -2896,17 +2920,18 @@ public sealed class RecordingOverlayWindow : Form
             var pressEscItem = new ToolStripMenuItem("Press Esc");
             pressEscItem.Click += (_, _) =>
             {
+                var captureContext = CaptureAssistiveContext(capturedPopupWindow);
                 if (capturedHwnd != IntPtr.Zero)
                     SetForegroundWindow(capturedHwnd);
                 System.Windows.Forms.SendKeys.SendWait("{ESC}");
-                _service.AddAction(new RecordedAction
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.Type,
                     Mode = RecordingMode.Assistive,
                     Element = capturedPopupInfo,
                     Value = "{ESC}",
                     Description = $"Press Esc on '{windowTitle}'"
-                });
+                }, captureContext);
                 UpdateStatusAfterAction($"Press Esc on [Popup] {windowTitle}");
             };
             menu.Items.Add(pressEscItem);
@@ -2916,17 +2941,18 @@ public sealed class RecordingOverlayWindow : Form
             var cancelEscItem = new ToolStripMenuItem("Cancel / Esc");
             cancelEscItem.Click += (_, _) =>
             {
+                var captureContext = CaptureAssistiveContext(capturedPopupWindow);
                 SafeCancelPopup();
                 ClearPopupCache();
 
-                _service.AddAction(new RecordedAction
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.Click,
                     Mode = RecordingMode.Assistive,
                     Element = capturedPopupInfo,
                     Value = "{ESC}",
                     Description = $"Cancel on '{windowTitle}'"
-                });
+                }, captureContext);
                 UpdateStatusAfterAction($"Cancel on [Popup] {windowTitle}");
             };
             menu.Items.Add(cancelEscItem);
@@ -2937,6 +2963,7 @@ public sealed class RecordingOverlayWindow : Form
             var closePopupItem = new ToolStripMenuItem("Close Popup");
             closePopupItem.Click += (_, _) =>
             {
+                var captureContext = CaptureAssistiveContext(capturedPopupWindow);
                 try
                 {
                     if (capturedPopupWindow.Patterns.Window.IsSupported)
@@ -2953,13 +2980,13 @@ public sealed class RecordingOverlayWindow : Form
                     _logger.LogWarning(ex, "Close Popup failed for '{Title}'", windowTitle);
                 }
 
-                _service.AddAction(new RecordedAction
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.CloseWindow,
                     Mode = RecordingMode.Assistive,
                     Element = capturedPopupInfo,
                     Description = $"Close popup '{windowTitle}'"
-                });
+                }, captureContext);
                 ClearPopupCache();
                 UpdateStatusAfterAction($"Close Popup [Window] {windowTitle}");
             };
@@ -3033,14 +3060,15 @@ public sealed class RecordingOverlayWindow : Form
                     try { capturedPopupWindow.AsWindow().SetForeground(); } catch { }
                 }
 
-                _service.AddAction(new RecordedAction
+                var captureContext = CaptureAssistiveContext(windowElement);
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.SwitchWindow,
                     Mode = RecordingMode.Assistive,
                     Element = capturedPopupInfo,
                     Value = windowTitle,
                     Description = $"Switch window to '{windowTitle}'"
-                });
+                }, captureContext);
                 UpdateStatusAfterAction($"Current Window set to [Window] {label}");
             };
             menu.Items.Add(makeCurrentItem);
@@ -3068,14 +3096,15 @@ public sealed class RecordingOverlayWindow : Form
         switchItem.Click += (_, _) =>
         {
             var label = ElementInfo.GetLabel(windowInfo);
-            _service.AddAction(new RecordedAction
+            var captureContext = CaptureAssistiveContext(windowElement);
+            RecordAssistive(new RecordedAction
             {
                 ActionType = ActionType.SwitchWindow,
                 Mode = RecordingMode.Assistive,
                 Element = windowInfo,
                 Value = windowTitle,
                 Description = $"Switch window to '{windowTitle}'"
-            });
+            }, captureContext);
             UpdateStatusAfterAction($"Switch Window [{windowInfo?.ControlType}] {label}");
         };
         menu.Items.Add(switchItem);
@@ -3152,14 +3181,15 @@ public sealed class RecordingOverlayWindow : Form
                         var capturedChildWin = childWin;
                         childWinItem.Click += (_, _) =>
                         {
-                            _service.AddAction(new RecordedAction
+                            var captureContext = CaptureAssistiveContext(capturedChildWin);
+                            RecordAssistive(new RecordedAction
                             {
                                 ActionType = ActionType.SwitchWindow,
                                 Mode = RecordingMode.Assistive,
                                 Element = capturedChildWinInfo,
                                 Value = capturedChildWinTitle,
                                 Description = $"Switch window to '{capturedChildWinTitle}'"
-                            });
+                            }, captureContext);
                             UpdateStatusAfterAction($"Switch Window [Window] {capturedChildWinTitle}");
                         };
 
@@ -4096,6 +4126,7 @@ public sealed class RecordingOverlayWindow : Form
             var selectItem = new ToolStripMenuItem(capturedName);
             selectItem.Click += (_, _) =>
             {
+                var captureContext = CaptureAssistiveContext(targetElement);
                 RunAssistiveActionAfterMenuCloseAsync(
                     $"Context Menu: {capturedMenuPath}",
                     () =>
@@ -4116,7 +4147,8 @@ public sealed class RecordingOverlayWindow : Form
                             targetElement,
                             elementInfo,
                             capturedMenuPath,
-                            originalRightClickPoint);
+                            originalRightClickPoint,
+                            captureContext);
 
                         StartPopupProbeAfterAction();
 
@@ -4836,11 +4868,11 @@ public sealed class RecordingOverlayWindow : Form
         AutomationElement? targetElement,
         ElementInfo? elementInfo,
         string menuPath,
-        System.Drawing.Point originalRightClickPoint)
+        System.Drawing.Point originalRightClickPoint,
+        AssistiveActionCaptureContext captureContext)
     {
         var targetInfo = elementInfo ?? (targetElement == null ? null : BuildElementInfo(targetElement));
-
-        _service.AddAction(new RecordedAction
+        RecordAssistive(new RecordedAction
         {
             ActionType = ActionType.MenuPathClick,
             Operation = "contextmenupath",
@@ -4854,7 +4886,7 @@ public sealed class RecordingOverlayWindow : Form
                 ["strategy"] = "context-menu-path"
             },
             Description = $"Select context menu path {menuPath} on {ElementInfo.GetLabel(targetInfo)}"
-        });
+        }, captureContext);
 
         UpdateStatusAfterAction($"Context menu path {menuPath}");
     }
@@ -4866,7 +4898,8 @@ public sealed class RecordingOverlayWindow : Form
     {
         var targetInfo = elementInfo ?? (targetElement == null ? null : BuildElementInfo(targetElement));
 
-        _service.AddAction(new RecordedAction
+        var captureContext = CaptureAssistiveContext(targetElement);
+        RecordAssistive(new RecordedAction
         {
             ActionType = ActionType.RightClick,
             Mode = RecordingMode.Assistive,
@@ -4878,7 +4911,7 @@ public sealed class RecordingOverlayWindow : Form
                 ["strategy"] = "plain-right-click-no-context-menu-items"
             },
             Description = BuildDescription("Right Click", targetInfo)
-        });
+        }, captureContext);
 
         UpdateStatusAfterAction($"Right Click on [{targetInfo?.ControlType}] {targetInfo?.Name ?? "(element)"}");
         StartPopupProbeAfterAction();
@@ -4978,6 +5011,7 @@ public sealed class RecordingOverlayWindow : Form
 
             RunAssistiveActionAfterMenuClose(label, () =>
             {
+                var captureContext = CaptureAssistiveContext(element);
                 if (!PerformAssistiveType(element, info, text, clearFirst))
                 {
                     _logger.LogWarning(
@@ -4993,7 +5027,7 @@ public sealed class RecordingOverlayWindow : Form
                     ? $"Clear and type '{displayText}' into {elementLabel}"
                     : $"Type '{displayText}' into {elementLabel}";
 
-                _service.AddAction(new RecordedAction
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.Type,
                     Mode = RecordingMode.Assistive,
@@ -5001,7 +5035,7 @@ public sealed class RecordingOverlayWindow : Form
                     Value = text,
                     PointerContext = ClonePointerContext(_currentAssistivePointerContext),
                     Description = description
-                });
+                }, captureContext);
 
                 UpdateStatusAfterAction($"{label.TrimEnd('…')} into [{info?.ControlType}] {elementLabel}");
             });
@@ -5029,6 +5063,7 @@ public sealed class RecordingOverlayWindow : Form
 
             RunAssistiveActionAfterMenuClose(label, () =>
             {
+                var captureContext = CaptureAssistiveContext(element);
                 var freshElement = ResolveFreshAssistiveDateElement(element);
 
                 if (freshElement == null)
@@ -5051,7 +5086,7 @@ public sealed class RecordingOverlayWindow : Form
                     ? $"Clear and type date {value} into {elementLabel}"
                     : $"Type date {value} into {elementLabel}";
 
-                _service.AddAction(new RecordedAction
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.Type,
                     Mode = RecordingMode.Assistive,
@@ -5060,7 +5095,7 @@ public sealed class RecordingOverlayWindow : Form
                     Value = value,
                     PointerContext = ClonePointerContext(_currentAssistivePointerContext),
                     Description = description
-                });
+                }, captureContext);
 
                 UpdateStatusAfterAction($"{label.TrimEnd('…')} into [{info?.ControlType}] {elementLabel}");
             });
@@ -7676,6 +7711,7 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
+            var captureContext = CaptureAssistiveContext(comboBox);
             var guard = CaptureComboBoxTargetGuard(comboBox);
             var operationDeadline = DateTime.UtcNow.AddMilliseconds(ComboBoxSingleSelectionTimeoutMs);
 
@@ -7693,7 +7729,7 @@ public sealed class RecordingOverlayWindow : Form
             // --- Strategy 1: Win32 native (pywinauto-style, no dropdown) ---
             if (TrySelectNativeWin32ComboBoxAssistive(comboBox, itemName, out var win32NativeStrategy))
             {
-                RecordComboBoxSelection(comboBox, comboInfo, itemName, win32NativeStrategy);
+                RecordComboBoxSelection(comboBox, comboInfo, itemName, win32NativeStrategy, captureContext);
                 return true;
             }
 
@@ -7715,7 +7751,7 @@ public sealed class RecordingOverlayWindow : Form
                     operationDeadline,
                     out var directStrategy))
             {
-                RecordComboBoxSelection(comboBox, comboInfo, itemName, directStrategy);
+                RecordComboBoxSelection(comboBox, comboInfo, itemName, directStrategy, captureContext);
                 return true;
             }
 
@@ -7743,7 +7779,7 @@ public sealed class RecordingOverlayWindow : Form
 
                     if (TrySelectComboBoxByPagedVisibleSearch(comboBox, itemName, guard, operationDeadline))
                     {
-                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "huge-list-paged-visible-search");
+                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "huge-list-paged-visible-search", captureContext);
                         return true;
                     }
 
@@ -7754,7 +7790,7 @@ public sealed class RecordingOverlayWindow : Form
 
                     if (TrySelectComboBoxByVisibleAnchorWindowSearch(comboBox, itemName, guard, operationDeadline))
                     {
-                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "huge-list-visible-anchor-window-search");
+                        RecordComboBoxSelection(comboBox, comboInfo, itemName, "huge-list-visible-anchor-window-search", captureContext);
                         return true;
                     }
 
@@ -7781,7 +7817,8 @@ public sealed class RecordingOverlayWindow : Form
                         comboBox,
                         comboInfo,
                         itemName,
-                        "small-combobox-exact-visible-commit");
+                        "small-combobox-exact-visible-commit",
+                        captureContext);
 
                     return true;
                 }
@@ -8737,9 +8774,10 @@ public sealed class RecordingOverlayWindow : Form
         AutomationElement comboBox,
         ElementInfo? comboInfo,
         string itemName,
-        string strategy)
+        string strategy,
+        AssistiveActionCaptureContext captureContext)
     {
-        _service.AddAction(new RecordedAction
+        RecordAssistive(new RecordedAction
         {
             ActionType = ActionType.Click,
             Mode = RecordingMode.Assistive,
@@ -8749,7 +8787,7 @@ public sealed class RecordingOverlayWindow : Form
             Value = itemName,
             Description = $"Select ComboBox item '{itemName}' from {comboInfo?.Name ?? SafeElementName(comboBox)} using {strategy}",
             PointerContext = ClonePointerContext(_currentAssistivePointerContext)
-        });
+        }, captureContext);
 
         UpdateStatusAfterAction($"Selected ComboBox item {itemName}");
     }
@@ -8931,6 +8969,7 @@ public sealed class RecordingOverlayWindow : Form
 
                         subItemEntry.Click += (_, _) =>
                         {
+                            var captureContext = CaptureAssistiveContext(capturedMenuBarRef);
                             RunAssistiveActionAfterMenuClose($"Click menu path {capturedMenuPathValue}", () =>
                             {
                                 BringElementWindowToForeground(capturedMenuBarRef);
@@ -8971,7 +9010,7 @@ public sealed class RecordingOverlayWindow : Form
                                         $"Failed to activate logical menu path '{capturedMenuPathValue}'.");
                                 }
 
-                                _service.AddAction(new RecordedAction
+                                RecordAssistive(new RecordedAction
                                 {
                                     ActionType = ActionType.MenuPathClick,
                                     Operation = "clicklogicalmenupath",
@@ -8981,7 +9020,7 @@ public sealed class RecordingOverlayWindow : Form
                                     MenuPath = capturedMenuPath,
                                     PointerContext = ClonePointerContext(_currentAssistivePointerContext),
                                     Description = $"Click menu path {capturedMenuPathValue}"
-                                });
+                                }, captureContext);
                                 UpdateStatusAfterAction($"Menu path [{capturedSubItemInfo.ControlType}] {capturedMenuPathValue}");
                                 StartPopupProbeAfterAction();
                             });
@@ -9554,6 +9593,7 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
+            var captureContext = CaptureAssistiveContext(parentMenuItem);
             BringElementWindowToForeground(parentMenuItem);
             Thread.Sleep(WindowActivationDelayMs);
 
@@ -9591,7 +9631,7 @@ public sealed class RecordingOverlayWindow : Form
             if (!ActivateDynamicLeafMenuItem(item, childName))
                 return false;
 
-            _service.AddAction(new RecordedAction
+            RecordAssistive(new RecordedAction
             {
                 ActionType = ActionType.Click,
                 Mode = RecordingMode.Assistive,
@@ -9601,7 +9641,7 @@ public sealed class RecordingOverlayWindow : Form
                 Value = $"{SafeElementName(parentMenuItem)}>{childName}",
                 Description = $"Select dynamic menu item {SafeElementName(parentMenuItem)}>{childName}",
                 PointerContext = ClonePointerContext(_currentAssistivePointerContext)
-            });
+            }, captureContext);
 
             UpdateStatusAfterAction($"Selected menu item {SafeElementName(parentMenuItem)}>{childName}");
             return true;
@@ -9624,6 +9664,7 @@ public sealed class RecordingOverlayWindow : Form
             if (pathParts.Count == 0)
                 return false;
 
+            var captureContext = CaptureAssistiveContext(rootParentMenuItem);
             BringElementWindowToForeground(rootParentMenuItem);
             Thread.Sleep(WindowActivationDelayMs);
 
@@ -9663,7 +9704,7 @@ public sealed class RecordingOverlayWindow : Form
 
                     var fullPath = $"{SafeElementName(rootParentMenuItem)}>{string.Join(">", pathParts)}";
 
-                    _service.AddAction(new RecordedAction
+                    RecordAssistive(new RecordedAction
                     {
                         ActionType = ActionType.Click,
                         Mode = RecordingMode.Assistive,
@@ -9680,7 +9721,7 @@ public sealed class RecordingOverlayWindow : Form
                             ["fullPath"] = fullPath,
                             ["leafName"] = part
                         }
-                    });
+                    }, captureContext);
 
                     UpdateStatusAfterAction($"Selected menu path {fullPath}");
 
@@ -10250,6 +10291,7 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
+            var captureContext = CaptureAssistiveContext(headerElement);
             BringElementWindowToForeground(headerElement);
             Thread.Sleep(WindowActivationDelayMs);
 
@@ -10266,7 +10308,7 @@ public sealed class RecordingOverlayWindow : Form
                     OpenedAtUtc = DateTime.UtcNow
                 };
 
-                _service.AddAction(new RecordedAction
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = ActionType.Click,
                     Mode = RecordingMode.Assistive,
@@ -10279,7 +10321,7 @@ public sealed class RecordingOverlayWindow : Form
                     {
                         ["clickRegion"] = region.ToString()
                     }
-                });
+                }, captureContext);
 
                 _statusLabel.Text = $"Header dropdown opened: {headerName}";
                 ShowHeaderDropdownItemsMenu(Cursor.Position, popupList, headerElement, headerInfo, region);
@@ -10732,6 +10774,7 @@ public sealed class RecordingOverlayWindow : Form
     {
         try
         {
+            var captureContext = CaptureAssistiveContext(headerElement);
             BringElementWindowToForeground(headerElement);
             Thread.Sleep(WindowActivationDelayMs);
 
@@ -10779,7 +10822,7 @@ public sealed class RecordingOverlayWindow : Form
                 return false;
             }
 
-            _service.AddAction(new RecordedAction
+            RecordAssistive(new RecordedAction
             {
                 ActionType = ActionType.Click,
                 Mode = RecordingMode.Assistive,
@@ -10796,7 +10839,7 @@ public sealed class RecordingOverlayWindow : Form
                     ["headerRegion"] = region.ToString(),
                     ["itemRegion"] = itemRegion.ToString()
                 }
-            });
+            }, captureContext);
 
             UpdateStatusAfterAction($"Selected dropdown item {itemName}");
             return true;
@@ -10912,6 +10955,10 @@ public sealed class RecordingOverlayWindow : Form
 
         item.Click += (_, _) =>
         {
+            // Capture window context before perform() — clicks that open/close windows
+            // leave the original AutomationElement stale.
+            var captureContext = CaptureAssistiveContext(element);
+
             RunAssistiveActionAfterMenuClose(label, () =>
             {
                 var success = false;
@@ -10964,14 +11011,14 @@ public sealed class RecordingOverlayWindow : Form
                     return;
                 }
 
-                _service.AddAction(new RecordedAction
+                RecordAssistive(new RecordedAction
                 {
                     ActionType = actionType,
                     Mode = RecordingMode.Assistive,
                     Element = info,
                     PointerContext = ClonePointerContext(_currentAssistivePointerContext),
                     Description = BuildDescription(label, info)
-                });
+                }, captureContext);
 
                 UpdateStatusAfterAction($"{label} on [{info?.ControlType}] {info?.Name ?? "(element)"}");
 
@@ -10996,11 +11043,11 @@ public sealed class RecordingOverlayWindow : Form
         var item = new ToolStripMenuItem(label + "?");
         item.Click += (_, _) =>
         {
+            var captureContext = CaptureAssistiveContext(element);
             bool result;
             try { result = evaluate(); }
             catch { result = false; }
-
-            _service.AddAction(new RecordedAction
+            RecordAssistive(new RecordedAction
             {
                 ActionType = actionType,
                 Mode = RecordingMode.Assistive,
@@ -11008,7 +11055,7 @@ public sealed class RecordingOverlayWindow : Form
                 QueryResult = result,
                 PointerContext = ClonePointerContext(_currentAssistivePointerContext),
                 Description = $"{label} check on {ElementInfo.GetLabel(info)}: {result}"
-            });
+            }, captureContext);
             UpdateStatusAfterAction($"{label}: {result}  │  [{info?.ControlType}] {info?.Name ?? "(element)"}");
         };
         menu.Items.Add(item);
@@ -11282,6 +11329,7 @@ public sealed class RecordingOverlayWindow : Form
         var item = new ToolStripMenuItem(menuLabel);
         item.Click += (_, _) =>
         {
+            var captureContext = CaptureAssistiveContext(searchRoot);
             // Bring the window to the foreground before firing the click so it lands
             // on the correct window rather than whatever currently has focus.
             if (preferredHwnd != IntPtr.Zero)
@@ -11330,13 +11378,13 @@ public sealed class RecordingOverlayWindow : Form
             }
 
             var buttonLabel = ElementInfo.GetLabel(buttonInfo);
-            _service.AddAction(new RecordedAction
+            RecordAssistive(new RecordedAction
             {
                 ActionType = ActionType.Click,
                 Mode = RecordingMode.Assistive,
                 Element = buttonInfo,
                 Description = $"Click on {buttonLabel}"
-            });
+            }, captureContext);
             UpdateStatusAfterAction($"Click [Button] {buttonInfo.Name ?? "(button)"}");
             StartPopupProbeAfterAction();
         };
@@ -11351,7 +11399,10 @@ public sealed class RecordingOverlayWindow : Form
             _assistiveActionCount,
             detail);
 
-        _statusLabel.Text = $"  ✓ Recorded: {detail}  │  Ctrl+S = Stop  ";
+        var annotation = _service.AssistiveAnnotationStatus;
+        _statusLabel.Text = string.IsNullOrWhiteSpace(annotation)
+            ? $"  ✓ Recorded: {detail}  │  Ctrl+S = Stop  "
+            : $"  ✓ Recorded: {detail}  │  {annotation}  │  Ctrl+S = Stop  ";
         // Revert to mode label after 2 s
         var timer = new System.Windows.Forms.Timer { Interval = 2000 };
         timer.Tick += (_, _) =>
@@ -11359,11 +11410,281 @@ public sealed class RecordingOverlayWindow : Form
             timer.Stop();
             timer.Dispose();
             if (_service.CurrentMode == RecordingMode.Assistive)
-                _statusLabel.Text = "  Assistive ACTIVE  │  Right-click element  │  Ctrl+Right-click for window actions  │  Ctrl+P = Passive  │  Ctrl+S = Stop  ";
+            {
+                var suffix = _service.AssistiveAnnotationStatus;
+                _statusLabel.Text = string.IsNullOrWhiteSpace(suffix)
+                    ? "  Assistive ACTIVE  │  Right-click element  │  Ctrl+Right-click for window actions  │  Ctrl+P = Passive  │  Ctrl+S = Stop  "
+                    : $"  Assistive ACTIVE  │  {suffix}  │  Right-click element  │  Ctrl+S = Stop  ";
+            }
             else if (_service.CurrentMode == RecordingMode.Passive)
                 _statusLabel.Text = "  Passive ACTIVE  │  Recording clicks & keys  │  Ctrl+A = Assistive  │  Ctrl+S = Stop  ";
         };
         timer.Start();
+    }
+
+    private void AddJiraBddRecordingMenu(ContextMenuStrip menu)
+    {
+        var jiraKey = _service.JiraKey;
+        var hasJira = !string.IsNullOrWhiteSpace(jiraKey);
+        var submenu = new ToolStripMenuItem("Jira / BDD Recording");
+
+        if (!hasJira)
+        {
+            var start = new ToolStripMenuItem("Start Jira Recording…");
+            start.Click += (_, _) => PromptStartJiraRecording();
+            submenu.DropDownItems.Add(start);
+            submenu.DropDownItems.Add(new ToolStripMenuItem("Current Jira: Not set") { Enabled = false });
+            submenu.DropDownItems.Add(new ToolStripMenuItem("Take BDD Statement (Next Action)…") { Enabled = false });
+            submenu.DropDownItems.Add(new ToolStripMenuItem("Take BDD Statement (Multiple Actions)…") { Enabled = false });
+            submenu.DropDownItems.Add(new ToolStripMenuItem("Finish Current BDD Statement") { Enabled = false });
+            submenu.DropDownItems.Add(new ToolStripMenuItem("Cancel Pending BDD Statement") { Enabled = false });
+        }
+        else
+        {
+            submenu.DropDownItems.Add(new ToolStripMenuItem($"Current Jira: {jiraKey}") { Enabled = false });
+
+            var next = new ToolStripMenuItem("Take BDD Statement (Next Action)…");
+            next.Click += (_, _) => PromptArmBdd(BddScope.NextAction);
+            submenu.DropDownItems.Add(next);
+
+            var multi = new ToolStripMenuItem("Take BDD Statement (Multiple Actions)…");
+            multi.Click += (_, _) => PromptArmBdd(BddScope.UntilFinished);
+            submenu.DropDownItems.Add(multi);
+
+            var finish = new ToolStripMenuItem("Finish Current BDD Statement");
+            finish.Click += (_, _) =>
+            {
+                if (_service.TryFinishBddStatement(out var message))
+                    _statusLabel.Text = $"  {message}  │  {_service.AssistiveAnnotationStatus}  ";
+                else
+                    MessageBox.Show(this, message, "BDD Statement", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            };
+            submenu.DropDownItems.Add(finish);
+
+            var cancel = new ToolStripMenuItem("Cancel Pending BDD Statement");
+            cancel.Click += (_, _) =>
+            {
+                if (_service.TryCancelBddStatement(out var message))
+                    _statusLabel.Text = $"  {message}  ";
+                else
+                    MessageBox.Show(this, message, "BDD Statement", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            };
+            submenu.DropDownItems.Add(cancel);
+        }
+
+        menu.Items.Add(submenu);
+        menu.Items.Add(new ToolStripSeparator());
+    }
+
+    private void PromptStartJiraRecording()
+    {
+        while (true)
+        {
+            var input = PromptForText("Start Jira Recording", "Enter Jira key (e.g. ABC-1234):", _service.JiraKey ?? string.Empty);
+            if (input is null)
+                return;
+
+            if (_service.TryStartJiraRecording(input, out var canonical, out var error))
+            {
+                _statusLabel.Text = $"  Jira {canonical}  │  BDD not armed  │  Right-click to continue  ";
+                return;
+            }
+
+            var retry = MessageBox.Show(
+                this,
+                error + Environment.NewLine + Environment.NewLine + "Try again?",
+                "Invalid Jira Key",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (retry != DialogResult.Yes)
+                return;
+        }
+    }
+
+    private void PromptArmBdd(BddScope scope)
+    {
+        while (true)
+        {
+            var title = scope == BddScope.NextAction
+                ? "BDD Statement (Next Action)"
+                : "BDD Statement (Multiple Actions)";
+            var input = PromptForText(title, "Enter BDD statement:", string.Empty);
+            if (input is null)
+                return;
+
+            if (_service.TryArmBddStatement(input, scope, out var groupId, out var error))
+            {
+                _logger.LogInformation(
+                    "BDD {GroupId} armed from overlay ({Scope}, {CharCount} chars).",
+                    groupId,
+                    scope,
+                    input.Trim().Length);
+                _statusLabel.Text = $"  {_service.AssistiveAnnotationStatus}  ";
+                return;
+            }
+
+            var retry = MessageBox.Show(
+                this,
+                error + Environment.NewLine + Environment.NewLine + "Try again?",
+                "Invalid BDD Statement",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (retry != DialogResult.Yes)
+                return;
+        }
+    }
+
+    private string? PromptForText(string title, string prompt, string defaultValue)
+    {
+        using var dialog = new Form
+        {
+            Text = title,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterScreen,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ShowInTaskbar = false,
+            ClientSize = new Size(420, 140),
+            TopMost = true
+        };
+
+        var label = new WinLabel
+        {
+            Text = prompt,
+            AutoSize = false,
+            Location = new Point(12, 12),
+            Size = new Size(396, 24)
+        };
+        var box = new System.Windows.Forms.TextBox
+        {
+            Location = new Point(12, 40),
+            Size = new Size(396, 23),
+            Text = defaultValue
+        };
+        var ok = new System.Windows.Forms.Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Location = new Point(252, 80),
+            Size = new Size(75, 28)
+        };
+        var cancel = new System.Windows.Forms.Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Location = new Point(333, 80),
+            Size = new Size(75, 28)
+        };
+
+        dialog.Controls.Add(label);
+        dialog.Controls.Add(box);
+        dialog.Controls.Add(ok);
+        dialog.Controls.Add(cancel);
+        dialog.AcceptButton = ok;
+        dialog.CancelButton = cancel;
+
+        return dialog.ShowDialog(this) == DialogResult.OK ? box.Text : null;
+    }
+
+    private void RecordAssistive(RecordedAction action, AssistiveActionCaptureContext captureContext)
+    {
+        ArgumentNullException.ThrowIfNull(captureContext);
+        action.Mode = RecordingMode.Assistive;
+        _service.RecordAssistiveAction(action, captureContext);
+    }
+
+    /// <summary>
+    /// Snapshots window identity from <paramref name="element"/> before any mutating action.
+    /// Never falls back to mutable overlay fields — callers must pass the action target.
+    /// </summary>
+    private AssistiveActionCaptureContext CaptureAssistiveContext(AutomationElement? element)
+    {
+        var window = CaptureWindowContext(element)
+            ?? new RecordedWindowContext
+            {
+                Title = DeterministicPageIdGenerator.UntitledFallback,
+                NormalizedTitle = DeterministicPageIdGenerator.UntitledFallback,
+                ProcessId = _service.GetRecordingTargetProcessId()
+            };
+
+        return new AssistiveActionCaptureContext
+        {
+            Window = window,
+            PageId = null
+        };
+    }
+
+    private RecordedWindowContext? CaptureWindowContext(AutomationElement? element)
+    {
+        try
+        {
+            AutomationElement? windowElement = null;
+            if (element != null)
+                windowElement = FindWindowAncestorOrSelf(element);
+
+            string? title = null;
+            int? processId = null;
+            IntPtr hwnd = IntPtr.Zero;
+
+            if (windowElement != null)
+            {
+                try { title = windowElement.Name; } catch { /* fallback below */ }
+                try { processId = windowElement.Properties.ProcessId.Value; } catch { }
+                try
+                {
+                    var raw = windowElement.Properties.NativeWindowHandle.ValueOrDefault;
+                    if (raw != 0)
+                        hwnd = new IntPtr(raw);
+                }
+                catch { }
+            }
+
+            if (hwnd == IntPtr.Zero && element != null)
+            {
+                try
+                {
+                    var raw = element.Properties.NativeWindowHandle.ValueOrDefault;
+                    if (raw != 0)
+                        hwnd = GetAncestor(new IntPtr(raw), GA_ROOT);
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrWhiteSpace(title) && hwnd != IntPtr.Zero)
+                title = TryGetWin32WindowTitle(hwnd);
+
+            if (processId is null)
+                processId = _service.GetRecordingTargetProcessId();
+
+            if (string.IsNullOrWhiteSpace(title) && hwnd == IntPtr.Zero && processId is null)
+                return null;
+
+            return new RecordedWindowContext
+            {
+                Title = title,
+                NormalizedTitle = DeterministicPageIdGenerator.NormalizeTitle(title),
+                ProcessId = processId,
+                NativeWindowHandle = hwnd == IntPtr.Zero ? null : $"0x{hwnd.ToInt64():X8}"
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to capture Assistive window context.");
+            return null;
+        }
+    }
+
+    private static string? TryGetWin32WindowTitle(IntPtr hwnd)
+    {
+        try
+        {
+            var buffer = new System.Text.StringBuilder(512);
+            return GetWindowText(hwnd, buffer, buffer.Capacity) > 0 ? buffer.ToString() : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

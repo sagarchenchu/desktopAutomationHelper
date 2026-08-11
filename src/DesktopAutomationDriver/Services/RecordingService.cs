@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DesktopAutomationDriver.Models.Recording;
 using DesktopAutomationDriver.Models.Request;
+using DesktopAutomationDriver.Services.Assistive;
 using FlaUI.Core.AutomationElements;
 using FlaUI.UIA3;
 
@@ -80,6 +81,58 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     private readonly List<RecordedAction> _actions = [];
     private readonly object _lock = new();
+    private readonly AssistiveRecordingCoordinator _assistive = new();
+    private readonly AssistiveArtifactBuilder _artifactBuilder = new();
+    private AssistiveArtifactWriter _artifactWriter = new();
+    private RecordingArtifactsSummary? _artifactsSummary;
+    private RecordingExportState _exportState = RecordingExportState.NotStarted;
+    private RecordingLifecycleState _lifecycle = RecordingLifecycleState.Idle;
+
+    /// <summary>Test seam: replaces the default artifact writer (path-safety / failure injection).</summary>
+    internal AssistiveArtifactWriter ArtifactWriterForTests
+    {
+        get => _artifactWriter;
+        set => _artifactWriter = value ?? throw new ArgumentNullException(nameof(value));
+    }
+
+    /// <summary>Test seam: inspect export-completed flag.</summary>
+    internal bool ExportCompletedForTests
+    {
+        get { lock (_lock) return _exportState == RecordingExportState.Completed; }
+    }
+
+    /// <summary>Test seam: inspect export state machine.</summary>
+    internal RecordingExportState ExportStateForTests
+    {
+        get { lock (_lock) return _exportState; }
+    }
+
+    /// <summary>Test seam: inspect recording lifecycle (Idle/Active/Stopping).</summary>
+    internal RecordingLifecycleState LifecycleStateForTests
+    {
+        get { lock (_lock) return _lifecycle; }
+    }
+
+    /// <summary>Test seam: inspect primary export path.</summary>
+    internal string? ExportFilePathForTests => _exportFilePath;
+
+    /// <summary>Test seam: invoked immediately before the primary recording atomic write.</summary>
+    internal Action<string>? BeforePrimaryWriteForTests { get; set; }
+
+    /// <summary>Test seam: invoked after sidecars succeed, before primary summary rewrite.</summary>
+    internal Action? BeforePrimarySummaryRewriteForTests { get; set; }
+
+    /// <summary>
+    /// Test seam: invoked after the session is atomically marked Stopping/inactive,
+    /// before <see cref="ExportJson"/> runs.
+    /// </summary>
+    internal Action? AfterBeginStopBeforeExportForTests { get; set; }
+
+    /// <summary>
+    /// Test seam: when true, <see cref="StartRecording"/> skips the STA overlay thread
+    /// so lifecycle races can be tested without WinForms.
+    /// </summary>
+    internal bool SuppressOverlayForTests { get; set; }
 
     // ── Recording target (process/window to which Assistive mode is scoped) ──
     private int? _recordingTargetProcessId;
@@ -125,21 +178,58 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     // ── IRecordingService ────────────────────────────────────────────────────
 
-    public bool IsActive => _isActive;
+    public bool IsActive
+    {
+        get { lock (_lock) return _lifecycle == RecordingLifecycleState.Active; }
+    }
 
     public RecordingMode CurrentMode => _currentMode;
 
-    public DateTimeOffset? StartedAt => _isActive ? _startedAt : null;
+    public DateTimeOffset? StartedAt
+    {
+        get
+        {
+            lock (_lock)
+                return _lifecycle == RecordingLifecycleState.Active ? _startedAt : null;
+        }
+    }
+
+    public string? RecordingId
+    {
+        get { lock (_lock) return _assistive.RecordingId; }
+    }
+
+    public string? JiraKey
+    {
+        get { lock (_lock) return _assistive.JiraKey; }
+    }
+
+    public string AssistiveAnnotationStatus
+    {
+        get { lock (_lock) return _assistive.OverlayStatusSuffix; }
+    }
 
     public StartRecordingResult StartRecording(StartRecordingRequest? request = null)
     {
-        if (_isActive)
-            return new StartRecordingResult { Error = "Recording is already active." };
-
         lock (_lock)
         {
+            if (_lifecycle == RecordingLifecycleState.Active || _isActive)
+                return new StartRecordingResult { Error = "Recording is already active." };
+
+            if (_lifecycle == RecordingLifecycleState.Stopping
+                || _exportState == RecordingExportState.InProgress)
+            {
+                return new StartRecordingResult
+                {
+                    Error = "Cannot start a new recording while stop/export is still pending."
+                };
+            }
+
             _actions.Clear();
             _exportFilePath = null;
+            _artifactsSummary = null;
+            _exportState = RecordingExportState.NotStarted;
+            _lifecycle = RecordingLifecycleState.Active;
             _stoppedAt = null;
             _currentMode = RecordingMode.None;
             _outputPath = request?.OutputPath;
@@ -147,6 +237,9 @@ public sealed class RecordingService : IRecordingService, IDisposable
             _isActive = true;
             _screenInfo = CaptureScreenResolution();
             _launchInfo = null;
+
+            var recordingId = $"rec-{_startedAt:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("N")[..8]}";
+            _assistive.Reset(recordingId);
 
             // Reset recording target
             _recordingTargetProcessId = null;
@@ -202,51 +295,54 @@ public sealed class RecordingService : IRecordingService, IDisposable
         }
 
         // ── Start the overlay on a dedicated STA thread ───────────────────────
-        _overlayThread = new Thread(() =>
+        if (!SuppressOverlayForTests)
         {
-            WinForms.Application.EnableVisualStyles();
-            WinForms.Application.SetCompatibleTextRenderingDefault(false);
-
-            // Create UIA automation on the STA thread so COM apartment is correct
-            try
+            _overlayThread = new Thread(() =>
             {
-                _automation = new UIA3Automation();
+                WinForms.Application.EnableVisualStyles();
+                WinForms.Application.SetCompatibleTextRenderingDefault(false);
+
+                // Create UIA automation on the STA thread so COM apartment is correct
+                try
+                {
+                    _automation = new UIA3Automation();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not create UIA3Automation on overlay thread");
+                }
+
+                _overlayWindow = new RecordingOverlayWindow(this, _logger);
+                WinForms.Application.Run(_overlayWindow);
+
+                // Clean up after the form closes
+                _automation?.Dispose();
+                _automation = null;
+                _overlayWindow = null;
+
+                // Show the "stopped" notification in the top-right corner on this STA thread
+                var notif = new RecordingStoppedNotification(_exportFilePath);
+                WinForms.Application.Run(notif);
+            })
+            {
+                IsBackground = true,
+                Name = "RecordingOverlay-STA"
+            };
+            _overlayThread.SetApartmentState(ApartmentState.STA);
+            _overlayThread.Start();
+
+            // ── Optional: schedule auto-stop after waitSeconds ────────────────────
+            if (request?.WaitSeconds is > 0)
+            {
+                const int MillisecondsPerSecond = 1000;
+                var ms = request.WaitSeconds.Value * MillisecondsPerSecond;
+                _autoStopTimer = new System.Threading.Timer(_ =>
+                {
+                    _autoStopTimer?.Dispose();
+                    _autoStopTimer = null;
+                    StopRecording();
+                }, null, ms, Timeout.Infinite);
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not create UIA3Automation on overlay thread");
-            }
-
-            _overlayWindow = new RecordingOverlayWindow(this, _logger);
-            WinForms.Application.Run(_overlayWindow);
-
-            // Clean up after the form closes
-            _automation?.Dispose();
-            _automation = null;
-            _overlayWindow = null;
-
-            // Show the "stopped" notification in the top-right corner on this STA thread
-            var notif = new RecordingStoppedNotification(_exportFilePath);
-            WinForms.Application.Run(notif);
-        })
-        {
-            IsBackground = true,
-            Name = "RecordingOverlay-STA"
-        };
-        _overlayThread.SetApartmentState(ApartmentState.STA);
-        _overlayThread.Start();
-
-        // ── Optional: schedule auto-stop after waitSeconds ────────────────────
-        if (request?.WaitSeconds is > 0)
-        {
-            const int MillisecondsPerSecond = 1000;
-            var ms = request.WaitSeconds.Value * MillisecondsPerSecond;
-            _autoStopTimer = new System.Threading.Timer(_ =>
-            {
-                _autoStopTimer?.Dispose();
-                _autoStopTimer = null;
-                StopRecording();
-            }, null, ms, Timeout.Infinite);
         }
 
         _logger.LogInformation("Recording session started at {Time}", _startedAt);
@@ -268,10 +364,25 @@ public sealed class RecordingService : IRecordingService, IDisposable
         _autoStopTimer?.Dispose();
         _autoStopTimer = null;
 
-        // Close the overlay if it is still open (thread-safe)
+        var shouldExport = TryClaimStop(out var newlyClaimed);
+        if (newlyClaimed)
+            AfterBeginStopBeforeExportForTests?.Invoke();
+
+        // Close the overlay if present; export must not depend on this succeeding.
         CloseOverlayIfOpen();
 
-        // If already stopped by Ctrl+S, just return current state
+        if (shouldExport)
+        {
+            try
+            {
+                ExportJson();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to export recording JSON on stop");
+            }
+        }
+
         return BuildExport();
     }
 
@@ -285,6 +396,12 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     public void AddAction(RecordedAction action)
     {
+        if (_currentMode == RecordingMode.Assistive)
+        {
+            throw new InvalidOperationException(
+                "Assistive actions must be recorded via RecordAssistiveAction with capture context.");
+        }
+
         action.Timestamp = DateTimeOffset.UtcNow;
         action.Mode = _currentMode;
 
@@ -300,6 +417,171 @@ public sealed class RecordingService : IRecordingService, IDisposable
         lock (_lock) { _actions.Add(action); }
         _logger.LogDebug("Recorded action: {Type} on [{Element}]",
             action.ActionType, action.Element?.ControlType ?? "?");
+    }
+
+    public void RecordAssistiveAction(RecordedAction action, AssistiveActionCaptureContext captureContext)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        ArgumentNullException.ThrowIfNull(captureContext);
+
+        action.Timestamp = DateTimeOffset.UtcNow;
+
+        if (string.IsNullOrEmpty(action.Description))
+        {
+            var elementLabel = ElementInfo.GetLabel(action.Element);
+            action.Description = action.QueryResult.HasValue
+                ? $"{action.ActionType} check on {elementLabel}: {action.QueryResult}"
+                : $"{action.ActionType} on {elementLabel}";
+        }
+
+        lock (_lock)
+        {
+            _assistive.EnrichAssistiveAction(action, captureContext);
+            _actions.Add(action);
+
+            if (action.Bdd != null)
+            {
+                _logger.LogInformation(
+                    "Assistive event {EventId} associated with BDD {GroupId} ({CharCount} chars).",
+                    action.EventId,
+                    action.Bdd.GroupId,
+                    action.Bdd.Statement.Length);
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "Assistive event {EventId} recorded without BDD. pageId={PageId}",
+                    action.EventId,
+                    action.PageId ?? "(none)");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Test seam: configures an Assistive session without starting the overlay.
+    /// </summary>
+    internal void ConfigureAssistiveSessionForTests(string outputDirectory, string recordingId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recordingId);
+
+        lock (_lock)
+        {
+            _actions.Clear();
+            _exportFilePath = null;
+            _artifactsSummary = null;
+            _exportState = RecordingExportState.NotStarted;
+            _lifecycle = RecordingLifecycleState.Active;
+            _outputPath = outputDirectory;
+            _startedAt = DateTimeOffset.UtcNow;
+            _stoppedAt = null;
+            _isActive = true;
+            _currentMode = RecordingMode.Assistive;
+            _assistive.Reset(recordingId);
+        }
+    }
+
+    /// <summary>Test seam: runs the export pipeline (idempotent / retry-safe).</summary>
+    internal void ExportForTests()
+    {
+        if (!TryClaimStop(out var newlyClaimed))
+            return;
+
+        if (newlyClaimed)
+            AfterBeginStopBeforeExportForTests?.Invoke();
+
+        ExportJson();
+    }
+
+    /// <summary>
+    /// Atomically marks the session Stopping (from Active) or reports that stop/export
+    /// is already pending. Returns <c>false</c> only when there is nothing to export.
+    /// </summary>
+    private bool TryClaimStop(out bool newlyClaimed)
+    {
+        lock (_lock)
+        {
+            newlyClaimed = false;
+
+            if (_exportState == RecordingExportState.Completed
+                && _lifecycle == RecordingLifecycleState.Idle)
+            {
+                return false;
+            }
+
+            if (_lifecycle == RecordingLifecycleState.Active || _isActive)
+            {
+                _lifecycle = RecordingLifecycleState.Stopping;
+                _isActive = false;
+                _stoppedAt ??= DateTimeOffset.UtcNow;
+                newlyClaimed = true;
+                return true;
+            }
+
+            if (_lifecycle == RecordingLifecycleState.Stopping
+                && _exportState != RecordingExportState.Completed)
+            {
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    public bool TryStartJiraRecording(string? rawKey, out string canonical, out string error)
+    {
+        lock (_lock)
+        {
+            var ok = _assistive.TryStartJiraRecording(rawKey, out canonical, out error);
+            if (ok)
+            {
+                _logger.LogInformation(
+                    "Jira recording scope set to {JiraKey}. Existing ordinary actions are preserved.",
+                    canonical);
+            }
+
+            return ok;
+        }
+    }
+
+    public bool TryArmBddStatement(string? statement, BddScope scope, out string groupId, out string error)
+    {
+        lock (_lock)
+        {
+            var ok = _assistive.TryArmBdd(statement, scope, out groupId, out error);
+            if (ok)
+            {
+                _logger.LogInformation(
+                    "BDD {GroupId} armed ({Scope}, {CharCount} chars).",
+                    groupId,
+                    scope,
+                    statement?.Trim().Length ?? 0);
+            }
+
+            return ok;
+        }
+    }
+
+    public bool TryFinishBddStatement(out string message)
+    {
+        lock (_lock)
+        {
+            var ok = _assistive.TryFinishBdd(out message);
+            if (ok)
+                _logger.LogInformation("{Message}", message);
+            return ok;
+        }
+    }
+
+    public bool TryCancelBddStatement(out string message)
+    {
+        lock (_lock)
+        {
+            var ok = _assistive.TryCancelBdd(out message);
+            if (ok)
+                _logger.LogInformation("{Message}", message);
+            return ok;
+        }
     }
 
     public void ReplaceLastAction(RecordedAction replacement)
@@ -426,12 +708,13 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     public void OnOverlayClosed()
     {
-        if (!_isActive) return;
+        if (!TryClaimStop(out var newlyClaimed))
+            return;
 
-        _isActive = false;
-        _stoppedAt = DateTimeOffset.UtcNow;
+        if (newlyClaimed)
+            AfterBeginStopBeforeExportForTests?.Invoke();
 
-        // Export JSON
+        // Export JSON (idempotent / single-flight). StopRecording may already own export.
         try
         {
             ExportJson();
@@ -676,14 +959,73 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     private void ExportJson()
     {
+        lock (_lock)
+        {
+            while (_exportState == RecordingExportState.InProgress)
+                Monitor.Wait(_lock);
+
+            if (_exportState == RecordingExportState.Completed)
+                return;
+
+            _exportState = RecordingExportState.InProgress;
+        }
+
+        try
+        {
+            ExportJsonCore();
+
+            lock (_lock)
+            {
+                _exportState = RecordingExportState.Completed;
+                _lifecycle = RecordingLifecycleState.Idle;
+                Monitor.PulseAll(_lock);
+            }
+        }
+        catch
+        {
+            // Primary write failed — keep Stopping so Start cannot erase the retryable session.
+            lock (_lock)
+            {
+                if (_exportState == RecordingExportState.InProgress)
+                    _exportState = RecordingExportState.NotStarted;
+                // Intentionally leave _lifecycle == Stopping until export retry succeeds.
+                // Failed recordings stay protected; a new start cannot clear the session.
+                Monitor.PulseAll(_lock);
+            }
+
+            throw;
+        }
+    }
+
+    private void ExportJsonCore()
+    {
         var dir = ResolveOutputDirectory();
         Directory.CreateDirectory(dir);
+        AssistivePathSafety.EnsureWritablePathInside(dir, dir);
 
         var stamp = (_stoppedAt ?? DateTimeOffset.UtcNow).ToString("yyyyMMdd_HHmmss");
-        _exportFilePath = Path.Combine(dir, $"recording_{stamp}.json");
+        string exportFilePath;
+        lock (_lock)
+        {
+            // Retry must rewrite the same primary path so a failed export can recover.
+            _exportFilePath ??= Path.Combine(dir, $"recording_{stamp}.json");
+            exportFilePath = _exportFilePath;
+        }
+
+        AssistivePathSafety.EnsureWritablePathInside(exportFilePath, dir);
 
         List<RecordedAction> snapshot;
-        lock (_lock) { snapshot = [.. _actions]; }
+        string? recordingId;
+        string? jiraKey;
+        lock (_lock)
+        {
+            snapshot = [.. _actions];
+            recordingId = _assistive.RecordingId;
+            jiraKey = _assistive.JiraKey;
+        }
+
+        recordingId ??= $"rec-{stamp}-{Guid.NewGuid().ToString("N")[..8]}";
+        var recordingFileName = Path.GetFileName(exportFilePath);
 
         var export = new RecordingExport
         {
@@ -692,11 +1034,92 @@ public sealed class RecordingService : IRecordingService, IDisposable
             Mode = _currentMode.ToString(),
             Screen = _screenInfo,
             Launch = _launchInfo,
-            ExportedFilePath = _exportFilePath,
+            ExportedFilePath = exportFilePath,
+            RecordingId = recordingId,
             Actions = snapshot
         };
 
-        File.WriteAllText(_exportFilePath, JsonSerializer.Serialize(export, JsonOpts));
+        // Primary recording must succeed even if sidecars fail.
+        BeforePrimaryWriteForTests?.Invoke(exportFilePath);
+        AssistiveAtomicIO.ReplaceFileAtomic(
+            exportFilePath,
+            JsonSerializer.Serialize(export, JsonOpts));
+
+        RecordingArtifactsSummary? artifactSummary = null;
+        var sidecarsWritten = false;
+        try
+        {
+            var build = _artifactBuilder.Build(
+                recordingId,
+                recordingFileName,
+                _stoppedAt ?? DateTimeOffset.UtcNow,
+                jiraKey,
+                snapshot);
+
+            if (build.Pages.Count > 0 || build.BddActionMap is not null)
+            {
+                artifactSummary = _artifactWriter.Write(
+                    dir,
+                    recordingFileName,
+                    recordingId,
+                    jiraKey,
+                    build);
+                sidecarsWritten = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Assistive artifact export failed; primary recording was preserved.");
+            artifactSummary = new RecordingArtifactsSummary
+            {
+                Warnings = ["Assistive artifact export failed. Primary recording was preserved."]
+            };
+        }
+
+        if (artifactSummary is null)
+            return;
+
+        _artifactsSummary = artifactSummary;
+        export.Artifacts = artifactSummary;
+
+        try
+        {
+            BeforePrimarySummaryRewriteForTests?.Invoke();
+            AssistiveAtomicIO.ReplaceFileAtomic(
+                exportFilePath,
+                JsonSerializer.Serialize(export, JsonOpts));
+        }
+        catch (Exception rewriteEx)
+        {
+            if (sidecarsWritten)
+            {
+                _logger.LogWarning(
+                    rewriteEx,
+                    "Assistive sidecars were written but rewriting the primary recording with the artifact summary failed. Primary contents from the initial write remain intact.");
+
+                if (!artifactSummary.Warnings.Any(w =>
+                        w.Contains("could not be updated with the artifact summary", StringComparison.OrdinalIgnoreCase)))
+                {
+                    artifactSummary.Warnings.Add(
+                        "Assistive sidecars were written but the primary recording could not be updated with the artifact summary.");
+                }
+            }
+            else
+            {
+                _logger.LogWarning(
+                    rewriteEx,
+                    "Failed to rewrite the primary recording with the Assistive artifact summary. Primary contents from the initial write remain intact.");
+
+                if (!artifactSummary.Warnings.Any(w =>
+                        w.Contains("could not be updated with the artifact summary", StringComparison.OrdinalIgnoreCase)))
+                {
+                    artifactSummary.Warnings.Add(
+                        "The primary recording could not be updated with the Assistive artifact summary.");
+                }
+            }
+
+            _artifactsSummary = artifactSummary;
+        }
     }
 
     /// <summary>
@@ -801,8 +1224,29 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     private RecordingExport BuildExport()
     {
+        bool shouldExport;
+        lock (_lock)
+            shouldExport = _exportState != RecordingExportState.Completed && _stoppedAt is not null;
+
+        if (shouldExport)
+        {
+            try
+            {
+                ExportJson();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to export recording JSON on retry");
+            }
+        }
+
         List<RecordedAction> snapshot;
-        lock (_lock) { snapshot = [.. _actions]; }
+        string? recordingId;
+        lock (_lock)
+        {
+            snapshot = [.. _actions];
+            recordingId = _assistive.RecordingId;
+        }
 
         return new RecordingExport
         {
@@ -812,6 +1256,8 @@ public sealed class RecordingService : IRecordingService, IDisposable
             Screen = _screenInfo,
             Launch = _launchInfo,
             ExportedFilePath = _exportFilePath,
+            RecordingId = recordingId,
+            Artifacts = _artifactsSummary,
             Actions = snapshot
         };
     }

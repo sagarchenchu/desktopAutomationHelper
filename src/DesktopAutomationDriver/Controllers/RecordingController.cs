@@ -103,6 +103,7 @@ public class RecordingController : ControllerBase
     ///
     /// Stops the active recording session, writes the JSON export file and returns the result.
     /// Idempotent — safe to call even if recording was already stopped (e.g. via Ctrl+S).
+    /// Claims stop/export even when the overlay was never created or failed to close.
     /// </summary>
     [HttpPost("stop")]
     public IActionResult Stop()

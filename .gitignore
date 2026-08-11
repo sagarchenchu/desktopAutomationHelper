@@ -29,3 +29,7 @@ Thumbs.db
 
 # Local agent configuration (may contain tokens)
 automation/config/agentsettings.local.json
+
+# Runtime Assistive recordings and candidates may contain PII
+**/Recordings/
+**/assistive-artifacts/
