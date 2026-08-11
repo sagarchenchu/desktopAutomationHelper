@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Workspace;
 using Microsoft.Extensions.Options;
@@ -17,16 +16,12 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
 
     private readonly AgentOptions _options;
     private readonly IWorkspaceManager _workspace;
-    private readonly Regex _jiraKeyRegex;
 
     public SuiteManifestReader(IOptions<AgentOptions> options, IWorkspaceManager workspace)
     {
         _options = options.Value;
         _workspace = workspace;
         AgentOptionsValidator.Validate(_options, OptionsValidationScope.Suites);
-        _jiraKeyRegex = new Regex(
-            _options.Suites.JiraKeyPattern,
-            RegexOptions.CultureInvariant | RegexOptions.Compiled);
     }
 
     public SuiteValidationResult ValidateFile(string path)
@@ -132,12 +127,12 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
         var enabledKeys = new List<string>();
         var disabledCount = 0;
         var duplicateCount = 0;
+        var projectPattern = _options.Suites.JiraKeyPattern;
 
         for (var i = 0; i < testCases.Count; i++)
         {
             var entry = testCases[i];
             var location = $"{fullPath}: testCases[{i}]";
-            var entryValid = true;
 
             if (string.IsNullOrWhiteSpace(entry.JiraKey))
             {
@@ -145,11 +140,12 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
                 continue;
             }
 
-            var key = entry.JiraKey.Trim();
-            if (!_jiraKeyRegex.IsMatch(key))
+            var entryValid = JiraKeyContract.TryValidate(
+                entry.JiraKey, projectPattern, out var key, out var keyError);
+            if (!entryValid)
             {
-                errors.Add($"{location}: invalid jiraKey '{key}' (pattern: {_options.Suites.JiraKeyPattern}).");
-                entryValid = false;
+                errors.Add($"{location}: {keyError}");
+                key = entry.JiraKey.Trim();
             }
 
             if (seen.TryGetValue(key, out var previousIndex))
@@ -205,22 +201,16 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
         var valid = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var index = 0;
+        var projectPattern = _options.Suites.JiraKeyPattern;
 
         foreach (var raw in materialised)
         {
             var location = $"keys[{index}]";
             index++;
 
-            if (string.IsNullOrWhiteSpace(raw))
+            if (!JiraKeyContract.TryValidate(raw, projectPattern, out var key, out var keyError))
             {
-                errors.Add($"{location}: jiraKey is required.");
-                continue;
-            }
-
-            var key = raw.Trim();
-            if (!_jiraKeyRegex.IsMatch(key))
-            {
-                errors.Add($"{location}: invalid jiraKey '{key}' (pattern: {_options.Suites.JiraKeyPattern}).");
+                errors.Add($"{location}: {keyError}");
                 continue;
             }
 

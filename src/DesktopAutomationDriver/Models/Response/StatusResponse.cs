@@ -26,7 +26,7 @@ public class StatusResponse
 /// </summary>
 public class BuildInfo
 {
-    public string Version { get; set; } = "1.0.105";
+    public string Version { get; set; } = "0.0.0-local";
     public string Revision { get; set; } = string.Empty;
     public string Time { get; set; } = string.Empty;
 }

@@ -46,6 +46,7 @@ public class Phase3ObjectRepositoryTests
             ["schemas/object-repository.schema.json"] = "automation/schemas/object-repository.schema.json",
             ["schemas/page-object.schema.json"] = "automation/schemas/page-object.schema.json",
             ["schemas/plan.schema.json"] = "automation/schemas/plan.schema.json",
+            ["schemas/suite.schema.json"] = "automation/schemas/suite.schema.json",
             ["object-repository/repository.json"] = "automation/object-repository/repository.json",
             ["object-repository/README.md"] = "automation/object-repository/README.md",
             ["object-repository/.gitignore"] = "automation/object-repository/.gitignore"
