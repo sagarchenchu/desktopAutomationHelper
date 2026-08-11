@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Workspace;
 using Microsoft.Extensions.Options;
@@ -16,12 +17,16 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
 
     private readonly AgentOptions _options;
     private readonly IWorkspaceManager _workspace;
+    private readonly Regex? _projectRegex;
 
     public SuiteManifestReader(IOptions<AgentOptions> options, IWorkspaceManager workspace)
     {
         _options = options.Value;
         _workspace = workspace;
         AgentOptionsValidator.Validate(_options, OptionsValidationScope.Suites);
+        _projectRegex = string.IsNullOrWhiteSpace(_options.Suites.JiraKeyPattern)
+            ? null
+            : JiraKeyContract.CompileProjectPattern(_options.Suites.JiraKeyPattern);
     }
 
     public SuiteValidationResult ValidateFile(string path)
@@ -127,7 +132,6 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
         var enabledKeys = new List<string>();
         var disabledCount = 0;
         var duplicateCount = 0;
-        var projectPattern = _options.Suites.JiraKeyPattern;
 
         for (var i = 0; i < testCases.Count; i++)
         {
@@ -140,12 +144,17 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
                 continue;
             }
 
+            // Suite files: no trim — must agree with suite.schema.json pattern matching.
             var entryValid = JiraKeyContract.TryValidate(
-                entry.JiraKey, projectPattern, out var key, out var keyError);
+                entry.JiraKey,
+                _projectRegex,
+                out var key,
+                out var keyError,
+                trimSurroundingWhitespace: false);
             if (!entryValid)
             {
                 errors.Add($"{location}: {keyError}");
-                key = entry.JiraKey.Trim();
+                key = entry.JiraKey;
             }
 
             if (seen.TryGetValue(key, out var previousIndex))
@@ -201,14 +210,19 @@ public sealed class SuiteManifestReader : ISuiteManifestReader
         var valid = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var index = 0;
-        var projectPattern = _options.Suites.JiraKeyPattern;
 
         foreach (var raw in materialised)
         {
             var location = $"keys[{index}]";
             index++;
 
-            if (!JiraKeyContract.TryValidate(raw, projectPattern, out var key, out var keyError))
+            // CLI validate-keys: trim surrounding whitespace for convenience.
+            if (!JiraKeyContract.TryValidate(
+                    raw,
+                    _projectRegex,
+                    out var key,
+                    out var keyError,
+                    trimSurroundingWhitespace: true))
             {
                 errors.Add($"{location}: {keyError}");
                 continue;

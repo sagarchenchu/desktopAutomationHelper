@@ -5,9 +5,47 @@ on:
     branches: [ main, master ]
 
 jobs:
-  release:
-    name: Build and Release EXE
+  build-and-test:
+    name: Build and Test (Windows)
     runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore DesktopAutomationHelper.slnx
+
+      - name: Build solution
+        run: dotnet build DesktopAutomationHelper.slnx --configuration Release --no-restore
+
+      - name: Run driver tests
+        run: >
+          dotnet test
+          src/DesktopAutomationDriver.Tests/DesktopAutomationDriver.Tests.csproj
+          --configuration Release
+          --no-build
+          --verbosity normal
+
+      - name: Run agent tests
+        run: >
+          dotnet test
+          src/DesktopAutomationAgent.Tests/DesktopAutomationAgent.Tests.csproj
+          --configuration Release
+          --no-build
+          --verbosity normal
+
+  release:
+    name: Publish and Create GitHub Release
+    runs-on: windows-latest
+    needs: build-and-test
     permissions:
       contents: write   # needed to create tags and releases
 
@@ -43,6 +81,8 @@ jobs:
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
           -p:PublishTrimmed=false
+          -p:DebugType=None
+          -p:DebugSymbols=false
           -p:Version=${{ steps.version.outputs.version }}
           -p:AssemblyVersion=${{ steps.version.outputs.version }}.0
           -p:FileVersion=${{ steps.version.outputs.version }}.0
@@ -59,6 +99,8 @@ jobs:
           --self-contained true
           -p:PublishSingleFile=true
           -p:PublishTrimmed=false
+          -p:DebugType=None
+          -p:DebugSymbols=false
           -p:Version=${{ steps.version.outputs.version }}
           -p:AssemblyVersion=${{ steps.version.outputs.version }}.0
           -p:FileVersion=${{ steps.version.outputs.version }}.0
@@ -74,23 +116,33 @@ jobs:
             if (-not (Test-Path $path)) { throw "Missing published file: $path" }
             $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $path))
             $product = $info.ProductVersion
-            if ([string]::IsNullOrWhiteSpace($product) -or -not $product.StartsWith($expected)) {
-              throw "Expected ProductVersion to start with '$expected' for $path but was '$product'"
+            if ($product -ne $expected) {
+              throw "Expected ProductVersion '$expected' for $path but was '$product'"
             }
             Write-Host "OK $path ProductVersion=$product"
           }
           Assert-ProductVersion "./publish/driver/DesktopAutomationDriver.exe"
           Assert-ProductVersion "./publish/agent/DesktopAutomationAgent.exe"
 
-      - name: Package agent zip
+      - name: Package release artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path ./publish/artifacts | Out-Null
           Copy-Item ./publish/driver/DesktopAutomationDriver.exe ./publish/artifacts/DesktopAutomationDriver.exe
+
+          if (-not (Test-Path ./publish/agent/DesktopAutomationAgent.exe)) {
+            throw "Agent publish missing DesktopAutomationAgent.exe"
+          }
           if (-not (Test-Path ./publish/agent/appsettings.json)) {
             throw "Agent package missing required appsettings.json"
           }
-          Compress-Archive -Path ./publish/agent/* -DestinationPath ./publish/artifacts/DesktopAutomationAgent-win-x64.zip -Force
+
+          $agentStage = "./publish/agent-package"
+          New-Item -ItemType Directory -Force -Path $agentStage | Out-Null
+          Copy-Item ./publish/agent/DesktopAutomationAgent.exe $agentStage/
+          Copy-Item ./publish/agent/appsettings.json $agentStage/
+          # Single-file self-contained: only exe + appsettings are required. Exclude PDBs and extras.
+          Compress-Archive -Path "$agentStage/*" -DestinationPath ./publish/artifacts/DesktopAutomationAgent-win-x64.zip -Force
 
       - name: Compute SHA-256 checksums
         shell: pwsh
@@ -121,7 +173,7 @@ jobs:
             | Artifact | Description |
             |---|---|
             | `DesktopAutomationDriver.exe` | Windows x64 self-contained driver |
-            | `DesktopAutomationAgent-win-x64.zip` | Windows x64 self-contained agent package (`DesktopAutomationAgent.exe`, `appsettings.json`, runtime files) |
+            | `DesktopAutomationAgent-win-x64.zip` | Windows x64 self-contained agent package (`DesktopAutomationAgent.exe`, `appsettings.json`) |
             | `SHA256SUMS.txt` | SHA-256 checksums for the artifacts above |
 
             ## How the pieces fit together

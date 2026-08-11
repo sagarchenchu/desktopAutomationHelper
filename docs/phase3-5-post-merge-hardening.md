@@ -29,12 +29,15 @@ Validation order:
 2. Optional `Suites:JiraKeyPattern` project-specific additional restriction
 
 Configured patterns cannot broaden acceptance: canonical always runs first.
-Suite files still require uppercase keys. Interactive Assistive input may trim
-and uppercase in the existing driver implementation (unchanged).
+Suite files require uppercase keys and **reject leading/trailing whitespace**
+(aligned with `suite.schema.json`). CLI `validate-keys` may trim surrounding
+whitespace. Interactive Assistive input may trim and uppercase in the existing
+driver implementation (unchanged).
 
 Aligned locations: `SuiteOptions`, agent `appsettings.json`,
 `automation/schemas/suite.schema.json`, workspace templates,
-Phase 1 docs, and drift tests against `bdd-action-map.schema.json`.
+Phase 1 docs, and drift tests against `bdd-action-map.schema.json`
+(including behavior checks for surrounding whitespace).
 
 ## outputPath clarification
 
@@ -51,7 +54,9 @@ No filename heuristics were added.
   - tag: `v1.0.<run_number>`
 - Inject into `dotnet publish` via `-p:Version` / `-p:InformationalVersion`.
 - Project files use unmistakable local default `0.0.0-local` (overridden on release).
+- `release.yml` runs Build and Test first; publish/release jobs depend on that success.
 - PR validation publishes both packages as CI artifacts and **does not** create a GitHub release.
+- Text files use LF via `.gitattributes`; CI runs `git diff --check` against the PR/merge base.
 
 ## Driver / agent release artifacts
 

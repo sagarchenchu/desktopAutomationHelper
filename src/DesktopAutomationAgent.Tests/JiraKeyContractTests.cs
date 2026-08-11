@@ -6,6 +6,9 @@ namespace DesktopAutomationAgent.Tests;
 
 public class JiraKeyContractTests
 {
+    private static readonly Regex CanonicalProjectRegex =
+        JiraKeyContract.CompileProjectPattern(JiraKeyContract.CanonicalPattern);
+
     public static readonly object[][] ValidKeys =
     [
         ["A-1"],
@@ -42,7 +45,7 @@ public class JiraKeyContractTests
     {
         Assert.True(JiraKeyContract.IsCanonical(key));
         Assert.True(
-            JiraKeyContract.TryValidate(key, JiraKeyContract.CanonicalPattern, out var normalized, out var error),
+            JiraKeyContract.TryValidate(key, CanonicalProjectRegex, out var normalized, out var error),
             error);
         Assert.Equal(key, normalized);
     }
@@ -52,14 +55,14 @@ public class JiraKeyContractTests
     public void Canonical_RejectsInvalidKeys(string key)
     {
         Assert.False(JiraKeyContract.IsCanonical(key));
-        Assert.False(JiraKeyContract.TryValidate(key, JiraKeyContract.CanonicalPattern, out _, out var error));
+        Assert.False(JiraKeyContract.TryValidate(key, CanonicalProjectRegex, out _, out var error));
         Assert.Contains("canonical Jira syntax", error, StringComparison.Ordinal);
     }
 
     [Fact]
     public void TryValidate_DistinguishesProjectSpecificRejection()
     {
-        const string projectOnly = @"^ABC-[1-9][0-9]{0,15}$";
+        var projectOnly = JiraKeyContract.CompileProjectPattern(@"^ABC-[1-9][0-9]{0,15}$");
         Assert.True(JiraKeyContract.IsCanonical("XYZ-1"));
         Assert.False(JiraKeyContract.TryValidate("XYZ-1", projectOnly, out _, out var error));
         Assert.Contains("project-specific pattern", error, StringComparison.Ordinal);
@@ -83,9 +86,33 @@ public class JiraKeyContractTests
     public void SuitesJiraKeyPattern_CannotBroadenBeyondCanonical()
     {
         // A permissive project pattern still cannot accept ABC-0 because canonical runs first.
-        const string permissive = @"^[A-Z][A-Z0-9_]*-[0-9]+$";
+        var permissive = JiraKeyContract.CompileProjectPattern(@"^[A-Z][A-Z0-9_]*-[0-9]+$");
         Assert.False(JiraKeyContract.TryValidate("ABC-0", permissive, out _, out var error));
         Assert.Contains("canonical Jira syntax", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SuiteValidation_RejectsSurroundingWhitespace_WithoutTrimming()
+    {
+        Assert.False(
+            JiraKeyContract.TryValidate(
+                " ABC-1 ",
+                CanonicalProjectRegex,
+                out _,
+                out var error,
+                trimSurroundingWhitespace: false));
+        Assert.Contains("leading or trailing whitespace", error, StringComparison.OrdinalIgnoreCase);
+
+        // CLI validate-keys may trim.
+        Assert.True(
+            JiraKeyContract.TryValidate(
+                " ABC-1 ",
+                CanonicalProjectRegex,
+                out var trimmed,
+                out var cliError,
+                trimSurroundingWhitespace: true),
+            cliError);
+        Assert.Equal("ABC-1", trimmed);
     }
 
     [Fact]
@@ -114,6 +141,46 @@ public class JiraKeyContractTests
         Assert.Equal(expected, appsettings.GetProperty("Suites").GetProperty("JiraKeyPattern").GetString());
         Assert.Equal(expected, agentExample.GetProperty("Suites").GetProperty("JiraKeyPattern").GetString());
         Assert.Equal(expected, new SuiteOptions().JiraKeyPattern);
+    }
+
+    [Fact]
+    public void CanonicalJiraPattern_SchemaAndSuiteRuntime_AgreeOnSurroundingWhitespace()
+    {
+        var suitePattern = ExtractJiraPattern(
+            ReadRepoJson("automation/schemas/suite.schema.json"),
+            suiteSchemaPath: true);
+        // Compile with the same timeout policy the agent uses.
+        _ = new Regex(suitePattern, RegexOptions.CultureInvariant | RegexOptions.Compiled, JiraKeyContract.MatchTimeout);
+
+        const string padded = " ABC-1 ";
+        Assert.DoesNotMatch(suitePattern, padded);
+        Assert.Matches(suitePattern, "ABC-1");
+
+        var options = TestSupport.CreateOptions();
+        var suites = Path.Combine(options.Workspace.Root, "suites");
+        Directory.CreateDirectory(suites);
+        File.WriteAllText(
+            Path.Combine(suites, "smoke.json"),
+            """
+            {
+              "schemaVersion": 1,
+              "name": "smoke",
+              "testCases": [ { "jiraKey": " ABC-1 " } ]
+            }
+            """);
+
+        var result = TestSupport.CreateSuiteReader(options).ValidateFile("suites/smoke.json");
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e =>
+            e.Contains("testCases[0]", StringComparison.Ordinal)
+            && e.Contains("leading or trailing whitespace", StringComparison.OrdinalIgnoreCase));
+
+        // CLI may still accept the same string after trim.
+        var cli = TestSupport.CreateSuiteReader(options).ValidateKeys([" ABC-1 "]);
+        Assert.True(cli.IsValid);
+        Assert.Equal(["ABC-1"], cli.ValidKeys);
+
+        Directory.Delete(options.Workspace.Root, recursive: true);
     }
 
     private static JsonElement ReadRepoJson(string relativePath)

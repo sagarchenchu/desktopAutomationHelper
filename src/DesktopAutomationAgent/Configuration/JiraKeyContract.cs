@@ -8,8 +8,11 @@ namespace DesktopAutomationAgent.Configuration;
 /// <c>^[A-Z][A-Z0-9_]{0,31}-[1-9][0-9]{0,15}$</c>.
 /// </summary>
 /// <remarks>
-/// Suite files must already be uppercase; interactive Assistive input may trim
-/// and uppercase through the driver. This type does not reference the driver.
+/// Suite files must already be uppercase and must not contain surrounding
+/// whitespace (aligned with <c>suite.schema.json</c>). CLI <c>validate-keys</c>
+/// may trim surrounding whitespace before validation. Interactive Assistive
+/// input may trim and uppercase through the driver. This type does not
+/// reference the driver.
 /// </remarks>
 public static class JiraKeyContract
 {
@@ -51,21 +54,26 @@ public static class JiraKeyContract
     }
 
     /// <summary>
-    /// Validates a suite/CLI Jira key: trim only (no case folding), then
-    /// canonical contract, then optional project-specific pattern.
+    /// Validates a Jira key against the canonical contract, then an optional
+    /// precompiled project-specific pattern.
     /// </summary>
     /// <param name="raw">Raw key from a suite file or CLI.</param>
-    /// <param name="projectPattern">
-    /// Optional additional restriction (<c>Suites:JiraKeyPattern</c>).
-    /// When null/whitespace, only the canonical contract applies.
+    /// <param name="projectRegex">
+    /// Optional additional restriction compiled from <c>Suites:JiraKeyPattern</c>.
+    /// When null, only the canonical contract applies.
     /// </param>
-    /// <param name="normalizedKey">Trimmed key on success.</param>
+    /// <param name="normalizedKey">Validated key on success (trimmed only when <paramref name="trimSurroundingWhitespace"/> is true).</param>
     /// <param name="error">Human-readable failure distinguishing canonical vs project rejection.</param>
+    /// <param name="trimSurroundingWhitespace">
+    /// When true (CLI <c>validate-keys</c>), surrounding whitespace is trimmed before matching.
+    /// When false (suite files), surrounding whitespace is rejected so runtime matches JSON Schema.
+    /// </param>
     public static bool TryValidate(
         string? raw,
-        string? projectPattern,
+        Regex? projectRegex,
         out string normalizedKey,
-        out string error)
+        out string error,
+        bool trimSurroundingWhitespace = false)
     {
         normalizedKey = string.Empty;
         error = string.Empty;
@@ -76,7 +84,25 @@ public static class JiraKeyContract
             return false;
         }
 
-        var key = raw.Trim();
+        string key;
+        if (trimSurroundingWhitespace)
+        {
+            key = raw.Trim();
+        }
+        else
+        {
+            // Suite files must match JSON Schema exactly — no silent trim.
+            if (!string.Equals(raw, raw.Trim(), StringComparison.Ordinal))
+            {
+                error =
+                    $"invalid jiraKey '{raw}': leading or trailing whitespace is not allowed " +
+                    $"(canonical pattern: {CanonicalPattern}).";
+                return false;
+            }
+
+            key = raw;
+        }
+
         if (key.Length > MaxLength)
         {
             error =
@@ -102,21 +128,8 @@ public static class JiraKeyContract
             return false;
         }
 
-        if (!string.IsNullOrWhiteSpace(projectPattern))
+        if (projectRegex is not null)
         {
-            Regex projectRegex;
-            try
-            {
-                projectRegex = CompileProjectPattern(projectPattern);
-            }
-            catch (ArgumentException ex)
-            {
-                error =
-                    $"invalid jiraKey '{key}': configured project-specific pattern " +
-                    $"is not a valid regular expression ({ex.Message}).";
-                return false;
-            }
-
             bool projectMatch;
             try
             {
@@ -131,7 +144,7 @@ public static class JiraKeyContract
             {
                 error =
                     $"invalid jiraKey '{key}': rejected by configured project-specific " +
-                    $"pattern ({projectPattern}).";
+                    $"pattern ({projectRegex}).";
                 return false;
             }
         }
