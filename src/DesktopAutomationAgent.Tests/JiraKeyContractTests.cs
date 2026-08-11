@@ -94,8 +94,9 @@ public class JiraKeyContractTests
         var regex = JiraKeyContract.CompileProjectPattern(JiraKeyContract.CanonicalPattern);
         Assert.Equal(RegexOptions.Compiled | RegexOptions.CultureInvariant, regex.Options & (RegexOptions.Compiled | RegexOptions.CultureInvariant));
         Assert.Equal(JiraKeyContract.MatchTimeout, regex.MatchTimeout);
-        Assert.True(regex.IsMatch("A-1"));
-        Assert.False(regex.IsMatch("a-1"));
+        Assert.Equal(JiraKeyContract.CanonicalPattern, regex.ToString());
+        Assert.Matches(JiraKeyContract.CanonicalPattern, "A-1");
+        Assert.DoesNotMatch(JiraKeyContract.CanonicalPattern, "a-1");
     }
 
     [Fact]

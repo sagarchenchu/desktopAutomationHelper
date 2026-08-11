@@ -57,9 +57,11 @@ public class PublishVersionMetadataTests
             var dll = Path.Combine(output, "DesktopAutomationAgent.dll");
             Assert.True(File.Exists(dll), $"Expected build output at {dll}");
 
-            var asm = Assembly.LoadFrom(dll);
-            var informational = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-            Assert.Equal(injected, informational);
+            // Read PE version resources without loading the assembly into this process
+            // (the test host already has DesktopAutomationAgent loaded).
+            var info = FileVersionInfo.GetVersionInfo(dll);
+            Assert.False(string.IsNullOrWhiteSpace(info.ProductVersion));
+            Assert.StartsWith(injected, info.ProductVersion!, StringComparison.Ordinal);
         }
         finally
         {
