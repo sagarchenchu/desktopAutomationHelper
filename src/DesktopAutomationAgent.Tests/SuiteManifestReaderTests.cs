@@ -208,6 +208,37 @@ public class SuiteManifestReaderTests
         Directory.Delete(options.Workspace.Root, recursive: true);
     }
 
+    [Fact]
+    public void ValidateFile_RejectsSurroundingWhitespaceInJiraKey()
+    {
+        var (options, root) = CreateWorkspaceWithSuite(
+            """
+            {
+              "schemaVersion": 1,
+              "name": "smoke",
+              "testCases": [ { "jiraKey": " ABC-1 " } ]
+            }
+            """);
+
+        var result = TestSupport.CreateSuiteReader(options).ValidateFile("suites/smoke.json");
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e =>
+            e.Contains("testCases[0]", StringComparison.Ordinal)
+            && e.Contains("leading or trailing whitespace", StringComparison.OrdinalIgnoreCase));
+        Directory.Delete(root, recursive: true);
+    }
+
+    [Fact]
+    public void ValidateKeys_TrimsSurroundingWhitespace()
+    {
+        var options = TestSupport.CreateOptions();
+        Directory.CreateDirectory(options.Workspace.Root);
+        var result = TestSupport.CreateSuiteReader(options).ValidateKeys([" ABC-1 "]);
+        Assert.True(result.IsValid);
+        Assert.Equal(["ABC-1"], result.ValidKeys);
+        Directory.Delete(options.Workspace.Root, recursive: true);
+    }
+
     private static (Configuration.AgentOptions Options, string Root) CreateWorkspaceWithSuite(string json)
     {
         var options = TestSupport.CreateOptions();

@@ -1,0 +1,31 @@
+# Normalize text files to LF in the repository. Prevents CRLF "trailing whitespace"
+# false positives from `git diff --check` on Windows-edited project files.
+* text=auto eol=lf
+
+*.csproj text eol=lf
+*.props text eol=lf
+*.targets text eol=lf
+*.sln text eol=lf
+*.slnx text eol=lf
+*.cs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.xml text eol=lf
+*.config text eol=lf
+*.gitignore text eol=lf
+*.gitattributes text eol=lf
+*.sh text eol=lf
+
+# Binary / generated
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.pdb binary
+*.zip binary
+*.snk binary

@@ -130,6 +130,8 @@ Returns the current running status, username, connection port, fixed probe port 
 
 Checks if the driver is running and ready to accept new sessions. Requires Bearer authentication.
 
+`<release-version>` below is a placeholder for the injected release version (`1.0.<github.run_number>`), not a fixed tag.
+
 - **Request Format:** No request body required.
 - **Success Response (HTTP 200):**
   ```json
@@ -140,7 +142,7 @@ Checks if the driver is running and ready to accept new sessions. Requires Beare
       "ready": true,
       "message": "Desktop Automation Driver is running",
       "build": {
-        "version": "1.0.111",
+        "version": "<release-version>",
         "revision": "",
         "time": "2026-06-14T00:46:12Z"
       }
@@ -778,7 +780,7 @@ Success response (`UiResponse` envelope):
   "success": true,
   "value": {
     "schemaVersion": 2,
-    "driverVersion": "1.0.111",
+    "driverVersion": "<release-version>",
     "operations": [
       {
         "name": "select",

@@ -16,11 +16,29 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
+      - name: Whitespace check against PR/merge base
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="${{ github.event.pull_request.base.sha }}"
+          else
+            # For pushes, compare against the previous commit on this branch when available.
+            BASE_REF="${{ github.event.before }}"
+            if [ -z "$BASE_REF" ] || [ "$BASE_REF" = "0000000000000000000000000000000000000000" ]; then
+              BASE_REF="$(git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD~1)"
+            fi
+          fi
+          echo "Checking whitespace for range ${BASE_REF}...HEAD"
+          git diff --check "${BASE_REF}"...HEAD
 
       - name: Restore dependencies
         run: dotnet restore DesktopAutomationHelper.slnx
@@ -79,6 +97,8 @@ jobs:
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
           -p:PublishTrimmed=false
+          -p:DebugType=None
+          -p:DebugSymbols=false
           -p:Version=0.0.0-ci
           -p:InformationalVersion=0.0.0-ci
           -p:IncludeSourceRevisionInInformationalVersion=false
@@ -93,6 +113,8 @@ jobs:
           --self-contained true
           -p:PublishSingleFile=true
           -p:PublishTrimmed=false
+          -p:DebugType=None
+          -p:DebugSymbols=false
           -p:Version=0.0.0-ci
           -p:InformationalVersion=0.0.0-ci
           -p:IncludeSourceRevisionInInformationalVersion=false
@@ -106,8 +128,8 @@ jobs:
             if (-not (Test-Path $path)) { throw "Missing published file: $path" }
             $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $path))
             $product = $info.ProductVersion
-            if ([string]::IsNullOrWhiteSpace($product) -or -not $product.StartsWith($expected)) {
-              throw "Expected ProductVersion to start with '$expected' for $path but was '$product'"
+            if ($product -ne $expected) {
+              throw "Expected ProductVersion '$expected' for $path but was '$product'"
             }
             Write-Host "OK $path ProductVersion=$product"
           }
@@ -115,6 +137,9 @@ jobs:
           Assert-ProductVersion "./publish/agent/DesktopAutomationAgent.exe"
           if (-not (Test-Path "./publish/agent/appsettings.json")) {
             throw "Agent publish output missing appsettings.json"
+          }
+          if (Test-Path "./publish/agent/DesktopAutomationAgent.pdb") {
+            throw "Agent publish unexpectedly includes a PDB; release packaging must exclude debug symbols"
           }
 
       - name: Upload driver artifact
@@ -130,4 +155,3 @@ jobs:
           path: |
             ./publish/agent/DesktopAutomationAgent.exe
             ./publish/agent/appsettings.json
-            ./publish/agent/**
