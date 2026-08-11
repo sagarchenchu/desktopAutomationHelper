@@ -107,7 +107,7 @@ Validation rules:
 - `schemaVersion` must be `1`
 - `name` required
 - `testCases` required (may be empty)
-- Jira keys match `^[A-Z][A-Z0-9_]*-[0-9]+$` by default
+- Jira keys must match the canonical Assistive contract `^[A-Z][A-Z0-9_]{0,31}-[1-9][0-9]{0,15}$` (suite files require uppercase). `Suites:JiraKeyPattern` is an optional project-specific additional restriction applied after the canonical check.
 - duplicate keys fail
 - disabled entries remain syntactically valid but are excluded from the effective selection
 - errors identify file + `testCases[i]`

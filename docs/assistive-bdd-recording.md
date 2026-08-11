@@ -155,7 +155,8 @@ Without a Jira key:
 
 ## Manual Windows acceptance checklist
 
-Unit tests do **not** exercise the real overlay/menu workflow. After merges, run this interactive checklist on Windows:
+Unit tests do **not** exercise the real overlay/menu workflow. After merges, run this interactive checklist on Windows.
+Record results in [`docs/assistive-windows-acceptance-results.md`](assistive-windows-acceptance-results.md).
 
 1. Launch a simple WPF/WinForms test app.
 2. Start recording; press Ctrl+A.
@@ -170,6 +171,7 @@ Unit tests do **not** exercise the real overlay/menu workflow. After merges, run
 11. Confirm recording JSON, one candidate page per title, and BDD map grouping.
 12. Replay via `/playback` and confirm behavior is unchanged.
 13. Repeat without Jira/BDD and confirm ordinary Assistive recording still works.
+14. **Immediate stop before overlay is fully displayed** — call `POST /record/start`, then immediately call `POST /record/stop` before the overlay is fully shown. Confirm: stop succeeds; exactly one primary `recording_*.json` is created; lifecycle returns to Idle; a new recording can start afterward; no orphan overlay and no partial artifact directory remains.
 
 ## Out of scope
 

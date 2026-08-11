@@ -1,5 +1,3 @@
-using System.Text.RegularExpressions;
-
 namespace DesktopAutomationAgent.Configuration;
 
 public enum OptionsValidationScope
@@ -32,16 +30,19 @@ public static class AgentOptionsValidator
 
         if (scope is OptionsValidationScope.Suites)
         {
-            if (string.IsNullOrWhiteSpace(options.Suites.JiraKeyPattern))
-                throw new AgentConfigurationException("Suites:JiraKeyPattern is required.");
-
-            try
+            // Empty / whitespace means "no project-specific additional restriction"
+            // beyond the canonical Jira contract.
+            if (!string.IsNullOrWhiteSpace(options.Suites.JiraKeyPattern))
             {
-                _ = new Regex(options.Suites.JiraKeyPattern, RegexOptions.CultureInvariant | RegexOptions.Compiled);
-            }
-            catch (ArgumentException ex)
-            {
-                throw new AgentConfigurationException($"Suites:JiraKeyPattern is not a valid regular expression: {ex.Message}");
+                try
+                {
+                    _ = JiraKeyContract.CompileProjectPattern(options.Suites.JiraKeyPattern);
+                }
+                catch (ArgumentException ex)
+                {
+                    throw new AgentConfigurationException(
+                        $"Suites:JiraKeyPattern is not a valid regular expression: {ex.Message}");
+                }
             }
         }
 

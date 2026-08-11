@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -8,7 +8,9 @@
     <RootNamespace>DesktopAutomationAgent</RootNamespace>
     <AssemblyName>DesktopAutomationAgent</AssemblyName>
     <Description>Project-specific desktop testing agent that talks to DesktopAutomationDriver over HTTP.</Description>
-    <Version>0.1.0</Version>
+    <!-- Local/dev default. Release and CI publish override Version/InformationalVersion (1.0.run_number). -->
+    <Version>0.0.0-local</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

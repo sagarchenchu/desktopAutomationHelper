@@ -173,7 +173,12 @@ Precedence remains: `appsettings.json` → `automation/config/agentsettings.loca
 
 ## Known limitations
 
-- No Jira/BDD compilation, AI repair, object repository, DB checks, suites,
+> Statements in this Phase 2 document that describe “no object repository” refer
+> to the **isolated Phase 2 implementation scope**, not the current repository after
+> Phase 3. Object-repository validation, capture, verify, and `$objectRef` expansion
+> are documented in [phase3-object-repository.md](phase3-object-repository.md).
+
+- No Jira/BDD compilation, AI repair, DB checks, suite orchestration,
   scheduling, notifications, parallelism, agent-level retries, templating, or
   HTML reporting.
 - Agent remains `net8.0` and talks to the driver only through HTTP.
