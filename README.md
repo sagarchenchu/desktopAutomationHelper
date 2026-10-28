@@ -6,6 +6,11 @@ Designed for **shared Citrix / RDS / VDI machines** where multiple users run sim
 
 ## Features
 
+**Experimental unattended runtime:** [DesktopRuntime](docs/desktop-runtime.md) is a separate,
+tool-independent project in this repository. Its first increment provides a `doctor --json`
+command and authenticated `GET /runtime/diagnostics` endpoint. Virtual-display installation,
+session provisioning, and execution without an RDP viewer are planned and are not yet implemented.
+
 - **UIA2 and UIA3 support** - choose the UI Automation backend that best fits your application.
 - **Standalone EXE** - publish as a single self-contained `.exe`; no additional runtime required.
 - **Per-user port isolation** - port is derived from the Windows login name (FNV-1a hash → 30000–39999); no two users on the same machine will collide.
