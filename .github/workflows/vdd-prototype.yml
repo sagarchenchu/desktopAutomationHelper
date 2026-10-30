@@ -1,0 +1,53 @@
+name: VDD Prototype
+
+on:
+  push:
+    branches: [main, 'feature/vdd-*']
+    paths: ['src/DesktopVirtualDisplay/**', 'tests/DesktopRuntime.Fixtures.*/**', 'tests/DesktopRuntime.Acceptance/**', 'scripts/*VddPrototype.ps1', 'docs/desktop-runtime-vdd-prototype.md', '.github/workflows/vdd-prototype.yml']
+  pull_request:
+    branches: [main]
+    paths: ['src/DesktopVirtualDisplay/**', 'tests/DesktopRuntime.Fixtures.*/**', 'tests/DesktopRuntime.Acceptance/**', 'scripts/*VddPrototype.ps1', 'docs/desktop-runtime-vdd-prototype.md', '.github/workflows/vdd-prototype.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: Portable VDD contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: g++ -std=c++17 -Wall -Wextra -Werror src/DesktopVirtualDisplay/Tests/Contracts.cpp -o /tmp/vdd-contracts && /tmp/vdd-contracts
+
+  native-build:
+    name: Native driver, utility and fixtures
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - uses: NuGet/setup-nuget@v2
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build and validate unsigned prototype package
+        shell: pwsh
+        run: ./scripts/Build-VddPrototype.ps1
+      - name: Validate acceptance script syntax
+        run: python -m py_compile tests/DesktopRuntime.Acceptance/fixture_smoke.py
+      - name: Upload unsigned prototype
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopVdd-prototype-unsigned-win-x64
+          path: artifacts/vdd/package/
+          if-no-files-found: error
+      - name: Upload native build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopVdd-build-diagnostics
+          path: |
+            artifacts/vdd/**/*.log
+            artifacts/vdd/**/*.inf
+          if-no-files-found: ignore
