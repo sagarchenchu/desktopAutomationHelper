@@ -26,6 +26,8 @@ Thumbs.db
 
 # Build artifacts
 *.log
+artifacts/vdd/
+__pycache__/
 
 # Local agent configuration (may contain tokens)
 automation/config/agentsettings.local.json

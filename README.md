@@ -6,6 +6,12 @@ Designed for **shared Citrix / RDS / VDI machines** where multiple users run sim
 
 ## Features
 
+An independent [virtual display prototype](docs/desktop-runtime-vdd-prototype.md)
+is available for Windows development and lab validation. Its separate workflow
+builds an unsigned native driver, lifetime utility and GUI fixtures. It requires
+approved driver signing/installation and does not yet establish unattended or
+Citrix execution support.
+
 - **UIA2 and UIA3 support** - choose the UI Automation backend that best fits your application.
 - **Standalone EXE** - publish as a single self-contained `.exe`; no additional runtime required.
 - **Per-user port isolation** - port is derived from the Windows login name (FNV-1a hash → 30000–39999); no two users on the same machine will collide.

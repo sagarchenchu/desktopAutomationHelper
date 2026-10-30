@@ -1,0 +1,67 @@
+; Copyright (c) Microsoft Corporation.
+; Copyright (c) 2026 Reddysagar Chenchu. See ../LICENSE-MS-PL.txt.
+[Version]
+Signature="$Windows NT$"
+Class=Display
+ClassGUID={4D36E968-E325-11CE-BFC1-08002BE10318}
+ClassVer=2.0
+Provider=%Manufacturer%
+CatalogFile=DesktopVirtualDisplay.cat
+DriverVer=10/29/2026,0.1.0.0
+PnpLockDown=1
+
+[Manufacturer]
+%Manufacturer%=Models,NTamd64.10.0...17763
+
+[Models.NTamd64.10.0...17763]
+%DeviceName%=Vdd_Install,DesktopRuntimeVddPrototype
+
+[SourceDisksFiles]
+DesktopVirtualDisplay.dll=1
+
+[SourceDisksNames]
+1=%DiskName%
+
+[Vdd_Install.NT]
+CopyFiles=DriverFiles
+
+[Vdd_Install.NT.HW]
+AddReg=DeviceSettings
+
+[DeviceSettings]
+HKR,,UpperFilters,0x00010000,"IndirectKmd"
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+
+; Explicit reflector registration supports the RS5 baseline; WUDFRD.inf is newer.
+[Vdd_Install.NT.Services]
+AddService=WUDFRd,0x000001fa,ReflectorService
+
+[ReflectorService]
+DisplayName=%ReflectorName%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\WUDFRd.sys
+
+[Vdd_Install.NT.Wdf]
+UmdfService=DesktopVirtualDisplay,Vdd_Service
+UmdfServiceOrder=DesktopVirtualDisplay
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+UmdfHostProcessSharing=ProcessSharingDisabled
+
+[Vdd_Service]
+UmdfLibraryVersion=2.25.0
+ServiceBinary=%12%\UMDF\DesktopVirtualDisplay.dll
+UmdfExtensions=IddCx0102
+
+[DestinationDirs]
+DriverFiles=12,UMDF
+
+[DriverFiles]
+DesktopVirtualDisplay.dll
+
+[Strings]
+Manufacturer="Reddysagar Chenchu"
+DeviceName="DesktopRuntime Virtual Display Prototype"
+DiskName="DesktopRuntime Virtual Display Package"
+ReflectorName="Windows Driver Foundation - User-mode Driver Framework Reflector"
