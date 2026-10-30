@@ -31,8 +31,8 @@ internal sealed class FixtureForm : Form
     private readonly DataGridView grid = new() { Name = "RecordsGrid", AccessibleName = "Records", Dock = DockStyle.Fill,
         ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false, MultiSelect = false,
         SelectionMode = DataGridViewSelectionMode.FullRowSelect, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill };
-    private readonly Label result = new() { Name = "ResultText", AccessibleName = "Result", AutoSize = true, Text = "Ready." };
-    private readonly Label marker = new() { Name = "FrameMarker", AccessibleName = "Frame marker", AutoSize = false, Width = 760, Height = 36 };
+    private readonly Label result = new() { Name = "ResultText", AutoSize = true, Text = "Ready." };
+    private readonly Label marker = new() { Name = "FrameMarker", AutoSize = false, Width = 760, Height = 36 };
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 500 };
     private int ticks;
 
