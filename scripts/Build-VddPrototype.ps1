@@ -27,6 +27,13 @@ foreach ($project in @('Driver/DesktopVirtualDisplay.vcxproj', 'Control/DesktopV
 if ($LASTEXITCODE -ne 0) { throw 'Native contract tests failed.' }
 & (Join-Path $outputRoot 'tools/DesktopVddCtl.exe') --help
 if ($LASTEXITCODE -ne 0) { throw 'Published utility help failed.' }
+$statusJson = & (Join-Path $outputRoot 'tools/DesktopVddCtl.exe') status
+$statusExit = $LASTEXITCODE
+if ($statusExit -notin @(0, 2)) { throw "Unexpected read-only status exit: $statusExit" }
+$status = $statusJson | ConvertFrom-Json
+if ($status.schemaVersion -ne 1) { throw 'Unexpected status protocol.' }
+if ($statusExit -eq 0 -and -not $status.pipelineReady) { throw 'Status exit/readiness mismatch.' }
+Write-Output $statusJson
 foreach ($name in @('DesktopVirtualDisplay.dll', 'DesktopVirtualDisplay.inf')) {
     $source = Join-Path $outputRoot "driver/$name"
     if (-not (Test-Path $source)) { throw "Expected driver output missing: $source" }
