@@ -28,6 +28,8 @@
     <OutDir>$(MSBuildThisFileDirectory)..\..\..\artifacts\vdd\driver\</OutDir>
     <IntDir>$(MSBuildThisFileDirectory)..\..\..\artifacts\vdd\obj\driver\</IntDir>
     <TargetName>DesktopVirtualDisplay</TargetName>
+    <!-- This kit ships StampInf as x64, even if a developer launches x86 MSBuild. -->
+    <InfToolPath>$(WDKContentRoot)\bin\10.0.26100.0\x64\</InfToolPath>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
