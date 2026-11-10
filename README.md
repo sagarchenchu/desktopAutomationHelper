@@ -1764,7 +1764,7 @@ It never references driver internals (no project reference, no FlaUI).
 | Phase 1 — agent foundation | Complete |
 | Phase 2 — deterministic plan runner | Complete |
 | Phase 3 — object repository | Complete |
-| Assistive BDD recording (candidates) | Complete — pending recorded interactive Windows acceptance if not yet executed |
+| Assistive BDD recording (candidates) | Complete — interactive Windows acceptance recorded (`docs/assistive-windows-acceptance-results.md`, 14/14 PASS) |
 | Phase 3.5 — post-merge hardening | This work (`docs/phase3-5-post-merge-hardening.md`) |
 | Phase 4 — deterministic BDD compiler | Not started |
 
