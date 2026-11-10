@@ -105,6 +105,6 @@
   "truncated": false,
   "warnings": [],
   "ordering": {
-    "rule": "depth-first pre-order; siblings by dumpuia ordinal then automationId, name, controlType"
+    "rule": "depth-first pre-order via parent links; siblings sorted by ordinal then automationId, name, controlType, nodeIndex"
   }
 }

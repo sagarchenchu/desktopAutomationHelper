@@ -94,6 +94,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
 
                 try
                 {
+                    var rootOrdinal = 0;
                     foreach (var (root, rootLabel) in roots)
                     {
                         CollectTreeNodes(
@@ -107,10 +108,12 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                             truncated,
                             truncationWarnings,
                             parentNodeIndex: null,
-                            ordinal: 0,
+                            ordinal: rootOrdinal,
                             ref totalVisited,
                             depth: 0,
                             pathSegments: options.IncludePath ? [rootLabel] : null);
+
+                        rootOrdinal++;
 
                         if (truncated.Value)
                             break;
@@ -140,6 +143,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                     ["operation"] = "dumpuia",
                     ["success"] = !timedOut.Value,
                     ["reason"] = timedOut.Value ? partialReason.Value ?? "timeout" : null,
+                    ["semanticDiagnosticVersion"] = NativeUiaSemanticContract.SemanticDiagnosticVersion,
                     ["view"] = options.View,
                     ["root"] = options.RootMode,
                     ["maxDepth"] = options.MaxDepth,
@@ -629,11 +633,31 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             }
         }
 
-        if (depth >= options.MaxDepth || truncated.Value)
+        if (truncated.Value)
             return;
 
+        if (depth >= options.MaxDepth)
+        {
+            if (HasAnyChild(element, options, deadlineUtc, cancellationToken))
+            {
+                truncated.Value = true;
+                truncationWarnings.Add(NativeUiaSemanticContract.MaxDepthTruncationWarning(options.MaxDepth));
+            }
+
+            return;
+        }
+
         var childOrdinal = 0;
-        foreach (var (child, childLabel, childPath) in GetChildren(element, options, pathSegments, segmentLabel, depth + 1, deadlineUtc, cancellationToken))
+        foreach (var (child, childLabel, childPath) in GetChildren(
+                     element,
+                     options,
+                     pathSegments,
+                     segmentLabel,
+                     depth + 1,
+                     deadlineUtc,
+                     cancellationToken,
+                     truncated,
+                     truncationWarnings))
         {
             CollectTreeNodes(
                 child,
@@ -710,7 +734,18 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         if (depth >= options.MaxDepth)
             return;
 
-        foreach (var (child, childLabel, childPath) in GetChildren(element, options, pathSegments, segmentLabel, depth + 1, deadlineUtc, cancellationToken))
+        var findTruncated = new StrongBox<bool>(false);
+        var findWarnings = new List<string>();
+        foreach (var (child, childLabel, childPath) in GetChildren(
+                     element,
+                     options,
+                     pathSegments,
+                     segmentLabel,
+                     depth + 1,
+                     deadlineUtc,
+                     cancellationToken,
+                     findTruncated,
+                     findWarnings))
         {
             FindMatchingNodes(
                 child,
@@ -796,7 +831,18 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         if (depth >= options.MaxDepth || menuLikeCandidates.Count >= 100)
             return;
 
-        foreach (var (child, childLabel, childPath) in GetChildren(element, options, pathSegments, segmentLabel, depth + 1, deadlineUtc, cancellationToken))
+        var menuTruncated = new StrongBox<bool>(false);
+        var menuWarnings = new List<string>();
+        foreach (var (child, childLabel, childPath) in GetChildren(
+                     element,
+                     options,
+                     pathSegments,
+                     segmentLabel,
+                     depth + 1,
+                     deadlineUtc,
+                     cancellationToken,
+                     menuTruncated,
+                     menuWarnings))
         {
             CollectMenuLikeRecursive(
                 child,
@@ -811,6 +857,24 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         }
     }
 
+    private bool HasAnyChild(
+        IUIAutomationElement element,
+        NativeUiaTreeDiagnosticOptions options,
+        DateTime deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        EnsureWithinDeadline(deadlineUtc, cancellationToken, "has-any-child");
+        try
+        {
+            var children = element.FindAll(TreeScope.TreeScope_Children, GetViewCondition(options.View));
+            return children.Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private IEnumerable<(IUIAutomationElement Child, string Label, List<string>? PathSegments)> GetChildren(
         IUIAutomationElement element,
         NativeUiaTreeDiagnosticOptions options,
@@ -818,7 +882,9 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         string segmentLabel,
         int childDepth,
         DateTime deadlineUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        StrongBox<bool> truncated,
+        List<string> truncationWarnings)
     {
         EnsureWithinDeadline(deadlineUtc, cancellationToken, "get-children");
 
@@ -830,6 +896,16 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         catch
         {
             yield break;
+        }
+
+        var warning = NativeUiaSemanticContract.MaxChildrenTruncationWarning(
+            children.Length,
+            options.MaxChildrenPerNode);
+        if (warning is not null)
+        {
+            truncated.Value = true;
+            if (!truncationWarnings.Contains(warning, StringComparer.Ordinal))
+                truncationWarnings.Add(warning);
         }
 
         var childCount = Math.Min(children.Length, options.MaxChildrenPerNode);
@@ -868,7 +944,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
     {
         var controlTypeId = _uia.GetIntProperty(element, UIA_PropertyIds.UIA_ControlTypePropertyId);
         var snapshot = _uia.CreateSnapshot(element);
-        var patterns = ReadCheapPatterns(element);
+        var (patterns, valueIsReadOnly) = ReadCheapPatterns(element);
 
         var record = new Dictionary<string, object?>
         {
@@ -884,7 +960,8 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             ["isEnabled"] = snapshot.IsEnabled,
             ["isOffscreen"] = snapshot.IsOffscreen,
             ["supportedPatterns"] = patterns,
-            ["capabilities"] = MapCapabilities(patterns)
+            ["valueIsReadOnly"] = valueIsReadOnly,
+            ["capabilities"] = NativeUiaSemanticContract.MapCapabilities(patterns, valueIsReadOnly)
         };
 
         if (options.IncludeBounds)
@@ -925,16 +1002,33 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         return record;
     }
 
-    private List<string> ReadCheapPatterns(IUIAutomationElement element)
+    private (List<string> Patterns, bool? ValueIsReadOnly) ReadCheapPatterns(IUIAutomationElement element)
     {
         var patterns = new List<string>();
+        bool? valueIsReadOnly = null;
 
         foreach (var patternId in CheapPatternIds)
         {
             try
             {
-                if (element.GetCurrentPattern(patternId) != null)
-                    patterns.Add(PatternName(patternId));
+                var pattern = element.GetCurrentPattern(patternId);
+                if (pattern is null)
+                    continue;
+
+                patterns.Add(PatternName(patternId));
+                if (patternId == UIA_PatternIds.UIA_ValuePatternId
+                    && pattern is IUIAutomationValuePattern valuePattern)
+                {
+                    try
+                    {
+                        valueIsReadOnly = valuePattern.CurrentIsReadOnly != 0;
+                    }
+                    catch
+                    {
+                        // Fail closed: unknown read-only state omits setValue.
+                        valueIsReadOnly = null;
+                    }
+                }
             }
             catch
             {
@@ -942,7 +1036,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             }
         }
 
-        return patterns;
+        return (patterns, valueIsReadOnly);
     }
 
     private object? ReadWindowState(IUIAutomationElement element)
@@ -965,47 +1059,6 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         {
             return null;
         }
-    }
-
-    private static List<string> MapCapabilities(IReadOnlyList<string> patterns)
-    {
-        var capabilities = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var pattern in patterns)
-        {
-            switch (pattern)
-            {
-                case "Invoke":
-                    capabilities.Add("invoke");
-                    break;
-                case "ExpandCollapse":
-                    capabilities.Add("expandCollapse");
-                    break;
-                case "SelectionItem":
-                    capabilities.Add("selectItem");
-                    break;
-                case "Selection":
-                    capabilities.Add("selectionContainer");
-                    break;
-                case "Toggle":
-                    capabilities.Add("toggle");
-                    break;
-                case "Value":
-                    capabilities.Add("setValue");
-                    capabilities.Add("readValue");
-                    break;
-                case "Scroll":
-                    capabilities.Add("scroll");
-                    break;
-                case "Grid":
-                    capabilities.Add("grid");
-                    break;
-                case "Window":
-                    capabilities.Add("window");
-                    break;
-            }
-        }
-
-        return capabilities.ToList();
     }
 
     private static string PatternName(int patternId) => patternId switch

@@ -47,10 +47,11 @@ public class Phase4aSemanticObservationTests
     [Fact]
     public void Normalizer_ProducesStableOrderingAndHash()
     {
+        // Dump order is depth-scrambled; DFS via parent links should visit A before B by sibling ordinal.
         var dumpuia = BuildDumpPayload(
             nodes:
             [
-                Node(0, null, 0, 0, "Window", "Main", "main", enabled: true, patterns: ["Window"]),
+                Node(0, null, 0, 0, "Window", "Main", "main", enabled: true, patterns: ["Window"], hwnd: 99),
                 Node(2, 0, 1, 1, "Button", "B", "b", enabled: true, patterns: ["Invoke"]),
                 Node(1, 0, 0, 1, "Button", "A", "a", enabled: true, patterns: ["Invoke"])
             ]);
@@ -60,11 +61,86 @@ public class Phase4aSemanticObservationTests
         var first = normalizer.Normalize(dumpuia, options, "snap-1", DateTimeOffset.Parse("2026-01-01T00:00:00Z"), "1.0.0");
         var second = normalizer.Normalize(dumpuia, options, "snap-2", DateTimeOffset.Parse("2026-01-02T00:00:00Z"), "1.0.0");
 
-        Assert.Equal(["n0", "n1", "n2"], first.Nodes.Select(n => n.Ref));
+        Assert.Equal(["main", "a", "b"], first.Nodes.Select(n => n.AutomationId));
         Assert.Equal("n0", first.Nodes[1].ParentRef);
         Assert.Equal(first.Nodes.Select(n => n.AutomationId), second.Nodes.Select(n => n.AutomationId));
         Assert.Equal(first.SnapshotHash, second.SnapshotHash);
         Assert.NotEqual(first.SnapshotId, second.SnapshotId);
+    }
+
+    [Fact]
+    public void Normalizer_HashIgnoresPidSessionHwndAndBounds()
+    {
+        var left = BuildDumpPayload(
+            [
+                Node(0, null, 0, 0, "Window", "Main", "main", true, ["Window"], hwnd: 11)
+            ],
+            processId: 100,
+            sessionId: 1,
+            hwnd: 11,
+            includeBounds: true);
+
+        var right = BuildDumpPayload(
+            [
+                Node(0, null, 0, 0, "Window", "Main", "main", true, ["Window"], hwnd: 99)
+            ],
+            processId: 200,
+            sessionId: 7,
+            hwnd: 99,
+            includeBounds: true);
+
+        var options = new ObservationOptions { ActionableOnly = false, IncludeBounds = true };
+        var normalizer = new SemanticSnapshotNormalizer();
+        var a = normalizer.Normalize(left, options, "snap-a", DateTimeOffset.UtcNow, "1.0.0");
+        var b = normalizer.Normalize(right, options, "snap-b", DateTimeOffset.UtcNow, "1.0.0");
+
+        Assert.Equal(a.SnapshotHash, b.SnapshotHash);
+        Assert.NotEqual(a.Application.ProcessId, b.Application.ProcessId);
+        Assert.NotEqual(a.Window!.Hwnd, b.Window!.Hwnd);
+    }
+
+    [Fact]
+    public void Normalizer_RejectsMissingSemanticDiagnosticVersion()
+    {
+        var payload = JsonSerializer.SerializeToElement(new
+        {
+            operation = "dumpuia",
+            success = true,
+            nodes = new[]
+            {
+                new { nodeIndex = 0, ordinal = 0, depth = 0, controlType = "Window", name = "Main", automationId = "main" }
+            }
+        });
+
+        Assert.Throws<InvalidOperationException>(() =>
+            new SemanticSnapshotNormalizer().Normalize(
+                payload,
+                new ObservationOptions { ActionableOnly = false },
+                "snap",
+                DateTimeOffset.UtcNow,
+                "1.0.0"));
+    }
+
+    [Fact]
+    public void Normalizer_MapsActiveWindowHwndToMatchingNodeRef()
+    {
+        var dumpuia = BuildDumpPayload(
+            [
+                Node(0, null, 0, 0, "Window", "Other", "other", true, ["Window"], hwnd: 10),
+                Node(1, null, 1, 0, "Window", "Active", "active", true, ["Window"], hwnd: 42),
+                Node(2, 1, 0, 1, "Button", "Go", "go", true, ["Invoke"])
+            ],
+            hwnd: 42);
+
+        var snapshot = new SemanticSnapshotNormalizer().Normalize(
+            dumpuia,
+            new ObservationOptions { ActionableOnly = false },
+            "snap",
+            DateTimeOffset.UtcNow,
+            "1.0.0");
+
+        Assert.Equal("active", snapshot.Nodes.Single(n => n.Ref == snapshot.Window!.Ref).AutomationId);
+        Assert.Equal(42, snapshot.Window!.Hwnd);
     }
 
     [Fact]
@@ -105,9 +181,30 @@ public class Phase4aSemanticObservationTests
         var edit = snapshot.Nodes.Single(n => n.AutomationId == "name");
         Assert.False(edit.Enabled);
         Assert.True(edit.Offscreen);
-        Assert.Contains("setValue", edit.Capabilities);
+        // Fail closed: unknown/omitted valueIsReadOnly must not expose setValue.
+        Assert.DoesNotContain("setValue", edit.Capabilities);
         Assert.Contains("readValue", edit.Capabilities);
-        Assert.DoesNotContain(edit.Capabilities, c => c.Contains("value", StringComparison.OrdinalIgnoreCase) && c is not ("setValue" or "readValue"));
+    }
+
+    [Fact]
+    public void Normalizer_ExposesSetValueOnlyWhenWritable()
+    {
+        var dumpuia = BuildDumpPayload(
+        [
+            Node(0, null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+            Node(1, 0, 0, 1, "Edit", "Writable", "w", true, ["Value"], valueIsReadOnly: false),
+            Node(2, 0, 1, 1, "Edit", "Readonly", "r", true, ["Value"], valueIsReadOnly: true)
+        ]);
+
+        var snapshot = new SemanticSnapshotNormalizer().Normalize(
+            dumpuia,
+            new ObservationOptions { ActionableOnly = false },
+            "snap",
+            DateTimeOffset.UtcNow,
+            "1.0.0");
+
+        Assert.Contains("setValue", snapshot.Nodes.Single(n => n.AutomationId == "w").Capabilities);
+        Assert.DoesNotContain("setValue", snapshot.Nodes.Single(n => n.AutomationId == "r").Capabilities);
     }
 
     [Fact]
@@ -125,12 +222,14 @@ public class Phase4aSemanticObservationTests
             ["isEnabled"] = true,
             ["isOffscreen"] = false,
             ["value"] = "super-secret-password",
+            ["valueIsReadOnly"] = false,
             ["supportedPatterns"] = new JsonArray("Value")
         };
         var dumpuia = JsonSerializer.SerializeToElement(new
         {
             operation = "dumpuia",
             success = true,
+            semanticDiagnosticVersion = 1,
             truncated = false,
             nodes = new[] { node },
             rootDiagnostics = new { processId = 1, processName = "Sample", windowsSessionId = 1 }
@@ -221,6 +320,7 @@ public class Phase4aSemanticObservationTests
                     {
                         operation = "dumpuia",
                         success = true,
+                        semanticDiagnosticVersion = 1,
                         truncated = false,
                         rootDiagnostics = new
                         {
@@ -249,6 +349,7 @@ public class Phase4aSemanticObservationTests
                                 name = "Sample",
                                 automationId = "main",
                                 className = "Wnd",
+                                nativeWindowHandle = 42,
                                 isEnabled = true,
                                 isOffscreen = false,
                                 isKeyboardFocusable = true,
@@ -362,32 +463,45 @@ public class Phase4aSemanticObservationTests
     [Fact]
     public void PatternCapabilityMapper_MapsKnownPatterns()
     {
-        var caps = PatternCapabilityMapper.Map(["Invoke", "Value", "Grid", "Toggle"]);
-        Assert.Equal(["grid", "invoke", "readValue", "setValue", "toggle"], caps);
-        Assert.True(PatternCapabilityMapper.IsActionable(caps));
+        var closed = PatternCapabilityMapper.Map(["Invoke", "Value", "Grid", "Toggle"]);
+        Assert.Equal(["grid", "invoke", "readValue", "toggle"], closed);
+
+        var writable = PatternCapabilityMapper.Map(["Value"], valueIsReadOnly: false);
+        Assert.Equal(["readValue", "setValue"], writable);
+        Assert.True(PatternCapabilityMapper.IsActionable(writable));
     }
 
-    private static JsonElement BuildDumpPayload(object[] nodes, bool truncated = false) =>
+    private static JsonElement BuildDumpPayload(
+        object[] nodes,
+        bool truncated = false,
+        int processId = 12,
+        int sessionId = 2,
+        long hwnd = 99,
+        bool includeBounds = false) =>
         JsonSerializer.SerializeToElement(new
         {
             operation = "dumpuia",
             success = true,
+            semanticDiagnosticVersion = 1,
             truncated,
             truncationWarnings = truncated ? new[] { "truncated" } : Array.Empty<string>(),
             nodes,
             rootDiagnostics = new
             {
-                activeWindowHwnd = 99,
-                processId = 12,
+                activeWindowHwnd = hwnd,
+                processId,
                 processName = "SampleApp",
-                windowsSessionId = 2,
+                windowsSessionId = sessionId,
                 activeWindow = new
                 {
                     name = "Sample",
                     className = "Wnd",
-                    processId = 12,
-                    nativeWindowHandle = 99,
-                    windowState = new { isModal = false }
+                    processId,
+                    nativeWindowHandle = hwnd,
+                    windowState = new { isModal = false },
+                    boundingRectangle = includeBounds
+                        ? new { x = 1.0, y = 2.0, width = 3.0, height = 4.0, left = 1.0, top = 2.0, right = 4.0, bottom = 6.0 }
+                        : null
                 }
             }
         });
@@ -402,7 +516,9 @@ public class Phase4aSemanticObservationTests
         string automationId,
         bool enabled,
         string[] patterns,
-        bool offscreen = false) =>
+        bool offscreen = false,
+        long? hwnd = null,
+        bool? valueIsReadOnly = null) =>
         new
         {
             nodeIndex,
@@ -413,12 +529,14 @@ public class Phase4aSemanticObservationTests
             name,
             automationId,
             className = "Cls",
+            nativeWindowHandle = hwnd,
             isEnabled = enabled,
             isOffscreen = offscreen,
             isKeyboardFocusable = enabled,
             hasKeyboardFocus = false,
+            valueIsReadOnly,
             supportedPatterns = patterns,
-            capabilities = PatternCapabilityMapper.Map(patterns)
+            capabilities = PatternCapabilityMapper.Map(patterns, valueIsReadOnly)
         };
 
     private static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(

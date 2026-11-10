@@ -2,7 +2,7 @@ namespace DesktopAutomationAgent.Observation;
 
 internal static class PatternCapabilityMapper
 {
-    public static IReadOnlyList<string> Map(IEnumerable<string>? patterns)
+    public static IReadOnlyList<string> Map(IEnumerable<string>? patterns, bool? valueIsReadOnly = null)
     {
         var capabilities = new SortedSet<string>(StringComparer.Ordinal);
         if (patterns is null)
@@ -28,8 +28,10 @@ internal static class PatternCapabilityMapper
                     capabilities.Add("toggle");
                     break;
                 case "value":
-                    capabilities.Add("setValue");
                     capabilities.Add("readValue");
+                    // Fail closed: setValue only when CurrentIsReadOnly is explicitly false.
+                    if (valueIsReadOnly == false)
+                        capabilities.Add("setValue");
                     break;
                 case "scroll":
                     capabilities.Add("scroll");
@@ -49,7 +51,7 @@ internal static class PatternCapabilityMapper
     public static bool IsActionable(IEnumerable<string> capabilities) =>
         capabilities.Any(static c => c is
             "invoke" or "expandCollapse" or "selectItem" or "selectionContainer"
-            or "toggle" or "setValue" or "scroll" or "grid" or "window");
+            or "toggle" or "setValue" or "readValue" or "scroll" or "grid" or "window");
 
     private static string Normalize(string pattern) =>
         pattern.Trim().Replace(" ", string.Empty, StringComparison.Ordinal).ToLowerInvariant();

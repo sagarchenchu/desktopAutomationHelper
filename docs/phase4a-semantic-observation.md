@@ -25,9 +25,11 @@ Required top-level fields:
 
 ### Ordering
 
-Depth-first pre-order from dumpuia tree links; siblings sorted by dumpuia ordinal,
-then `automationId`, `name`, `controlType`. Identical normalized trees produce the
-same `snapshotHash` (hash ignores `snapshotId` / `capturedAtUtc` / runtime IDs).
+Depth-first pre-order via parent tree links (not a global depth|ordinal sort).
+Only siblings are sorted (ordinal, then `automationId`, `name`, `controlType`,
+`nodeIndex`). Identical normalized trees produce the same `snapshotHash`
+(hash ignores `snapshotId` / `capturedAtUtc` / runtime IDs / PID / session ID /
+HWND / bounds).
 
 ### Ephemeral refs
 
@@ -62,8 +64,15 @@ Optional dumpuia inputs (defaults preserve capture-page behavior):
 | `includeTreeLinks` | `false` | nodeIndex / parentNodeIndex / ordinal |
 | `includeWindowState` | `false` | Window-pattern modal/state |
 
-Agent `observe-app` requests tree links, focus state, window state, and a bounded
-`maxNodes`, then normalizes into the semantic snapshot DTOs.
+Successful dumpuia payloads include `semanticDiagnosticVersion: 1`. Hitting
+`maxDepth` / `maxChildren` / `maxNodes` marks `truncated` with warnings (no silent
+drop). ValuePattern exposes `valueIsReadOnly`; `setValue` is emitted only when
+writable (`CurrentIsReadOnly == false`) — fail closed for Phase 4B.
+
+Agent `observe-app` requires `semanticDiagnosticVersion` and tree-link fields,
+requests focus/window state and a bounded `maxNodes`, then normalizes into the
+semantic snapshot DTOs. Older drivers that omit the marker/tree links fail fast
+instead of producing flat degraded snapshots.
 
 ## CLI
 
@@ -120,4 +129,6 @@ dumpuia can resolve the application window, matching `capture-page`.
 - WinForms `DesktopAutomationTestApp` (`DA Test Harness`): observed menu, button,
   textbox, combo box, grid/list, and disabled control under correct process/session.
 - EventLog `getvalue` before/after observe matched (no UI mutation from observation).
-- WPF: no suitable WPF target process was available on the worker during this run.
+- WPF: still incomplete — no suitable WPF target on the worker, and the TestApp
+  harness PR #138 (`cursor/desktop-test-app-harness-b89b`) remains unmerged. This
+  does not block Phase 4A observe-only landing.

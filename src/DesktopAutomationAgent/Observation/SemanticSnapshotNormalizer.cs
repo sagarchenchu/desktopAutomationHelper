@@ -10,6 +10,7 @@ public sealed class SemanticSnapshotNormalizer
 {
     public const int MaxStringLength = 256;
     public const int DefaultMaxNodes = 500;
+    public const int RequiredSemanticDiagnosticVersion = 1;
 
     private static readonly JsonSerializerOptions CanonicalJsonOptions = new()
     {
@@ -40,6 +41,8 @@ public sealed class SemanticSnapshotNormalizer
         if (string.IsNullOrWhiteSpace(snapshotId))
             throw new ArgumentException("snapshotId is required.", nameof(snapshotId));
 
+        RequireSemanticDiagnostics(dumpuiaValue);
+
         var warnings = new List<string>();
         var truncated = dumpuiaValue.TryGetProperty("truncated", out var truncatedElement)
                         && truncatedElement.ValueKind is JsonValueKind.True;
@@ -59,43 +62,41 @@ public sealed class SemanticSnapshotNormalizer
         }
 
         var rawNodes = ReadRawNodes(dumpuiaValue);
+        if (rawNodes.Count == 0)
+            throw new InvalidOperationException("dumpuia returned zero nodes with semantic tree links.");
+
+        ValidateRawTree(rawNodes);
+
         var maxNodes = Math.Clamp(options.MaxNodes ?? DefaultMaxNodes, 1, 2000);
         if (rawNodes.Count > maxNodes)
         {
             truncated = true;
             warnings.Add($"Agent truncated nodes from {rawNodes.Count} to maxNodes={maxNodes}.");
-            rawNodes = rawNodes.Take(maxNodes).ToList();
+            rawNodes = TruncatePreservingAncestors(rawNodes, maxNodes);
         }
 
         var selected = options.ActionableOnly
             ? SelectActionable(rawNodes, warnings)
-            : rawNodes.OrderBy(static n => n.SortKey, StringComparer.Ordinal).ToList();
+            : rawNodes;
 
-        ValidateRawTree(selected);
-
-        var nodes = AssignRefs(selected, options);
+        var ordered = OrderDepthFirst(selected);
+        var nodes = AssignRefs(ordered, options);
         var application = ReadApplication(dumpuiaValue);
         var session = ReadSession(dumpuiaValue);
-        var window = ReadWindow(dumpuiaValue, nodes, options);
+        var window = ReadWindow(dumpuiaValue, ordered, nodes, options);
 
-        // Editable values are never projected into the semantic snapshot.
-        // Runtime IDs stay in-memory only when requested and are omitted from persisted hash inputs below.
-        var snapshotForHash = new SemanticSnapshot
+        var hash = ComputeHash(new SemanticSnapshot
         {
             SnapshotSchemaVersion = SemanticSnapshot.SchemaVersion,
-            SnapshotId = string.Empty,
-            CapturedAtUtc = default,
             DriverVersion = driverVersion,
             Application = application,
             WindowsSession = session,
-            Window = StripRuntimeSensitiveWindow(window),
-            Nodes = nodes.Select(StripRuntimeId).ToList(),
+            Window = window,
+            Nodes = nodes,
             Truncated = truncated,
             Warnings = warnings.OrderBy(static w => w, StringComparer.Ordinal).ToList(),
             Ordering = SnapshotOrdering.Default
-        };
-
-        var hash = ComputeHash(snapshotForHash);
+        });
 
         return new SemanticSnapshot
         {
@@ -116,22 +117,24 @@ public sealed class SemanticSnapshotNormalizer
 
     public static string ComputeHash(SemanticSnapshot snapshot)
     {
+        // Exclude volatile identity: PID, session ID, HWND, and optional bounds.
         var payload = JsonSerializer.Serialize(new
         {
             snapshot.SnapshotSchemaVersion,
             snapshot.DriverVersion,
-            snapshot.Application,
-            snapshot.WindowsSession,
+            application = new
+            {
+                processName = snapshot.Application.ProcessName
+            },
+            windowsSession = new { },
             window = snapshot.Window is null
                 ? null
                 : new
                 {
-                    snapshot.Window.Hwnd,
+                    snapshot.Window.Ref,
                     snapshot.Window.Title,
                     snapshot.Window.ClassName,
-                    snapshot.Window.ProcessId,
-                    snapshot.Window.IsModal,
-                    snapshot.Window.Bounds
+                    snapshot.Window.IsModal
                 },
             nodes = snapshot.Nodes.Select(n => new
             {
@@ -150,8 +153,7 @@ public sealed class SemanticSnapshotNormalizer
                 n.Focusable,
                 n.HasKeyboardFocus,
                 n.Patterns,
-                n.Capabilities,
-                n.Bounds
+                n.Capabilities
             }),
             snapshot.Truncated,
             warnings = snapshot.Warnings,
@@ -160,6 +162,35 @@ public sealed class SemanticSnapshotNormalizer
 
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
         return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private static void RequireSemanticDiagnostics(JsonElement dumpuiaValue)
+    {
+        var version = GetNullableInt(dumpuiaValue, "semanticDiagnosticVersion");
+        if (version is null || version < RequiredSemanticDiagnosticVersion)
+        {
+            throw new InvalidOperationException(
+                $"Driver dumpuia lacks semanticDiagnosticVersion>={RequiredSemanticDiagnosticVersion}. Upgrade the driver; flat/degraded snapshots are not accepted.");
+        }
+
+        if (!dumpuiaValue.TryGetProperty("nodes", out var nodes)
+            || nodes.ValueKind != JsonValueKind.Array
+            || nodes.GetArrayLength() == 0)
+        {
+            throw new InvalidOperationException("dumpuia response did not include nodes.");
+        }
+
+        foreach (var node in nodes.EnumerateArray())
+        {
+            if (node.ValueKind != JsonValueKind.Object)
+                continue;
+
+            if (!node.TryGetProperty("nodeIndex", out _))
+            {
+                throw new InvalidOperationException(
+                    "Driver dumpuia omitted required tree-link field 'nodeIndex'. Upgrade the driver; flat/degraded snapshots are not accepted.");
+            }
+        }
     }
 
     private static List<RawNode> ReadRawNodes(JsonElement dumpuiaValue)
@@ -171,13 +202,19 @@ public sealed class SemanticSnapshotNormalizer
         }
 
         var nodes = new List<RawNode>();
-        var index = 0;
         foreach (var element in nodesElement.EnumerateArray())
         {
             if (element.ValueKind != JsonValueKind.Object)
                 continue;
 
+            if (!element.TryGetProperty("nodeIndex", out var nodeIndexElement)
+                || !nodeIndexElement.TryGetInt32(out var nodeIndex))
+            {
+                throw new InvalidOperationException("dumpuia node is missing required nodeIndex tree link.");
+            }
+
             var patterns = ReadStringArray(element, "supportedPatterns");
+            var valueIsReadOnly = GetNullableBool(element, "valueIsReadOnly");
             var capabilities = element.TryGetProperty("capabilities", out var capsElement)
                                && capsElement.ValueKind == JsonValueKind.Array
                 ? capsElement.EnumerateArray()
@@ -185,11 +222,25 @@ public sealed class SemanticSnapshotNormalizer
                     .Select(static c => c.GetString()!)
                     .Where(static c => !string.IsNullOrWhiteSpace(c))
                     .ToList()
-                : PatternCapabilityMapper.Map(patterns).ToList();
+                : PatternCapabilityMapper.Map(patterns, valueIsReadOnly).ToList();
 
-            var nodeIndex = GetNullableInt(element, "nodeIndex") ?? index;
+            // Fail closed for Phase 4B: never invent setValue when writable state is unknown/false.
+            if (valueIsReadOnly != false)
+                capabilities.RemoveAll(static c => c == "setValue");
+            else if (patterns.Any(static p => string.Equals(p, "Value", StringComparison.OrdinalIgnoreCase))
+                     && !capabilities.Contains("setValue", StringComparer.Ordinal))
+            {
+                capabilities.Add("setValue");
+            }
+
+            if (patterns.Any(static p => string.Equals(p, "Value", StringComparison.OrdinalIgnoreCase))
+                && !capabilities.Contains("readValue", StringComparer.Ordinal))
+            {
+                capabilities.Add("readValue");
+            }
+
             var parentNodeIndex = GetNullableInt(element, "parentNodeIndex");
-            var ordinal = GetNullableInt(element, "ordinal") ?? index;
+            var ordinal = GetNullableInt(element, "ordinal") ?? 0;
             var depth = GetInt(element, "depth");
             var controlType = Bound(GetString(element, "controlType")) ?? string.Empty;
             var name = Bound(GetString(element, "name"));
@@ -220,14 +271,36 @@ public sealed class SemanticSnapshotNormalizer
                 ReadIsModal(element),
                 GetNullableLong(element, "nativeWindowHandle"),
                 GetNullableInt(element, "processId"),
-                BuildSortKey(depth, ordinal, automationId, name, controlType, nodeIndex)));
-
-            index++;
+                valueIsReadOnly));
         }
 
-        return nodes
-            .OrderBy(static n => n.SortKey, StringComparer.Ordinal)
-            .ToList();
+        // Preserve driver dump order; do not globally re-sort by depth.
+        return nodes;
+    }
+
+    private static List<RawNode> TruncatePreservingAncestors(IReadOnlyList<RawNode> nodes, int maxNodes)
+    {
+        if (nodes.Count <= maxNodes)
+            return nodes.ToList();
+
+        var byIndex = nodes.ToDictionary(static n => n.NodeIndex);
+        var keep = new HashSet<int>();
+        foreach (var node in nodes)
+        {
+            if (keep.Count >= maxNodes)
+                break;
+
+            keep.Add(node.NodeIndex);
+            var current = node;
+            while (current.ParentNodeIndex is int parent && byIndex.TryGetValue(parent, out var parentNode))
+            {
+                if (!keep.Add(parent) || keep.Count >= maxNodes)
+                    break;
+                current = parentNode;
+            }
+        }
+
+        return OrderDepthFirst(nodes.Where(n => keep.Contains(n.NodeIndex)).ToList());
     }
 
     private static List<RawNode> SelectActionable(IReadOnlyList<RawNode> nodes, List<string> warnings)
@@ -239,7 +312,6 @@ public sealed class SemanticSnapshotNormalizer
                 keep.Add(node.NodeIndex);
         }
 
-        // Preserve ancestors so parent refs remain coherent.
         var byIndex = nodes.ToDictionary(static n => n.NodeIndex);
         foreach (var index in keep.ToList())
         {
@@ -259,7 +331,7 @@ public sealed class SemanticSnapshotNormalizer
                 $"Filtered to actionable/content-relevant nodes ({selected.Count} of {nodes.Count}).");
         }
 
-        return selected.OrderBy(static n => n.SortKey, StringComparer.Ordinal).ToList();
+        return selected;
     }
 
     private static bool ShouldKeepActionable(RawNode node)
@@ -293,6 +365,76 @@ public sealed class SemanticSnapshotNormalizer
         }
     }
 
+    /// <summary>
+    /// Depth-first preorder via parent links. Sibling order only is sorted
+    /// (ordinal, then automationId/name/controlType/nodeIndex).
+    /// </summary>
+    internal static List<RawNode> OrderDepthFirst(IReadOnlyList<RawNode> nodes)
+    {
+        var byIndex = nodes.ToDictionary(static n => n.NodeIndex);
+        var children = new Dictionary<int, List<RawNode>>();
+        var roots = new List<RawNode>();
+
+        foreach (var node in nodes)
+        {
+            if (node.ParentNodeIndex is int parent && byIndex.ContainsKey(parent))
+            {
+                if (!children.TryGetValue(parent, out var list))
+                {
+                    list = [];
+                    children[parent] = list;
+                }
+
+                list.Add(node);
+            }
+            else
+            {
+                roots.Add(node);
+            }
+        }
+
+        static int Compare(RawNode left, RawNode right) =>
+            string.CompareOrdinal(
+                BuildSiblingSortKey(left),
+                BuildSiblingSortKey(right));
+
+        foreach (var pair in children)
+            pair.Value.Sort(Compare);
+
+        roots.Sort(Compare);
+
+        var ordered = new List<RawNode>(nodes.Count);
+        var visiting = new HashSet<int>();
+
+        void Visit(RawNode node)
+        {
+            if (!visiting.Add(node.NodeIndex))
+                return;
+
+            ordered.Add(node);
+            if (children.TryGetValue(node.NodeIndex, out var kids))
+            {
+                foreach (var child in kids)
+                    Visit(child);
+            }
+        }
+
+        foreach (var root in roots)
+            Visit(root);
+
+        // Orphans with broken parent links already treated as roots.
+        foreach (var node in nodes)
+        {
+            if (!visiting.Contains(node.NodeIndex))
+                Visit(node);
+        }
+
+        return ordered;
+    }
+
+    private static string BuildSiblingSortKey(RawNode node) =>
+        $"{node.Ordinal:D6}|{node.AutomationId}|{node.Name}|{node.ControlType}|{node.NodeIndex:D6}";
+
     private static List<SemanticNode> AssignRefs(IReadOnlyList<RawNode> nodes, ObservationOptions options)
     {
         var refByIndex = new Dictionary<int, string>();
@@ -305,13 +447,7 @@ public sealed class SemanticSnapshotNormalizer
             var node = nodes[i];
             string? parentRef = null;
             if (node.ParentNodeIndex is int parentIndex)
-            {
-                if (!refByIndex.TryGetValue(parentIndex, out parentRef))
-                {
-                    // Parent was filtered out; leave null rather than inventing a cross-tree link.
-                    parentRef = null;
-                }
-            }
+                refByIndex.TryGetValue(parentIndex, out parentRef);
 
             result.Add(new SemanticNode
             {
@@ -336,7 +472,6 @@ public sealed class SemanticSnapshotNormalizer
             });
         }
 
-        // Reject invalid refs before returning.
         _ = new EphemeralRefIndex(new SemanticSnapshot
         {
             SnapshotId = "validate",
@@ -377,6 +512,7 @@ public sealed class SemanticSnapshotNormalizer
 
     private static WindowIdentity? ReadWindow(
         JsonElement dumpuiaValue,
+        IReadOnlyList<RawNode> orderedRaw,
         IReadOnlyList<SemanticNode> nodes,
         ObservationOptions options)
     {
@@ -406,9 +542,24 @@ public sealed class SemanticSnapshotNormalizer
                 bounds = ReadBounds(active);
         }
 
+        string? windowRef = null;
+        if (hwnd is > 0)
+        {
+            for (var i = 0; i < orderedRaw.Count; i++)
+            {
+                if (orderedRaw[i].NativeWindowHandle == hwnd)
+                {
+                    windowRef = nodes[i].Ref;
+                    break;
+                }
+            }
+        }
+
+        windowRef ??= nodes.Count > 0 ? nodes[0].Ref : null;
+
         return new WindowIdentity
         {
-            Ref = nodes.Count > 0 ? nodes[0].Ref : null,
+            Ref = windowRef,
             Hwnd = hwnd is > 0 ? hwnd : null,
             Title = title,
             ClassName = className,
@@ -417,41 +568,6 @@ public sealed class SemanticSnapshotNormalizer
             Bounds = bounds
         };
     }
-
-    private static WindowIdentity? StripRuntimeSensitiveWindow(WindowIdentity? window) =>
-        window is null
-            ? null
-            : new WindowIdentity
-            {
-                Hwnd = window.Hwnd,
-                Title = window.Title,
-                ClassName = window.ClassName,
-                ProcessId = window.ProcessId,
-                IsModal = window.IsModal,
-                Bounds = window.Bounds
-            };
-
-    private static SemanticNode StripRuntimeId(SemanticNode node) =>
-        new()
-        {
-            Ref = node.Ref,
-            ParentRef = node.ParentRef,
-            Ordinal = node.Ordinal,
-            Depth = node.Depth,
-            ControlType = node.ControlType,
-            Role = node.Role,
-            Name = node.Name,
-            AutomationId = node.AutomationId,
-            ClassName = node.ClassName,
-            HelpText = node.HelpText,
-            Enabled = node.Enabled,
-            Offscreen = node.Offscreen,
-            Focusable = node.Focusable,
-            HasKeyboardFocus = node.HasKeyboardFocus,
-            Patterns = node.Patterns,
-            Capabilities = node.Capabilities,
-            Bounds = node.Bounds
-        };
 
     private static BoundingRectangleDto? ReadBounds(JsonElement element)
     {
@@ -499,15 +615,6 @@ public sealed class SemanticSnapshotNormalizer
             .OrderBy(static item => item, StringComparer.Ordinal)
             .ToList()!;
     }
-
-    private static string BuildSortKey(
-        int depth,
-        int ordinal,
-        string? automationId,
-        string? name,
-        string? controlType,
-        int nodeIndex) =>
-        $"{depth:D4}|{ordinal:D6}|{automationId}|{name}|{controlType}|{nodeIndex:D6}";
 
     private static string? GetString(JsonElement element, string propertyName) =>
         element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
@@ -582,7 +689,7 @@ public sealed class SemanticSnapshotNormalizer
     private static string? NullIfEmpty(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value;
 
-    private sealed record RawNode(
+    internal sealed record RawNode(
         int NodeIndex,
         int? ParentNodeIndex,
         int Ordinal,
@@ -603,5 +710,5 @@ public sealed class SemanticSnapshotNormalizer
         bool? IsModal,
         long? NativeWindowHandle,
         int? ProcessId,
-        string SortKey);
+        bool? ValueIsReadOnly);
 }

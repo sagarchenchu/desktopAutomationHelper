@@ -122,11 +122,12 @@ public class Phase2CliTests
     }
 
     [Fact]
-    public void HelpText_IsPhase3()
+    public void HelpText_IsPhase4A()
     {
-        Assert.Contains("Phase 3", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("Phase 4A", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("validate-object-repository", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("capture-page", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("observe-app", CommandLine.HelpText, StringComparison.Ordinal);
     }
 
     private static FakeHttpMessageHandler ReadyHandler() =>

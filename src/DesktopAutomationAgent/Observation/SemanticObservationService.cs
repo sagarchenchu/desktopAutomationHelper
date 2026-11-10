@@ -263,16 +263,37 @@ public sealed class SemanticObservationService : ISemanticObservationService
 
         ObjectRepositoryPathSafety.EnsureWritablePathInside(fullPath, _workspace.RootPath);
 
-        if (File.Exists(fullPath))
-            throw new InvalidOperationException("Observation artifact already exists and must not be overwritten.");
-
         var directory = Path.GetDirectoryName(fullPath)
             ?? throw new InvalidOperationException("Observation path has no directory.");
         Directory.CreateDirectory(directory);
 
         var json = JsonSerializer.Serialize(snapshot, JsonOptions);
         json = SecretRedactor.Redact(json);
-        await File.WriteAllTextAsync(fullPath, json.EndsWith('\n') ? json : json + "\n").ConfigureAwait(false);
+        if (!json.EndsWith('\n'))
+            json += "\n";
+
+        // Atomic create: fail if the destination already exists (no Exists-then-Write race).
+        var tempPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            await File.WriteAllTextAsync(tempPath, json).ConfigureAwait(false);
+            File.Move(tempPath, fullPath, overwrite: false);
+        }
+        catch (IOException) when (File.Exists(fullPath))
+        {
+            throw new InvalidOperationException("Observation artifact already exists and must not be overwritten.");
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                try { File.Delete(tempPath); }
+                catch { /* best-effort cleanup */ }
+            }
+        }
 
         return ToDisplayRelative(fullPath);
     }

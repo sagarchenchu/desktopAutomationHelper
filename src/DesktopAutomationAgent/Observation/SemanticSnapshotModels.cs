@@ -129,7 +129,7 @@ public sealed class SnapshotOrdering
 {
     public static SnapshotOrdering Default { get; } = new()
     {
-        Rule = "depth-first pre-order; siblings by dumpuia ordinal then automationId, name, controlType"
+        Rule = "depth-first pre-order via parent links; siblings sorted by ordinal then automationId, name, controlType, nodeIndex"
     };
 
     public string Rule { get; init; } = string.Empty;
