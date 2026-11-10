@@ -4,6 +4,7 @@ using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
 using DesktopAutomationAgent.ObjectRepository;
+using DesktopAutomationAgent.Exploration;
 using DesktopAutomationAgent.Observation;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Readiness;
@@ -52,7 +53,8 @@ public static class AgentCli
                 or AgentCommandKind.ResolveObject
                 or AgentCommandKind.CapturePage
                 or AgentCommandKind.VerifyObjectRepository
-                or AgentCommandKind.ObserveApp;
+                or AgentCommandKind.ObserveApp
+                or AgentCommandKind.ExploreApp;
 
         if (parsed.Error is not null)
         {
@@ -114,6 +116,11 @@ public static class AgentCli
                         cancellationToken)
                     .ConfigureAwait(false),
                 AgentCommandKind.ObserveApp => await RunObserveAppAsync(
+                        host.Services,
+                        parsed,
+                        cancellationToken)
+                    .ConfigureAwait(false),
+                AgentCommandKind.ExploreApp => await RunExploreAppAsync(
                         host.Services,
                         parsed,
                         cancellationToken)
@@ -225,6 +232,13 @@ public static class AgentCli
         builder.Services.AddSingleton<ObjectVerificationService>();
         builder.Services.AddSingleton<SemanticSnapshotNormalizer>();
         builder.Services.AddSingleton<ISemanticObservationService, SemanticObservationService>();
+        builder.Services.AddSingleton<ExplorationPolicyReader>();
+        builder.Services.AddSingleton<StateFingerprinter>();
+        builder.Services.AddSingleton<CapabilityResolver>();
+        builder.Services.AddSingleton<UiStabilizationService>();
+        builder.Services.AddSingleton<WindowTransitionDetector>();
+        builder.Services.AddSingleton<ExplorationArtifactWriter>();
+        builder.Services.AddSingleton<IExplorationCoordinator, ExplorationCoordinator>();
 
         return builder.Build();
     }
@@ -669,6 +683,84 @@ public static class AgentCli
                 Console.WriteLine($"Artifact        : {result.SnapshotFilePath}");
             if (!string.IsNullOrWhiteSpace(result.Error))
                 Console.Error.WriteLine(result.Error);
+        }
+
+        return result.ExitCode;
+    }
+
+    private static async Task<int> RunExploreAppAsync(
+        IServiceProvider services,
+        ParsedCommand parsed,
+        CancellationToken cancellationToken)
+    {
+        var coordinator = services.GetRequiredService<IExplorationCoordinator>();
+        var result = await coordinator.ExploreAsync(
+            new ExplorationRequest
+            {
+                PolicyPath = parsed.PolicyFile!,
+                DryRun = parsed.DryRun
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        if (parsed.Json)
+        {
+            var payload = new
+            {
+                result.Success,
+                result.ExitCode,
+                result.Error,
+                result.ExplorationId,
+                result.ArtifactDirectory,
+                summary = result.Summary,
+                dryRunCandidates = result.DryRunCandidates.Select(c => new
+                {
+                    c.ActionKey,
+                    kind = c.Kind.ToString(),
+                    c.Category,
+                    c.DriverOperation,
+                    c.ElementKey,
+                    c.AutomationId,
+                    c.Name,
+                    c.ControlType,
+                    c.Depth,
+                    c.Priority
+                })
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — explore-app");
+            Console.WriteLine($"Success           : {result.Success}");
+            Console.WriteLine($"Exit code         : {result.ExitCode}");
+            Console.WriteLine($"Exploration id    : {result.ExplorationId}");
+            if (result.Summary is not null)
+            {
+                Console.WriteLine($"Status            : {result.Summary.Status}");
+                Console.WriteLine($"Mode              : {result.Summary.Mode}");
+                Console.WriteLine($"Dry run           : {result.Summary.DryRun}");
+                Console.WriteLine($"States visited    : {result.Summary.StatesVisited}");
+                Console.WriteLine($"Actions attempted : {result.Summary.ActionsAttempted}");
+                Console.WriteLine($"Transitions       : {result.Summary.TransitionsRecorded}");
+                Console.WriteLine($"Max depth         : {result.Summary.MaxDepthReached}");
+                Console.WriteLine($"Stop reason       : {result.Summary.StopReason}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.ArtifactDirectory))
+                Console.WriteLine($"Artifacts         : {result.ArtifactDirectory}");
+
+            if (parsed.DryRun && result.DryRunCandidates.Count > 0)
+            {
+                Console.WriteLine("Permitted candidates:");
+                foreach (var candidate in result.DryRunCandidates.Take(50))
+                {
+                    Console.WriteLine(
+                        $"  - [{candidate.Category}] {candidate.Kind} {candidate.ElementKey} via {candidate.DriverOperation}");
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.Error))
+                Console.Error.WriteLine(SecretRedactor.Redact(result.Error));
         }
 
         return result.ExitCode;

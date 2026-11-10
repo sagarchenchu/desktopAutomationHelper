@@ -193,6 +193,9 @@ public sealed class WorkspaceManager : IWorkspaceManager
         "object-repository/candidates",
         "object-repository/captures",
         "observations",
+        "exploration",
+        "exploration/policies",
+        "exploration/runs",
         "runs"
     ];
 
@@ -212,7 +215,10 @@ public sealed class WorkspaceManager : IWorkspaceManager
             ["schemas/object-repository.schema.json"] = ObjectRepositorySchema,
             ["schemas/page-object.schema.json"] = PageObjectSchema,
             ["schemas/semantic-snapshot.schema.json"] = SemanticSnapshotSchema,
+            ["schemas/exploration-policy.schema.json"] = ExplorationPolicySchema,
             ["observations/.gitignore"] = ObservationsGitIgnore,
+            ["exploration/.gitignore"] = ExplorationGitIgnore,
+            ["exploration/policies/example.policy.json"] = ExampleExplorationPolicy,
             ["runs/.gitignore"] = RunsGitIgnore
         };
 
@@ -1164,6 +1170,161 @@ public sealed class WorkspaceManager : IWorkspaceManager
         """
         *
         !.gitignore
+        """;
+
+    private const string ExplorationGitIgnore =
+        """
+        *
+        !.gitignore
+        !policies/
+        !policies/**
+        """;
+
+    private const string ExplorationPolicySchema =
+        """
+        {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "$id": "https://local/desktop-automation-agent/exploration-policy.schema.json",
+          "title": "DesktopAutomationAgent Exploration Policy",
+          "type": "object",
+          "required": [
+            "policySchemaVersion",
+            "mode",
+            "application",
+            "scope",
+            "allowedActionCategories",
+            "allowRules",
+            "denyRules",
+            "budgets",
+            "allowCloseChildWindowsForBacktrack",
+            "allowHover",
+            "allowCoordinateFallback"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "$schema": { "type": "string" },
+            "policySchemaVersion": { "const": 1 },
+            "policyId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "mode": { "type": "string", "enum": ["observe", "navigate"] },
+            "application": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["processName"],
+              "properties": {
+                "processName": { "type": "string", "minLength": 1, "maxLength": 256 },
+                "executablePath": { "type": ["string", "null"], "maxLength": 1024 },
+                "executableSha256": { "type": ["string", "null"] },
+                "allowedChildProcessNames": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+                  "maxItems": 64
+                }
+              }
+            },
+            "scope": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "windowsSessionId": { "type": ["integer", "null"], "minimum": 0 },
+                "allowedWindowTitles": { "type": "array", "items": { "type": "string", "maxLength": 256 } },
+                "deniedWindowTitles": { "type": "array", "items": { "type": "string", "maxLength": 256 } },
+                "allowedWindowClasses": { "type": "array", "items": { "type": "string", "maxLength": 256 } },
+                "deniedWindowClasses": { "type": "array", "items": { "type": "string", "maxLength": 256 } }
+              }
+            },
+            "allowedActionCategories": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["expandCollapse", "tabSelect", "menuOpen", "scroll", "focus", "hover", "selectItem", "invoke"]
+              }
+            },
+            "allowRules": { "type": "array", "items": { "type": "object" } },
+            "denyRules": { "type": "array", "items": { "type": "object" } },
+            "budgets": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "maxStates",
+                "maxActions",
+                "maxDepth",
+                "totalDurationSeconds",
+                "perActionTimeoutSeconds",
+                "stabilizationTimeoutSeconds"
+              ],
+              "properties": {
+                "maxStates": { "type": "integer", "minimum": 1 },
+                "maxActions": { "type": "integer", "minimum": 0 },
+                "maxDepth": { "type": "integer", "minimum": 0 },
+                "totalDurationSeconds": { "type": "integer", "minimum": 1 },
+                "perActionTimeoutSeconds": { "type": "integer", "minimum": 1 },
+                "stabilizationTimeoutSeconds": { "type": "integer", "minimum": 1 },
+                "stabilizationQuietPeriodMilliseconds": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "allowCloseChildWindowsForBacktrack": { "type": "boolean" },
+            "allowHover": { "type": "boolean" },
+            "allowCoordinateFallback": { "type": "boolean" },
+            "allowDoubleClick": { "type": "boolean" }
+          }
+        }
+        """;
+
+    private const string ExampleExplorationPolicy =
+        """
+        {
+          "$schema": "../../schemas/exploration-policy.schema.json",
+          "policySchemaVersion": 1,
+          "policyId": "example-safe-navigate",
+          "mode": "navigate",
+          "application": {
+            "processName": "DesktopAutomationExplorerFixture",
+            "executablePath": null,
+            "executableSha256": null,
+            "allowedChildProcessNames": []
+          },
+          "scope": {
+            "windowsSessionId": null,
+            "allowedWindowTitles": [
+              "DA Explorer Fixture",
+              "DA Explorer Child",
+              "DA Explorer Dialog",
+              "DA Explorer Second"
+            ],
+            "deniedWindowTitles": [],
+            "allowedWindowClasses": [],
+            "deniedWindowClasses": []
+          },
+          "allowedActionCategories": [
+            "expandCollapse",
+            "tabSelect",
+            "menuOpen",
+            "scroll",
+            "focus",
+            "selectItem"
+          ],
+          "allowRules": [
+            { "automationId": "ExplorerOpenDialogButton", "action": "invoke", "actionCategory": "invoke" },
+            { "automationId": "ExplorerTabDetails", "action": "tabSelect", "actionCategory": "tabSelect" }
+          ],
+          "denyRules": [
+            { "automationId": "ExplorerDeleteButton", "action": "*" },
+            { "nameContains": "Submit", "action": "*" }
+          ],
+          "budgets": {
+            "maxStates": 25,
+            "maxActions": 40,
+            "maxDepth": 6,
+            "totalDurationSeconds": 180,
+            "perActionTimeoutSeconds": 15,
+            "stabilizationTimeoutSeconds": 8,
+            "stabilizationQuietPeriodMilliseconds": 400
+          },
+          "allowCloseChildWindowsForBacktrack": false,
+          "allowHover": false,
+          "allowCoordinateFallback": false,
+          "allowDoubleClick": false
+        }
         """;
 
 }

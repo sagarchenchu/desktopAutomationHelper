@@ -164,6 +164,12 @@ public sealed record ObservationOptions
     /// Must not overwrite an existing file.
     /// </summary>
     public string? OutputPath { get; init; }
+
+    /// <summary>
+    /// When false, skips writing observation artifacts (used by exploration polling).
+    /// Defaults to true for observe-app CLI behavior.
+    /// </summary>
+    public bool PersistArtifact { get; init; } = true;
 }
 
 public sealed record ObservationResult

@@ -1,0 +1,159 @@
+{
+  "$schema": "../../schemas/exploration-policy.schema.json",
+  "policySchemaVersion": 1,
+  "policyId": "example-safe-navigate",
+  "mode": "navigate",
+  "application": {
+    "processName": "DesktopAutomationExplorerFixture",
+    "executablePath": null,
+    "executableSha256": null,
+    "allowedChildProcessNames": []
+  },
+  "scope": {
+    "windowsSessionId": null,
+    "allowedWindowTitles": [
+      "DA Explorer Fixture",
+      "DA Explorer Child",
+      "DA Explorer Dialog",
+      "DA Explorer Second"
+    ],
+    "deniedWindowTitles": [],
+    "allowedWindowClasses": [],
+    "deniedWindowClasses": []
+  },
+  "allowedActionCategories": [
+    "expandCollapse",
+    "tabSelect",
+    "menuOpen",
+    "scroll",
+    "focus",
+    "selectItem"
+  ],
+  "allowRules": [
+    {
+      "automationId": "ExplorerTreeRoot",
+      "action": "expand",
+      "actionCategory": "expandCollapse"
+    },
+    {
+      "name": "Root",
+      "controlType": "TreeItem",
+      "action": "expand",
+      "actionCategory": "expandCollapse"
+    },
+    {
+      "automationId": "ExplorerTreeChild",
+      "action": "expand",
+      "actionCategory": "expandCollapse"
+    },
+    {
+      "name": "Child",
+      "controlType": "TreeItem",
+      "action": "expand",
+      "actionCategory": "expandCollapse"
+    },
+    {
+      "automationId": "ExplorerTabHome",
+      "action": "tabSelect",
+      "actionCategory": "tabSelect"
+    },
+    {
+      "name": "Home",
+      "action": "tabSelect",
+      "actionCategory": "tabSelect"
+    },
+    {
+      "automationId": "ExplorerTabDetails",
+      "action": "tabSelect",
+      "actionCategory": "tabSelect"
+    },
+    {
+      "name": "Details",
+      "action": "tabSelect",
+      "actionCategory": "tabSelect"
+    },
+    {
+      "automationId": "ExplorerFileMenu",
+      "action": "menuOpen",
+      "actionCategory": "menuOpen"
+    },
+    {
+      "automationId": "ExplorerOpenDialogMenuItem",
+      "action": "menuOpen",
+      "actionCategory": "menuOpen"
+    },
+    {
+      "automationId": "ExplorerOpenSecondMenuItem",
+      "action": "menuOpen",
+      "actionCategory": "menuOpen"
+    },
+    {
+      "automationId": "ExplorerOpenDialogButton",
+      "action": "invoke",
+      "actionCategory": "invoke"
+    },
+    {
+      "automationId": "ExplorerOpenSecondButton",
+      "action": "invoke",
+      "actionCategory": "invoke"
+    },
+    {
+      "automationId": "ExplorerList",
+      "actionCategory": "selectItem",
+      "action": "selectItem"
+    },
+    {
+      "automationId": "ExplorerScrollPanel",
+      "action": "scroll",
+      "actionCategory": "scroll"
+    },
+    {
+      "automationId": "ExplorerHoverTarget",
+      "action": "focus",
+      "actionCategory": "focus"
+    }
+  ],
+  "denyRules": [
+    {
+      "automationId": "ExplorerDeleteButton",
+      "action": "*"
+    },
+    {
+      "automationId": "ExplorerSubmitButton",
+      "action": "*"
+    },
+    {
+      "automationId": "ExplorerSaveButton",
+      "action": "*"
+    },
+    {
+      "nameContains": "Delete",
+      "action": "*"
+    },
+    {
+      "nameContains": "Submit",
+      "action": "*"
+    },
+    {
+      "nameContains": "Save",
+      "action": "*"
+    },
+    {
+      "nameContains": "Purchase",
+      "action": "*"
+    }
+  ],
+  "budgets": {
+    "maxStates": 25,
+    "maxActions": 40,
+    "maxDepth": 6,
+    "totalDurationSeconds": 180,
+    "perActionTimeoutSeconds": 15,
+    "stabilizationTimeoutSeconds": 8,
+    "stabilizationQuietPeriodMilliseconds": 400
+  },
+  "allowCloseChildWindowsForBacktrack": false,
+  "allowHover": false,
+  "allowCoordinateFallback": false,
+  "allowDoubleClick": false
+}

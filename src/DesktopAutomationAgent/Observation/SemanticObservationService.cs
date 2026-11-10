@@ -211,16 +211,19 @@ public sealed class SemanticObservationService : ISemanticObservationService
         var persistSnapshot = CloneWithoutRuntimeIds(snapshot);
         string? relativePath = null;
 
-        try
+        if (options.PersistArtifact)
         {
-            relativePath = await WriteArtifactAsync(observationId, persistSnapshot, options.OutputPath)
-                .ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
-                                       or System.Security.SecurityException
-                                       or RepositoryPathException or WorkspaceException or InvalidOperationException)
-        {
-            return Failure(SecretRedactor.Redact(ex.Message), ExitCodes.SuiteOrWorkspace);
+            try
+            {
+                relativePath = await WriteArtifactAsync(observationId, persistSnapshot, options.OutputPath)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                           or System.Security.SecurityException
+                                           or RepositoryPathException or WorkspaceException or InvalidOperationException)
+            {
+                return Failure(SecretRedactor.Redact(ex.Message), ExitCodes.SuiteOrWorkspace);
+            }
         }
 
         _logger.LogInformation(

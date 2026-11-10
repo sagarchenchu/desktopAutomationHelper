@@ -1,0 +1,4 @@
+*
+!.gitignore
+!policies/
+!policies/**
