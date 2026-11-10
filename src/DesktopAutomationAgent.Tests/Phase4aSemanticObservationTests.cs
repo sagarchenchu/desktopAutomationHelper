@@ -587,7 +587,7 @@ public class Phase4aSemanticObservationTests
         Assert.True(parsed.IncludeBounds);
         Assert.Equal(10, parsed.MaxNodes);
         Assert.Contains("observe-app", CommandLine.HelpText, StringComparison.Ordinal);
-        Assert.Contains("Crawling and AI are not implemented", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("AI is not implemented", CommandLine.HelpText, StringComparison.Ordinal);
     }
 
     [Fact]
