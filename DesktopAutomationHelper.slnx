@@ -4,6 +4,7 @@
     <Project Path="src/DesktopAutomationAgent/DesktopAutomationAgent.csproj" />
     <Project Path="src/DesktopAutomationDriver.Tests/DesktopAutomationDriver.Tests.csproj" />
     <Project Path="src/DesktopAutomationDriver/DesktopAutomationDriver.csproj" />
+    <Project Path="src/DesktopAutomationTestApp/DesktopAutomationTestApp.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/DesktopAutomationExplorerFixture/DesktopAutomationExplorerFixture.csproj" />

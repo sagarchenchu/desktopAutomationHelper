@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>DesktopAutomationTestApp</AssemblyName>
+    <RootNamespace>DesktopAutomationTestApp</RootNamespace>
+    <Description>Deterministic WinForms harness for exercising DesktopAutomationDriver actions.</Description>
+    <Version>0.0.0-local</Version>
+    <!-- Allow building Windows-targeted code on non-Windows CI/agents -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+</Project>

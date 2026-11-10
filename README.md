@@ -1797,9 +1797,23 @@ Configuration precedence: `appsettings.json` → `automation/config/agentsetting
 
 ---
 
+## Desktop Automation Test App
+
+WinForms harness with stable AutomationIds for exercising driver actions
+(click, double-click, type-ahead, grid/headers, dropdowns, radios, multi-window).
+
+```cmd
+dotnet run --project src/DesktopAutomationTestApp -c Release
+```
+
+See [`docs/desktop-automation-test-app.md`](docs/desktop-automation-test-app.md).
+Useful as the target app for Assistive / Gate 0 interactive acceptance on Windows.
+
+---
+
 ## Building from Source
 
-> **Note:** Building and running the **driver** requires **Windows** (UIA2/UIA3 are Windows-only APIs).
+> **Note:** Building and running the **driver** and **test app** require **Windows** (WinForms / UIA).
 > The **agent** targets `net8.0` and can be built/tested on non-Windows hosts.
 
 ```cmd
