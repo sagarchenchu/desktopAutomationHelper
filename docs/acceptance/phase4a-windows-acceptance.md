@@ -3,7 +3,7 @@
 Recorded on the self-hosted Windows worker against branch
 `feature/agent-phase-4a-semantic-observation` (draft PR #140; do not merge).
 
-- Final tip SHA: a6e0f92a685cec8aeffb4d1aa297c20c297ae5e8
+- Final tip SHA: e929f28025ba1edc1a612f544afab61efdc8b1f6
 - Product/acceptance code tip: `74a6e40764aec2b96475ae1735f79aba3f461ee4`
 
 ## Targets
