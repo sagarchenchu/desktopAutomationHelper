@@ -7,7 +7,7 @@ If not executed, leave status as `NOT RUN — interactive Windows validation req
 
 | Field | Value |
 |---|---|
-| Tested commit SHA | *(filled after docs commit — see PR tip)* `f1a84006ac0c71d18ee1b6ba02c3bee7858b13f8` base + this results commit |
+| Tested commit SHA | a6cf3fb49570fa270c6101aa9771e2a0d0759b72 |
 | Base SHA (`origin/main`) | `f1a84006ac0c71d18ee1b6ba02c3bee7858b13f8` |
 | Windows version | Windows 10/11 Pro 24H2 (build 26100) |
 | Application type (WPF / WinForms) | WinForms (`DesktopAutomationTestApp` from `cursor/desktop-test-app-harness-b89b` / PR #138) |
