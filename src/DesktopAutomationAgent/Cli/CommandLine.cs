@@ -12,7 +12,8 @@ public enum AgentCommandKind
     ValidateObjectRepository,
     ResolveObject,
     CapturePage,
-    VerifyObjectRepository
+    VerifyObjectRepository,
+    ObserveApp
 }
 
 public sealed class ParsedCommand
@@ -40,6 +41,18 @@ public sealed class ParsedCommand
     public int? MaxChildren { get; init; }
 
     public bool? IncludeOffscreen { get; init; }
+
+    public int? MaxNodes { get; init; }
+
+    public bool IncludeBounds { get; init; }
+
+    public bool IncludeHelpText { get; init; }
+
+    public bool? IncludeFocusState { get; init; }
+
+    public bool? ActionableOnly { get; init; }
+
+    public string? OutputPath { get; init; }
 
     public IReadOnlyList<string> Keys { get; init; } = Array.Empty<string>();
 
@@ -76,6 +89,7 @@ public static class CommandLine
             "resolve-object" => ParseResolveObject(rest),
             "capture-page" => ParseCapturePage(rest),
             "verify-object-repository" => ParseVerifyObjectRepository(rest),
+            "observe-app" => ParseObserveApp(rest),
             _ => new ParsedCommand
             {
                 Kind = AgentCommandKind.Help,
@@ -423,6 +437,164 @@ public static class CommandLine
     private static ParsedCommand ParseVerifyObjectRepository(string[] rest) =>
         ParseRepositoryCommand(AgentCommandKind.VerifyObjectRepository, rest, requireRef: false, requirePage: false);
 
+    private static ParsedCommand ParseObserveApp(string[] rest)
+    {
+        var json = HasFlag(rest, "--json");
+        string? view = null;
+        string? root = null;
+        int? maxDepth = null;
+        int? maxChildren = null;
+        int? maxNodes = null;
+        bool? includeOffscreen = null;
+        var includeBounds = false;
+        var includeHelpText = false;
+        bool? includeFocusState = null;
+        bool? actionableOnly = null;
+        string? outputPath = null;
+        var config = new List<string>();
+        var unknown = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            switch (arg)
+            {
+                case "--view":
+                    if (!TryReadFlagValue(rest, ref i, out var viewValue))
+                        return Error(AgentCommandKind.ObserveApp, json, "--view requires a value.", config);
+                    if (!seen.Add("view"))
+                        return Error(AgentCommandKind.ObserveApp, json, "--view may not be repeated.", config);
+                    view = viewValue;
+                    continue;
+                case "--root":
+                    if (!TryReadFlagValue(rest, ref i, out var rootValue))
+                        return Error(AgentCommandKind.ObserveApp, json, "--root requires a value.", config);
+                    if (!seen.Add("root"))
+                        return Error(AgentCommandKind.ObserveApp, json, "--root may not be repeated.", config);
+                    root = rootValue;
+                    continue;
+                case "--max-depth":
+                    if (!TryReadFlagValue(rest, ref i, out var depthRaw))
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-depth requires a value.", config);
+                    if (!seen.Add("max-depth"))
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-depth may not be repeated.", config);
+                    if (!int.TryParse(depthRaw, out var depth))
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-depth requires an integer.", config);
+                    maxDepth = depth;
+                    continue;
+                case "--max-children":
+                    if (!TryReadFlagValue(rest, ref i, out var childrenRaw))
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-children requires a value.", config);
+                    if (!seen.Add("max-children"))
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-children may not be repeated.", config);
+                    if (!int.TryParse(childrenRaw, out var children))
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-children requires an integer.", config);
+                    maxChildren = children;
+                    continue;
+                case "--max-nodes":
+                    if (!TryReadFlagValue(rest, ref i, out var nodesRaw))
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-nodes requires a value.", config);
+                    if (!seen.Add("max-nodes"))
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-nodes may not be repeated.", config);
+                    if (!int.TryParse(nodesRaw, out var nodes))
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-nodes requires an integer.", config);
+                    maxNodes = nodes;
+                    continue;
+                case "--include-offscreen":
+                    if (!seen.Add("include-offscreen"))
+                        return Error(AgentCommandKind.ObserveApp, json, "--include-offscreen may not be repeated.", config);
+                    includeOffscreen = true;
+                    continue;
+                case "--include-bounds":
+                    if (!seen.Add("include-bounds"))
+                        return Error(AgentCommandKind.ObserveApp, json, "--include-bounds may not be repeated.", config);
+                    includeBounds = true;
+                    continue;
+                case "--include-help-text":
+                    if (!seen.Add("include-help-text"))
+                        return Error(AgentCommandKind.ObserveApp, json, "--include-help-text may not be repeated.", config);
+                    includeHelpText = true;
+                    continue;
+                case "--no-focus-state":
+                    if (!seen.Add("focus-state"))
+                        return Error(AgentCommandKind.ObserveApp, json, "focus-state flags may not be repeated.", config);
+                    includeFocusState = false;
+                    continue;
+                case "--include-structural":
+                    if (!seen.Add("actionable-only"))
+                        return Error(AgentCommandKind.ObserveApp, json, "actionable-only flags may not be repeated.", config);
+                    actionableOnly = false;
+                    continue;
+                case "--output":
+                    if (!TryReadFlagValue(rest, ref i, out var outputValue))
+                        return Error(AgentCommandKind.ObserveApp, json, "--output requires a path.", config);
+                    if (!seen.Add("output"))
+                        return Error(AgentCommandKind.ObserveApp, json, "--output may not be repeated.", config);
+                    outputPath = outputValue;
+                    continue;
+                case "--json":
+                    continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.ObserveApp,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (!string.IsNullOrWhiteSpace(view) && view is not ("control" or "content" or "raw"))
+            return Error(AgentCommandKind.ObserveApp, json, "--view must be one of: control, content, raw.", config);
+
+        if (!string.IsNullOrWhiteSpace(root)
+            && root is not ("activeWindow" or "processWindows" or "desktopChildren"))
+        {
+            return Error(
+                AgentCommandKind.ObserveApp,
+                json,
+                "--root must be one of: activeWindow, processWindows, desktopChildren.",
+                config);
+        }
+
+        if (maxDepth is < 0 or > 20)
+            return Error(AgentCommandKind.ObserveApp, json, "--max-depth must be between 0 and 20.", config);
+
+        if (maxChildren is < 1 or > 1000)
+            return Error(AgentCommandKind.ObserveApp, json, "--max-children must be between 1 and 1000.", config);
+
+        if (maxNodes is < 1 or > 2000)
+            return Error(AgentCommandKind.ObserveApp, json, "--max-nodes must be between 1 and 2000.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.ObserveApp,
+            View = view,
+            Root = root,
+            MaxDepth = maxDepth,
+            MaxChildren = maxChildren,
+            MaxNodes = maxNodes,
+            IncludeOffscreen = includeOffscreen,
+            IncludeBounds = includeBounds,
+            IncludeHelpText = includeHelpText,
+            IncludeFocusState = includeFocusState,
+            ActionableOnly = actionableOnly,
+            OutputPath = outputPath,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
     private static ParsedCommand ParseRepositoryCommand(
         AgentCommandKind kind,
         string[] rest,
@@ -667,6 +839,7 @@ public static class CommandLine
             AgentCommandKind.ResolveObject => "resolve-object",
             AgentCommandKind.CapturePage => "capture-page",
             AgentCommandKind.VerifyObjectRepository => "verify-object-repository",
+            AgentCommandKind.ObserveApp => "observe-app",
             _ => kind.ToString()
         };
 
@@ -738,7 +911,7 @@ public static class CommandLine
 
     public static string HelpText =>
         """
-        Desktop Automation Agent (Phase 3)
+        Desktop Automation Agent (Phase 4A)
 
         Commands:
           init
@@ -775,6 +948,13 @@ public static class CommandLine
               [--max-depth <0-20>] [--max-children <1-1000>] [--include-offscreen] [--json]
               Verify active repository objects via finduia using the same root/depth/children options as capture.
 
+          observe-app [--json]
+              [--view control|content|raw] [--root activeWindow|processWindows|desktopChildren]
+              [--max-depth N] [--max-children N] [--max-nodes N] [--include-offscreen]
+              [--include-bounds] [--include-help-text] [--no-focus-state] [--include-structural]
+              [--output <workspace-relative-or-safe-path>]
+              Observe-only semantic snapshot via dumpuia. Never clicks, types, crawls, or plans.
+
           doctor [--json]
               Run configuration, workspace, driver discovery, status, and catalog checks.
 
@@ -787,9 +967,9 @@ public static class CommandLine
           3 driver unavailable or unsafe discovery
           4 authentication or catalog incompatibility
           5 suite, plan, workspace, object repository or artifact validation failure
-          6 UI operation, timeout, capture/verify or assertion failure
+          6 UI operation, timeout, capture/verify/observe or assertion failure
           7 execution cancelled
 
-        Phase 3 adds object-repository capture, verify, resolve, and plan $objectRef expansion.
+        Phase 4A adds observe-app semantic snapshots. Crawling and AI are not implemented.
         """;
 }

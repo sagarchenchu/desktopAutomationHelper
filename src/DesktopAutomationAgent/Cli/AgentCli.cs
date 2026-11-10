@@ -4,6 +4,7 @@ using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
 using DesktopAutomationAgent.ObjectRepository;
+using DesktopAutomationAgent.Observation;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Readiness;
 using DesktopAutomationAgent.Suites;
@@ -50,7 +51,8 @@ public static class AgentCli
                 or AgentCommandKind.ValidateObjectRepository
                 or AgentCommandKind.ResolveObject
                 or AgentCommandKind.CapturePage
-                or AgentCommandKind.VerifyObjectRepository;
+                or AgentCommandKind.VerifyObjectRepository
+                or AgentCommandKind.ObserveApp;
 
         if (parsed.Error is not null)
         {
@@ -107,6 +109,11 @@ public static class AgentCli
                         cancellationToken)
                     .ConfigureAwait(false),
                 AgentCommandKind.VerifyObjectRepository => await RunVerifyObjectRepositoryAsync(
+                        host.Services,
+                        parsed,
+                        cancellationToken)
+                    .ConfigureAwait(false),
+                AgentCommandKind.ObserveApp => await RunObserveAppAsync(
                         host.Services,
                         parsed,
                         cancellationToken)
@@ -216,6 +223,8 @@ public static class AgentCli
         builder.Services.AddSingleton<ObjectCandidateGenerator>();
         builder.Services.AddSingleton<ObjectCaptureService>();
         builder.Services.AddSingleton<ObjectVerificationService>();
+        builder.Services.AddSingleton<SemanticSnapshotNormalizer>();
+        builder.Services.AddSingleton<ISemanticObservationService, SemanticObservationService>();
 
         return builder.Build();
     }
@@ -573,6 +582,91 @@ public static class AgentCli
             Console.WriteLine($"Ambiguous  : {result.Ambiguous}");
             Console.WriteLine($"Fragile    : {result.Fragile}");
             Console.WriteLine($"Failed     : {result.Failed}");
+            if (!string.IsNullOrWhiteSpace(result.Error))
+                Console.Error.WriteLine(result.Error);
+        }
+
+        return result.ExitCode;
+    }
+
+    private static async Task<int> RunObserveAppAsync(
+        IServiceProvider services,
+        ParsedCommand parsed,
+        CancellationToken cancellationToken)
+    {
+        var service = services.GetRequiredService<ISemanticObservationService>();
+        var result = await service.ObserveAsync(
+            new ObservationOptions
+            {
+                View = parsed.View ?? "control",
+                Root = parsed.Root ?? "activeWindow",
+                MaxDepth = parsed.MaxDepth,
+                MaxChildren = parsed.MaxChildren,
+                MaxNodes = parsed.MaxNodes,
+                IncludeOffscreen = parsed.IncludeOffscreen,
+                IncludeBounds = parsed.IncludeBounds,
+                IncludeHelpText = parsed.IncludeHelpText,
+                IncludeFocusState = parsed.IncludeFocusState ?? true,
+                ActionableOnly = parsed.ActionableOnly ?? true,
+                OutputPath = parsed.OutputPath
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        if (parsed.Json)
+        {
+            // Structured JSON on stdout. Runtime IDs stay in-memory only and are omitted from
+            // machine-readable stdout to match the persisted artifact privacy rules.
+            var jsonPayload = result.Snapshot is null
+                ? result
+                : result with
+                {
+                    Snapshot = new SemanticSnapshot
+                    {
+                        SnapshotSchemaVersion = result.Snapshot.SnapshotSchemaVersion,
+                        SnapshotId = result.Snapshot.SnapshotId,
+                        CapturedAtUtc = result.Snapshot.CapturedAtUtc,
+                        DriverVersion = result.Snapshot.DriverVersion,
+                        SnapshotHash = result.Snapshot.SnapshotHash,
+                        Application = result.Snapshot.Application,
+                        WindowsSession = result.Snapshot.WindowsSession,
+                        Window = result.Snapshot.Window,
+                        Nodes = result.Snapshot.Nodes.Select(static n => new SemanticNode
+                        {
+                            Ref = n.Ref,
+                            ParentRef = n.ParentRef,
+                            Ordinal = n.Ordinal,
+                            Depth = n.Depth,
+                            ControlType = n.ControlType,
+                            Role = n.Role,
+                            Name = n.Name,
+                            AutomationId = n.AutomationId,
+                            ClassName = n.ClassName,
+                            HelpText = n.HelpText,
+                            Enabled = n.Enabled,
+                            Offscreen = n.Offscreen,
+                            Focusable = n.Focusable,
+                            HasKeyboardFocus = n.HasKeyboardFocus,
+                            Patterns = n.Patterns,
+                            Capabilities = n.Capabilities,
+                            Bounds = n.Bounds
+                        }).ToList(),
+                        Truncated = result.Snapshot.Truncated,
+                        Warnings = result.Snapshot.Warnings,
+                        Ordering = result.Snapshot.Ordering
+                    }
+                };
+            Console.WriteLine(JsonSerializer.Serialize(jsonPayload, JsonOutputOptions));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — observe-app");
+            Console.WriteLine($"Success         : {result.Success}");
+            Console.WriteLine($"Observation ID  : {result.ObservationId}");
+            Console.WriteLine($"Nodes           : {result.NodeCount}");
+            Console.WriteLine($"Truncated       : {result.Truncated}");
+            Console.WriteLine($"Snapshot hash   : {result.SnapshotHash}");
+            if (!string.IsNullOrWhiteSpace(result.SnapshotFilePath))
+                Console.WriteLine($"Artifact        : {result.SnapshotFilePath}");
             if (!string.IsNullOrWhiteSpace(result.Error))
                 Console.Error.WriteLine(result.Error);
         }

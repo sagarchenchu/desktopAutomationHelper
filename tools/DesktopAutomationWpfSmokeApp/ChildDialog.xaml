@@ -1,0 +1,33 @@
+<Window x:Class="DesktopAutomationWpfSmokeApp.ChildDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DA WPF Child Dialog"
+        AutomationProperties.AutomationId="WpfChildDialog"
+        Width="360"
+        Height="180"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False">
+  <DockPanel Margin="16">
+    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right">
+      <Button Name="DialogOkButton"
+              AutomationProperties.AutomationId="WpfDialogOkButton"
+              Content="OK"
+              Width="80"
+              Margin="0,0,8,0"
+              IsDefault="True"
+              Click="Ok_Click" />
+      <Button Name="DialogCancelButton"
+              AutomationProperties.AutomationId="WpfDialogCancelButton"
+              Content="Cancel"
+              Width="80"
+              IsCancel="True"
+              Click="Cancel_Click" />
+    </StackPanel>
+    <TextBlock Name="DialogMessageLabel"
+               AutomationProperties.AutomationId="WpfDialogMessageLabel"
+               Text="Confirm the WPF sample action?"
+               VerticalAlignment="Center"
+               TextWrapping="Wrap" />
+  </DockPanel>
+</Window>

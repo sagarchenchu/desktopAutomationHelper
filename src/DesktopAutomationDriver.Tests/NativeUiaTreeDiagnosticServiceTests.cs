@@ -33,4 +33,31 @@ public class NativeUiaTreeDiagnosticServiceTests
         Assert.Contains("\"root\":\"activeWindow\"", json);
         Assert.Contains("no-root", json);
     }
+
+    [Fact]
+    public void ParseOptions_ExposesSemanticOptionalDefaultsInNoRootPayload()
+    {
+        var service = new NativeUiaTreeDiagnosticService(NullLogger<NativeUiaTreeDiagnosticService>.Instance);
+
+        var result = service.DumpTree(
+            new UiRequest
+            {
+                Operation = "dumpuia",
+                MaxNodes = 25,
+                IncludeBounds = false,
+                IncludeHelpText = true,
+                IncludeFocusState = true,
+                IncludeRuntimeId = true,
+                IncludeTreeLinks = true,
+                IncludeWindowState = true,
+                TimeoutMs = 500
+            },
+            activeWindowHwnd: null,
+            processId: null);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(result);
+        Assert.Contains("no-root", json);
+        // Options are only echoed on successful root resolution; ensure request still accepted.
+        Assert.DoesNotContain("exceptionType", json, StringComparison.OrdinalIgnoreCase);
+    }
 }

@@ -1,0 +1,83 @@
+<Window x:Class="DesktopAutomationWpfSmokeApp.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DA WPF Smoke"
+        AutomationProperties.AutomationId="WpfMainWindow"
+        Width="640"
+        Height="480"
+        WindowStartupLocation="CenterScreen">
+  <DockPanel Margin="12">
+    <Menu DockPanel.Dock="Top" Name="MainMenu" AutomationProperties.AutomationId="WpfMainMenu">
+      <MenuItem Header="_File" Name="FileMenu" AutomationProperties.AutomationId="WpfFileMenu">
+        <MenuItem Header="Open Dialog"
+                  Name="OpenDialogMenuItem"
+                  AutomationProperties.AutomationId="WpfOpenDialogMenuItem"
+                  Click="OpenDialog_Click" />
+      </MenuItem>
+    </Menu>
+
+    <StackPanel>
+      <TextBlock Text="Phase 4A WPF observation smoke"
+                 Margin="0,8,0,12"
+                 FontSize="16"
+                 FontWeight="SemiBold" />
+
+      <Button Name="PrimaryButton"
+              AutomationProperties.AutomationId="WpfPrimaryButton"
+              Content="Primary"
+              Width="120"
+              HorizontalAlignment="Left"
+              Margin="0,0,0,8"
+              Click="PrimaryButton_Click" />
+
+      <Button Name="DisabledButton"
+              AutomationProperties.AutomationId="WpfDisabledButton"
+              Content="Disabled"
+              Width="120"
+              HorizontalAlignment="Left"
+              Margin="0,0,0,8"
+              IsEnabled="False" />
+
+      <TextBox Name="NameEdit"
+               AutomationProperties.AutomationId="WpfNameEdit"
+               Width="280"
+               HorizontalAlignment="Left"
+               Margin="0,0,0,8"
+               Text="hello-wpf" />
+
+      <ComboBox Name="CountryCombo"
+                AutomationProperties.AutomationId="WpfCountryCombo"
+                Width="200"
+                HorizontalAlignment="Left"
+                Margin="0,0,0,8"
+                SelectedIndex="0">
+        <ComboBoxItem Content="Canada" />
+        <ComboBoxItem Content="USA" />
+        <ComboBoxItem Content="Mexico" />
+      </ComboBox>
+
+      <ListBox Name="SampleList"
+               AutomationProperties.AutomationId="WpfSampleList"
+               Height="80"
+               Width="280"
+               HorizontalAlignment="Left"
+               Margin="0,0,0,8">
+        <ListBoxItem Content="Alpha" />
+        <ListBoxItem Content="Beta" />
+        <ListBoxItem Content="Gamma" />
+      </ListBox>
+
+      <Button Name="OpenDialogButton"
+              AutomationProperties.AutomationId="WpfOpenDialogButton"
+              Content="Open Dialog"
+              Width="120"
+              HorizontalAlignment="Left"
+              Click="OpenDialog_Click" />
+
+      <TextBlock Name="StatusLabel"
+                 AutomationProperties.AutomationId="WpfStatusLabel"
+                 Margin="0,12,0,0"
+                 Text="Status: Ready" />
+    </StackPanel>
+  </DockPanel>
+</Window>
