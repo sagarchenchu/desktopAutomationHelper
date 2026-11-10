@@ -491,4 +491,40 @@ public class UiRequest
 
     /// <summary>When true, include a human-readable element path in dumpuia/finduia output.</summary>
     public bool? IncludePath { get; set; }
+
+    /// <summary>
+    /// Soft cap on collected dumpuia nodes. When reached, results are truncated with warnings
+    /// instead of failing. Absolute hard cap remains enforced separately.
+    /// </summary>
+    public int? MaxNodes { get; set; }
+
+    /// <summary>
+    /// When false, omit boundingRectangle from dumpuia/finduia element records.
+    /// Defaults to true for backward compatibility.
+    /// </summary>
+    public bool? IncludeBounds { get; set; }
+
+    /// <summary>When true, include HelpText on dumpuia/finduia element records.</summary>
+    public bool? IncludeHelpText { get; set; }
+
+    /// <summary>
+    /// When true, include isKeyboardFocusable and hasKeyboardFocus on dumpuia/finduia records.
+    /// </summary>
+    public bool? IncludeFocusState { get; set; }
+
+    /// <summary>
+    /// When true, include ephemeral runtimeId on dumpuia/finduia records for in-session resolution.
+    /// Runtime IDs must not be persisted as approved knowledge.
+    /// </summary>
+    public bool? IncludeRuntimeId { get; set; }
+
+    /// <summary>
+    /// When true, include nodeIndex/parentNodeIndex/ordinal tree-link fields on dumpuia nodes.
+    /// </summary>
+    public bool? IncludeTreeLinks { get; set; }
+
+    /// <summary>
+    /// When true, include window-pattern modal/state diagnostics on window-like nodes and roots.
+    /// </summary>
+    public bool? IncludeWindowState { get; set; }
 }

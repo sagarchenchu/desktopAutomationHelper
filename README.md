@@ -1765,10 +1765,11 @@ It never references driver internals (no project reference, no FlaUI).
 | Phase 2 — deterministic plan runner | Complete |
 | Phase 3 — object repository | Complete |
 | Assistive BDD recording (candidates) | Complete — interactive Windows acceptance recorded (`docs/assistive-windows-acceptance-results.md`, 14/14 PASS) |
-| Phase 3.5 — post-merge hardening | This work (`docs/phase3-5-post-merge-hardening.md`) |
+| Phase 3.5 — post-merge hardening | Complete (`docs/phase3-5-post-merge-hardening.md`) |
+| Phase 4A — semantic desktop observation | This work (`docs/phase4a-semantic-observation.md`) — observe-only; crawling not implemented |
 | Phase 4 — deterministic BDD compiler | Not started |
 
-The agent does **not** currently read Jira, understand BDD, run/schedule suites, repair failures, or invoke AI.
+The agent does **not** currently read Jira, understand BDD, crawl the UI, run/schedule suites, repair failures, or invoke AI.
 
 ```cmd
 dotnet run --project src/DesktopAutomationAgent -- init
@@ -1781,6 +1782,7 @@ dotnet run --project src/DesktopAutomationAgent -- validate-object-repository --
 dotnet run --project src/DesktopAutomationAgent -- resolve-object --file automation/object-repository/repository.json --ref page.element
 dotnet run --project src/DesktopAutomationAgent -- capture-page --file automation/object-repository/repository.json --page login --name "Login"
 dotnet run --project src/DesktopAutomationAgent -- verify-object-repository --file automation/object-repository/repository.json
+dotnet run --project src/DesktopAutomationAgent -- observe-app --json
 dotnet run --project src/DesktopAutomationAgent -- doctor
 dotnet run --project src/DesktopAutomationAgent -- doctor --json
 ```
@@ -1789,8 +1791,9 @@ Configuration precedence: `appsettings.json` → `automation/config/agentsetting
 → `DA_AGENT__*` environment variables → command-line. See
 [`docs/phase1-agent-foundation.md`](docs/phase1-agent-foundation.md),
 [`docs/phase2-deterministic-runner.md`](docs/phase2-deterministic-runner.md),
-[`docs/phase3-object-repository.md`](docs/phase3-object-repository.md), and
-[`docs/phase3-5-post-merge-hardening.md`](docs/phase3-5-post-merge-hardening.md).
+[`docs/phase3-object-repository.md`](docs/phase3-object-repository.md),
+[`docs/phase3-5-post-merge-hardening.md`](docs/phase3-5-post-merge-hardening.md), and
+[`docs/phase4a-semantic-observation.md`](docs/phase4a-semantic-observation.md).
 
 ---
 
@@ -1854,16 +1857,18 @@ DesktopAutomationDriver (Windows process)
 DesktopAutomationAgent (separate process; HTTP client only)
   Deterministic plan runner (Phase 2) — executes already-compiled JSON plans
   Object repository (Phase 3) — approved Page Objects under automation/object-repository
+  Semantic observation (Phase 4A) — observe-app snapshots under automation/observations/
   Suite manifests — Jira-key lists for future suite orchestration (validation only today)
   Schemas under automation/schemas/
   Run artifacts under automation/runs/
-  Does not read Jira, compile BDD, schedule suites, self-heal, or call AI
+  Does not read Jira, compile BDD, crawl, schedule suites, self-heal, or call AI
 
 Artifact distinctions
   Approved Page Objects     automation/object-repository (manual promotion)
   Assistive candidates      assistive-artifacts/ (manual review required)
   Phase 2 execution plans   automation/plans/*.plan.json
   Assistive bdd-action-map  capture sidecar; not a compiled plan
+  Semantic snapshots        automation/observations/ (observe-only; ephemeral refs)
   Future BDD compiler       Phase 4 — not implemented
 ```
 

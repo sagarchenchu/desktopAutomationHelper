@@ -1,0 +1,110 @@
+{
+  "snapshotSchemaVersion": 1,
+  "snapshotId": "20260101T000000000Z-example01",
+  "capturedAtUtc": "2026-01-01T00:00:00.0000000+00:00",
+  "driverVersion": "1.0.0-example",
+  "snapshotHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "application": {
+    "processId": 1001,
+    "processName": "SampleApp"
+  },
+  "windowsSession": {
+    "sessionId": 1
+  },
+  "window": {
+    "ref": "n0",
+    "hwnd": 123456,
+    "title": "Sample Window",
+    "className": "SampleWindowClass",
+    "processId": 1001,
+    "isModal": false
+  },
+  "nodes": [
+    {
+      "ref": "n0",
+      "ordinal": 0,
+      "depth": 0,
+      "controlType": "Window",
+      "role": "Window",
+      "name": "Sample Window",
+      "automationId": "MainWindow",
+      "className": "SampleWindowClass",
+      "enabled": true,
+      "offscreen": false,
+      "focusable": true,
+      "hasKeyboardFocus": false,
+      "patterns": [
+        "Window"
+      ],
+      "capabilities": [
+        "window"
+      ]
+    },
+    {
+      "ref": "n1",
+      "parentRef": "n0",
+      "ordinal": 0,
+      "depth": 1,
+      "controlType": "Button",
+      "role": "Button",
+      "name": "Submit",
+      "automationId": "submit",
+      "enabled": true,
+      "offscreen": false,
+      "focusable": true,
+      "hasKeyboardFocus": false,
+      "patterns": [
+        "Invoke"
+      ],
+      "capabilities": [
+        "invoke"
+      ]
+    },
+    {
+      "ref": "n2",
+      "parentRef": "n0",
+      "ordinal": 1,
+      "depth": 1,
+      "controlType": "Edit",
+      "role": "Edit",
+      "name": "User name",
+      "automationId": "username",
+      "enabled": true,
+      "offscreen": false,
+      "focusable": true,
+      "hasKeyboardFocus": false,
+      "patterns": [
+        "Value"
+      ],
+      "capabilities": [
+        "readValue",
+        "setValue"
+      ]
+    },
+    {
+      "ref": "n3",
+      "parentRef": "n0",
+      "ordinal": 2,
+      "depth": 1,
+      "controlType": "Button",
+      "role": "Button",
+      "name": "Disabled Action",
+      "automationId": "disabled-action",
+      "enabled": false,
+      "offscreen": false,
+      "focusable": false,
+      "hasKeyboardFocus": false,
+      "patterns": [
+        "Invoke"
+      ],
+      "capabilities": [
+        "invoke"
+      ]
+    }
+  ],
+  "truncated": false,
+  "warnings": [],
+  "ordering": {
+    "rule": "depth-first pre-order; siblings by dumpuia ordinal then automationId, name, controlType"
+  }
+}

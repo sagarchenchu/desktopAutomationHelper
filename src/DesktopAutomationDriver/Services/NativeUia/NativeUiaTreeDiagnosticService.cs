@@ -18,6 +18,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
     private const int MaxProcessWindows = 20;
     private const int MaxDesktopChildren = 200;
     private const int DeadlineSafetyMs = 50;
+    private const int MaxDiagnosticStringLength = 256;
 
     private static readonly int[] MenuLikeControlTypeIds =
     [
@@ -37,7 +38,11 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         UIA_PatternIds.UIA_ExpandCollapsePatternId,
         UIA_PatternIds.UIA_SelectionItemPatternId,
         UIA_PatternIds.UIA_TogglePatternId,
-        UIA_PatternIds.UIA_ValuePatternId
+        UIA_PatternIds.UIA_ValuePatternId,
+        UIA_PatternIds.UIA_SelectionPatternId,
+        UIA_PatternIds.UIA_ScrollPatternId,
+        UIA_PatternIds.UIA_GridPatternId,
+        UIA_PatternIds.UIA_WindowPatternId
     ];
 
     private readonly NativeUiaAutomation _uia;
@@ -70,6 +75,8 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                 var filter = BuildDumpFilter(options);
                 var collected = new List<object>();
                 var totalVisited = 0;
+                var truncated = new StrongBox<bool>(false);
+                var truncationWarnings = new List<string>();
                 var roots = ResolveRoots(options, activeWindowHwnd, processId, deadlineUtc, cancellationToken);
 
                 if (roots.Count == 0)
@@ -97,22 +104,33 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                             deadlineUtc,
                             cancellationToken,
                             collected,
+                            truncated,
+                            truncationWarnings,
+                            parentNodeIndex: null,
+                            ordinal: 0,
                             ref totalVisited,
                             depth: 0,
                             pathSegments: options.IncludePath ? [rootLabel] : null);
+
+                        if (truncated.Value)
+                            break;
 
                         if (IsDeadlineNear(deadlineUtc))
                         {
                             timedOut.Value = true;
                             partialReason.Value = "timeout";
+                            truncated.Value = true;
+                            truncationWarnings.Add("Traversal stopped early due to timeout.");
                             break;
                         }
                     }
                 }
-                catch (TimeoutException)
+                catch (TimeoutException ex)
                 {
                     timedOut.Value = true;
                     partialReason.Value = "timeout";
+                    truncated.Value = true;
+                    truncationWarnings.Add(ex.Message);
                 }
 
                 nodes.AddRange(collected);
@@ -126,12 +144,21 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                     ["root"] = options.RootMode,
                     ["maxDepth"] = options.MaxDepth,
                     ["maxChildren"] = options.MaxChildrenPerNode,
+                    ["maxNodes"] = options.MaxNodes,
                     ["includeOffscreen"] = options.IncludeOffscreen,
+                    ["includeBounds"] = options.IncludeBounds,
+                    ["includeHelpText"] = options.IncludeHelpText,
+                    ["includeFocusState"] = options.IncludeFocusState,
+                    ["includeRuntimeId"] = options.IncludeRuntimeId,
+                    ["includeTreeLinks"] = options.IncludeTreeLinks,
+                    ["includeWindowState"] = options.IncludeWindowState,
                     ["filter"] = filter,
                     ["totalVisited"] = totalVisited,
                     ["matchCount"] = collected.Count,
+                    ["truncated"] = truncated.Value,
+                    ["truncationWarnings"] = truncationWarnings.Count > 0 ? truncationWarnings : null,
                     ["nodes"] = collected,
-                    ["partialResults"] = timedOut.Value ? collected : null,
+                    ["partialResults"] = timedOut.Value || truncated.Value ? collected : null,
                     ["menuLikeCandidates"] = menuLikeCandidates.Count > 0 ? menuLikeCandidates : null
                 };
             });
@@ -296,6 +323,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             EnsureWithinDeadline(deadlineUtc, cancellationToken, "start");
 
             var rootDiagnostics = BuildRootDiagnostics(
+                options,
                 activeWindowHwnd,
                 processId,
                 deadlineUtc,
@@ -369,6 +397,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
     };
 
     private object BuildRootDiagnostics(
+        NativeUiaTreeDiagnosticOptions options,
         IntPtr? activeWindowHwnd,
         int? processId,
         DateTime deadlineUtc,
@@ -383,7 +412,16 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         {
             activeWindowElement = _uia.FromHandle(activeWindowHwnd.Value);
             if (activeWindowElement != null)
-                activeWindowSnapshot = BuildElementRecord(activeWindowElement, depth: 0, path: "activeWindow", includePath: true);
+            {
+                activeWindowSnapshot = BuildElementRecord(
+                    activeWindowElement,
+                    depth: 0,
+                    path: "activeWindow",
+                    options,
+                    nodeIndex: null,
+                    parentNodeIndex: null,
+                    ordinal: null);
+            }
         }
 
         var processWindows = new List<object>();
@@ -392,7 +430,30 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             foreach (var window in FindTopLevelWindowsForProcess(processId.Value, deadlineUtc, cancellationToken))
             {
                 EnsureWithinDeadline(deadlineUtc, cancellationToken, "process-window-snapshot");
-                processWindows.Add(BuildElementRecord(window, depth: 0, path: "processWindow", includePath: true));
+                processWindows.Add(BuildElementRecord(
+                    window,
+                    depth: 0,
+                    path: "processWindow",
+                    options,
+                    nodeIndex: null,
+                    parentNodeIndex: null,
+                    ordinal: null));
+            }
+        }
+
+        string? processName = null;
+        int? windowsSessionId = null;
+        if (processId is int pid)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                processName = BoundString(process.ProcessName);
+                windowsSessionId = process.SessionId;
+            }
+            catch
+            {
+                // Process may have exited; leave identity fields null.
             }
         }
 
@@ -401,6 +462,8 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             activeWindowHwnd = activeWindowHwnd is > 0 ? activeWindowHwnd.Value.ToInt64() : (long?)null,
             activeWindow = activeWindowSnapshot,
             processId,
+            processName,
+            windowsSessionId,
             processWindowCount = processWindows.Count,
             processWindows
         };
@@ -522,6 +585,10 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         DateTime deadlineUtc,
         CancellationToken cancellationToken,
         List<object> collected,
+        StrongBox<bool> truncated,
+        List<string> truncationWarnings,
+        int? parentNodeIndex,
+        int ordinal,
         ref int totalVisited,
         int depth,
         List<string>? pathSegments)
@@ -532,25 +599,40 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         cancellationToken.ThrowIfCancellationRequested();
         totalVisited++;
 
+        int? currentNodeIndex = null;
         if (ShouldIncludeElement(element, options))
         {
+            var provisionalIndex = collected.Count;
             var record = BuildElementRecord(
                 element,
                 depth,
                 BuildPath(pathSegments, segmentLabel, options.IncludePath),
-                options.IncludePath);
+                options,
+                nodeIndex: provisionalIndex,
+                parentNodeIndex: parentNodeIndex,
+                ordinal: ordinal);
 
             if (filter.Matches(record))
             {
+                if (collected.Count >= options.MaxNodes || collected.Count >= MaxTotalNodes)
+                {
+                    truncated.Value = true;
+                    truncationWarnings.Add(
+                        collected.Count >= MaxTotalNodes
+                            ? "dumpuia reached absolute max node cap."
+                            : "dumpuia reached requested maxNodes cap.");
+                    return;
+                }
+
                 collected.Add(record);
-                if (collected.Count >= MaxTotalNodes)
-                    throw new TimeoutException("dumpuia reached max node cap.");
+                currentNodeIndex = provisionalIndex;
             }
         }
 
-        if (depth >= options.MaxDepth)
+        if (depth >= options.MaxDepth || truncated.Value)
             return;
 
+        var childOrdinal = 0;
         foreach (var (child, childLabel, childPath) in GetChildren(element, options, pathSegments, segmentLabel, depth + 1, deadlineUtc, cancellationToken))
         {
             CollectTreeNodes(
@@ -561,9 +643,18 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                 deadlineUtc,
                 cancellationToken,
                 collected,
+                truncated,
+                truncationWarnings,
+                parentNodeIndex: currentNodeIndex,
+                ordinal: childOrdinal,
                 ref totalVisited,
                 depth + 1,
                 childPath);
+
+            childOrdinal++;
+
+            if (truncated.Value)
+                return;
 
             if (IsDeadlineNear(deadlineUtc))
                 throw new TimeoutException("dumpuia traversal exceeded timeout.");
@@ -597,7 +688,10 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                     element,
                     depth,
                     BuildPath(pathSegments, segmentLabel, options.IncludePath),
-                    options.IncludePath));
+                    options,
+                    nodeIndex: matches.Count,
+                    parentNodeIndex: null,
+                    ordinal: null));
             }
 
             if (depth <= 3 && IsMenuLikeControlType(_uia.GetIntProperty(element, UIA_PropertyIds.UIA_ControlTypePropertyId)))
@@ -606,7 +700,10 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                     element,
                     depth,
                     BuildPath(pathSegments, segmentLabel, options.IncludePath),
-                    options.IncludePath));
+                    options,
+                    nodeIndex: null,
+                    parentNodeIndex: null,
+                    ordinal: null));
             }
         }
 
@@ -689,7 +786,10 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                     element,
                     depth,
                     BuildPath(pathSegments, segmentLabel, options.IncludePath),
-                    options.IncludePath));
+                    options,
+                    nodeIndex: null,
+                    parentNodeIndex: null,
+                    ordinal: null));
             }
         }
 
@@ -761,30 +861,66 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         IUIAutomationElement element,
         int depth,
         string? path,
-        bool includePath)
+        NativeUiaTreeDiagnosticOptions options,
+        int? nodeIndex,
+        int? parentNodeIndex,
+        int? ordinal)
     {
         var controlTypeId = _uia.GetIntProperty(element, UIA_PropertyIds.UIA_ControlTypePropertyId);
         var snapshot = _uia.CreateSnapshot(element);
+        var patterns = ReadCheapPatterns(element);
 
         var record = new Dictionary<string, object?>
         {
             ["depth"] = depth,
-            ["name"] = snapshot.Name,
-            ["automationId"] = snapshot.AutomationId,
+            ["name"] = BoundString(snapshot.Name),
+            ["automationId"] = BoundString(snapshot.AutomationId),
             ["controlTypeId"] = controlTypeId,
-            ["controlType"] = snapshot.ControlType,
-            ["className"] = snapshot.ClassName,
-            ["frameworkId"] = snapshot.FrameworkId,
+            ["controlType"] = BoundString(snapshot.ControlType),
+            ["className"] = BoundString(snapshot.ClassName),
+            ["frameworkId"] = BoundString(snapshot.FrameworkId),
             ["processId"] = snapshot.ProcessId,
             ["nativeWindowHandle"] = snapshot.NativeWindowHandle,
             ["isEnabled"] = snapshot.IsEnabled,
             ["isOffscreen"] = snapshot.IsOffscreen,
-            ["boundingRectangle"] = NativeUiaDiagnostics.ToRectangleObject(snapshot.BoundingRectangle),
-            ["supportedPatterns"] = ReadCheapPatterns(element)
+            ["supportedPatterns"] = patterns,
+            ["capabilities"] = MapCapabilities(patterns)
         };
 
-        if (includePath)
+        if (options.IncludeBounds)
+            record["boundingRectangle"] = NativeUiaDiagnostics.ToRectangleObject(snapshot.BoundingRectangle);
+
+        if (options.IncludePath)
             record["path"] = path ?? string.Empty;
+
+        if (options.IncludeHelpText)
+        {
+            record["helpText"] = BoundString(
+                _uia.GetStringProperty(element, UIA_PropertyIds.UIA_HelpTextPropertyId));
+        }
+
+        if (options.IncludeFocusState)
+        {
+            record["isKeyboardFocusable"] = _uia.GetBoolProperty(
+                element,
+                UIA_PropertyIds.UIA_IsKeyboardFocusablePropertyId);
+            record["hasKeyboardFocus"] = _uia.GetBoolProperty(
+                element,
+                UIA_PropertyIds.UIA_HasKeyboardFocusPropertyId);
+        }
+
+        if (options.IncludeRuntimeId)
+            record["runtimeId"] = BoundString(snapshot.RuntimeId);
+
+        if (options.IncludeTreeLinks)
+        {
+            record["nodeIndex"] = nodeIndex;
+            record["parentNodeIndex"] = parentNodeIndex;
+            record["ordinal"] = ordinal;
+        }
+
+        if (options.IncludeWindowState && controlTypeId == WindowControlTypeId)
+            record["windowState"] = ReadWindowState(element);
 
         return record;
     }
@@ -809,6 +945,69 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         return patterns;
     }
 
+    private object? ReadWindowState(IUIAutomationElement element)
+    {
+        try
+        {
+            if (element.GetCurrentPattern(UIA_PatternIds.UIA_WindowPatternId) is not IUIAutomationWindowPattern window)
+                return null;
+
+            return new Dictionary<string, object?>
+            {
+                ["isModal"] = window.CurrentIsModal != 0,
+                ["canMaximize"] = window.CurrentCanMaximize != 0,
+                ["canMinimize"] = window.CurrentCanMinimize != 0,
+                ["windowInteractionState"] = window.CurrentWindowInteractionState.ToString(),
+                ["windowVisualState"] = window.CurrentWindowVisualState.ToString()
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static List<string> MapCapabilities(IReadOnlyList<string> patterns)
+    {
+        var capabilities = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var pattern in patterns)
+        {
+            switch (pattern)
+            {
+                case "Invoke":
+                    capabilities.Add("invoke");
+                    break;
+                case "ExpandCollapse":
+                    capabilities.Add("expandCollapse");
+                    break;
+                case "SelectionItem":
+                    capabilities.Add("selectItem");
+                    break;
+                case "Selection":
+                    capabilities.Add("selectionContainer");
+                    break;
+                case "Toggle":
+                    capabilities.Add("toggle");
+                    break;
+                case "Value":
+                    capabilities.Add("setValue");
+                    capabilities.Add("readValue");
+                    break;
+                case "Scroll":
+                    capabilities.Add("scroll");
+                    break;
+                case "Grid":
+                    capabilities.Add("grid");
+                    break;
+                case "Window":
+                    capabilities.Add("window");
+                    break;
+            }
+        }
+
+        return capabilities.ToList();
+    }
+
     private static string PatternName(int patternId) => patternId switch
     {
         UIA_PatternIds.UIA_InvokePatternId => "Invoke",
@@ -816,8 +1015,22 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         UIA_PatternIds.UIA_SelectionItemPatternId => "SelectionItem",
         UIA_PatternIds.UIA_TogglePatternId => "Toggle",
         UIA_PatternIds.UIA_ValuePatternId => "Value",
+        UIA_PatternIds.UIA_SelectionPatternId => "Selection",
+        UIA_PatternIds.UIA_ScrollPatternId => "Scroll",
+        UIA_PatternIds.UIA_GridPatternId => "Grid",
+        UIA_PatternIds.UIA_WindowPatternId => "Window",
         _ => $"Pattern({patternId})"
     };
+
+    private static string BoundString(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return string.Empty;
+
+        return value.Length <= MaxDiagnosticStringLength
+            ? value
+            : value[..MaxDiagnosticStringLength];
+    }
 
     private bool ElementMatchesLocator(
         IUIAutomationElement element,
@@ -975,8 +1188,16 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             RootMode = NormalizeRootMode(root),
             MaxDepth = Math.Clamp(request.MaxDepth ?? request.Depth ?? DefaultMaxDepth, 0, 20),
             MaxChildrenPerNode = Math.Clamp(request.MaxChildren ?? request.Limit ?? DefaultMaxChildrenPerNode, 1, 1000),
+            // Unspecified MaxNodes keeps the historical hard cap so capture-page stays compatible.
+            MaxNodes = Math.Clamp(request.MaxNodes ?? MaxTotalNodes, 1, MaxTotalNodes),
             IncludeOffscreen = request.IncludeOffscreen ?? false,
             IncludePath = request.IncludePath ?? request.IncludeIdentifiers ?? true,
+            IncludeBounds = request.IncludeBounds ?? true,
+            IncludeHelpText = request.IncludeHelpText ?? false,
+            IncludeFocusState = request.IncludeFocusState ?? false,
+            IncludeRuntimeId = request.IncludeRuntimeId ?? false,
+            IncludeTreeLinks = request.IncludeTreeLinks ?? false,
+            IncludeWindowState = request.IncludeWindowState ?? false,
             NameContains = request.NameContains ?? request.BestMatch,
             ControlType = request.Locator?.ControlType,
             ClassName = request.ClassName ?? request.Locator?.ClassName,
@@ -1079,8 +1300,15 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         public string RootMode { get; init; } = "activeWindow";
         public int MaxDepth { get; init; } = DefaultMaxDepth;
         public int MaxChildrenPerNode { get; init; } = DefaultMaxChildrenPerNode;
+        public int MaxNodes { get; init; } = MaxTotalNodes;
         public bool IncludeOffscreen { get; init; }
         public bool IncludePath { get; init; } = true;
+        public bool IncludeBounds { get; init; } = true;
+        public bool IncludeHelpText { get; init; }
+        public bool IncludeFocusState { get; init; }
+        public bool IncludeRuntimeId { get; init; }
+        public bool IncludeTreeLinks { get; init; }
+        public bool IncludeWindowState { get; init; }
         public string? NameContains { get; init; }
         public string? ControlType { get; init; }
         public string? ClassName { get; init; }

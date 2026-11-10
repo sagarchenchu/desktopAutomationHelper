@@ -192,6 +192,7 @@ public sealed class WorkspaceManager : IWorkspaceManager
         "object-repository/pages",
         "object-repository/candidates",
         "object-repository/captures",
+        "observations",
         "runs"
     ];
 
@@ -210,6 +211,8 @@ public sealed class WorkspaceManager : IWorkspaceManager
             ["object-repository/.gitignore"] = ObjectRepositoryGitIgnore,
             ["schemas/object-repository.schema.json"] = ObjectRepositorySchema,
             ["schemas/page-object.schema.json"] = PageObjectSchema,
+            ["schemas/semantic-snapshot.schema.json"] = SemanticSnapshotSchema,
+            ["observations/.gitignore"] = ObservationsGitIgnore,
             ["runs/.gitignore"] = RunsGitIgnore
         };
 
@@ -912,6 +915,244 @@ public sealed class WorkspaceManager : IWorkspaceManager
                 "metadata": {
                   "type": "object",
                   "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+        """;
+
+    private const string ObservationsGitIgnore =
+        """
+        *
+        !.gitignore
+        !examples/
+        !examples/**
+        """;
+
+    private const string SemanticSnapshotSchema =
+        """
+        {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "$id": "https://local/desktop-automation-agent/semantic-snapshot.schema.json",
+          "title": "DesktopAutomationAgent Semantic Snapshot",
+          "$comment": "Phase 4A observe-only contract. Ephemeral refs are snapshot-scoped. Editable values are omitted by default. Runtime IDs must not be persisted as approved knowledge.",
+          "type": "object",
+          "required": [
+            "snapshotSchemaVersion",
+            "snapshotId",
+            "capturedAtUtc",
+            "driverVersion",
+            "snapshotHash",
+            "application",
+            "windowsSession",
+            "nodes",
+            "truncated",
+            "warnings",
+            "ordering"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "$schema": {
+              "type": "string"
+            },
+            "snapshotSchemaVersion": {
+              "const": 1
+            },
+            "snapshotId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "capturedAtUtc": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "driverVersion": {
+              "type": "string"
+            },
+            "snapshotHash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "application": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "processId": {
+                  "type": ["integer", "null"]
+                },
+                "processName": {
+                  "type": ["string", "null"],
+                  "maxLength": 256
+                }
+              }
+            },
+            "windowsSession": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sessionId": {
+                  "type": ["integer", "null"]
+                }
+              }
+            },
+            "window": {
+              "type": ["object", "null"],
+              "additionalProperties": false,
+              "properties": {
+                "ref": {
+                  "type": ["string", "null"]
+                },
+                "hwnd": {
+                  "type": ["integer", "null"]
+                },
+                "title": {
+                  "type": ["string", "null"],
+                  "maxLength": 256
+                },
+                "className": {
+                  "type": ["string", "null"],
+                  "maxLength": 256
+                },
+                "processId": {
+                  "type": ["integer", "null"]
+                },
+                "isModal": {
+                  "type": ["boolean", "null"]
+                },
+                "bounds": {
+                  "$ref": "#/$defs/bounds"
+                }
+              }
+            },
+            "nodes": {
+              "type": "array",
+              "maxItems": 2000,
+              "items": {
+                "$ref": "#/$defs/node"
+              }
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "warnings": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 512
+              }
+            },
+            "ordering": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["rule"],
+              "properties": {
+                "rule": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "$defs": {
+            "bounds": {
+              "type": ["object", "null"],
+              "additionalProperties": false,
+              "properties": {
+                "x": { "type": ["number", "null"] },
+                "y": { "type": ["number", "null"] },
+                "width": { "type": ["number", "null"] },
+                "height": { "type": ["number", "null"] },
+                "left": { "type": ["number", "null"] },
+                "top": { "type": ["number", "null"] },
+                "right": { "type": ["number", "null"] },
+                "bottom": { "type": ["number", "null"] }
+              }
+            },
+            "node": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "ref",
+                "ordinal",
+                "depth",
+                "controlType",
+                "role",
+                "enabled",
+                "offscreen",
+                "patterns",
+                "capabilities"
+              ],
+              "properties": {
+                "ref": {
+                  "type": "string",
+                  "pattern": "^n[0-9]+$"
+                },
+                "parentRef": {
+                  "type": ["string", "null"],
+                  "pattern": "^n[0-9]+$"
+                },
+                "ordinal": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "depth": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "controlType": {
+                  "type": "string",
+                  "maxLength": 256
+                },
+                "role": {
+                  "type": "string",
+                  "maxLength": 256
+                },
+                "name": {
+                  "type": ["string", "null"],
+                  "maxLength": 256
+                },
+                "automationId": {
+                  "type": ["string", "null"],
+                  "maxLength": 256
+                },
+                "className": {
+                  "type": ["string", "null"],
+                  "maxLength": 256
+                },
+                "helpText": {
+                  "type": ["string", "null"],
+                  "maxLength": 256
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "offscreen": {
+                  "type": "boolean"
+                },
+                "focusable": {
+                  "type": ["boolean", "null"]
+                },
+                "hasKeyboardFocus": {
+                  "type": ["boolean", "null"]
+                },
+                "patterns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 64
+                  }
+                },
+                "capabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 64
+                  }
+                },
+                "bounds": {
+                  "$ref": "#/$defs/bounds"
                 }
               }
             }
