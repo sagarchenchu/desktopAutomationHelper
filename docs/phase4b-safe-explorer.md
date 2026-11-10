@@ -65,16 +65,16 @@ Never: arbitrary typing, save/submit/delete, double-click, coordinate clicks.
 
 ## State algorithm
 
-1. Capture before snapshot  
-2. Fingerprint  
-3. Select one allowed frontier action deterministically  
-4. Record intended action  
-5. Execute through `IDriverUiClient`  
-6. Stabilize (bounded quiet period)  
-7. Capture after snapshot  
-8. Diff fingerprints / window inventory  
-9. Record success, no-op, failure, modal, new/closed window, or scope violation  
-10. Enqueue only previously unseen permitted frontier actions  
+1. Capture before snapshot
+2. Fingerprint
+3. Select one allowed frontier action deterministically
+4. Record intended action
+5. Execute through `IDriverUiClient`
+6. Stabilize (bounded quiet period)
+7. Capture after snapshot
+8. Diff fingerprints / window inventory
+9. Record success, no-op, failure, modal, new/closed window, or scope violation
+10. Enqueue only previously unseen permitted frontier actions
 
 Cancellation always attempts a valid partial artifact write.
 
