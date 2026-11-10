@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using DesktopAutomationAgent.Cli;
+using DesktopAutomationAgent.Compilation;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
@@ -122,9 +123,10 @@ public class Phase2CliTests
     }
 
     [Fact]
-    public void HelpText_IsPhase3()
+    public void HelpText_IncludesCompileBddAndObjectRepository()
     {
-        Assert.Contains("Phase 3", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("Phase 4", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("compile-bdd", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("validate-object-repository", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("capture-page", CommandLine.HelpText, StringComparison.Ordinal);
     }
@@ -193,6 +195,7 @@ public class Phase2CliTests
             builder.Services.AddSingleton<ObjectCandidateGenerator>();
             builder.Services.AddSingleton<ObjectCaptureService>();
             builder.Services.AddSingleton<ObjectVerificationService>();
+            builder.Services.AddSingleton<IDeterministicBddPlanCompiler, DeterministicBddPlanCompiler>();
             builder.Services.AddSingleton<IDriverConnectionResolver>(_ =>
                 new DriverConnectionResolver(Options.Create(options), factory, NullLogger<DriverConnectionResolver>.Instance));
             builder.Services.AddSingleton<IDriverCatalogClient>(_ =>

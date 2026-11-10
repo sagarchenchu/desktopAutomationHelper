@@ -179,5 +179,8 @@ Record results in [`docs/assistive-windows-acceptance-results.md`](assistive-win
 - AI interpretation / Copilot / self-healing / auto locator repair
 - Automatic promotion to active page objects
 - Full object-tree capture (future Debug Mode)
-- BDD-to-Phase-2-plan compilation
 - Screenshots / HTML reports / notifications
+
+Offline compilation of `bdd-action-map.json` + recording into a Phase 2 plan is
+implemented by the Agent as `compile-bdd` (Phase 4). See
+[`phase4-deterministic-bdd-compiler.md`](phase4-deterministic-bdd-compiler.md).
