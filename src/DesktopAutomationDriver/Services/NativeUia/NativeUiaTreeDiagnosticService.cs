@@ -75,7 +75,10 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                 var filter = BuildDumpFilter(options);
                 var collected = new List<object>();
                 var totalVisited = 0;
+                // IsTruncated is informational (maxDepth/maxChildren/maxNodes).
+                // StopTraversal is only maxNodes, timeout, or cancellation.
                 var truncated = new StrongBox<bool>(false);
+                var stopTraversal = new StrongBox<bool>(false);
                 var truncationWarnings = new List<string>();
                 var roots = ResolveRoots(options, activeWindowHwnd, processId, deadlineUtc, cancellationToken);
 
@@ -106,6 +109,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                             cancellationToken,
                             collected,
                             truncated,
+                            stopTraversal,
                             truncationWarnings,
                             parentNodeIndex: null,
                             ordinal: rootOrdinal,
@@ -115,7 +119,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
 
                         rootOrdinal++;
 
-                        if (truncated.Value)
+                        if (stopTraversal.Value)
                             break;
 
                         if (IsDeadlineNear(deadlineUtc))
@@ -123,6 +127,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                             timedOut.Value = true;
                             partialReason.Value = "timeout";
                             truncated.Value = true;
+                            stopTraversal.Value = true;
                             truncationWarnings.Add("Traversal stopped early due to timeout.");
                             break;
                         }
@@ -133,6 +138,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                     timedOut.Value = true;
                     partialReason.Value = "timeout";
                     truncated.Value = true;
+                    stopTraversal.Value = true;
                     truncationWarnings.Add(ex.Message);
                 }
 
@@ -445,9 +451,19 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             }
         }
 
+        // Prefer the live active-window process when the session PID is stale/exited.
+        var identityProcessId = processId;
+        if (activeWindowSnapshot is Dictionary<string, object?> activeRecord
+            && activeRecord.TryGetValue("processId", out var activePidObj)
+            && activePidObj is int activePid
+            && activePid > 0)
+        {
+            identityProcessId = activePid;
+        }
+
         string? processName = null;
         int? windowsSessionId = null;
-        if (processId is int pid)
+        if (identityProcessId is int pid)
         {
             try
             {
@@ -465,7 +481,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         {
             activeWindowHwnd = activeWindowHwnd is > 0 ? activeWindowHwnd.Value.ToInt64() : (long?)null,
             activeWindow = activeWindowSnapshot,
-            processId,
+            processId = identityProcessId,
             processName,
             windowsSessionId,
             processWindowCount = processWindows.Count,
@@ -590,6 +606,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         CancellationToken cancellationToken,
         List<object> collected,
         StrongBox<bool> truncated,
+        StrongBox<bool> stopTraversal,
         List<string> truncationWarnings,
         int? parentNodeIndex,
         int ordinal,
@@ -597,6 +614,9 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         int depth,
         List<string>? pathSegments)
     {
+        if (stopTraversal.Value)
+            return;
+
         if (IsDeadlineNear(deadlineUtc))
             throw new TimeoutException("dumpuia traversal exceeded timeout.");
 
@@ -621,6 +641,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                 if (collected.Count >= options.MaxNodes || collected.Count >= MaxTotalNodes)
                 {
                     truncated.Value = true;
+                    stopTraversal.Value = true;
                     truncationWarnings.Add(
                         collected.Count >= MaxTotalNodes
                             ? "dumpuia reached absolute max node cap."
@@ -633,7 +654,8 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             }
         }
 
-        if (truncated.Value)
+        // Informational truncation (maxChildren/maxDepth) must not stop sibling traversal.
+        if (stopTraversal.Value)
             return;
 
         if (depth >= options.MaxDepth)
@@ -641,7 +663,9 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             if (HasAnyChild(element, options, deadlineUtc, cancellationToken))
             {
                 truncated.Value = true;
-                truncationWarnings.Add(NativeUiaSemanticContract.MaxDepthTruncationWarning(options.MaxDepth));
+                var warning = NativeUiaSemanticContract.MaxDepthTruncationWarning(options.MaxDepth);
+                if (!truncationWarnings.Contains(warning, StringComparer.Ordinal))
+                    truncationWarnings.Add(warning);
             }
 
             return;
@@ -668,6 +692,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                 cancellationToken,
                 collected,
                 truncated,
+                stopTraversal,
                 truncationWarnings,
                 parentNodeIndex: currentNodeIndex,
                 ordinal: childOrdinal,
@@ -677,7 +702,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
 
             childOrdinal++;
 
-            if (truncated.Value)
+            if (stopTraversal.Value)
                 return;
 
             if (IsDeadlineNear(deadlineUtc))
@@ -898,6 +923,8 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             yield break;
         }
 
+        // maxChildren is informational truncation only — never stopTraversal.
+        // Callers must keep visiting the yielded (capped) children and their siblings.
         var warning = NativeUiaSemanticContract.MaxChildrenTruncationWarning(
             children.Length,
             options.MaxChildrenPerNode);

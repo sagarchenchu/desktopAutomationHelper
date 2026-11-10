@@ -47,12 +47,15 @@ public class Phase4aSemanticObservationTests
     [Fact]
     public void Normalizer_ProducesStableOrderingAndHash()
     {
-        // Dump order is depth-scrambled; DFS via parent links should visit A before B by sibling ordinal.
+        // Dump order is depth-scrambled with a grandchild under A.
+        // Global depth|ordinal sort of root+two children would also pass without the grandchild;
+        // DFS via parent links must emit root → A → A1 → B.
         var dumpuia = BuildDumpPayload(
             nodes:
             [
                 Node(0, null, 0, 0, "Window", "Main", "main", enabled: true, patterns: ["Window"], hwnd: 99),
-                Node(2, 0, 1, 1, "Button", "B", "b", enabled: true, patterns: ["Invoke"]),
+                Node(3, 0, 1, 1, "Button", "B", "b", enabled: true, patterns: ["Invoke"]),
+                Node(2, 1, 0, 2, "Text", "A1", "a1", enabled: true, patterns: ["Value"], valueIsReadOnly: true),
                 Node(1, 0, 0, 1, "Button", "A", "a", enabled: true, patterns: ["Invoke"])
             ]);
 
@@ -61,8 +64,9 @@ public class Phase4aSemanticObservationTests
         var first = normalizer.Normalize(dumpuia, options, "snap-1", DateTimeOffset.Parse("2026-01-01T00:00:00Z"), "1.0.0");
         var second = normalizer.Normalize(dumpuia, options, "snap-2", DateTimeOffset.Parse("2026-01-02T00:00:00Z"), "1.0.0");
 
-        Assert.Equal(["main", "a", "b"], first.Nodes.Select(n => n.AutomationId));
+        Assert.Equal(["main", "a", "a1", "b"], first.Nodes.Select(n => n.AutomationId));
         Assert.Equal("n0", first.Nodes[1].ParentRef);
+        Assert.Equal("n1", first.Nodes[2].ParentRef);
         Assert.Equal(first.Nodes.Select(n => n.AutomationId), second.Nodes.Select(n => n.AutomationId));
         Assert.Equal(first.SnapshotHash, second.SnapshotHash);
         Assert.NotEqual(first.SnapshotId, second.SnapshotId);
@@ -71,29 +75,36 @@ public class Phase4aSemanticObservationTests
     [Fact]
     public void Normalizer_HashIgnoresPidSessionHwndAndBounds()
     {
+        // Bounds deliberately differ between payloads so the hash must ignore them.
         var left = BuildDumpPayload(
             [
-                Node(0, null, 0, 0, "Window", "Main", "main", true, ["Window"], hwnd: 11)
+                Node(0, null, 0, 0, "Window", "Main", "main", true, ["Window"], hwnd: 11, bounds: Rect(10, 20, 100, 50))
             ],
             processId: 100,
             sessionId: 1,
             hwnd: 11,
-            includeBounds: true);
+            includeBounds: true,
+            windowBounds: Rect(10, 20, 100, 50));
 
         var right = BuildDumpPayload(
             [
-                Node(0, null, 0, 0, "Window", "Main", "main", true, ["Window"], hwnd: 99)
+                Node(0, null, 0, 0, "Window", "Main", "main", true, ["Window"], hwnd: 99, bounds: Rect(999, 888, 10, 10))
             ],
             processId: 200,
             sessionId: 7,
             hwnd: 99,
-            includeBounds: true);
+            includeBounds: true,
+            windowBounds: Rect(999, 888, 10, 10));
 
         var options = new ObservationOptions { ActionableOnly = false, IncludeBounds = true };
         var normalizer = new SemanticSnapshotNormalizer();
         var a = normalizer.Normalize(left, options, "snap-a", DateTimeOffset.UtcNow, "1.0.0");
         var b = normalizer.Normalize(right, options, "snap-b", DateTimeOffset.UtcNow, "1.0.0");
 
+        Assert.NotNull(a.Window!.Bounds);
+        Assert.NotNull(b.Window!.Bounds);
+        Assert.NotEqual(a.Window.Bounds!.X, b.Window.Bounds!.X);
+        Assert.NotEqual(a.Nodes[0].Bounds!.X, b.Nodes[0].Bounds!.X);
         Assert.Equal(a.SnapshotHash, b.SnapshotHash);
         Assert.NotEqual(a.Application.ProcessId, b.Application.ProcessId);
         Assert.NotEqual(a.Window!.Hwnd, b.Window!.Hwnd);
@@ -410,6 +421,125 @@ public class Phase4aSemanticObservationTests
     }
 
     [Fact]
+    public async Task ObserveApp_ConcurrentAndSequentialWritesDoNotOverwriteArtifact()
+    {
+        var options = TestSupport.CreateOptions(
+            baseUrl: "http://127.0.0.1:33402",
+            bearerToken: "secret-token");
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        const string output = "observations/manual/shared-snapshot.json";
+        var absolute = Path.Combine(workspace.RootPath, "observations", "manual", "shared-snapshot.json");
+        var observeOptions = new ObservationOptions
+        {
+            ActionableOnly = false,
+            OutputPath = output
+        };
+
+        SemanticObservationService CreateService()
+        {
+            var handler = new FakeHttpMessageHandler(async (req, _) =>
+            {
+                if (req.Method == HttpMethod.Post)
+                {
+                    return FakeHttpMessageHandler.Json(new
+                    {
+                        success = true,
+                        value = new
+                        {
+                            operation = "dumpuia",
+                            success = true,
+                            semanticDiagnosticVersion = 1,
+                            truncated = false,
+                            rootDiagnostics = new
+                            {
+                                activeWindowHwnd = 42,
+                                processId = 77,
+                                processName = "SampleApp",
+                                windowsSessionId = 1,
+                                activeWindow = new
+                                {
+                                    name = "Sample",
+                                    className = "Wnd",
+                                    processId = 77,
+                                    nativeWindowHandle = 42,
+                                    windowState = new { isModal = false }
+                                }
+                            },
+                            nodes = new object[]
+                            {
+                                new
+                                {
+                                    nodeIndex = 0,
+                                    parentNodeIndex = (int?)null,
+                                    ordinal = 0,
+                                    depth = 0,
+                                    controlType = "Window",
+                                    name = "Sample",
+                                    automationId = "main",
+                                    className = "Wnd",
+                                    nativeWindowHandle = 42,
+                                    isEnabled = true,
+                                    isOffscreen = false,
+                                    supportedPatterns = new[] { "Window" },
+                                    capabilities = new[] { "window" }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                if (req.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.OrdinalIgnoreCase))
+                {
+                    return FakeHttpMessageHandler.Json(new
+                    {
+                        status = 0,
+                        value = new { ready = true, message = "ok", build = new { version = "1.0.105" } }
+                    });
+                }
+
+                return FakeHttpMessageHandler.Json(new { success = true, value = CatalogFixtures.Phase2Catalog() });
+            });
+
+            var factory = TestSupport.CreateFactory(handler);
+            var wrapped = Options.Create(options);
+            return new SemanticObservationService(
+                wrapped,
+                new DriverConnectionResolver(wrapped, factory, NullLogger<DriverConnectionResolver>.Instance),
+                new DriverCatalogClient(wrapped, factory, NullLogger<DriverCatalogClient>.Instance),
+                new DriverUiClient(wrapped, factory, NullLogger<DriverUiClient>.Instance),
+                new SemanticSnapshotNormalizer(),
+                workspace,
+                NullLogger<SemanticObservationService>.Instance);
+        }
+
+        var first = await CreateService().ObserveAsync(observeOptions);
+        Assert.True(first.Success);
+        Assert.True(File.Exists(absolute));
+        var original = await File.ReadAllTextAsync(absolute);
+
+        var second = await CreateService().ObserveAsync(observeOptions);
+        Assert.False(second.Success);
+        Assert.Contains("already exists", second.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(original, await File.ReadAllTextAsync(absolute));
+
+        // Concurrent writers racing the same path: exactly one succeeds; artifact is not clobbered.
+        File.Delete(absolute);
+        var races = await Task.WhenAll(
+            CreateService().ObserveAsync(observeOptions),
+            CreateService().ObserveAsync(observeOptions));
+
+        Assert.Equal(1, races.Count(r => r.Success));
+        Assert.Equal(1, races.Count(r => !r.Success));
+        Assert.Contains(races, r => !r.Success && r.Error is not null
+            && r.Error.Contains("already exists", StringComparison.OrdinalIgnoreCase));
+        Assert.True(File.Exists(absolute));
+        var raced = await File.ReadAllTextAsync(absolute);
+        Assert.False(string.IsNullOrWhiteSpace(raced));
+        Assert.Contains("snapshotSchemaVersion", raced, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ObserveApp_RejectsOversizedDriverResponse()
     {
         var options = TestSupport.CreateOptions(
@@ -477,7 +607,8 @@ public class Phase4aSemanticObservationTests
         int processId = 12,
         int sessionId = 2,
         long hwnd = 99,
-        bool includeBounds = false) =>
+        bool includeBounds = false,
+        object? windowBounds = null) =>
         JsonSerializer.SerializeToElement(new
         {
             operation = "dumpuia",
@@ -500,11 +631,24 @@ public class Phase4aSemanticObservationTests
                     nativeWindowHandle = hwnd,
                     windowState = new { isModal = false },
                     boundingRectangle = includeBounds
-                        ? new { x = 1.0, y = 2.0, width = 3.0, height = 4.0, left = 1.0, top = 2.0, right = 4.0, bottom = 6.0 }
+                        ? windowBounds ?? Rect(1, 2, 3, 4)
                         : null
                 }
             }
         });
+
+    private static object Rect(double x, double y, double width, double height) =>
+        new
+        {
+            x,
+            y,
+            width,
+            height,
+            left = x,
+            top = y,
+            right = x + width,
+            bottom = y + height
+        };
 
     private static object Node(
         int nodeIndex,
@@ -518,7 +662,8 @@ public class Phase4aSemanticObservationTests
         string[] patterns,
         bool offscreen = false,
         long? hwnd = null,
-        bool? valueIsReadOnly = null) =>
+        bool? valueIsReadOnly = null,
+        object? bounds = null) =>
         new
         {
             nodeIndex,
@@ -536,7 +681,8 @@ public class Phase4aSemanticObservationTests
             hasKeyboardFocus = false,
             valueIsReadOnly,
             supportedPatterns = patterns,
-            capabilities = PatternCapabilityMapper.Map(patterns, valueIsReadOnly)
+            capabilities = PatternCapabilityMapper.Map(patterns, valueIsReadOnly),
+            boundingRectangle = bounds
         };
 
     private static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(

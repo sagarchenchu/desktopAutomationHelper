@@ -94,4 +94,108 @@ internal static class NativeUiaSemanticContract
 
         return leftNodeIndex.CompareTo(rightNodeIndex);
     }
+
+    /// <summary>
+    /// Pure bounded DFS used by unit tests and as the behavioral contract for dumpuia.
+    /// <see cref="SemanticBoundedTraversalResult.IsTruncated"/> is informational
+    /// (maxDepth / maxChildren / maxNodes). <see cref="SemanticBoundedTraversalResult.StopTraversal"/>
+    /// is set only for maxNodes (timeout/cancellation are handled by the live collector).
+    /// </summary>
+    public static SemanticBoundedTraversalResult TraverseBounded(
+        SemanticProbeNode root,
+        int maxDepth,
+        int maxChildren,
+        int maxNodes)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        if (maxDepth < 0)
+            throw new ArgumentOutOfRangeException(nameof(maxDepth));
+        if (maxChildren < 0)
+            throw new ArgumentOutOfRangeException(nameof(maxChildren));
+        if (maxNodes < 1)
+            throw new ArgumentOutOfRangeException(nameof(maxNodes));
+
+        var visited = new List<string>();
+        var warnings = new List<string>();
+        var isTruncated = false;
+        var stopTraversal = false;
+
+        void Visit(SemanticProbeNode node, int depth)
+        {
+            if (stopTraversal)
+                return;
+
+            if (visited.Count >= maxNodes)
+            {
+                isTruncated = true;
+                stopTraversal = true;
+                warnings.Add("dumpuia reached requested maxNodes cap.");
+                return;
+            }
+
+            visited.Add(node.Id);
+
+            if (stopTraversal)
+                return;
+
+            if (depth >= maxDepth)
+            {
+                if (node.Children.Count > 0)
+                {
+                    isTruncated = true;
+                    var depthWarning = MaxDepthTruncationWarning(maxDepth);
+                    if (!warnings.Contains(depthWarning, StringComparer.Ordinal))
+                        warnings.Add(depthWarning);
+                }
+
+                return;
+            }
+
+            var childrenWarning = MaxChildrenTruncationWarning(node.Children.Count, maxChildren);
+            if (childrenWarning is not null)
+            {
+                isTruncated = true;
+                if (!warnings.Contains(childrenWarning, StringComparer.Ordinal))
+                    warnings.Add(childrenWarning);
+            }
+
+            var childCount = Math.Min(node.Children.Count, maxChildren);
+            for (var i = 0; i < childCount; i++)
+            {
+                Visit(node.Children[i], depth + 1);
+                if (stopTraversal)
+                    return;
+            }
+        }
+
+        Visit(root, depth: 0);
+
+        return new SemanticBoundedTraversalResult
+        {
+            VisitedIds = visited,
+            IsTruncated = isTruncated,
+            StopTraversal = stopTraversal,
+            Warnings = warnings
+        };
+    }
+}
+
+/// <summary>
+/// In-memory probe node for bounded traversal contract tests.
+/// </summary>
+internal sealed class SemanticProbeNode
+{
+    public required string Id { get; init; }
+    public IReadOnlyList<SemanticProbeNode> Children { get; init; } = Array.Empty<SemanticProbeNode>();
+}
+
+/// <summary>
+/// Result of <see cref="NativeUiaSemanticContract.TraverseBounded"/>.
+/// </summary>
+internal sealed class SemanticBoundedTraversalResult
+{
+    public required IReadOnlyList<string> VisitedIds { get; init; }
+    public required bool IsTruncated { get; init; }
+    public required bool StopTraversal { get; init; }
+    public required IReadOnlyList<string> Warnings { get; init; }
 }

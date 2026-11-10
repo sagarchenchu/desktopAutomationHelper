@@ -111,24 +111,30 @@ dumpuia can resolve the application window, matching `capture-page`.
 
 - Observe-only: no crawl, action-by-ref, knowledge graph, Jira/BDD, plan, MCP, AI, OCR, or Debug Mode.
 - Active session / resolvable root still required for meaningful window scope.
-- WPF acceptance depends on a WPF target being available on the worker.
-- Modal dialog top-level visibility can vary by harness timing; main-window
-  controls (including dialog/child openers and disabled controls) are covered.
+- `maxDepth` / `maxChildren` mark informational `truncated` without stopping sibling
+  traversal; only `maxNodes`, timeout, or cancellation set stop-traversal.
 
 ## Test evidence
 
-- Agent: `Phase4aSemanticObservationTests` (ordering, hash, maxNodes/truncation,
-  capabilities, disabled/offscreen, value omission, redaction, stale/duplicate refs,
-  single dumpuia POST, oversized response rejection, schema/sample validation).
-- Driver: extended `NativeUiaTreeDiagnosticServiceTests` + existing dumpuia/catalog suites.
+- Agent: `Phase4aSemanticObservationTests` (DFS with grandchild, hash with differing
+  bounds, maxNodes/truncation, capabilities, disabled/offscreen, value omission,
+  redaction, stale/duplicate refs, single dumpuia POST, concurrent/non-overwrite
+  artifact writes, oversized response rejection, schema/sample validation).
+- Driver: `NativeUiaSemanticContractTests` bounded traversal contracts
+  (maxChildren keeps first N siblings; maxDepth visits siblings and omits
+  grandchildren; maxNodes stops traversal) plus dumpuia/catalog suites.
 - Phase 0–3 suites remain green aside from known symlink path-safety tests that
   require `SeCreateSymbolicLinkPrivilege`.
 
 ### Windows acceptance (self-hosted worker)
 
-- WinForms `DesktopAutomationTestApp` (`DA Test Harness`): observed menu, button,
-  textbox, combo box, grid/list, and disabled control under correct process/session.
-- EventLog `getvalue` before/after observe matched (no UI mutation from observation).
-- WPF: still incomplete — no suitable WPF target on the worker, and the TestApp
-  harness PR #138 (`cursor/desktop-test-app-harness-b89b`) remains unmerged. This
-  does not block Phase 4A observe-only landing.
+Required before merge — see
+[`docs/acceptance/phase4a-windows-acceptance.md`](acceptance/phase4a-windows-acceptance.md).
+
+- **WPF** `tools/DesktopAutomationWpfSmokeApp` (`DA WPF Smoke`): observed menu,
+  button, textbox, combo, list, disabled control, and child dialog under correct
+  process/session. Harness PR #138 alone is not enough for this gate.
+- **WinForms** `DesktopAutomationTestApp` (`DA Test Harness`, harness PR #138 when
+  not on main): observed menu, button, textbox, combo, DataGrid/`SampleGrid`,
+  disabled control, child window, and **actual modal** `DA Sample Dialog`.
+- EventLog `getvalue` unchanged across observe-only (no UI mutation from observation).

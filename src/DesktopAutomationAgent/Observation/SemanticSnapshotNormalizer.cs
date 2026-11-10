@@ -489,9 +489,16 @@ public sealed class SemanticSnapshotNormalizer
             return new ApplicationIdentity();
         }
 
+        int? processId = GetNullableInt(root, "processId");
+        if (root.TryGetProperty("activeWindow", out var active)
+            && active.ValueKind == JsonValueKind.Object)
+        {
+            processId = GetNullableInt(active, "processId") ?? processId;
+        }
+
         return new ApplicationIdentity
         {
-            ProcessId = GetNullableInt(root, "processId"),
+            ProcessId = processId,
             ProcessName = NullIfEmpty(Bound(GetString(root, "processName")))
         };
     }
@@ -527,7 +534,8 @@ public sealed class SemanticSnapshotNormalizer
         long? hwnd = GetNullableLong(root, "activeWindowHwnd");
         string? title = null;
         string? className = null;
-        int? processId = GetNullableInt(root, "processId");
+        // Prefer the observed window's processId over a possibly stale session PID.
+        int? processId = null;
         bool? isModal = null;
         BoundingRectangleDto? bounds = null;
 
@@ -535,7 +543,7 @@ public sealed class SemanticSnapshotNormalizer
         {
             title = NullIfEmpty(Bound(GetString(active, "name")));
             className = NullIfEmpty(Bound(GetString(active, "className")));
-            processId ??= GetNullableInt(active, "processId");
+            processId = GetNullableInt(active, "processId") ?? GetNullableInt(root, "processId");
             hwnd ??= GetNullableLong(active, "nativeWindowHandle");
             isModal = ReadIsModal(active);
             if (options.IncludeBounds)
