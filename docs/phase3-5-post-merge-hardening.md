@@ -111,6 +111,6 @@ Windows GitHub Actions is authoritative for driver tests when the local host is 
 ## Known remaining work
 
 - Record interactive Assistive Windows acceptance results on a real desktop.
-- Phase 4: deterministic BDD compiler (not started).
+- Phase 4: deterministic BDD compiler — see `phase4-deterministic-bdd-compiler.md`.
 - Future secure bootstrap for untrusted shared hosts (design only in this phase).
 - Future Debug Mode services (boundaries only; see `debug-mode-design-boundaries.md`).

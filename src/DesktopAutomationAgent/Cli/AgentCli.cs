@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using DesktopAutomationAgent.Compilation;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
@@ -50,7 +51,8 @@ public static class AgentCli
                 or AgentCommandKind.ValidateObjectRepository
                 or AgentCommandKind.ResolveObject
                 or AgentCommandKind.CapturePage
-                or AgentCommandKind.VerifyObjectRepository;
+                or AgentCommandKind.VerifyObjectRepository
+                or AgentCommandKind.CompileBdd;
 
         if (parsed.Error is not null)
         {
@@ -111,6 +113,7 @@ public static class AgentCli
                         parsed,
                         cancellationToken)
                     .ConfigureAwait(false),
+                AgentCommandKind.CompileBdd => RunCompileBdd(host.Services, parsed),
                 _ => ExitCodes.UsageOrConfiguration
             };
         }
@@ -216,6 +219,7 @@ public static class AgentCli
         builder.Services.AddSingleton<ObjectCandidateGenerator>();
         builder.Services.AddSingleton<ObjectCaptureService>();
         builder.Services.AddSingleton<ObjectVerificationService>();
+        builder.Services.AddSingleton<IDeterministicBddPlanCompiler, DeterministicBddPlanCompiler>();
 
         return builder.Build();
     }
@@ -340,6 +344,67 @@ public static class AgentCli
         }
 
         return result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
+    }
+
+    private static int RunCompileBdd(IServiceProvider services, ParsedCommand parsed)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Workspace);
+
+        var compiler = services.GetRequiredService<IDeterministicBddPlanCompiler>();
+        var result = compiler.Compile(new BddCompileRequest
+        {
+            MapPath = parsed.MapFile!,
+            RecordingPath = parsed.RecordingFile,
+            OutputPath = parsed.OutputFile,
+            PreferObjectRefs = parsed.PreferObjectRefs,
+            ObjectRepositoryPath = parsed.RepositoryFile
+        });
+
+        if (parsed.Json)
+        {
+            var payload = new
+            {
+                result.Success,
+                result.MapPath,
+                result.RecordingPath,
+                result.OutputPath,
+                result.PlanId,
+                result.JiraKey,
+                result.RecordingId,
+                result.StepCount,
+                result.SkippedActionCount,
+                result.UnmappedEventCount,
+                result.Errors,
+                result.Warnings
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else if (result.Success)
+        {
+            Console.WriteLine("Desktop Automation Agent — compile-bdd");
+            Console.WriteLine($"Map       : {result.MapPath}");
+            Console.WriteLine($"Recording : {result.RecordingPath}");
+            Console.WriteLine($"Plan ID   : {result.PlanId}");
+            Console.WriteLine($"Output    : {result.OutputPath}");
+            Console.WriteLine($"Steps     : {result.StepCount}");
+            if (result.UnmappedEventCount > 0)
+                Console.WriteLine($"Unmapped  : {result.UnmappedEventCount} (not compiled)");
+            foreach (var warning in result.Warnings)
+                Console.WriteLine($"Warning   : {warning}");
+            Console.WriteLine("Compilation succeeded. Validate with validate-plan; execute with run-plan.");
+        }
+        else
+        {
+            Console.Error.WriteLine("compile-bdd failed:");
+            foreach (var error in result.Errors)
+                Console.Error.WriteLine($"  - {error}");
+            foreach (var warning in result.Warnings)
+                Console.Error.WriteLine($"  warning: {warning}");
+        }
+
+        return result.Success ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
     }
 
     private static async Task<int> RunPlanAsync(

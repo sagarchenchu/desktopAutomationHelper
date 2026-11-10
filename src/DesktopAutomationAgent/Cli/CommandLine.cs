@@ -12,7 +12,8 @@ public enum AgentCommandKind
     ValidateObjectRepository,
     ResolveObject,
     CapturePage,
-    VerifyObjectRepository
+    VerifyObjectRepository,
+    CompileBdd
 }
 
 public sealed class ParsedCommand
@@ -24,6 +25,12 @@ public sealed class ParsedCommand
     public string? PlanFile { get; init; }
 
     public string? RepositoryFile { get; init; }
+
+    public string? MapFile { get; init; }
+
+    public string? RecordingFile { get; init; }
+
+    public string? OutputFile { get; init; }
 
     public string? ObjectRef { get; init; }
 
@@ -46,6 +53,8 @@ public sealed class ParsedCommand
     public bool Json { get; init; }
 
     public bool DryRun { get; init; }
+
+    public bool PreferObjectRefs { get; init; }
 
     public string? Error { get; init; }
 
@@ -76,12 +85,150 @@ public static class CommandLine
             "resolve-object" => ParseResolveObject(rest),
             "capture-page" => ParseCapturePage(rest),
             "verify-object-repository" => ParseVerifyObjectRepository(rest),
+            "compile-bdd" => ParseCompileBdd(rest),
             _ => new ParsedCommand
             {
                 Kind = AgentCommandKind.Help,
                 Json = HasFlag(rest, "--json") || HasFlag(args, "--json"),
                 Error = $"Unknown command '{args[0]}'."
             }
+        };
+    }
+
+    private static ParsedCommand ParseCompileBdd(string[] rest)
+    {
+        var json = HasFlag(rest, "--json");
+        var preferObjectRefs = HasFlag(rest, "--prefer-object-refs");
+        string? map = null;
+        string? recording = null;
+        string? output = null;
+        string? repository = null;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--map")
+            {
+                if (i + 1 >= rest.Length)
+                {
+                    return new ParsedCommand
+                    {
+                        Kind = AgentCommandKind.CompileBdd,
+                        Json = json,
+                        Error = "--map requires a path.",
+                        ConfigurationArgs = config.ToArray()
+                    };
+                }
+
+                map = rest[++i];
+                continue;
+            }
+
+            if (arg is "--recording")
+            {
+                if (i + 1 >= rest.Length)
+                {
+                    return new ParsedCommand
+                    {
+                        Kind = AgentCommandKind.CompileBdd,
+                        Json = json,
+                        Error = "--recording requires a path.",
+                        ConfigurationArgs = config.ToArray()
+                    };
+                }
+
+                recording = rest[++i];
+                continue;
+            }
+
+            if (arg is "--out" or "--output")
+            {
+                if (i + 1 >= rest.Length)
+                {
+                    return new ParsedCommand
+                    {
+                        Kind = AgentCommandKind.CompileBdd,
+                        Json = json,
+                        Error = $"{arg} requires a path.",
+                        ConfigurationArgs = config.ToArray()
+                    };
+                }
+
+                output = rest[++i];
+                continue;
+            }
+
+            if (arg is "--object-repository" or "--file")
+            {
+                if (i + 1 >= rest.Length)
+                {
+                    return new ParsedCommand
+                    {
+                        Kind = AgentCommandKind.CompileBdd,
+                        Json = json,
+                        Error = $"{arg} requires a path.",
+                        ConfigurationArgs = config.ToArray()
+                    };
+                }
+
+                repository = rest[++i];
+                continue;
+            }
+
+            if (arg is "--json" or "--prefer-object-refs")
+                continue;
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.CompileBdd,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(map))
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.CompileBdd,
+                Json = json,
+                Error = "compile-bdd requires --map <bdd-action-map.json>.",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (preferObjectRefs && string.IsNullOrWhiteSpace(repository))
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.CompileBdd,
+                Json = json,
+                Error = "--prefer-object-refs requires --object-repository <repository.json>.",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.CompileBdd,
+            MapFile = map,
+            RecordingFile = recording,
+            OutputFile = output,
+            RepositoryFile = repository,
+            PreferObjectRefs = preferObjectRefs,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
         };
     }
 
@@ -738,7 +885,7 @@ public static class CommandLine
 
     public static string HelpText =>
         """
-        Desktop Automation Agent (Phase 3)
+        Desktop Automation Agent (Phase 4)
 
         Commands:
           init
@@ -757,6 +904,12 @@ public static class CommandLine
           run-plan --file <path> [--dry-run] [--json]
               Preflight against the live driver catalog, then execute the plan through POST /ui.
               --dry-run validates only (GET /status and /ui/operations); never calls POST /ui.
+
+          compile-bdd --map <bdd-action-map.json> [--recording <recording.json>]
+              [--out <plans/plan.plan.json>] [--prefer-object-refs --object-repository <repository.json>]
+              [--json]
+              Offline deterministic compiler: Assistive BDD action map + recording -> Phase 2 plan.
+              Does not call Jira, does not interpret BDD statement text, and makes no HTTP calls.
 
           validate-object-repository --file <repository.json> [--json]
               Offline object repository validation. Makes no HTTP calls.
@@ -786,10 +939,10 @@ public static class CommandLine
           2 usage or configuration error
           3 driver unavailable or unsafe discovery
           4 authentication or catalog incompatibility
-          5 suite, plan, workspace, object repository or artifact validation failure
+          5 suite, plan, workspace, object repository, compile or artifact validation failure
           6 UI operation, timeout, capture/verify or assertion failure
           7 execution cancelled
 
-        Phase 3 adds object-repository capture, verify, resolve, and plan $objectRef expansion.
+        Phase 4 compiles Assistive bdd-action-map.json into Phase 2 plans. It does not fetch Jira or run AI.
         """;
 }
