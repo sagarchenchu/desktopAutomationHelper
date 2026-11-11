@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "../../schemas/exploration-policy.schema.json",
   "policySchemaVersion": 1,
   "policyId": "acceptance-modal-second-backtrack",
@@ -41,4 +41,3 @@
   "allowCoordinateFallback": false,
   "allowDoubleClick": false
 }
-
