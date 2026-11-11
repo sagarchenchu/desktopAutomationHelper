@@ -151,27 +151,14 @@ public sealed class CapabilityResolver
         string controlType,
         HashSet<string> capabilities)
     {
+        // Menu / MenuBar containers are MenuOpen only when ExpandCollapse is present.
         if (controlType is "Menu" or "MenuBar")
-            return true;
+            return capabilities.Contains("expandCollapse");
 
-        if (controlType != "MenuItem" && !LooksLikeMenu(node))
-            return false;
-
-        if (capabilities.Contains("expandCollapse"))
-            return true;
-
-        if (node.Interaction?.ExpandCollapse is string expandState
-            && !string.IsNullOrWhiteSpace(expandState))
-            return true;
-
-        // Top-level menu containers often named *Menu without ExpandCollapse projected yet.
-        if (controlType == "MenuItem"
-            && !string.IsNullOrWhiteSpace(node.AutomationId)
-            && node.AutomationId.EndsWith("Menu", StringComparison.OrdinalIgnoreCase)
-            && !node.AutomationId.EndsWith("MenuItem", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
+        // MenuItem: ExpandCollapse required for MenuOpen. No AutomationId heuristic —
+        // without ExpandCollapse the item is Invoke-only and needs an explicit allow.
+        if (controlType == "MenuItem")
+            return capabilities.Contains("expandCollapse");
 
         return false;
     }
@@ -188,12 +175,6 @@ public sealed class CapabilityResolver
 
         return null;
     }
-
-    private static bool LooksLikeMenu(SemanticNode node) =>
-        (!string.IsNullOrWhiteSpace(node.AutomationId)
-         && node.AutomationId.Contains("Menu", StringComparison.OrdinalIgnoreCase))
-        || (!string.IsNullOrWhiteSpace(node.Name)
-            && node.Name.Contains("Menu", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Re-authorize a live node for an already-queued candidate. Fail closed when

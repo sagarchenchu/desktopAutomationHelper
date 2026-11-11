@@ -36,6 +36,8 @@ public sealed class WindowTransitionResult
     public string? Detail { get; init; }
 
     public WindowInventory Inventory { get; init; } = new();
+
+    public List<WindowDescriptor> AddedWindows { get; init; } = [];
 }
 
 /// <summary>
@@ -63,7 +65,13 @@ public sealed class WindowTransitionDetector
         {
             Id = "explore-listwindows",
             Operation = "listwindows",
-            CaptureResponse = true
+            CaptureResponse = true,
+            // Include owned/child top-level windows (second window, dialogs) that are not
+            // always direct desktop children.
+            Arguments = new Dictionary<string, System.Text.Json.JsonElement>(StringComparer.Ordinal)
+            {
+                ["includeDesktopDescendants"] = System.Text.Json.JsonSerializer.SerializeToElement(true)
+            }
         };
 
         var response = await _uiClient.ExecuteStepAsync(connection, step, cancellationToken).ConfigureAwait(false);
@@ -173,7 +181,8 @@ public sealed class WindowTransitionDetector
                 : removed.Count > 0
                     ? $"Closed window(s): {string.Join(", ", removed.Select(w => w.Title))}"
                     : null,
-            Inventory = after
+            Inventory = after,
+            AddedWindows = added
         };
     }
 

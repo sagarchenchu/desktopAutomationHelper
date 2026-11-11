@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using DesktopAutomationAgent.Observation;
 
@@ -25,8 +26,8 @@ public interface IProcessIdentityProbe
 }
 
 /// <summary>
-/// Resolves PID → process name / path / hash / session via System.Diagnostics.
-/// Fail-closed callers treat probe failures as out of scope.
+/// Resolves PID → process name / path / hash / session / parent via System.Diagnostics
+/// and the supported Toolhelp32 snapshot API for parent lineage.
 /// </summary>
 public sealed class SystemProcessIdentityProbe : IProcessIdentityProbe
 {
@@ -46,6 +47,7 @@ public sealed class SystemProcessIdentityProbe : IProcessIdentityProbe
             using var process = Process.GetProcessById(processId);
             string? path = null;
             string? sha = null;
+            string? pathError = null;
             try
             {
                 path = process.MainModule?.FileName;
@@ -57,8 +59,7 @@ public sealed class SystemProcessIdentityProbe : IProcessIdentityProbe
             }
             catch (Exception ex)
             {
-                error = $"Unable to read executable for PID {processId}: {ex.GetType().Name}.";
-                // Continue with name/session when path is unavailable; callers decide fail-closed.
+                pathError = $"Unable to read executable for PID {processId}: {ex.GetType().Name}.";
             }
 
             int? sessionId = null;
@@ -71,6 +72,12 @@ public sealed class SystemProcessIdentityProbe : IProcessIdentityProbe
                 // Session may be inaccessible for some processes.
             }
 
+            if (!ToolhelpParentProcessId.TryGet(processId, out var parentPid, out var parentError))
+            {
+                error = parentError ?? $"Unable to resolve parent process id for PID {processId}.";
+                return false;
+            }
+
             info = new ProcessIdentityInfo
             {
                 ProcessId = processId,
@@ -78,9 +85,7 @@ public sealed class SystemProcessIdentityProbe : IProcessIdentityProbe
                 ExecutablePath = path,
                 ExecutableSha256 = sha,
                 SessionId = sessionId,
-                // Parent PID is optional; tests inject probes with lineage. Live probe leaves
-                // it null when undocumented NT APIs are unavailable — name allow-list still applies.
-                ParentProcessId = null
+                ParentProcessId = parentPid
             };
 
             if (string.IsNullOrWhiteSpace(info.ProcessName))
@@ -89,6 +94,10 @@ public sealed class SystemProcessIdentityProbe : IProcessIdentityProbe
                 return false;
             }
 
+            // Path errors are deferred to validators that require path/hash.
+            if (pathError is not null && string.IsNullOrWhiteSpace(path))
+                error = pathError;
+
             return true;
         }
         catch (Exception ex)
@@ -96,6 +105,98 @@ public sealed class SystemProcessIdentityProbe : IProcessIdentityProbe
             error = $"Unable to resolve process identity for PID {processId}: {ex.GetType().Name}.";
             return false;
         }
+    }
+}
+
+/// <summary>
+/// Parent PID via CreateToolhelp32Snapshot / Process32FirstW / Process32NextW (supported Win32 API).
+/// </summary>
+internal static class ToolhelpParentProcessId
+{
+    private const uint Th32csSnapProcess = 0x00000002;
+
+    public static bool TryGet(int processId, out int parentProcessId, out string? error)
+    {
+        parentProcessId = 0;
+        error = null;
+
+        if (!OperatingSystem.IsWindows())
+        {
+            error = "Parent process lookup requires Windows.";
+            return false;
+        }
+
+        var snapshot = CreateToolhelp32Snapshot(Th32csSnapProcess, 0);
+        if (snapshot == IntPtr.Zero || snapshot == new IntPtr(-1))
+        {
+            error = $"CreateToolhelp32Snapshot failed for PID {processId}.";
+            return false;
+        }
+
+        try
+        {
+            var entry = new Processentry32W
+            {
+                DwSize = (uint)Marshal.SizeOf<Processentry32W>()
+            };
+
+            if (!Process32FirstW(snapshot, ref entry))
+            {
+                error = $"Process32FirstW failed for PID {processId}.";
+                return false;
+            }
+
+            do
+            {
+                if (unchecked((int)entry.Th32ProcessId) == processId)
+                {
+                    parentProcessId = unchecked((int)entry.Th32ParentProcessId);
+                    if (parentProcessId <= 0)
+                    {
+                        error = $"Parent process id missing for PID {processId}.";
+                        return false;
+                    }
+
+                    return true;
+                }
+            } while (Process32NextW(snapshot, ref entry));
+
+            error = $"PID {processId} not found in Toolhelp32 snapshot.";
+            return false;
+        }
+        finally
+        {
+            CloseHandle(snapshot);
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool Process32FirstW(IntPtr hSnapshot, ref Processentry32W lppe);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool Process32NextW(IntPtr hSnapshot, ref Processentry32W lppe);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct Processentry32W
+    {
+        public uint DwSize;
+        public uint CntUsage;
+        public uint Th32ProcessId;
+        public UIntPtr Th32DefaultHeapId;
+        public uint Th32ModuleId;
+        public uint CntThreads;
+        public uint Th32ParentProcessId;
+        public int PcPriClassBase;
+        public uint DwFlags;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string SzExeFile;
     }
 }
 
@@ -109,15 +210,39 @@ public sealed class ProcessIdentityValidationResult
 /// <summary>
 /// Fail-closed application identity checks: process name, optional path/SHA256,
 /// Windows session, and parent/child lineage for allowed children.
+/// Root PID/session are pinned once for the whole exploration run.
 /// </summary>
 public sealed class ProcessIdentityValidator
 {
     private readonly IProcessIdentityProbe _probe;
-    private int? _rootProcessId;
+    private int? _pinnedRootProcessId;
+    private int? _pinnedRootSessionId;
+    private bool _rootPinned;
 
     public ProcessIdentityValidator(IProcessIdentityProbe? probe = null)
     {
         _probe = probe ?? new SystemProcessIdentityProbe();
+    }
+
+    public int? PinnedRootProcessId => _pinnedRootProcessId;
+
+    public int? PinnedRootSessionId => _pinnedRootSessionId;
+
+    /// <summary>
+    /// Pin the initial in-scope root process for the run. Subsequent calls are no-ops
+    /// so a later snapshot cannot reset the root identity.
+    /// </summary>
+    public void PinRoot(int processId, int? sessionId)
+    {
+        if (_rootPinned)
+            return;
+
+        if (processId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(processId));
+
+        _pinnedRootProcessId = processId;
+        _pinnedRootSessionId = sessionId;
+        _rootPinned = true;
     }
 
     public ProcessIdentityValidationResult ValidateSnapshot(
@@ -155,9 +280,10 @@ public sealed class ProcessIdentityValidator
         if (!pathHash.IsValid)
             return pathHash;
 
+        var actualSession = snapshot.WindowsSession.SessionId ?? identity.SessionId;
+
         if (policy.Scope.WindowsSessionId is int expectedSession)
         {
-            var actualSession = snapshot.WindowsSession.SessionId ?? identity.SessionId;
             if (actualSession is null)
                 return Fail("Windows session id is missing; fail-closed.");
             if (actualSession != expectedSession)
@@ -174,7 +300,22 @@ public sealed class ProcessIdentityValidator
 
         if (isRoot)
         {
-            _rootProcessId = pid;
+            if (!_rootPinned)
+            {
+                PinRoot(pid, actualSession);
+            }
+            else if (_pinnedRootProcessId != pid)
+            {
+                return Fail(
+                    $"Root process id {pid} differs from pinned root {_pinnedRootProcessId}; fail-closed.");
+            }
+            else if (_pinnedRootSessionId is int pinnedSession
+                     && actualSession is int liveSession
+                     && pinnedSession != liveSession)
+            {
+                return Fail(
+                    $"Root session {liveSession} differs from pinned session {pinnedSession}; fail-closed.");
+            }
         }
         else
         {
@@ -205,43 +346,27 @@ public sealed class ProcessIdentityValidator
         if (window.ProcessId is not int pid || pid <= 0)
             return Fail($"New window '{window.Title}' is missing processId; fail-closed.");
 
-        var requiresPathOrHash = !string.IsNullOrWhiteSpace(policy.Application.ExecutablePath)
-                                 || !string.IsNullOrWhiteSpace(policy.Application.ExecutableSha256);
+        if (!_probe.TryGetIdentity(pid, out var identity, out var probeError))
+            return Fail(probeError ?? $"Unable to resolve process identity for new window PID {pid}.");
 
-        if (_probe.TryGetIdentity(pid, out var identity, out var probeError))
+        if (!string.Equals(identity.ProcessName, window.ProcessName, StringComparison.OrdinalIgnoreCase))
         {
-            if (!string.Equals(identity.ProcessName, window.ProcessName, StringComparison.OrdinalIgnoreCase))
-            {
-                return Fail(
-                    $"New window process name mismatch: listed '{window.ProcessName}', live '{identity.ProcessName}'.");
-            }
-
-            var pathHash = ValidatePathAndHash(identity, policy, allowChildWithoutRootHash: true);
-            if (!pathHash.IsValid)
-                return pathHash;
-
-            if (!string.Equals(
-                    window.ProcessName,
-                    policy.Application.ProcessName,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                var lineage = ValidateChildLineage(pid, identity, policy);
-                if (!lineage.IsValid)
-                    return lineage;
-            }
-
-            return Ok();
+            return Fail(
+                $"New window process name mismatch: listed '{window.ProcessName}', live '{identity.ProcessName}'.");
         }
 
-        // Probe failed: fail closed when path/hash must be enforced; otherwise processName
-        // from listwindows is the identity gate for new windows.
-        if (requiresPathOrHash
-            && string.Equals(
+        var pathHash = ValidatePathAndHash(identity, policy, allowChildWithoutRootHash: true);
+        if (!pathHash.IsValid)
+            return pathHash;
+
+        if (!string.Equals(
                 window.ProcessName,
                 policy.Application.ProcessName,
                 StringComparison.OrdinalIgnoreCase))
         {
-            return Fail(probeError ?? $"Unable to resolve process identity for new window PID {pid}.");
+            var lineage = ValidateChildLineage(pid, identity, policy);
+            if (!lineage.IsValid)
+                return lineage;
         }
 
         return Ok();
@@ -263,8 +388,6 @@ public sealed class ProcessIdentityValidator
         if (!isRoot && allowChildWithoutRootHash && !requiresPath && !requiresHash)
             return Ok();
 
-        // Path/hash constraints apply to the root application identity. Allowed children
-        // are gated by name + lineage; when set on policy they still require resolvable identity.
         if (requiresPath || requiresHash)
         {
             if (!isRoot)
@@ -311,31 +434,30 @@ public sealed class ProcessIdentityValidator
             return Fail($"Process '{identity.ProcessName}' is not an allowed child.");
         }
 
-        if (_rootProcessId is int rootPid)
-        {
-            if (identity.ParentProcessId is int parent)
-            {
-                if (parent != rootPid && parent != childPid)
-                {
-                    // Walk one level: accept if parent is root; otherwise fail closed when known.
-                    if (!_probe.TryGetIdentity(parent, out var parentInfo, out _))
-                        return Fail($"Unable to verify parent lineage for child PID {childPid}.");
+        if (_pinnedRootProcessId is not int rootPid)
+            return Fail("Root process is not pinned; cannot verify child lineage.");
 
-                    if (parentInfo.ProcessId != rootPid
-                        && !string.Equals(
-                            parentInfo.ProcessName,
-                            policy.Application.ProcessName,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        return Fail(
-                            $"Child process '{identity.ProcessName}' parent '{parentInfo.ProcessName}' is outside lineage.");
-                    }
-                }
-            }
-            // Missing parent id: name allow-list already checked; do not invent lineage.
+        if (identity.ParentProcessId is not int parent || parent <= 0)
+            return Fail($"Parent process id missing for child PID {childPid}; fail-closed.");
+
+        if (parent == rootPid)
+            return Ok();
+
+        if (!_probe.TryGetIdentity(parent, out var parentInfo, out var parentError))
+            return Fail(parentError ?? $"Unable to verify parent lineage for child PID {childPid}.");
+
+        if (parentInfo.ProcessId == rootPid
+            || string.Equals(
+                parentInfo.ProcessName,
+                policy.Application.ProcessName,
+                StringComparison.OrdinalIgnoreCase)
+            || parentInfo.ParentProcessId == rootPid)
+        {
+            return Ok();
         }
 
-        return Ok();
+        return Fail(
+            $"Child process '{identity.ProcessName}' parent '{parentInfo.ProcessName}' is outside lineage.");
     }
 
     private static bool IsProcessNameAllowed(string processName, ExplorationPolicyDocument policy)

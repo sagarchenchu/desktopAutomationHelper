@@ -5,6 +5,7 @@ internal sealed class MainForm : Form
     private readonly TextBox _eventLog;
     private readonly Label _status;
     private readonly ToolTip _toolTip = new();
+    private SampleDialog? _openDialog;
 
     public MainForm()
     {
@@ -178,9 +179,21 @@ internal sealed class MainForm : Form
     private void OpenDialog()
     {
         Log("Open dialog");
-        using var dialog = new SampleDialog();
-        dialog.ShowDialog(this);
-        Log("Dialog closed");
+        // Owned, non-blocking dialog so the explorer can still observe/backtrack.
+        // (ShowDialog freezes the UI thread and blocks dumpuia stabilization.)
+        if (_openDialog is { IsDisposed: false })
+        {
+            _openDialog.Activate();
+            return;
+        }
+
+        _openDialog = new SampleDialog();
+        _openDialog.FormClosed += (_, _) =>
+        {
+            _openDialog = null;
+            Log("Dialog closed");
+        };
+        _openDialog.Show(this);
     }
 
     private void OpenSecond()

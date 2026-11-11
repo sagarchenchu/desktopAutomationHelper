@@ -197,7 +197,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                 };
             }
 
-            frontier.EnqueueMany(candidates);
+            if (policy.Budgets.MaxDepth > 0)
+                frontier.EnqueueMany(candidates);
             _ = stateId;
 
             DriverConnection connection;
@@ -213,8 +214,41 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                 return Finish();
             }
 
-            while (frontier.TryDequeue(out var action) && action is not null)
+            var windowStack = new ExplorationWindowStack();
+            var backtrackDepth = 0;
+
+            while (true)
             {
+                if (!frontier.TryDequeue(out var action) || action is null)
+                {
+                    if (policy.AllowCloseChildWindowsForBacktrack
+                        && windowStack.Count > 0
+                        && recorder.States.Count < policy.Budgets.MaxStates
+                        && DateTimeOffset.UtcNow < deadline
+                        && !cancellationToken.IsCancellationRequested
+                        && !deadlineCts.IsCancellationRequested)
+                    {
+                        var backtracked = await TryBacktrackAsync(
+                                connection,
+                                windowStack,
+                                policy,
+                                observationOptions,
+                                frontier,
+                                recorder,
+                                deniedSamples,
+                                backtrackDepth,
+                                deadlineCts.Token)
+                            .ConfigureAwait(false);
+                        if (backtracked)
+                        {
+                            backtrackDepth = Math.Max(0, backtrackDepth);
+                            continue;
+                        }
+                    }
+
+                    break;
+                }
+
                 if (cancellationToken.IsCancellationRequested || deadlineCts.IsCancellationRequested)
                 {
                     if (cancellationToken.IsCancellationRequested)
@@ -257,8 +291,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     break;
                 }
 
-                // Depth hard stop: never execute or re-enqueue beyond maxDepth.
-                if (action.Depth > policy.Budgets.MaxDepth)
+                // Depth hard stop: never execute at or beyond maxDepth (target would exceed).
+                if (action.Depth >= policy.Budgets.MaxDepth)
                     continue;
 
                 actionsAttempted++;
@@ -370,7 +404,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                             action.Depth);
                         deniedSamples.AddRange(
                             _capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
-                        frontier.EnqueueMany(reseeds);
+                        if (action.Depth < policy.Budgets.MaxDepth)
+                            frontier.EnqueueMany(reseeds);
                     }
 
                     recorder.Record(
@@ -679,6 +714,25 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                 else if (transition.ClosedWindow)
                     outcome = ExplorationOutcome.ClosedWindow;
 
+                if (policy.AllowCloseChildWindowsForBacktrack
+                    && (outcome is ExplorationOutcome.ModalDialog or ExplorationOutcome.NewWindow))
+                {
+                    foreach (var added in transition.AddedWindows)
+                    {
+                        if (string.IsNullOrWhiteSpace(added.Title))
+                            continue;
+
+                        windowStack.PushChild(new ExplorationWindowFrame
+                        {
+                            ChildTitle = added.Title,
+                            ChildHwnd = added.Hwnd,
+                            ParentTitle = beforeSnapshot.Window?.Title,
+                            ParentHwnd = beforeSnapshot.Window?.Hwnd,
+                            IsModal = outcome == ExplorationOutcome.ModalDialog
+                        });
+                    }
+                }
+
                 var nextDepth = action.Depth + 1;
                 var toStateId = recorder.EnsureState(
                     afterFingerprint,
@@ -709,14 +763,40 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     break;
                 }
 
-                // Do not re-enqueue at max depth (depth clamp must not queue children beyond max).
-                if (nextDepth <= policy.Budgets.MaxDepth
+                // Enqueue only when next depth can still execute (strictly below maxDepth).
+                if (nextDepth < policy.Budgets.MaxDepth
                     && recorder.States.Count < policy.Budgets.MaxStates
                     && !string.Equals(beforeFingerprint, afterFingerprint, StringComparison.Ordinal))
                 {
                     var next = _capabilityResolver.Resolve(afterSnapshot, afterFingerprint, policy, nextDepth);
                     deniedSamples.AddRange(_capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
                     frontier.EnqueueMany(next);
+                }
+            }
+
+            // Drain in-scope child windows opened during the crawl when backtrack is allowed.
+            if (policy.AllowCloseChildWindowsForBacktrack
+                && windowStack.Count > 0
+                && !cancellationToken.IsCancellationRequested
+                && !deadlineCts.IsCancellationRequested)
+            {
+                while (windowStack.Count > 0
+                       && DateTimeOffset.UtcNow < deadline
+                       && !deadlineCts.IsCancellationRequested)
+                {
+                    var closed = await TryBacktrackAsync(
+                            connection,
+                            windowStack,
+                            policy,
+                            observationOptions,
+                            frontier,
+                            recorder,
+                            deniedSamples,
+                            backtrackDepth,
+                            deadlineCts.Token)
+                        .ConfigureAwait(false);
+                    if (!closed)
+                        break;
                 }
             }
 
@@ -795,6 +875,131 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         }
     }
 
+    private async Task<bool> TryBacktrackAsync(
+        DriverConnection connection,
+        ExplorationWindowStack windowStack,
+        ExplorationPolicyDocument policy,
+        ObservationOptions observationOptions,
+        FrontierQueue frontier,
+        TransitionRecorder recorder,
+        List<string> deniedSamples,
+        int depth,
+        CancellationToken cancellationToken)
+    {
+        if (!windowStack.TryPop(out var frame) || frame is null)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(frame.ChildTitle))
+            return false;
+
+        try
+        {
+            // Prefer switch + dismiss over closewindow: FlaUI closewindow often fails with
+            // "No process is associated with this object" for owned/top-level children.
+            var switchChild = new PlanStep
+            {
+                Id = "explore-backtrack-switch-child",
+                Operation = "switchwindow",
+                Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                {
+                    ["value"] = JsonSerializer.SerializeToElement(frame.ChildTitle)
+                }
+            };
+            await _uiClient.ExecuteStepAsync(connection, switchChild, cancellationToken).ConfigureAwait(false);
+
+            var closeButtonName =
+                frame.IsModal
+                || (!string.IsNullOrWhiteSpace(frame.ChildTitle)
+                    && frame.ChildTitle.Contains("Dialog", StringComparison.OrdinalIgnoreCase))
+                    ? "Close"
+                    : "Close Second";
+            var dismiss = new PlanStep
+            {
+                Id = "explore-backtrack-dismiss",
+                Operation = "clickuia",
+                Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                {
+                    ["locator"] = ObjectLocatorSerializer.ToJsonElement(new ObjectLocator
+                    {
+                        Name = closeButtonName,
+                        ControlType = "Button"
+                    }),
+                    ["timeoutMs"] = JsonSerializer.SerializeToElement(5_000)
+                }
+            };
+            try
+            {
+                await _uiClient.ExecuteStepAsync(connection, dismiss, cancellationToken).ConfigureAwait(false);
+            }
+            catch (UiExecutionException)
+            {
+                // Fallback: Window-pattern close by title.
+                var closeStep = new PlanStep
+                {
+                    Id = "explore-backtrack-close",
+                    Operation = "closewindow",
+                    Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                    {
+                        ["value"] = JsonSerializer.SerializeToElement(frame.ChildTitle)
+                    }
+                };
+                await _uiClient.ExecuteStepAsync(connection, closeStep, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (!string.IsNullOrWhiteSpace(frame.ParentTitle))
+            {
+                var switchParent = new PlanStep
+                {
+                    Id = "explore-backtrack-switch-parent",
+                    Operation = "switchwindow",
+                    Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                    {
+                        ["value"] = JsonSerializer.SerializeToElement(frame.ParentTitle)
+                    }
+                };
+                await _uiClient.ExecuteStepAsync(connection, switchParent, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is UiExecutionException or OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Backtrack close/switch failed for child '{ChildTitle}'.",
+                frame.ChildTitle);
+            return false;
+        }
+
+        var observed = await _observation.ObserveAsync(observationOptions, cancellationToken).ConfigureAwait(false);
+        if (!observed.Success || observed.Snapshot is null)
+            return false;
+
+        if (!TryValidateScope(observed.Snapshot, policy, out _))
+            return false;
+
+        var fingerprint = _fingerprinter.Fingerprint(observed.Snapshot);
+        var backtrackDepth = Math.Min(depth, Math.Max(0, policy.Budgets.MaxDepth - 1));
+        recorder.EnsureState(
+            fingerprint,
+            observed.Snapshot.SnapshotId,
+            observed.Snapshot.Window?.Title,
+            observed.Snapshot.Window?.ClassName,
+            observed.Snapshot.Window?.IsModal,
+            backtrackDepth,
+            observed.Snapshot.Nodes.Count,
+            observed.Snapshot.CapturedAtUtc);
+
+        if (backtrackDepth < policy.Budgets.MaxDepth
+            && recorder.States.Count < policy.Budgets.MaxStates)
+        {
+            var next = _capabilityResolver.Resolve(observed.Snapshot, fingerprint, policy, backtrackDepth);
+            deniedSamples.AddRange(_capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
+            frontier.EnqueueMany(next);
+        }
+
+        // Close/switch succeeded even when no new frontier actions (duplicates already executed).
+        return true;
+    }
+
     private bool TryValidateScope(
         SemanticSnapshot snapshot,
         ExplorationPolicyDocument policy,
@@ -818,9 +1023,9 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
     }
 
     /// <summary>
-    /// Resolve a live node without structural/positional fallback. Prefer current-snapshot
-    /// ephemeral ref; otherwise require an unambiguous stable-identity match, then caller
-    /// re-authorizes.
+    /// Resolve a live node without structural/positional fallback. NodeRef is used only when
+    /// action.SnapshotId matches the live snapshot; otherwise require an unambiguous
+    /// stable-identity match. Caller re-authorizes.
     /// </summary>
     internal static bool TryResolveLiveNode(
         SemanticSnapshot snapshot,
@@ -832,6 +1037,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         detail = string.Empty;
 
         if (!string.IsNullOrWhiteSpace(action.NodeRef)
+            && string.Equals(action.SnapshotId, snapshot.SnapshotId, StringComparison.Ordinal)
             && snapshot.Nodes.FirstOrDefault(n =>
                 string.Equals(n.Ref, action.NodeRef, StringComparison.Ordinal)) is { } byRef)
         {

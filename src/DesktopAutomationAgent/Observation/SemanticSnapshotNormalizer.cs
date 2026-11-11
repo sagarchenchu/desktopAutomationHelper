@@ -153,7 +153,15 @@ public sealed class SemanticSnapshotNormalizer
                 n.Focusable,
                 n.HasKeyboardFocus,
                 n.Patterns,
-                n.Capabilities
+                n.Capabilities,
+                interaction = n.Interaction is null
+                    ? null
+                    : new
+                    {
+                        expandCollapse = n.Interaction.ExpandCollapse,
+                        selected = n.Interaction.Selected,
+                        toggle = n.Interaction.Toggle
+                    }
             }),
             snapshot.Truncated,
             warnings = snapshot.Warnings,

@@ -293,6 +293,44 @@ public class Phase4bSafeExplorerTests
             new WindowDescriptor { Title = "X", ProcessId = 12 },
             MinimalPolicy());
         Assert.False(newWindowMissingName.IsValid);
+
+        // Probe failure must fail closed (never Ok).
+        var probeFail = validator.ValidateNewWindow(
+            new WindowDescriptor
+            {
+                Title = "Ghost",
+                ProcessName = "DesktopAutomationExplorerFixture",
+                ProcessId = 999
+            },
+            MinimalPolicy());
+        Assert.False(probeFail.IsValid);
+
+        // Missing parent fails child lineage.
+        var noParentProbe = new FakeProcessIdentityProbe();
+        noParentProbe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = 1
+        });
+        noParentProbe.Register(20, new ProcessIdentityInfo
+        {
+            ProcessId = 20,
+            ProcessName = "FixtureChild",
+            SessionId = 1,
+            ParentProcessId = null
+        });
+        var lineageValidator = new ProcessIdentityValidator(noParentProbe);
+        var rootOk = lineageValidator.ValidateSnapshot(Snapshot(processId: 10), childPolicy);
+        Assert.True(rootOk.IsValid);
+        Assert.Equal(10, lineageValidator.PinnedRootProcessId);
+        Assert.False(lineageValidator.ValidateSnapshot(
+            Snapshot(processName: "FixtureChild", processId: 20),
+            childPolicy).IsValid);
+
+        // Pin is sticky — second root validation must not reset.
+        Assert.True(lineageValidator.ValidateSnapshot(Snapshot(processId: 10), childPolicy).IsValid);
+        Assert.Equal(10, lineageValidator.PinnedRootProcessId);
     }
 
     [Fact]
@@ -330,14 +368,56 @@ public class Phase4bSafeExplorerTests
     }
 
     [Fact]
-    public void TryResolveLiveNode_RejectsAmbiguousAndPositionalOnlyMatches()
+    public void TryResolveLiveNode_UsesNodeRefOnlyWhenSnapshotIdMatches()
     {
         var snapshot = Snapshot(
-            Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
-            Node("n1", "n0", 0, 1, "Button", "Same", "dup", true, ["Invoke"]),
-            Node("n2", "n0", 1, 1, "Button", "Same", "dup", true, ["Invoke"]));
+            snapshotId: "snap-live",
+            nodes:
+            [
+                Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+                Node("n1", "n0", 0, 1, "Button", "Open", "open", true, ["Invoke"])
+            ]);
 
-        var action = new ExplorationActionCandidate
+        var sameSnapshot = new ExplorationActionCandidate
+        {
+            ActionKey = "invoke:open",
+            Kind = ExplorationActionKind.Invoke,
+            Category = "invoke",
+            ElementKey = "Button|open|Open|o0|d1",
+            AutomationId = "open",
+            Name = "Open",
+            ControlType = "Button",
+            NodeRef = "n1",
+            SnapshotId = "snap-live"
+        };
+        Assert.True(ExplorationCoordinator.TryResolveLiveNode(snapshot, sameSnapshot, out var byRef, out _));
+        Assert.Equal("n1", byRef!.Ref);
+
+        var staleSnapshotId = new ExplorationActionCandidate
+        {
+            ActionKey = sameSnapshot.ActionKey,
+            Kind = sameSnapshot.Kind,
+            Category = sameSnapshot.Category,
+            ElementKey = sameSnapshot.ElementKey,
+            AutomationId = sameSnapshot.AutomationId,
+            Name = sameSnapshot.Name,
+            ControlType = sameSnapshot.ControlType,
+            NodeRef = "n1",
+            SnapshotId = "snap-other"
+        };
+        // NodeRef must be ignored when SnapshotId differs — fall through to identity match.
+        Assert.True(ExplorationCoordinator.TryResolveLiveNode(snapshot, staleSnapshotId, out var byIdentity, out _));
+        Assert.Equal("n1", byIdentity!.Ref);
+
+        var ambiguous = Snapshot(
+            snapshotId: "snap-live",
+            nodes:
+            [
+                Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+                Node("n1", "n0", 0, 1, "Button", "Same", "dup", true, ["Invoke"]),
+                Node("n2", "n0", 1, 1, "Button", "Same", "dup", true, ["Invoke"])
+            ]);
+        var ambiguousAction = new ExplorationActionCandidate
         {
             ActionKey = "invoke:x",
             Kind = ExplorationActionKind.Invoke,
@@ -346,18 +426,11 @@ public class Phase4bSafeExplorerTests
             AutomationId = "dup",
             Name = "Same",
             ControlType = "Button",
-            NodeRef = "missing",
-            SnapshotId = "other"
+            NodeRef = "n1",
+            SnapshotId = "snap-other"
         };
-
-        Assert.False(ExplorationCoordinator.TryResolveLiveNode(snapshot, action, out _, out var detail));
+        Assert.False(ExplorationCoordinator.TryResolveLiveNode(ambiguous, ambiguousAction, out _, out var detail));
         Assert.Contains("Ambiguous", detail, StringComparison.OrdinalIgnoreCase);
-
-        var unique = Snapshot(
-            Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
-            Node("n9", "n0", 5, 2, "Button", "Same", "dup", true, ["Invoke"]));
-        Assert.True(ExplorationCoordinator.TryResolveLiveNode(unique, action, out var live, out _));
-        Assert.Equal("n9", live!.Ref);
     }
 
     [Fact]
@@ -547,7 +620,7 @@ public class Phase4bSafeExplorerTests
         [
             new ExplorationElementRule { AutomationId = "ExplorerTreeRoot", Action = "expand", ActionCategory = "expandCollapse" }
         ];
-        await File.WriteAllTextAsync(policyPath, JsonSerializer.Serialize(policy));
+        await File.WriteAllTextAsync(policyPath, JsonSerializer.Serialize(policy, CamelCaseJson));
 
         var snapshot = Snapshot(
             processName: "DesktopAutomationExplorerFixture",
@@ -890,6 +963,265 @@ public class Phase4bSafeExplorerTests
         Assert.False(ForbiddenActionVocabulary.Matches("Open Dialog"));
     }
 
+    [Fact]
+    public void PolicyReader_SchemaRejectsMisspelledMaxActions()
+    {
+        var json = """
+            {
+              "policySchemaVersion": 1,
+              "mode": "observe",
+              "application": { "processName": "DesktopAutomationExplorerFixture" },
+              "scope": {},
+              "allowedActionCategories": [],
+              "allowRules": [],
+              "denyRules": [],
+              "budgets": {
+                "maxStates": 5,
+                "maxActons": 3,
+                "maxDepth": 2,
+                "totalDurationSeconds": 30,
+                "perActionTimeoutSeconds": 5,
+                "stabilizationTimeoutSeconds": 5
+              },
+              "allowCloseChildWindowsForBacktrack": false,
+              "allowHover": false,
+              "allowCoordinateFallback": false
+            }
+            """;
+        var result = new ExplorationPolicyReader().ValidateJsonAgainstSchema(json);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("schema", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void CapabilityResolver_MenuOpenRequiresExpandCollapse_NoAutomationIdHeuristic()
+    {
+        var snapshot = Snapshot(
+            Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+            Node("n1", "n0", 0, 1, "MenuItem", "File", "ExplorerFileMenu", true, ["Invoke"]));
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.AllowedActionCategories = ["menuOpen", "invoke"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule
+            {
+                AutomationId = "ExplorerFileMenu",
+                Action = "menuOpen",
+                ActionCategory = "menuOpen"
+            }
+        ];
+
+        var candidates = new CapabilityResolver().Resolve(snapshot, "fp", policy, 0);
+        Assert.DoesNotContain(candidates, c => c.Kind == ExplorationActionKind.MenuOpen);
+    }
+
+    [Fact]
+    public void ComputeHash_IncludesInteractionState()
+    {
+        var collapsed = Snapshot(
+            Node(
+                "n1",
+                null,
+                0,
+                0,
+                "TreeItem",
+                "Root",
+                "root",
+                true,
+                ["ExpandCollapse"],
+                interaction: new NodeInteractionState { ExpandCollapse = "Collapsed" }));
+        var expanded = Snapshot(
+            Node(
+                "n1",
+                null,
+                0,
+                0,
+                "TreeItem",
+                "Root",
+                "root",
+                true,
+                ["ExpandCollapse"],
+                interaction: new NodeInteractionState { ExpandCollapse = "Expanded" }));
+
+        Assert.NotEqual(
+            SemanticSnapshotNormalizer.ComputeHash(collapsed),
+            SemanticSnapshotNormalizer.ComputeHash(expanded));
+    }
+
+    [Fact]
+    public async Task Coordinator_MaxDepthZero_DoesNotExecuteActions()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.Budgets.MaxDepth = 0;
+        policy.Budgets.MaxActions = 10;
+        policy.AllowedActionCategories = ["expandCollapse"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule { AutomationId = "ExplorerTreeRoot", Action = "expand", ActionCategory = "expandCollapse" }
+        ];
+        var policyPath = WritePolicy(workspace.RootPath, policy);
+
+        var snapshot = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                    Node("n1", "n0", 0, 1, "TreeItem", "Root", "ExplorerTreeRoot", true, ["ExpandCollapse"])
+                ]),
+            "DA Explorer Fixture",
+            "Form",
+            false,
+            1,
+            10);
+
+        var observe = new Mock<ISemanticObservationService>();
+        observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ObservationResult { Success = true, ExitCode = 0, Snapshot = snapshot, NodeCount = 2 });
+
+        var ui = new Mock<IDriverUiClient>(MockBehavior.Strict);
+        var connection = new Mock<IDriverConnectionResolver>();
+        connection.Setup(c => c.ResolveAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DriverConnection
+            {
+                BaseUri = new Uri("http://127.0.0.1:1"),
+                BearerToken = "token",
+                DiscoveryMethod = "configured"
+            });
+
+        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, connection.Object);
+        var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
+        Assert.True(result.Success);
+        Assert.Equal(0, result.Summary!.ActionsAttempted);
+        ui.Verify(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Coordinator_MaxDepthOne_ExecutesOnlyDepthZero()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.Budgets.MaxDepth = 1;
+        policy.Budgets.MaxActions = 20;
+        policy.Budgets.StabilizationQuietPeriodMilliseconds = 0;
+        policy.AllowedActionCategories = ["expandCollapse"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule { AutomationId = "ExplorerTreeRoot", Action = "expand", ActionCategory = "expandCollapse" },
+            new ExplorationElementRule { AutomationId = "ExplorerTreeChild", Action = "expand", ActionCategory = "expandCollapse" }
+        ];
+        var policyPath = WritePolicy(workspace.RootPath, policy);
+
+        var stateA = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                snapshotId: "snap-a",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                    Node("n1", "n0", 0, 1, "TreeItem", "Root", "ExplorerTreeRoot", true, ["ExpandCollapse"])
+                ]),
+            "DA Explorer Fixture",
+            "Form",
+            false,
+            1,
+            10);
+
+        var stateB = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                snapshotId: "snap-b",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                    Node("n1", "n0", 0, 1, "TreeItem", "Root", "ExplorerTreeRoot", true, ["ExpandCollapse"]),
+                    Node("n2", "n1", 0, 2, "TreeItem", "Child", "ExplorerTreeChild", true, ["ExpandCollapse"])
+                ]),
+            "DA Explorer Fixture",
+            "Form",
+            false,
+            1,
+            10);
+
+        var observeCalls = 0;
+        var observe = new Mock<ISemanticObservationService>();
+        observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                observeCalls++;
+                var snap = observeCalls <= 2 ? stateA : stateB;
+                return new ObservationResult { Success = true, ExitCode = 0, Snapshot = snap, NodeCount = snap.Nodes.Count };
+            });
+
+        var mutateCalls = 0;
+        var ui = new Mock<IDriverUiClient>();
+        ui.Setup(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((DriverConnection _, PlanStep step, CancellationToken _) =>
+            {
+                if (step.Operation == "listwindows")
+                {
+                    return new UiExecutionResponse
+                    {
+                        Success = true,
+                        Value = JsonSerializer.SerializeToElement(new
+                        {
+                            windows = new[]
+                            {
+                                new
+                                {
+                                    hwnd = 1,
+                                    title = "DA Explorer Fixture",
+                                    className = "Form",
+                                    processId = 10,
+                                    processName = "DesktopAutomationExplorerFixture"
+                                }
+                            }
+                        })
+                    };
+                }
+
+                mutateCalls++;
+                return new UiExecutionResponse { Success = true };
+            });
+
+        var connection = new Mock<IDriverConnectionResolver>();
+        connection.Setup(c => c.ResolveAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DriverConnection
+            {
+                BaseUri = new Uri("http://127.0.0.1:1"),
+                BearerToken = "token",
+                DiscoveryMethod = "configured"
+            });
+
+        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, connection.Object);
+        var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
+        Assert.True(result.Success, result.Error ?? result.Summary?.StopReason ?? "failed");
+        Assert.True(mutateCalls >= 1);
+        Assert.True(result.Summary!.MaxDepthReached <= 1);
+        Assert.True(result.Summary.ActionsAttempted >= 1);
+
+        // Every attempted action must have been at depth 0 (depth >= maxDepth never executes).
+        var transitionLines = File.ReadAllLines(Path.Combine(result.ArtifactDirectory!, "transitions.jsonl"))
+            .Where(l => !string.IsNullOrWhiteSpace(l));
+        foreach (var line in transitionLines)
+        {
+            using var doc = JsonDocument.Parse(line);
+            if (doc.RootElement.TryGetProperty("depth", out var depthProp))
+                Assert.True(depthProp.GetInt32() < policy.Budgets.MaxDepth);
+        }
+    }
+
     private static ExplorationCoordinator CreateCoordinator(
         AgentOptions options,
         Workspace.IWorkspaceManager workspace,
@@ -948,11 +1280,18 @@ public class Phase4bSafeExplorerTests
         }
     }
 
+    private static readonly JsonSerializerOptions CamelCaseJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        WriteIndented = true
+    };
+
     private static string WritePolicy(string workspaceRoot, ExplorationPolicyDocument policy)
     {
         var path = Path.Combine(workspaceRoot, "exploration", "policies", Guid.NewGuid().ToString("N") + ".json");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, JsonSerializer.Serialize(policy));
+        File.WriteAllText(path, JsonSerializer.Serialize(policy, CamelCaseJson));
         return path;
     }
 

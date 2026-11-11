@@ -152,7 +152,7 @@
     "stabilizationTimeoutSeconds": 8,
     "stabilizationQuietPeriodMilliseconds": 400
   },
-  "allowCloseChildWindowsForBacktrack": false,
+  "allowCloseChildWindowsForBacktrack": true,
   "allowHover": false,
   "allowCoordinateFallback": false,
   "allowDoubleClick": false
