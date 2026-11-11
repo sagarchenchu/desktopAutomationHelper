@@ -7,9 +7,8 @@ namespace DesktopAutomationAgent.Exploration;
 
 /// <summary>
 /// Stable state identity for exploration. Ignores volatile timestamps, runtime refs,
-/// handles, coordinates, PID, and session id. Collision risk: expand/selected-only
-/// mutations that do not change the visible node set or names may fingerprint as equal
-/// until pattern state is projected into semantic snapshots.
+/// handles, coordinates, PID, and session id. Includes selected/expanded/toggle
+/// interaction state so tab/expand/toggle mutations change the fingerprint.
 /// </summary>
 public sealed class StateFingerprinter
 {
@@ -50,7 +49,15 @@ public sealed class StateFingerprinter
                 enabled = n.Enabled,
                 offscreen = n.Offscreen,
                 patterns = n.Patterns,
-                capabilities = n.Capabilities
+                capabilities = n.Capabilities,
+                interaction = n.Interaction is null
+                    ? null
+                    : new
+                    {
+                        expandCollapse = n.Interaction.ExpandCollapse,
+                        selected = n.Interaction.Selected,
+                        toggle = n.Interaction.Toggle
+                    }
             }),
             truncated = snapshot.Truncated
         }, CanonicalJsonOptions);

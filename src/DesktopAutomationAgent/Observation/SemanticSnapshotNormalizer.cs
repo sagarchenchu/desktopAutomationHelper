@@ -271,7 +271,8 @@ public sealed class SemanticSnapshotNormalizer
                 ReadIsModal(element),
                 GetNullableLong(element, "nativeWindowHandle"),
                 GetNullableInt(element, "processId"),
-                valueIsReadOnly));
+                valueIsReadOnly,
+                ReadInteraction(element)));
         }
 
         // Preserve driver dump order; do not globally re-sort by depth.
@@ -467,6 +468,7 @@ public sealed class SemanticSnapshotNormalizer
                 HasKeyboardFocus = options.IncludeFocusState ? node.HasKeyboardFocus : null,
                 Patterns = node.Patterns.OrderBy(static p => p, StringComparer.Ordinal).ToList(),
                 Capabilities = node.Capabilities,
+                Interaction = node.Interaction,
                 Bounds = options.IncludeBounds ? node.Bounds : null,
                 RuntimeId = options.IncludeRuntimeId ? NullIfEmpty(node.RuntimeId) : null
             });
@@ -697,6 +699,47 @@ public sealed class SemanticSnapshotNormalizer
     private static string? NullIfEmpty(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value;
 
+    private static NodeInteractionState? ReadInteraction(JsonElement element)
+    {
+        if (!element.TryGetProperty("interaction", out var interaction)
+            || interaction.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        string? expandCollapse = null;
+        bool? selected = null;
+        string? toggle = null;
+
+        if (interaction.TryGetProperty("expandCollapse", out var expandElement)
+            && expandElement.ValueKind == JsonValueKind.String)
+        {
+            expandCollapse = Bound(expandElement.GetString());
+        }
+
+        if (interaction.TryGetProperty("selected", out var selectedElement))
+        {
+            if (selectedElement.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                selected = selectedElement.GetBoolean();
+        }
+
+        if (interaction.TryGetProperty("toggle", out var toggleElement)
+            && toggleElement.ValueKind == JsonValueKind.String)
+        {
+            toggle = Bound(toggleElement.GetString());
+        }
+
+        if (expandCollapse is null && selected is null && toggle is null)
+            return null;
+
+        return new NodeInteractionState
+        {
+            ExpandCollapse = expandCollapse,
+            Selected = selected,
+            Toggle = toggle
+        };
+    }
+
     internal sealed record RawNode(
         int NodeIndex,
         int? ParentNodeIndex,
@@ -718,5 +761,6 @@ public sealed class SemanticSnapshotNormalizer
         bool? IsModal,
         long? NativeWindowHandle,
         int? ProcessId,
-        bool? ValueIsReadOnly);
+        bool? ValueIsReadOnly,
+        NodeInteractionState? Interaction);
 }

@@ -7,6 +7,10 @@ internal static class UiIds
     public const string FileMenu = "ExplorerFileMenu";
     public const string OpenDialogMenuItem = "ExplorerOpenDialogMenuItem";
     public const string OpenSecondMenuItem = "ExplorerOpenSecondMenuItem";
+    public const string ExitMenuItem = "ExplorerExitMenuItem";
+    public const string ResetMenuItem = "ExplorerResetMenuItem";
+    public const string PrintMenuItem = "ExplorerPrintMenuItem";
+    public const string ArchiveMenuItem = "ExplorerArchiveMenuItem";
     public const string TabControl = "ExplorerTabs";
     public const string TabHome = "ExplorerTabHome";
     public const string TabDetails = "ExplorerTabDetails";

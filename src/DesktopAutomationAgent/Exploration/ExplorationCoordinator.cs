@@ -34,6 +34,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
     private readonly CapabilityResolver _capabilityResolver;
     private readonly UiStabilizationService _stabilization;
     private readonly WindowTransitionDetector _windowDetector;
+    private readonly ProcessIdentityValidator _identityValidator;
     private readonly ExplorationArtifactWriter _artifactWriter;
     private readonly ILogger<ExplorationCoordinator> _logger;
 
@@ -48,7 +49,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         UiStabilizationService stabilization,
         WindowTransitionDetector windowDetector,
         ExplorationArtifactWriter artifactWriter,
-        ILogger<ExplorationCoordinator> logger)
+        ILogger<ExplorationCoordinator> logger,
+        ProcessIdentityValidator? identityValidator = null)
     {
         _options = options.Value;
         _policyReader = policyReader;
@@ -59,6 +61,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         _capabilityResolver = capabilityResolver;
         _stabilization = stabilization;
         _windowDetector = windowDetector;
+        _identityValidator = identityValidator ?? new ProcessIdentityValidator();
         _artifactWriter = artifactWriter;
         _logger = logger;
     }
@@ -119,9 +122,12 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         var actionsAttempted = 0;
         SemanticSnapshot? initialSnapshot = null;
 
+        using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        LinkDeadline(deadlineCts, deadline);
+
         try
         {
-            var initial = await _observation.ObserveAsync(observationOptions, cancellationToken).ConfigureAwait(false);
+            var initial = await _observation.ObserveAsync(observationOptions, deadlineCts.Token).ConfigureAwait(false);
             if (!initial.Success || initial.Snapshot is null)
             {
                 stopReason = initial.Error ?? "Initial observation failed.";
@@ -131,22 +137,9 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             }
 
             initialSnapshot = initial.Snapshot;
-            if (!WindowTransitionDetector.IsSnapshotInScope(initialSnapshot, policy))
+            if (!TryValidateScope(initialSnapshot, policy, out var initialScopeError))
             {
-                stopReason = "Initial window/process/session is outside policy scope.";
-                status = "failed";
-                exitCode = ExitCodes.ExecutionFailure;
-                return Finish();
-            }
-
-            if (!string.IsNullOrWhiteSpace(policy.Application.ProcessName)
-                && !string.Equals(
-                    initialSnapshot.Application.ProcessName,
-                    policy.Application.ProcessName,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                stopReason =
-                    $"Observed process '{initialSnapshot.Application.ProcessName}' does not match policy processName '{policy.Application.ProcessName}'.";
+                stopReason = initialScopeError;
                 status = "failed";
                 exitCode = ExitCodes.ExecutionFailure;
                 return Finish();
@@ -210,7 +203,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             DriverConnection connection;
             try
             {
-                connection = await _connectionResolver.ResolveAsync(cancellationToken).ConfigureAwait(false);
+                connection = await _connectionResolver.ResolveAsync(deadlineCts.Token).ConfigureAwait(false);
             }
             catch (DriverConnectionException ex)
             {
@@ -222,11 +215,21 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
 
             while (frontier.TryDequeue(out var action) && action is not null)
             {
-                if (cancellationToken.IsCancellationRequested)
+                if (cancellationToken.IsCancellationRequested || deadlineCts.IsCancellationRequested)
                 {
-                    stopReason = "cancelled";
-                    status = "cancelled";
-                    exitCode = ExitCodes.Cancelled;
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        stopReason = "cancelled";
+                        status = "cancelled";
+                        exitCode = ExitCodes.Cancelled;
+                    }
+                    else
+                    {
+                        stopReason = "total-duration-budget";
+                        status = "budget-exhausted";
+                        exitCode = ExitCodes.Success;
+                    }
+
                     break;
                 }
 
@@ -246,7 +249,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     break;
                 }
 
-                if (recorder.States.Count > policy.Budgets.MaxStates)
+                if (recorder.States.Count >= policy.Budgets.MaxStates)
                 {
                     stopReason = "max-states-budget";
                     status = "budget-exhausted";
@@ -254,10 +257,9 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     break;
                 }
 
+                // Depth hard stop: never execute or re-enqueue beyond maxDepth.
                 if (action.Depth > policy.Budgets.MaxDepth)
-                {
                     continue;
-                }
 
                 actionsAttempted++;
                 var actionStarted = DateTimeOffset.UtcNow;
@@ -271,22 +273,27 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     nodeCount: 0,
                     capturedAtUtc: actionStarted);
 
+                if (recorder.States.Count > policy.Budgets.MaxStates)
+                {
+                    stopReason = "max-states-budget";
+                    status = "budget-exhausted";
+                    exitCode = ExitCodes.Success;
+                    break;
+                }
+
                 WindowInventory beforeWindows;
                 try
                 {
-                    beforeWindows = await _windowDetector.ListWindowsAsync(connection, cancellationToken)
+                    beforeWindows = await _windowDetector.ListWindowsAsync(connection, deadlineCts.Token)
                         .ConfigureAwait(false);
                 }
-                catch (Exception ex) when (ex is UiExecutionException or OperationCanceledException)
+                catch (OperationCanceledException)
                 {
-                    if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
-                    {
-                        stopReason = "cancelled";
-                        status = "cancelled";
-                        exitCode = ExitCodes.Cancelled;
-                        break;
-                    }
-
+                    (stopReason, status, exitCode) = CancelOrDeadline(cancellationToken);
+                    break;
+                }
+                catch (UiExecutionException ex)
+                {
                     recorder.Record(
                         fromStateId,
                         null,
@@ -305,7 +312,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                 string beforeFingerprint;
                 try
                 {
-                    var beforeObserve = await _observation.ObserveAsync(observationOptions, cancellationToken)
+                    var beforeObserve = await _observation.ObserveAsync(observationOptions, deadlineCts.Token)
                         .ConfigureAwait(false);
                     if (!beforeObserve.Success || beforeObserve.Snapshot is null)
                     {
@@ -325,23 +332,47 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     beforeSnapshot = beforeObserve.Snapshot;
                     beforeFingerprint = _fingerprinter.Fingerprint(beforeSnapshot);
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException)
                 {
-                    stopReason = "cancelled";
-                    status = "cancelled";
-                    exitCode = ExitCodes.Cancelled;
+                    (stopReason, status, exitCode) = CancelOrDeadline(cancellationToken);
+                    break;
+                }
+
+                // Blocker: scope after every observation (including pre-action) before resolve/execute.
+                if (!TryValidateScope(beforeSnapshot, policy, out var beforeScopeError))
+                {
+                    recorder.Record(
+                        fromStateId,
+                        null,
+                        beforeFingerprint,
+                        null,
+                        action,
+                        ExplorationOutcome.ScopeViolation,
+                        beforeScopeError,
+                        actionStarted,
+                        DateTimeOffset.UtcNow);
+                    stopReason = "scope-violation";
+                    status = "failed";
+                    exitCode = ExitCodes.ExecutionFailure;
                     break;
                 }
 
                 if (!string.Equals(beforeFingerprint, action.StateFingerprint, StringComparison.Ordinal))
                 {
-                    // State drifted; re-seed frontier from current state and skip stale action.
-                    var reseeds = _capabilityResolver.Resolve(
-                        beforeSnapshot,
-                        beforeFingerprint,
-                        policy,
-                        action.Depth);
-                    frontier.EnqueueMany(reseeds);
+                    // State drifted; re-seed frontier from current in-scope state and skip stale action.
+                    if (action.Depth < policy.Budgets.MaxDepth
+                        && recorder.States.Count < policy.Budgets.MaxStates)
+                    {
+                        var reseeds = _capabilityResolver.Resolve(
+                            beforeSnapshot,
+                            beforeFingerprint,
+                            policy,
+                            action.Depth);
+                        deniedSamples.AddRange(
+                            _capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
+                        frontier.EnqueueMany(reseeds);
+                    }
+
                     recorder.Record(
                         fromStateId,
                         recorder.EnsureState(
@@ -363,36 +394,40 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     continue;
                 }
 
-                var refIndex = new EphemeralRefIndex(beforeSnapshot);
-                if (!refIndex.TryResolve(action.SnapshotId, action.NodeRef, out var liveNode)
-                    || liveNode is null)
+                if (!TryResolveLiveNode(beforeSnapshot, action, out var liveNode, out var resolveDetail))
                 {
-                    // Same fingerprint but refs rotated — resolve by element key.
-                    liveNode = beforeSnapshot.Nodes.FirstOrDefault(n =>
-                        string.Equals(
-                            CapabilityResolver.BuildElementKey(n),
-                            action.ElementKey,
-                            StringComparison.Ordinal));
-                    if (liveNode is null)
-                    {
-                        recorder.Record(
-                            fromStateId,
-                            null,
-                            beforeFingerprint,
-                            null,
-                            action,
-                            ExplorationOutcome.StaleRef,
-                            $"Unable to resolve element '{action.ElementKey}' in current snapshot.",
-                            actionStarted,
-                            DateTimeOffset.UtcNow);
-                        continue;
-                    }
+                    recorder.Record(
+                        fromStateId,
+                        null,
+                        beforeFingerprint,
+                        null,
+                        action,
+                        ExplorationOutcome.StaleRef,
+                        resolveDetail,
+                        actionStarted,
+                        DateTimeOffset.UtcNow);
+                    continue;
+                }
+
+                if (!_capabilityResolver.IsStillAuthorized(liveNode!, action, policy, out var reauthDeny))
+                {
+                    recorder.Record(
+                        fromStateId,
+                        null,
+                        beforeFingerprint,
+                        null,
+                        action,
+                        ExplorationOutcome.StaleRef,
+                        $"Live node re-authorization failed: {reauthDeny ?? "deny-by-default"}.",
+                        actionStarted,
+                        DateTimeOffset.UtcNow);
+                    continue;
                 }
 
                 PlanStep step;
                 try
                 {
-                    step = BuildStep(action, liveNode, policy.Budgets.PerActionTimeoutSeconds);
+                    step = BuildStep(action, liveNode!, policy.Budgets.PerActionTimeoutSeconds);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -411,7 +446,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
 
                 try
                 {
-                    using var actionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    using var actionCts = CancellationTokenSource.CreateLinkedTokenSource(deadlineCts.Token);
                     actionCts.CancelAfter(TimeSpan.FromSeconds(policy.Budgets.PerActionTimeoutSeconds));
                     await _uiClient.ExecuteStepAsync(connection, step, actionCts.Token).ConfigureAwait(false);
                 }
@@ -432,6 +467,24 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                         DateTimeOffset.UtcNow);
                     break;
                 }
+                catch (OperationCanceledException) when (deadlineCts.IsCancellationRequested
+                                                         && !cancellationToken.IsCancellationRequested)
+                {
+                    stopReason = "total-duration-budget";
+                    status = "budget-exhausted";
+                    exitCode = ExitCodes.Success;
+                    recorder.Record(
+                        fromStateId,
+                        null,
+                        beforeFingerprint,
+                        null,
+                        action,
+                        ExplorationOutcome.BudgetExhausted,
+                        "Total duration budget reached during action.",
+                        actionStarted,
+                        DateTimeOffset.UtcNow);
+                    break;
+                }
                 catch (Exception ex) when (ex is UiExecutionException or OperationCanceledException)
                 {
                     recorder.Record(
@@ -447,12 +500,39 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     continue;
                 }
 
-                var stabilization = await _stabilization.WaitAsync(
-                        observationOptions,
-                        policy.Budgets,
-                        snapshot => WindowTransitionDetector.IsSnapshotInScope(snapshot, policy),
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                StabilizationResult stabilization;
+                try
+                {
+                    stabilization = await _stabilization.WaitAsync(
+                            observationOptions,
+                            policy.Budgets,
+                            snapshot =>
+                            {
+                                if (!WindowTransitionDetector.IsSnapshotInScope(snapshot, policy))
+                                    return false;
+                                var identity = _identityValidator.ValidateSnapshot(snapshot, policy);
+                                return identity.IsValid;
+                            },
+                            deadlineCts.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    (stopReason, status, exitCode) = CancelOrDeadline(cancellationToken);
+                    recorder.Record(
+                        fromStateId,
+                        null,
+                        beforeFingerprint,
+                        null,
+                        action,
+                        cancellationToken.IsCancellationRequested
+                            ? ExplorationOutcome.Cancelled
+                            : ExplorationOutcome.BudgetExhausted,
+                        stopReason,
+                        actionStarted,
+                        DateTimeOffset.UtcNow);
+                    break;
+                }
 
                 if (stabilization.Detail == "Scope violation detected during stabilization."
                     && stabilization.Snapshot is not null)
@@ -516,13 +596,37 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                 var afterFingerprint = stabilization.LastFingerprint
                     ?? _fingerprinter.Fingerprint(afterSnapshot);
 
+                // Scope after post-action / stabilization observation.
+                if (!TryValidateScope(afterSnapshot, policy, out var afterScopeError))
+                {
+                    recorder.Record(
+                        fromStateId,
+                        null,
+                        beforeFingerprint,
+                        afterFingerprint,
+                        action,
+                        ExplorationOutcome.ScopeViolation,
+                        afterScopeError,
+                        actionStarted,
+                        DateTimeOffset.UtcNow);
+                    stopReason = "scope-violation";
+                    status = "failed";
+                    exitCode = ExitCodes.ExecutionFailure;
+                    break;
+                }
+
                 WindowInventory afterWindows;
                 try
                 {
-                    afterWindows = await _windowDetector.ListWindowsAsync(connection, cancellationToken)
+                    afterWindows = await _windowDetector.ListWindowsAsync(connection, deadlineCts.Token)
                         .ConfigureAwait(false);
                 }
-                catch (Exception ex) when (ex is UiExecutionException or OperationCanceledException)
+                catch (OperationCanceledException)
+                {
+                    (stopReason, status, exitCode) = CancelOrDeadline(cancellationToken);
+                    break;
+                }
+                catch (UiExecutionException ex)
                 {
                     recorder.Record(
                         fromStateId,
@@ -575,14 +679,14 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                 else if (transition.ClosedWindow)
                     outcome = ExplorationOutcome.ClosedWindow;
 
-                var toDepth = Math.Min(action.Depth + 1, policy.Budgets.MaxDepth);
+                var nextDepth = action.Depth + 1;
                 var toStateId = recorder.EnsureState(
                     afterFingerprint,
                     afterSnapshot.SnapshotId,
                     afterSnapshot.Window?.Title,
                     afterSnapshot.Window?.ClassName,
                     afterSnapshot.Window?.IsModal,
-                    toDepth,
+                    Math.Min(nextDepth, policy.Budgets.MaxDepth),
                     afterSnapshot.Nodes.Count,
                     afterSnapshot.CapturedAtUtc);
 
@@ -597,7 +701,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     actionStarted,
                     DateTimeOffset.UtcNow);
 
-                if (recorder.States.Count >= policy.Budgets.MaxStates)
+                if (recorder.States.Count > policy.Budgets.MaxStates)
                 {
                     stopReason = "max-states-budget";
                     status = "budget-exhausted";
@@ -605,10 +709,12 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     break;
                 }
 
-                if (toDepth <= policy.Budgets.MaxDepth
+                // Do not re-enqueue at max depth (depth clamp must not queue children beyond max).
+                if (nextDepth <= policy.Budgets.MaxDepth
+                    && recorder.States.Count < policy.Budgets.MaxStates
                     && !string.Equals(beforeFingerprint, afterFingerprint, StringComparison.Ordinal))
                 {
-                    var next = _capabilityResolver.Resolve(afterSnapshot, afterFingerprint, policy, toDepth);
+                    var next = _capabilityResolver.Resolve(afterSnapshot, afterFingerprint, policy, nextDepth);
                     deniedSamples.AddRange(_capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
                     frontier.EnqueueMany(next);
                 }
@@ -625,6 +731,13 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             stopReason = "cancelled";
             status = "cancelled";
             exitCode = ExitCodes.Cancelled;
+            return Finish();
+        }
+        catch (OperationCanceledException) when (deadlineCts.IsCancellationRequested)
+        {
+            stopReason = "total-duration-budget";
+            status = "budget-exhausted";
+            exitCode = ExitCodes.Success;
             return Finish();
         }
         catch (Exception ex)
@@ -681,6 +794,105 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             };
         }
     }
+
+    private bool TryValidateScope(
+        SemanticSnapshot snapshot,
+        ExplorationPolicyDocument policy,
+        out string error)
+    {
+        if (!WindowTransitionDetector.IsSnapshotInScope(snapshot, policy))
+        {
+            error = "Window/process/session is outside policy scope.";
+            return false;
+        }
+
+        var identity = _identityValidator.ValidateSnapshot(snapshot, policy);
+        if (!identity.IsValid)
+        {
+            error = identity.Detail ?? "Process identity validation failed.";
+            return false;
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    /// <summary>
+    /// Resolve a live node without structural/positional fallback. Prefer current-snapshot
+    /// ephemeral ref; otherwise require an unambiguous stable-identity match, then caller
+    /// re-authorizes.
+    /// </summary>
+    internal static bool TryResolveLiveNode(
+        SemanticSnapshot snapshot,
+        ExplorationActionCandidate action,
+        out SemanticNode? liveNode,
+        out string detail)
+    {
+        liveNode = null;
+        detail = string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(action.NodeRef)
+            && snapshot.Nodes.FirstOrDefault(n =>
+                string.Equals(n.Ref, action.NodeRef, StringComparison.Ordinal)) is { } byRef)
+        {
+            liveNode = byRef;
+            return true;
+        }
+
+        var expectedKey = CapabilityResolver.BuildStableIdentityKey(new SemanticNode
+        {
+            ControlType = action.ControlType ?? string.Empty,
+            AutomationId = action.AutomationId,
+            Name = action.Name,
+            ClassName = action.ClassName
+        });
+
+        var matches = snapshot.Nodes
+            .Where(n => string.Equals(
+                CapabilityResolver.BuildStableIdentityKey(n),
+                expectedKey,
+                StringComparison.Ordinal))
+            .ToList();
+
+        if (matches.Count == 1)
+        {
+            liveNode = matches[0];
+            return true;
+        }
+
+        if (matches.Count == 0)
+        {
+            detail =
+                $"Unable to resolve element '{action.ElementKey}' in current snapshot (no unambiguous identity match).";
+            return false;
+        }
+
+        detail =
+            $"Ambiguous identity match for '{action.ElementKey}' ({matches.Count} nodes); fail-closed.";
+        return false;
+    }
+
+    private static void LinkDeadline(CancellationTokenSource deadlineCts, DateTimeOffset deadline)
+    {
+        var remaining = deadline - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+        {
+            deadlineCts.Cancel();
+            return;
+        }
+
+        // CancelAfter rejects > int.MaxValue ms; clamp to a safe upper bound.
+        var ms = remaining.TotalMilliseconds;
+        if (ms > int.MaxValue)
+            ms = int.MaxValue;
+        deadlineCts.CancelAfter(TimeSpan.FromMilliseconds(ms));
+    }
+
+    private static (string stopReason, string status, int exitCode) CancelOrDeadline(
+        CancellationToken cancellationToken) =>
+        cancellationToken.IsCancellationRequested
+            ? ("cancelled", "cancelled", ExitCodes.Cancelled)
+            : ("total-duration-budget", "budget-exhausted", ExitCodes.Success);
 
     private static PlanStep BuildStep(
         ExplorationActionCandidate action,

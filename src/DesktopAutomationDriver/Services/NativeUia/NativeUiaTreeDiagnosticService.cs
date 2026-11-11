@@ -971,7 +971,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
     {
         var controlTypeId = _uia.GetIntProperty(element, UIA_PropertyIds.UIA_ControlTypePropertyId);
         var snapshot = _uia.CreateSnapshot(element);
-        var (patterns, valueIsReadOnly) = ReadCheapPatterns(element);
+        var (patterns, valueIsReadOnly, interaction) = ReadCheapPatterns(element);
 
         var record = new Dictionary<string, object?>
         {
@@ -990,6 +990,9 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             ["valueIsReadOnly"] = valueIsReadOnly,
             ["capabilities"] = NativeUiaSemanticContract.MapCapabilities(patterns, valueIsReadOnly)
         };
+
+        if (interaction.Count > 0)
+            record["interaction"] = interaction;
 
         if (options.IncludeBounds)
             record["boundingRectangle"] = NativeUiaDiagnostics.ToRectangleObject(snapshot.BoundingRectangle);
@@ -1029,10 +1032,12 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
         return record;
     }
 
-    private (List<string> Patterns, bool? ValueIsReadOnly) ReadCheapPatterns(IUIAutomationElement element)
+    private (List<string> Patterns, bool? ValueIsReadOnly, Dictionary<string, object?> Interaction) ReadCheapPatterns(
+        IUIAutomationElement element)
     {
         var patterns = new List<string>();
         bool? valueIsReadOnly = null;
+        var interaction = new Dictionary<string, object?>(StringComparer.Ordinal);
 
         foreach (var patternId in CheapPatternIds)
         {
@@ -1056,6 +1061,55 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
                         valueIsReadOnly = null;
                     }
                 }
+                else if (patternId == UIA_PatternIds.UIA_ExpandCollapsePatternId
+                         && pattern is IUIAutomationExpandCollapsePattern expandCollapse)
+                {
+                    try
+                    {
+                        interaction["expandCollapse"] = expandCollapse.CurrentExpandCollapseState switch
+                        {
+                            ExpandCollapseState.ExpandCollapseState_Expanded => "expanded",
+                            ExpandCollapseState.ExpandCollapseState_Collapsed => "collapsed",
+                            ExpandCollapseState.ExpandCollapseState_PartiallyExpanded => "partiallyExpanded",
+                            ExpandCollapseState.ExpandCollapseState_LeafNode => "leaf",
+                            _ => "unknown"
+                        };
+                    }
+                    catch
+                    {
+                        // ignore unstable pattern reads
+                    }
+                }
+                else if (patternId == UIA_PatternIds.UIA_SelectionItemPatternId
+                         && pattern is IUIAutomationSelectionItemPattern selectionItem)
+                {
+                    try
+                    {
+                        interaction["selected"] = selectionItem.CurrentIsSelected != 0;
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
+                }
+                else if (patternId == UIA_PatternIds.UIA_TogglePatternId
+                         && pattern is IUIAutomationTogglePattern toggle)
+                {
+                    try
+                    {
+                        interaction["toggle"] = toggle.CurrentToggleState switch
+                        {
+                            ToggleState.ToggleState_On => "on",
+                            ToggleState.ToggleState_Off => "off",
+                            ToggleState.ToggleState_Indeterminate => "indeterminate",
+                            _ => "unknown"
+                        };
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
+                }
             }
             catch
             {
@@ -1063,7 +1117,7 @@ internal sealed class NativeUiaTreeDiagnosticService : INativeUiaTreeDiagnosticS
             }
         }
 
-        return (patterns, valueIsReadOnly);
+        return (patterns, valueIsReadOnly, interaction);
     }
 
     private object? ReadWindowState(IUIAutomationElement element)

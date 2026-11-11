@@ -1670,12 +1670,14 @@ public partial class UiService : IUiService
         {
             var hwndPtr = SafeWindowHandle(w);
             var hwndVal = hwndPtr.ToInt64();
+            var processId = SafeProcessId(w);
             return new
             {
                 title        = SafeElementName(w),
                 automationId = SafeElementAutomationId(w),
                 className    = SafeElementClassName(w),
-                processId    = SafeProcessId(w),
+                processId    = processId,
+                processName  = SafeProcessName(processId),
                 hwnd         = hwndVal,
                 hwndHex      = $"0x{hwndVal:X}",
                 visible      = hwndPtr != IntPtr.Zero && IsWindowVisible(hwndPtr),
@@ -1683,6 +1685,22 @@ public partial class UiService : IUiService
                 isOffscreen  = SafeIsOffscreen(w)
             };
         }).ToList();
+    }
+
+    private static string? SafeProcessName(int? processId)
+    {
+        if (processId is not int pid || pid <= 0)
+            return null;
+
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById(pid);
+            return string.IsNullOrWhiteSpace(process.ProcessName) ? null : process.ProcessName;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static int GetListResponseLimit(UiRequest req)

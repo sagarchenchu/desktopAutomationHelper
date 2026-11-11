@@ -40,14 +40,19 @@ public sealed class WindowTransitionResult
 
 /// <summary>
 /// Detects new/closed windows and scope violations against the exploration policy.
+/// New windows without processName fail closed so they can be process-checked.
 /// </summary>
 public sealed class WindowTransitionDetector
 {
     private readonly IDriverUiClient _uiClient;
+    private readonly ProcessIdentityValidator _identityValidator;
 
-    public WindowTransitionDetector(IDriverUiClient uiClient)
+    public WindowTransitionDetector(
+        IDriverUiClient uiClient,
+        ProcessIdentityValidator? identityValidator = null)
     {
         _uiClient = uiClient;
+        _identityValidator = identityValidator ?? new ProcessIdentityValidator();
     }
 
     public async Task<WindowInventory> ListWindowsAsync(
@@ -85,40 +90,64 @@ public sealed class WindowTransitionDetector
         // (browser, terminals, etc.) are ignored so listwindows noise cannot fail the crawl.
         foreach (var window in added)
         {
-            if (!IsWindowInScope(window, policy))
+            var identity = _identityValidator.ValidateNewWindow(window, policy);
+            if (!identity.IsValid || !IsWindowInScope(window, policy))
             {
                 return new WindowTransitionResult
                 {
                     ScopeViolation = true,
                     NewWindow = true,
                     ClosedWindow = removed.Count > 0,
-                    Detail = $"Unexpected external window '{window.Title}' / process '{window.ProcessName}'.",
+                    Detail = identity.Detail
+                             ?? $"Unexpected external window '{window.Title}' / process '{window.ProcessName}'.",
                     Inventory = after
                 };
             }
         }
 
-        if (afterSnapshot?.Application.ProcessName is string processName
-            && !IsProcessAllowed(processName, policy))
+        if (afterSnapshot?.Application.ProcessName is string processName)
+        {
+            if (string.IsNullOrWhiteSpace(processName) || !IsProcessAllowed(processName, policy))
+            {
+                return new WindowTransitionResult
+                {
+                    ScopeViolation = true,
+                    Detail = $"Process '{processName}' is outside the allowed process tree.",
+                    Inventory = after
+                };
+            }
+        }
+        else if (afterSnapshot is not null)
         {
             return new WindowTransitionResult
             {
                 ScopeViolation = true,
-                Detail = $"Process '{processName}' is outside the allowed process tree.",
+                Detail = "Observed application processName is missing.",
                 Inventory = after
             };
         }
 
-        if (policy.Scope.WindowsSessionId is int expectedSession
-            && afterSnapshot?.WindowsSession.SessionId is int actualSession
-            && expectedSession != actualSession)
+        if (policy.Scope.WindowsSessionId is int expectedSession)
         {
-            return new WindowTransitionResult
+            if (afterSnapshot?.WindowsSession.SessionId is not int actualSession)
             {
-                ScopeViolation = true,
-                Detail = $"Windows session {actualSession} differs from allowed session {expectedSession}.",
-                Inventory = after
-            };
+                return new WindowTransitionResult
+                {
+                    ScopeViolation = true,
+                    Detail = "Windows session id is missing; fail-closed.",
+                    Inventory = after
+                };
+            }
+
+            if (expectedSession != actualSession)
+            {
+                return new WindowTransitionResult
+                {
+                    ScopeViolation = true,
+                    Detail = $"Windows session {actualSession} differs from allowed session {expectedSession}.",
+                    Inventory = after
+                };
+            }
         }
 
         if (afterSnapshot?.Window is { } active)
@@ -150,14 +179,19 @@ public sealed class WindowTransitionDetector
 
     public static bool IsSnapshotInScope(SemanticSnapshot snapshot, ExplorationPolicyDocument policy)
     {
-        if (snapshot.Application.ProcessName is string processName
-            && !IsProcessAllowed(processName, policy))
+        if (string.IsNullOrWhiteSpace(snapshot.Application.ProcessName))
             return false;
 
-        if (policy.Scope.WindowsSessionId is int expectedSession
-            && snapshot.WindowsSession.SessionId is int actualSession
-            && expectedSession != actualSession)
+        if (!IsProcessAllowed(snapshot.Application.ProcessName, policy))
             return false;
+
+        if (policy.Scope.WindowsSessionId is int expectedSession)
+        {
+            if (snapshot.WindowsSession.SessionId is not int actualSession)
+                return false;
+            if (expectedSession != actualSession)
+                return false;
+        }
 
         if (snapshot.Window is { } window)
         {
@@ -179,7 +213,11 @@ public sealed class WindowTransitionDetector
 
     private static bool IsWindowInScope(WindowDescriptor window, ExplorationPolicyDocument policy)
     {
-        if (!string.IsNullOrWhiteSpace(window.ProcessName) && !IsProcessAllowed(window.ProcessName, policy))
+        // Fail closed: new windows must carry processName so they can be process-checked.
+        if (string.IsNullOrWhiteSpace(window.ProcessName))
+            return false;
+
+        if (!IsProcessAllowed(window.ProcessName, policy))
             return false;
 
         if (!IsTitleAllowed(window.Title, policy) || !IsClassAllowed(window.ClassName, policy))

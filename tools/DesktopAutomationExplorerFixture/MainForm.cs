@@ -20,8 +20,22 @@ internal sealed class MainForm : Form
         openDialog.Click += (_, _) => OpenDialog();
         var openSecond = new ToolStripMenuItem("Open Second Window") { Name = UiIds.OpenSecondMenuItem };
         openSecond.Click += (_, _) => OpenSecond();
+        // Leaf commands — must never be clicked via global menuOpen; require explicit invoke allow.
+        var exit = new ToolStripMenuItem("Exit") { Name = UiIds.ExitMenuItem };
+        exit.Click += (_, _) => Log("LEAF: Exit");
+        var reset = new ToolStripMenuItem("Reset") { Name = UiIds.ResetMenuItem };
+        reset.Click += (_, _) => Log("LEAF: Reset");
+        var print = new ToolStripMenuItem("Print") { Name = UiIds.PrintMenuItem };
+        print.Click += (_, _) => Log("LEAF: Print");
+        var archive = new ToolStripMenuItem("Archive") { Name = UiIds.ArchiveMenuItem };
+        archive.Click += (_, _) => Log("LEAF: Archive");
         file.DropDownItems.Add(openDialog);
         file.DropDownItems.Add(openSecond);
+        file.DropDownItems.Add(new ToolStripSeparator());
+        file.DropDownItems.Add(exit);
+        file.DropDownItems.Add(reset);
+        file.DropDownItems.Add(print);
+        file.DropDownItems.Add(archive);
         menu.Items.Add(file);
         MainMenuStrip = menu;
         Controls.Add(menu);

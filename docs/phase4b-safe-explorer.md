@@ -54,7 +54,7 @@ When authorized by category and/or explicit allow rules:
 |---|---|---|
 | Expand / Collapse | `expandtreeitem` / `collapsetreeitem` | Prefer over invoke |
 | TabSelect | `selecttabuia` | TabItem |
-| MenuOpen | `clickuia` | Menu / MenuItem |
+| MenuOpen | `clickuia` | Expandable Menu / MenuItem containers only (leaf Exit/Reset/Print/Archive → Invoke + explicit allow) |
 | SelectItem | `select` | List/tree selection items |
 | Scroll | `scroll` (pattern mode) | When ScrollPattern present |
 | Focus | `focusuia` | When focusable |
@@ -81,13 +81,13 @@ Cancellation always attempts a valid partial artifact write.
 ## State identity risks
 
 Fingerprint ignores volatile timestamps, ephemeral refs, handles, coordinates,
-PID, and session id. It includes process name, window title/class/modal, and
-visible control identity/enabled/offscreen/patterns.
+PID, and session id. It includes process name, window title/class/modal, visible
+control identity/enabled/offscreen/patterns/capabilities, and interaction state
+(selected/expanded/toggle) when dumpuia projects it.
 
-**Collision risk:** expand/selected-only mutations that do not change the visible
-node set may fingerprint as equal until pattern state is projected into semantic
-snapshots. **False-difference risk:** truncation/warning churn or focus-adjacent
-name changes can create extra states.
+**Collision risk:** expand/selected-only mutations collide only when interaction
+state is unavailable from the driver. **False-difference risk:** truncation or
+focus-adjacent name changes can create extra states.
 
 ## Budgets and cycle protection
 

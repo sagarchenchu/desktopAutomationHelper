@@ -79,13 +79,13 @@
     },
     {
       "automationId": "ExplorerOpenDialogMenuItem",
-      "action": "menuOpen",
-      "actionCategory": "menuOpen"
+      "action": "invoke",
+      "actionCategory": "invoke"
     },
     {
       "automationId": "ExplorerOpenSecondMenuItem",
-      "action": "menuOpen",
-      "actionCategory": "menuOpen"
+      "action": "invoke",
+      "actionCategory": "invoke"
     },
     {
       "automationId": "ExplorerOpenDialogButton",

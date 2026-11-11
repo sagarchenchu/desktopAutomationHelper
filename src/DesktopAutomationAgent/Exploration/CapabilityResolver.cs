@@ -115,7 +115,10 @@ public sealed class CapabilityResolver
             }
         }
 
-        if (controlType is "MenuItem" or "Menu" || LooksLikeMenu(node))
+        // Only expandable submenu containers are MenuOpen. Leaf MenuItem commands
+        // (Exit/Reset/Print/Archive/etc.) go through Invoke + explicit allow — never
+        // via a global menuOpen category grant.
+        if (IsExpandableMenuContainer(node, controlType, capabilities))
         {
             yield return (ExplorationActionKind.MenuOpen, "menuOpen", "clickuia", null);
         }
@@ -135,8 +138,42 @@ public sealed class CapabilityResolver
         yield return (ExplorationActionKind.Hover, "hover", "hover", null);
 
         // Invoke is proposed only as a technical candidate; authorization is separate.
-        if (capabilities.Contains("invoke"))
+        // Leaf menu commands surface here (not as MenuOpen).
+        if (capabilities.Contains("invoke")
+            || (controlType == "MenuItem" && !IsExpandableMenuContainer(node, controlType, capabilities)))
+        {
             yield return (ExplorationActionKind.Invoke, "invoke", "clickuia", null);
+        }
+    }
+
+    private static bool IsExpandableMenuContainer(
+        SemanticNode node,
+        string controlType,
+        HashSet<string> capabilities)
+    {
+        if (controlType is "Menu" or "MenuBar")
+            return true;
+
+        if (controlType != "MenuItem" && !LooksLikeMenu(node))
+            return false;
+
+        if (capabilities.Contains("expandCollapse"))
+            return true;
+
+        if (node.Interaction?.ExpandCollapse is string expandState
+            && !string.IsNullOrWhiteSpace(expandState))
+            return true;
+
+        // Top-level menu containers often named *Menu without ExpandCollapse projected yet.
+        if (controlType == "MenuItem"
+            && !string.IsNullOrWhiteSpace(node.AutomationId)
+            && node.AutomationId.EndsWith("Menu", StringComparison.OrdinalIgnoreCase)
+            && !node.AutomationId.EndsWith("MenuItem", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static Dictionary<string, string>? BuildValueArgs(SemanticNode node)
@@ -157,6 +194,36 @@ public sealed class CapabilityResolver
          && node.AutomationId.Contains("Menu", StringComparison.OrdinalIgnoreCase))
         || (!string.IsNullOrWhiteSpace(node.Name)
             && node.Name.Contains("Menu", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Re-authorize a live node for an already-queued candidate. Fail closed when
+    /// the live element no longer matches the intended action.
+    /// </summary>
+    public bool IsStillAuthorized(
+        SemanticNode liveNode,
+        ExplorationActionCandidate action,
+        ExplorationPolicyDocument policy,
+        out string? denyReason)
+    {
+        ArgumentNullException.ThrowIfNull(liveNode);
+        ArgumentNullException.ThrowIfNull(action);
+        ArgumentNullException.ThrowIfNull(policy);
+
+        var allowedCategories = new HashSet<string>(policy.AllowedActionCategories, StringComparer.Ordinal);
+        return IsAuthorized(liveNode, action.Kind, action.Category, policy, allowedCategories, out denyReason);
+    }
+
+    /// <summary>
+    /// Stable identity key without ordinal/depth — used for unambiguous rematch only.
+    /// </summary>
+    public static string BuildStableIdentityKey(SemanticNode node)
+    {
+        var aid = string.IsNullOrWhiteSpace(node.AutomationId) ? "-" : node.AutomationId.Trim();
+        var name = string.IsNullOrWhiteSpace(node.Name) ? "-" : node.Name.Trim();
+        var ct = string.IsNullOrWhiteSpace(node.ControlType) ? "-" : NormalizeControlType(node.ControlType);
+        var cls = string.IsNullOrWhiteSpace(node.ClassName) ? "-" : node.ClassName.Trim();
+        return $"{ct}|{aid}|{name}|{cls}";
+    }
 
     private bool IsAuthorized(
         SemanticNode node,

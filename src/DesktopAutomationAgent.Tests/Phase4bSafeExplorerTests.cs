@@ -122,6 +122,245 @@ public class Phase4bSafeExplorerTests
     }
 
     [Fact]
+    public void CapabilityResolver_LeafMenuItem_IsInvokeNotMenuOpen()
+    {
+        var snapshot = Snapshot(
+            Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+            Node("n1", "n0", 0, 1, "MenuItem", "File", "ExplorerFileMenu", true, ["ExpandCollapse"]),
+            Node("n2", "n1", 0, 2, "MenuItem", "Exit", "ExplorerExitMenuItem", true, ["Invoke"]),
+            Node("n3", "n1", 1, 2, "MenuItem", "Reset", "ExplorerResetMenuItem", true, ["Invoke"]),
+            Node("n4", "n1", 2, 2, "MenuItem", "Print", "ExplorerPrintMenuItem", true, ["Invoke"]),
+            Node("n5", "n1", 3, 2, "MenuItem", "Archive", "ExplorerArchiveMenuItem", true, ["Invoke"]),
+            Node("n6", "n1", 4, 2, "MenuItem", "Open Dialog", "ExplorerOpenDialogMenuItem", true, ["Invoke"]));
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.AllowedActionCategories = ["menuOpen", "invoke"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule
+            {
+                AutomationId = "ExplorerFileMenu",
+                Action = "menuOpen",
+                ActionCategory = "menuOpen"
+            },
+            new ExplorationElementRule
+            {
+                AutomationId = "ExplorerOpenDialogMenuItem",
+                Action = "invoke",
+                ActionCategory = "invoke"
+            }
+        ];
+
+        var resolver = new CapabilityResolver();
+        var candidates = resolver.Resolve(snapshot, "fp", policy, 0);
+
+        Assert.Contains(candidates, c => c.AutomationId == "ExplorerFileMenu" && c.Kind == ExplorationActionKind.MenuOpen);
+        Assert.Contains(candidates, c => c.AutomationId == "ExplorerOpenDialogMenuItem" && c.Kind == ExplorationActionKind.Invoke);
+        Assert.DoesNotContain(candidates, c => c.AutomationId == "ExplorerExitMenuItem");
+        Assert.DoesNotContain(candidates, c => c.AutomationId == "ExplorerResetMenuItem");
+        Assert.DoesNotContain(candidates, c => c.AutomationId == "ExplorerPrintMenuItem");
+        Assert.DoesNotContain(candidates, c => c.AutomationId == "ExplorerArchiveMenuItem");
+        Assert.DoesNotContain(candidates, c =>
+            c.Kind == ExplorationActionKind.MenuOpen
+            && c.AutomationId is "ExplorerExitMenuItem" or "ExplorerOpenDialogMenuItem");
+    }
+
+    [Fact]
+    public void StateFingerprinter_IncludesInteractionState()
+    {
+        var collapsed = Snapshot(
+            Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+            Node(
+                "n1",
+                "n0",
+                0,
+                1,
+                "TreeItem",
+                "Root",
+                "ExplorerTreeRoot",
+                true,
+                ["ExpandCollapse"],
+                interaction: new NodeInteractionState { ExpandCollapse = "Collapsed" }));
+        var expanded = Snapshot(
+            Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+            Node(
+                "n1",
+                "n0",
+                0,
+                1,
+                "TreeItem",
+                "Root",
+                "ExplorerTreeRoot",
+                true,
+                ["ExpandCollapse"],
+                interaction: new NodeInteractionState { ExpandCollapse = "Expanded" }));
+        var selected = Snapshot(
+            Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+            Node(
+                "n1",
+                "n0",
+                0,
+                1,
+                "TabItem",
+                "Home",
+                "ExplorerTabHome",
+                true,
+                ["SelectionItem"],
+                interaction: new NodeInteractionState { Selected = true }));
+        var unselected = Snapshot(
+            Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+            Node(
+                "n1",
+                "n0",
+                0,
+                1,
+                "TabItem",
+                "Home",
+                "ExplorerTabHome",
+                true,
+                ["SelectionItem"],
+                interaction: new NodeInteractionState { Selected = false }));
+
+        var fingerprinter = new StateFingerprinter();
+        Assert.NotEqual(fingerprinter.Fingerprint(collapsed), fingerprinter.Fingerprint(expanded));
+        Assert.NotEqual(fingerprinter.Fingerprint(selected), fingerprinter.Fingerprint(unselected));
+    }
+
+    [Fact]
+    public void ProcessIdentityValidator_FailClosed_OnMissingIdentityAndPathMismatch()
+    {
+        var policy = MinimalPolicy();
+        policy.Application.ExecutablePath = @"C:\apps\fixture.exe";
+        policy.Application.ExecutableSha256 = new string('a', 64);
+
+        var probe = new FakeProcessIdentityProbe();
+        probe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            ExecutablePath = @"C:\apps\other.exe",
+            ExecutableSha256 = new string('b', 64),
+            SessionId = 1
+        });
+
+        var validator = new ProcessIdentityValidator(probe);
+        var snapshot = Snapshot(processId: 10);
+        var mismatch = validator.ValidateSnapshot(snapshot, policy);
+        Assert.False(mismatch.IsValid);
+
+        var missingName = Snapshot(processName: "", processId: 10);
+        Assert.False(validator.ValidateSnapshot(missingName, MinimalPolicy()).IsValid);
+
+        var missingPid = new SemanticSnapshot
+        {
+            SnapshotId = "snap",
+            Application = new ApplicationIdentity
+            {
+                ProcessName = "DesktopAutomationExplorerFixture",
+                ProcessId = null
+            },
+            WindowsSession = new WindowsSessionIdentity { SessionId = 1 },
+            Nodes = [Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"])]
+        };
+        Assert.False(validator.ValidateSnapshot(missingPid, MinimalPolicy()).IsValid);
+
+        probe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            ExecutablePath = @"C:\apps\fixture.exe",
+            ExecutableSha256 = new string('a', 64),
+            SessionId = 1
+        });
+        Assert.True(validator.ValidateSnapshot(snapshot, policy).IsValid);
+
+        var childPolicy = MinimalPolicy();
+        childPolicy.Application.AllowedChildProcessNames = ["FixtureChild"];
+        probe.Register(11, new ProcessIdentityInfo
+        {
+            ProcessId = 11,
+            ProcessName = "FixtureChild",
+            ParentProcessId = 10,
+            SessionId = 1
+        });
+        // Establish root first.
+        Assert.True(validator.ValidateSnapshot(snapshot, childPolicy).IsValid);
+        var childSnap = Snapshot(processName: "FixtureChild", processId: 11);
+        Assert.True(validator.ValidateSnapshot(childSnap, childPolicy).IsValid);
+
+        var newWindowMissingName = validator.ValidateNewWindow(
+            new WindowDescriptor { Title = "X", ProcessId = 12 },
+            MinimalPolicy());
+        Assert.False(newWindowMissingName.IsValid);
+    }
+
+    [Fact]
+    public void WindowTransitionDetector_FailsClosed_WhenNewWindowMissingProcessName()
+    {
+        var policy = MinimalPolicy();
+        var before = new WindowInventory
+        {
+            Windows =
+            [
+                new WindowDescriptor
+                {
+                    Hwnd = 1,
+                    Title = "DA Explorer Fixture",
+                    ProcessName = "DesktopAutomationExplorerFixture",
+                    ProcessId = 10
+                }
+            ]
+        };
+        var after = new WindowInventory
+        {
+            Windows =
+            [
+                before.Windows[0],
+                new WindowDescriptor { Hwnd = 2, Title = "Mystery", ProcessId = 11 }
+            ]
+        };
+
+        var detector = new WindowTransitionDetector(
+            Mock.Of<IDriverUiClient>(),
+            new ProcessIdentityValidator(new FakeProcessIdentityProbe()));
+        var result = detector.Compare(before, after, Snapshot(), policy);
+        Assert.True(result.ScopeViolation);
+        Assert.Contains("processName", result.Detail ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TryResolveLiveNode_RejectsAmbiguousAndPositionalOnlyMatches()
+    {
+        var snapshot = Snapshot(
+            Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+            Node("n1", "n0", 0, 1, "Button", "Same", "dup", true, ["Invoke"]),
+            Node("n2", "n0", 1, 1, "Button", "Same", "dup", true, ["Invoke"]));
+
+        var action = new ExplorationActionCandidate
+        {
+            ActionKey = "invoke:x",
+            Kind = ExplorationActionKind.Invoke,
+            Category = "invoke",
+            ElementKey = "Button|dup|Same|o0|d1",
+            AutomationId = "dup",
+            Name = "Same",
+            ControlType = "Button",
+            NodeRef = "missing",
+            SnapshotId = "other"
+        };
+
+        Assert.False(ExplorationCoordinator.TryResolveLiveNode(snapshot, action, out _, out var detail));
+        Assert.Contains("Ambiguous", detail, StringComparison.OrdinalIgnoreCase);
+
+        var unique = Snapshot(
+            Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+            Node("n9", "n0", 5, 2, "Button", "Same", "dup", true, ["Invoke"]));
+        Assert.True(ExplorationCoordinator.TryResolveLiveNode(unique, action, out var live, out _));
+        Assert.Equal("n9", live!.Ref);
+    }
+
+    [Fact]
     public void FrontierQueue_IsDeterministic_AndRejectsDuplicatePairs()
     {
         var frontier = new FrontierQueue();
@@ -659,6 +898,21 @@ public class Phase4bSafeExplorerTests
         IDriverConnectionResolver connection)
     {
         var fingerprinter = new StateFingerprinter();
+        var probe = new FakeProcessIdentityProbe();
+        probe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = 1
+        });
+        probe.Register(11, new ProcessIdentityInfo
+        {
+            ProcessId = 11,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = 1,
+            ParentProcessId = 10
+        });
+        var identity = new ProcessIdentityValidator(probe);
         return new ExplorationCoordinator(
             Options.Create(options),
             new ExplorationPolicyReader(),
@@ -668,9 +922,30 @@ public class Phase4bSafeExplorerTests
             fingerprinter,
             new CapabilityResolver(),
             new UiStabilizationService(observation, fingerprinter),
-            new WindowTransitionDetector(ui),
+            new WindowTransitionDetector(ui, identity),
             new ExplorationArtifactWriter(workspace),
-            NullLogger<ExplorationCoordinator>.Instance);
+            NullLogger<ExplorationCoordinator>.Instance,
+            identity);
+    }
+
+    private sealed class FakeProcessIdentityProbe : IProcessIdentityProbe
+    {
+        private readonly Dictionary<int, ProcessIdentityInfo> _byPid = new();
+
+        public void Register(int processId, ProcessIdentityInfo info) => _byPid[processId] = info;
+
+        public bool TryGetIdentity(int processId, out ProcessIdentityInfo info, out string? error)
+        {
+            if (_byPid.TryGetValue(processId, out info!))
+            {
+                error = null;
+                return true;
+            }
+
+            info = new ProcessIdentityInfo { ProcessId = processId };
+            error = $"Fake probe has no identity for PID {processId}.";
+            return false;
+        }
     }
 
     private static string WritePolicy(string workspaceRoot, ExplorationPolicyDocument policy)
@@ -812,7 +1087,8 @@ public class Phase4bSafeExplorerTests
         string automationId,
         bool enabled,
         string[] patterns,
-        bool focusable = true) =>
+        bool focusable = true,
+        NodeInteractionState? interaction = null) =>
         new()
         {
             Ref = nodeRef,
@@ -828,7 +1104,8 @@ public class Phase4bSafeExplorerTests
             Focusable = focusable,
             HasKeyboardFocus = false,
             Patterns = patterns.ToList(),
-            Capabilities = PatternCapabilityMapper.Map(patterns).ToList()
+            Capabilities = PatternCapabilityMapper.Map(patterns).ToList(),
+            Interaction = interaction
         };
 
     private static string ReadRepoFile(string relativePath)
