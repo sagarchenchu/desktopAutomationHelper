@@ -235,8 +235,8 @@ public static class AgentCli
         builder.Services.AddSingleton<ExplorationPolicyReader>();
         builder.Services.AddSingleton<StateFingerprinter>();
         builder.Services.AddSingleton<CapabilityResolver>();
+        // ProcessIdentityValidator is crawl-scoped (created per ExploreAsync), not a singleton.
         builder.Services.AddSingleton<IProcessIdentityProbe, SystemProcessIdentityProbe>();
-        builder.Services.AddSingleton<ProcessIdentityValidator>();
         builder.Services.AddSingleton<UiStabilizationService>();
         builder.Services.AddSingleton<WindowTransitionDetector>();
         builder.Services.AddSingleton<ExplorationArtifactWriter>();

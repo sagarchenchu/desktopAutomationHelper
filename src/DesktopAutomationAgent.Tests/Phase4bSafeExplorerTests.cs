@@ -331,6 +331,35 @@ public class Phase4bSafeExplorerTests
         // Pin is sticky — second root validation must not reset.
         Assert.True(lineageValidator.ValidateSnapshot(Snapshot(processId: 10), childPolicy).IsValid);
         Assert.Equal(10, lineageValidator.PinnedRootProcessId);
+
+        // Same processName as root but different PID is NOT accepted without ancestry to the pin.
+        var sameNameProbe = new FakeProcessIdentityProbe();
+        sameNameProbe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = 1
+        });
+        sameNameProbe.Register(55, new ProcessIdentityInfo
+        {
+            ProcessId = 55,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = 1,
+            ParentProcessId = 1
+        });
+        var sameNameValidator = new ProcessIdentityValidator(sameNameProbe);
+        Assert.True(sameNameValidator.ValidateSnapshot(Snapshot(processId: 10), MinimalPolicy()).IsValid);
+        var sameNameDifferentPid = sameNameValidator.ValidateNewWindow(
+            new WindowDescriptor
+            {
+                Title = "Other Instance",
+                ProcessName = "DesktopAutomationExplorerFixture",
+                ProcessId = 55,
+                Hwnd = 99
+            },
+            MinimalPolicy());
+        Assert.False(sameNameDifferentPid.IsValid);
+        Assert.Contains("Unexpected external", sameNameDifferentPid.Detail ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -359,10 +388,18 @@ public class Phase4bSafeExplorerTests
             ]
         };
 
-        var detector = new WindowTransitionDetector(
-            Mock.Of<IDriverUiClient>(),
-            new ProcessIdentityValidator(new FakeProcessIdentityProbe()));
-        var result = detector.Compare(before, after, Snapshot(), policy);
+        var probe = new FakeProcessIdentityProbe();
+        probe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = 1
+        });
+        var identity = new ProcessIdentityValidator(probe);
+        Assert.True(identity.ValidateSnapshot(Snapshot(processId: 10), policy).IsValid);
+
+        var detector = new WindowTransitionDetector(Mock.Of<IDriverUiClient>());
+        var result = detector.Compare(before, after, Snapshot(processId: 10), policy, identity);
         Assert.True(result.ScopeViolation);
         Assert.Contains("processName", result.Detail ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
@@ -517,8 +554,18 @@ public class Phase4bSafeExplorerTests
             ]
         };
 
+        var probe = new FakeProcessIdentityProbe();
+        probe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = 1
+        });
+        var identity = new ProcessIdentityValidator(probe);
+        Assert.True(identity.ValidateSnapshot(Snapshot(processId: 10), policy).IsValid);
+
         var detector = new WindowTransitionDetector(Mock.Of<IDriverUiClient>());
-        var external = detector.Compare(before, afterExternal, Snapshot(), policy);
+        var external = detector.Compare(before, afterExternal, Snapshot(processId: 10), policy, identity);
         Assert.True(external.ScopeViolation);
 
         // Pre-existing external windows must not fail scope checks.
@@ -536,13 +583,19 @@ public class Phase4bSafeExplorerTests
                 }
             ]
         };
-        var stableNoise = detector.Compare(preexistingNoise, preexistingNoise, Snapshot(
-            processName: "DesktopAutomationExplorerFixture",
-            nodes: [Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "main", true, ["Window"])]), policy);
+        var stableNoise = detector.Compare(
+            preexistingNoise,
+            preexistingNoise,
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                processId: 10,
+                nodes: [Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "main", true, ["Window"])]),
+            policy,
+            identity);
         Assert.False(stableNoise.ScopeViolation);
 
         var afterModal = new WindowInventory { Windows = [before.Windows[0]] };
-        var modalSnapshot = CloneWithWindow(Snapshot(), "DA Explorer Dialog", "Dialog", isModal: true, hwnd: 3, processId: 10);
+        var modalSnapshot = CloneWithWindow(Snapshot(processId: 10), "DA Explorer Dialog", "Dialog", isModal: true, hwnd: 3, processId: 10);
         modalSnapshot = new SemanticSnapshot
         {
             SnapshotId = modalSnapshot.SnapshotId,
@@ -554,7 +607,7 @@ public class Phase4bSafeExplorerTests
             Window = modalSnapshot.Window,
             Nodes = modalSnapshot.Nodes
         };
-        var modal = detector.Compare(before, afterModal, modalSnapshot, policy);
+        var modal = detector.Compare(before, afterModal, modalSnapshot, policy, identity);
         Assert.True(modal.ModalDialog);
         Assert.False(modal.ScopeViolation);
     }
@@ -1222,6 +1275,506 @@ public class Phase4bSafeExplorerTests
         }
     }
 
+    [Fact]
+    public async Task Coordinator_RecordsStabilizationTimeout_WhenFingerprintNeverQuiets()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.Budgets.MaxActions = 1;
+        policy.Budgets.StabilizationTimeoutSeconds = 1;
+        policy.Budgets.StabilizationQuietPeriodMilliseconds = 500;
+        policy.AllowedActionCategories = ["expandCollapse"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule { AutomationId = "ExplorerTreeRoot", Action = "expand", ActionCategory = "expandCollapse" }
+        ];
+        var policyPath = WritePolicy(workspace.RootPath, policy);
+
+        var tick = 0;
+        var observe = new Mock<ISemanticObservationService>();
+        observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                tick++;
+                // Initial + pre-action share identity; stabilization polls alternate node names so FP never quiets.
+                var name = tick <= 2 ? "Root" : $"Root-{tick}";
+                var snap = CloneWithWindow(
+                    Snapshot(
+                        processName: "DesktopAutomationExplorerFixture",
+                        snapshotId: $"snap-{tick}",
+                        nodes:
+                        [
+                            Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                            Node("n1", "n0", 0, 1, "TreeItem", name, "ExplorerTreeRoot", true, ["ExpandCollapse"])
+                        ]),
+                    "DA Explorer Fixture",
+                    "Form",
+                    false,
+                    1,
+                    10);
+                return new ObservationResult { Success = true, ExitCode = 0, Snapshot = snap, NodeCount = 2 };
+            });
+
+        var ui = new Mock<IDriverUiClient>();
+        ui.Setup(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((DriverConnection _, PlanStep step, CancellationToken _) =>
+                step.Operation == "listwindows"
+                    ? ListWindowsResponse([(1L, "DA Explorer Fixture", 10)])
+                    : new UiExecutionResponse { Success = true });
+
+        var connection = MockConnection();
+        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, connection);
+        var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
+        Assert.True(result.Success);
+        var transitions = File.ReadAllLines(Path.Combine(result.ArtifactDirectory!, "transitions.jsonl"))
+            .Where(l => !string.IsNullOrWhiteSpace(l))
+            .Select(l => JsonDocument.Parse(l).RootElement.GetProperty("outcome").GetString())
+            .ToList();
+        Assert.Contains("stabilizationTimeout", transitions);
+    }
+
+    [Fact]
+    public async Task Coordinator_StopsAtExactMaxStatesBudget()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.Budgets.MaxStates = 2;
+        policy.Budgets.MaxActions = 50;
+        policy.Budgets.MaxDepth = 5;
+        policy.Budgets.StabilizationQuietPeriodMilliseconds = 0;
+        policy.AllowedActionCategories = ["expandCollapse"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule { AutomationId = "ExplorerTreeRoot", Action = "expand", ActionCategory = "expandCollapse" },
+            new ExplorationElementRule { AutomationId = "ExplorerTreeChild", Action = "expand", ActionCategory = "expandCollapse" }
+        ];
+        var policyPath = WritePolicy(workspace.RootPath, policy);
+
+        var observeCalls = 0;
+        var observe = new Mock<ISemanticObservationService>();
+        observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                observeCalls++;
+                var snap = CloneWithWindow(
+                    Snapshot(
+                        processName: "DesktopAutomationExplorerFixture",
+                        snapshotId: $"snap-{observeCalls}",
+                        nodes:
+                        [
+                            Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                            Node("n1", "n0", 0, 1, "TreeItem", $"Root-{observeCalls}", "ExplorerTreeRoot", true, ["ExpandCollapse"]),
+                            Node("n2", "n1", 0, 2, "TreeItem", $"Child-{observeCalls}", "ExplorerTreeChild", true, ["ExpandCollapse"])
+                        ]),
+                    "DA Explorer Fixture",
+                    "Form",
+                    false,
+                    1,
+                    10);
+                return new ObservationResult { Success = true, ExitCode = 0, Snapshot = snap, NodeCount = snap.Nodes.Count };
+            });
+
+        var ui = new Mock<IDriverUiClient>();
+        ui.Setup(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((DriverConnection _, PlanStep step, CancellationToken _) =>
+                step.Operation == "listwindows"
+                    ? ListWindowsResponse([(1L, "DA Explorer Fixture", 10)])
+                    : new UiExecutionResponse { Success = true });
+
+        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, MockConnection());
+        var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
+        Assert.True(result.Success);
+        Assert.Equal("max-states-budget", result.Summary!.StopReason);
+        Assert.Equal(policy.Budgets.MaxStates, result.Summary.StatesVisited);
+    }
+
+    [Fact]
+    public async Task Coordinator_StopsOnTotalDurationBudget()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.Budgets.TotalDurationSeconds = 1;
+        policy.Budgets.MaxActions = 50;
+        policy.Budgets.PerActionTimeoutSeconds = 5;
+        policy.Budgets.StabilizationQuietPeriodMilliseconds = 0;
+        policy.AllowedActionCategories = ["expandCollapse"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule { AutomationId = "ExplorerTreeRoot", Action = "expand", ActionCategory = "expandCollapse" }
+        ];
+        var policyPath = WritePolicy(workspace.RootPath, policy);
+
+        var snap = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                    Node("n1", "n0", 0, 1, "TreeItem", "Root", "ExplorerTreeRoot", true, ["ExpandCollapse"])
+                ]),
+            "DA Explorer Fixture",
+            "Form",
+            false,
+            1,
+            10);
+
+        var observe = new Mock<ISemanticObservationService>();
+        observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ObservationResult { Success = true, ExitCode = 0, Snapshot = snap, NodeCount = 2 });
+
+        var ui = new Mock<IDriverUiClient>();
+        ui.Setup(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()))
+            .Returns(async (DriverConnection _, PlanStep step, CancellationToken ct) =>
+            {
+                if (step.Operation != "listwindows")
+                    await Task.Delay(1200, ct);
+                return ListWindowsResponse([(1L, "DA Explorer Fixture", 10)]);
+            });
+
+        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, MockConnection());
+        var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
+        Assert.True(result.Success, result.Error ?? result.Summary?.StopReason ?? "failed");
+        Assert.Equal("total-duration-budget", result.Summary!.StopReason);
+        Assert.Equal("budget-exhausted", result.Summary.Status);
+    }
+
+    [Fact]
+    public async Task Coordinator_Backtrack_UsesHwndWindowPattern_AndPreservesDepth()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.AllowCloseChildWindowsForBacktrack = true;
+        policy.Budgets.MaxActions = 20;
+        policy.Budgets.MaxDepth = 3;
+        policy.Budgets.StabilizationQuietPeriodMilliseconds = 0;
+        policy.AllowedActionCategories = ["invoke"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule
+            {
+                AutomationId = "ExplorerOpenSecondButton",
+                Action = "invoke",
+                ActionCategory = "invoke"
+            }
+        ];
+        var policyPath = WritePolicy(workspace.RootPath, policy);
+
+        var main = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                snapshotId: "snap-main",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                    Node("n1", "n0", 0, 1, "Button", "Open Second", "ExplorerOpenSecondButton", true, ["Invoke"])
+                ]),
+            "DA Explorer Fixture",
+            "Form",
+            false,
+            1,
+            10);
+
+        // Child surface has no further permitted actions so frontier empties → backtrack.
+        var child = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                snapshotId: "snap-child",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Second", "ExplorerSecondWindow", true, ["Window"])
+                ]),
+            "DA Explorer Second",
+            "Form",
+            false,
+            2,
+            10);
+
+        var activeHwnd = 1L;
+        var childOpen = false;
+        var childClosed = false;
+        var observe = new Mock<ISemanticObservationService>();
+        observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                var snap = activeHwnd == 2 && childOpen && !childClosed ? child : main;
+                return new ObservationResult
+                {
+                    Success = true,
+                    ExitCode = 0,
+                    Snapshot = snap,
+                    NodeCount = snap.Nodes.Count
+                };
+            });
+
+        var operations = new List<string>();
+        var ui = new Mock<IDriverUiClient>();
+        ui.Setup(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((DriverConnection _, PlanStep step, CancellationToken _) =>
+            {
+                operations.Add(step.Operation);
+                if (step.Operation == "listwindows")
+                {
+                    return childOpen && !childClosed
+                        ? ListWindowsResponse(
+                        [
+                            (1L, "DA Explorer Fixture", 10),
+                            (2L, "DA Explorer Second", 10)
+                        ])
+                        : ListWindowsResponse([(1L, "DA Explorer Fixture", 10)]);
+                }
+
+                if (step.Operation == "clickuia")
+                {
+                    childOpen = true;
+                    return new UiExecutionResponse { Success = true };
+                }
+
+                if (step.Operation == "switchwindow")
+                {
+                    Assert.True(
+                        step.Arguments is not null && step.Arguments.ContainsKey("hwnd"),
+                        "Backtrack/NewWindow switch must use hwnd, not title.");
+                    activeHwnd = step.Arguments!["hwnd"].GetInt64();
+                    return new UiExecutionResponse { Success = true };
+                }
+
+                if (step.Operation == "closewindow")
+                {
+                    Assert.True(
+                        step.Arguments is null
+                        || step.Arguments.Count == 0
+                        || !step.Arguments.ContainsKey("value"),
+                        "Backtrack must use WindowPattern closewindow (no title value).");
+                    childClosed = true;
+                    activeHwnd = 1;
+                    return new UiExecutionResponse { Success = true };
+                }
+
+                return new UiExecutionResponse { Success = true };
+            });
+
+        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, MockConnection());
+        var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
+        Assert.True(result.Success, result.Error ?? result.Summary?.StopReason ?? "failed");
+        Assert.Contains("closewindow", operations);
+        Assert.Contains("switchwindow", operations);
+
+        var transitionLines = File.ReadAllLines(Path.Combine(result.ArtifactDirectory!, "transitions.jsonl"))
+            .Where(l => !string.IsNullOrWhiteSpace(l))
+            .Select(l => JsonDocument.Parse(l).RootElement)
+            .ToList();
+
+        Assert.Contains(transitionLines, t =>
+            t.TryGetProperty("outcome", out var o)
+            && o.GetString() == "newWindow");
+
+        var backtrack = transitionLines.FirstOrDefault(t =>
+            t.TryGetProperty("actionKey", out var key)
+            && (key.GetString()?.StartsWith("backtrack:close:", StringComparison.Ordinal) ?? false));
+        Assert.False(backtrack.ValueKind == JsonValueKind.Undefined);
+        Assert.Equal("closedWindow", backtrack.GetProperty("outcome").GetString());
+        Assert.Equal(1, backtrack.GetProperty("depth").GetInt32());
+        Assert.Contains(
+            "WindowPattern",
+            backtrack.GetProperty("detail").GetString() ?? string.Empty,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Coordinator_NewWindow_IndependentOfNoOpFingerprint_SwitchesAndEnqueues()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.AllowCloseChildWindowsForBacktrack = false;
+        policy.Budgets.MaxActions = 5;
+        policy.Budgets.MaxDepth = 2;
+        policy.Budgets.StabilizationQuietPeriodMilliseconds = 0;
+        policy.AllowedActionCategories = ["invoke", "expandCollapse"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule
+            {
+                AutomationId = "ExplorerOpenSecondButton",
+                Action = "invoke",
+                ActionCategory = "invoke"
+            },
+            new ExplorationElementRule
+            {
+                AutomationId = "ExplorerTreeRoot",
+                Action = "expand",
+                ActionCategory = "expandCollapse"
+            }
+        ];
+        var policyPath = WritePolicy(workspace.RootPath, policy);
+
+        // Parent fingerprint intentionally unchanged across the invoke (NoOp FP), but a new HWND appears.
+        var main = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                snapshotId: "snap-main",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                    Node("n1", "n0", 0, 1, "Button", "Open Second", "ExplorerOpenSecondButton", true, ["Invoke"])
+                ]),
+            "DA Explorer Fixture",
+            "Form",
+            false,
+            1,
+            10);
+
+        var child = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                snapshotId: "snap-child",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Second", "ExplorerSecondWindow", true, ["Window"]),
+                    Node("n1", "n0", 0, 1, "TreeItem", "Root", "ExplorerTreeRoot", true, ["ExpandCollapse"])
+                ]),
+            "DA Explorer Second",
+            "Form",
+            false,
+            2,
+            10);
+
+        var observeCalls = 0;
+        var switched = false;
+        var observe = new Mock<ISemanticObservationService>();
+        observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                observeCalls++;
+                var snap = switched ? child : main;
+                return new ObservationResult { Success = true, ExitCode = 0, Snapshot = snap, NodeCount = snap.Nodes.Count };
+            });
+
+        var childOpen = false;
+        var ui = new Mock<IDriverUiClient>();
+        ui.Setup(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((DriverConnection _, PlanStep step, CancellationToken _) =>
+            {
+                if (step.Operation == "listwindows")
+                {
+                    return childOpen
+                        ? ListWindowsResponse(
+                        [
+                            (1L, "DA Explorer Fixture", 10),
+                            (2L, "DA Explorer Second", 10)
+                        ])
+                        : ListWindowsResponse([(1L, "DA Explorer Fixture", 10)]);
+                }
+
+                if (step.Operation == "clickuia")
+                {
+                    childOpen = true;
+                    return new UiExecutionResponse { Success = true };
+                }
+
+                if (step.Operation == "switchwindow")
+                {
+                    Assert.True(step.Arguments!.ContainsKey("hwnd"));
+                    Assert.Equal(2, step.Arguments["hwnd"].GetInt64());
+                    switched = true;
+                    return new UiExecutionResponse { Success = true };
+                }
+
+                return new UiExecutionResponse { Success = true };
+            });
+
+        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, MockConnection());
+        var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
+        Assert.True(result.Success, result.Error ?? result.Summary?.StopReason ?? "failed");
+        Assert.True(switched);
+
+        var outcomes = File.ReadAllLines(Path.Combine(result.ArtifactDirectory!, "transitions.jsonl"))
+            .Where(l => !string.IsNullOrWhiteSpace(l))
+            .Select(l => JsonDocument.Parse(l).RootElement.GetProperty("outcome").GetString())
+            .ToList();
+        Assert.Contains("newWindow", outcomes);
+        // The open transition must be NewWindow even though the parent fingerprint was unchanged.
+        Assert.Equal("newWindow", outcomes[0]);
+    }
+
+    [Fact]
+    public void ExplorationWindowStack_RequiresChildHwndAndProcessId()
+    {
+        var stack = new ExplorationWindowStack();
+        Assert.ThrowsAny<Exception>(() => stack.PushChild(new ExplorationWindowFrame
+        {
+            ChildHwnd = 0,
+            ChildProcessId = 10,
+            Depth = 1
+        }));
+        Assert.ThrowsAny<Exception>(() => stack.PushChild(new ExplorationWindowFrame
+        {
+            ChildHwnd = 1,
+            ChildProcessId = 0,
+            Depth = 1
+        }));
+        stack.PushChild(new ExplorationWindowFrame
+        {
+            ChildHwnd = 2,
+            ChildProcessId = 10,
+            ParentHwnd = 1,
+            Depth = 1
+        });
+        Assert.True(stack.TryPeek(out var frame));
+        Assert.Equal(2, frame!.ChildHwnd);
+        Assert.Equal(1, frame.Depth);
+    }
+
+    private static IDriverConnectionResolver MockConnection()
+    {
+        var connection = new Mock<IDriverConnectionResolver>();
+        connection.Setup(c => c.ResolveAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DriverConnection
+            {
+                BaseUri = new Uri("http://127.0.0.1:1"),
+                BearerToken = "token",
+                DiscoveryMethod = "configured"
+            });
+        return connection.Object;
+    }
+
+    private static UiExecutionResponse ListWindowsResponse(
+        (long Hwnd, string Title, int ProcessId)[] windows) =>
+        new()
+        {
+            Success = true,
+            Value = JsonSerializer.SerializeToElement(new
+            {
+                windows = windows.Select(w => new
+                {
+                    hwnd = w.Hwnd,
+                    title = w.Title,
+                    className = "Form",
+                    processId = w.ProcessId,
+                    processName = "DesktopAutomationExplorerFixture"
+                }).ToArray()
+            })
+        };
+
     private static ExplorationCoordinator CreateCoordinator(
         AgentOptions options,
         Workspace.IWorkspaceManager workspace,
@@ -1240,11 +1793,10 @@ public class Phase4bSafeExplorerTests
         probe.Register(11, new ProcessIdentityInfo
         {
             ProcessId = 11,
-            ProcessName = "DesktopAutomationExplorerFixture",
+            ProcessName = "FixtureChild",
             SessionId = 1,
             ParentProcessId = 10
         });
-        var identity = new ProcessIdentityValidator(probe);
         return new ExplorationCoordinator(
             Options.Create(options),
             new ExplorationPolicyReader(),
@@ -1254,10 +1806,10 @@ public class Phase4bSafeExplorerTests
             fingerprinter,
             new CapabilityResolver(),
             new UiStabilizationService(observation, fingerprinter),
-            new WindowTransitionDetector(ui, identity),
+            new WindowTransitionDetector(ui),
             new ExplorationArtifactWriter(workspace),
             NullLogger<ExplorationCoordinator>.Instance,
-            identity);
+            probe);
     }
 
     private sealed class FakeProcessIdentityProbe : IProcessIdentityProbe

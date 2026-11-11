@@ -94,7 +94,6 @@ public sealed class SystemProcessIdentityProbe : IProcessIdentityProbe
                 return false;
             }
 
-            // Path errors are deferred to validators that require path/hash.
             if (pathError is not null && string.IsNullOrWhiteSpace(path))
                 error = pathError;
 
@@ -208,9 +207,10 @@ public sealed class ProcessIdentityValidationResult
 }
 
 /// <summary>
-/// Fail-closed application identity checks: process name, optional path/SHA256,
-/// Windows session, and parent/child lineage for allowed children.
-/// Root PID/session are pinned once for the whole exploration run.
+/// Fail-closed application identity checks for a single exploration crawl.
+/// Root PID/session are pinned once; root windows must match that pin; child
+/// ancestry must terminate at the pinned PID (no process-name shortcut).
+/// Create a new instance per ExploreAsync — do not share across crawls.
 /// </summary>
 public sealed class ProcessIdentityValidator
 {
@@ -228,9 +228,10 @@ public sealed class ProcessIdentityValidator
 
     public int? PinnedRootSessionId => _pinnedRootSessionId;
 
+    public bool IsRootPinned => _rootPinned;
+
     /// <summary>
-    /// Pin the initial in-scope root process for the run. Subsequent calls are no-ops
-    /// so a later snapshot cannot reset the root identity.
+    /// Pin the initial in-scope root process for the crawl. Subsequent calls are no-ops.
     /// </summary>
     public void PinRoot(int processId, int? sessionId)
     {
@@ -293,38 +294,38 @@ public sealed class ProcessIdentityValidator
             }
         }
 
-        var isRoot = string.Equals(
-            snapshot.Application.ProcessName,
-            policy.Application.ProcessName,
-            StringComparison.OrdinalIgnoreCase);
-
-        if (isRoot)
+        if (!_rootPinned)
         {
-            if (!_rootPinned)
-            {
-                PinRoot(pid, actualSession);
-            }
-            else if (_pinnedRootProcessId != pid)
+            // First successful observation pins the crawl root.
+            if (!string.Equals(
+                    snapshot.Application.ProcessName,
+                    policy.Application.ProcessName,
+                    StringComparison.OrdinalIgnoreCase))
             {
                 return Fail(
-                    $"Root process id {pid} differs from pinned root {_pinnedRootProcessId}; fail-closed.");
+                    $"Initial process '{snapshot.Application.ProcessName}' is not the policy root '{policy.Application.ProcessName}'.");
             }
-            else if (_pinnedRootSessionId is int pinnedSession
-                     && actualSession is int liveSession
-                     && pinnedSession != liveSession)
+
+            PinRoot(pid, actualSession);
+            return Ok();
+        }
+
+        // After pin: root windows must equal pinned PID (+ pinned session when known).
+        if (pid == _pinnedRootProcessId)
+        {
+            if (_pinnedRootSessionId is int pinnedSession
+                && actualSession is int liveSession
+                && pinnedSession != liveSession)
             {
                 return Fail(
                     $"Root session {liveSession} differs from pinned session {pinnedSession}; fail-closed.");
             }
-        }
-        else
-        {
-            var lineage = ValidateChildLineage(pid, identity, policy);
-            if (!lineage.IsValid)
-                return lineage;
+
+            return Ok();
         }
 
-        return Ok();
+        // Different PID — must be an allowed child whose ancestry terminates at the pinned root.
+        return ValidateChildLineage(pid, identity, policy);
     }
 
     public ProcessIdentityValidationResult ValidateNewWindow(
@@ -336,12 +337,6 @@ public sealed class ProcessIdentityValidator
 
         if (string.IsNullOrWhiteSpace(window.ProcessName))
             return Fail($"New window '{window.Title}' is missing processName; fail-closed.");
-
-        if (!IsProcessNameAllowed(window.ProcessName, policy))
-        {
-            return Fail(
-                $"Unexpected external window '{window.Title}' / process '{window.ProcessName}'.");
-        }
 
         if (window.ProcessId is not int pid || pid <= 0)
             return Fail($"New window '{window.Title}' is missing processId; fail-closed.");
@@ -355,18 +350,54 @@ public sealed class ProcessIdentityValidator
                 $"New window process name mismatch: listed '{window.ProcessName}', live '{identity.ProcessName}'.");
         }
 
-        var pathHash = ValidatePathAndHash(identity, policy, allowChildWithoutRootHash: true);
-        if (!pathHash.IsValid)
-            return pathHash;
+        if (!_rootPinned || _pinnedRootProcessId is not int rootPid)
+            return Fail("Root process is not pinned; cannot validate new window.");
 
-        if (!string.Equals(
-                window.ProcessName,
-                policy.Application.ProcessName,
-                StringComparison.OrdinalIgnoreCase))
+        // Same process as pinned root — require session match when pinned.
+        if (pid == rootPid)
         {
-            var lineage = ValidateChildLineage(pid, identity, policy);
-            if (!lineage.IsValid)
-                return lineage;
+            if (_pinnedRootSessionId is int pinnedSession
+                && identity.SessionId is int liveSession
+                && pinnedSession != liveSession)
+            {
+                return Fail(
+                    $"New window session {liveSession} differs from pinned session {pinnedSession}; fail-closed.");
+            }
+
+            var pathHash = ValidatePathAndHash(identity, policy);
+            return pathHash.IsValid ? Ok() : pathHash;
+        }
+
+        // Different PID: no process-name==root shortcut — must be allowed child + ancestry to pin.
+        if (!policy.Application.AllowedChildProcessNames.Any(c =>
+                string.Equals(c, window.ProcessName, StringComparison.OrdinalIgnoreCase)))
+        {
+            return Fail(
+                $"Unexpected external window '{window.Title}' / process '{window.ProcessName}' (pid {pid}).");
+        }
+
+        return ValidateChildLineage(pid, identity, policy);
+    }
+
+    /// <summary>
+    /// Verifies a live HWND's process id matches the expected PID after switchwindow.
+    /// </summary>
+    public ProcessIdentityValidationResult ValidateHwndProcess(
+        long hwnd,
+        int expectedProcessId,
+        WindowInventory inventory)
+    {
+        var match = inventory.Windows.FirstOrDefault(w => w.Hwnd == hwnd);
+        if (match is null)
+            return Fail($"HWND 0x{hwnd:X} is not present in the window inventory.");
+
+        if (match.ProcessId is not int pid || pid <= 0)
+            return Fail($"HWND 0x{hwnd:X} is missing processId; fail-closed.");
+
+        if (pid != expectedProcessId)
+        {
+            return Fail(
+                $"HWND 0x{hwnd:X} processId {pid} does not match expected {expectedProcessId}; fail-closed.");
         }
 
         return Ok();
@@ -374,49 +405,45 @@ public sealed class ProcessIdentityValidator
 
     private ProcessIdentityValidationResult ValidatePathAndHash(
         ProcessIdentityInfo identity,
-        ExplorationPolicyDocument policy,
-        bool allowChildWithoutRootHash = false)
+        ExplorationPolicyDocument policy)
     {
         var requiresPath = !string.IsNullOrWhiteSpace(policy.Application.ExecutablePath);
         var requiresHash = !string.IsNullOrWhiteSpace(policy.Application.ExecutableSha256);
 
-        var isRoot = string.Equals(
-            identity.ProcessName,
-            policy.Application.ProcessName,
-            StringComparison.OrdinalIgnoreCase);
-
-        if (!isRoot && allowChildWithoutRootHash && !requiresPath && !requiresHash)
+        if (!requiresPath && !requiresHash)
             return Ok();
 
-        if (requiresPath || requiresHash)
+        // Path/hash constraints apply only to the pinned root process identity.
+        if (_rootPinned
+            && _pinnedRootProcessId is int rootPid
+            && identity.ProcessId != rootPid)
         {
-            if (!isRoot)
-                return Ok();
+            return Ok();
+        }
 
-            if (requiresPath)
+        if (requiresPath)
+        {
+            if (string.IsNullOrWhiteSpace(identity.ExecutablePath))
+                return Fail("Executable path could not be resolved; fail-closed.");
+
+            if (!PathsEqual(identity.ExecutablePath, policy.Application.ExecutablePath!))
             {
-                if (string.IsNullOrWhiteSpace(identity.ExecutablePath))
-                    return Fail("Executable path could not be resolved; fail-closed.");
-
-                if (!PathsEqual(identity.ExecutablePath, policy.Application.ExecutablePath!))
-                {
-                    return Fail(
-                        $"Executable path '{identity.ExecutablePath}' does not match policy '{policy.Application.ExecutablePath}'.");
-                }
+                return Fail(
+                    $"Executable path '{identity.ExecutablePath}' does not match policy '{policy.Application.ExecutablePath}'.");
             }
+        }
 
-            if (requiresHash)
+        if (requiresHash)
+        {
+            if (string.IsNullOrWhiteSpace(identity.ExecutableSha256))
+                return Fail("Executable SHA256 could not be resolved; fail-closed.");
+
+            if (!string.Equals(
+                    identity.ExecutableSha256,
+                    policy.Application.ExecutableSha256,
+                    StringComparison.OrdinalIgnoreCase))
             {
-                if (string.IsNullOrWhiteSpace(identity.ExecutableSha256))
-                    return Fail("Executable SHA256 could not be resolved; fail-closed.");
-
-                if (!string.Equals(
-                        identity.ExecutableSha256,
-                        policy.Application.ExecutableSha256,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    return Fail("Executable SHA256 does not match policy.");
-                }
+                return Fail("Executable SHA256 does not match policy.");
             }
         }
 
@@ -437,27 +464,35 @@ public sealed class ProcessIdentityValidator
         if (_pinnedRootProcessId is not int rootPid)
             return Fail("Root process is not pinned; cannot verify child lineage.");
 
-        if (identity.ParentProcessId is not int parent || parent <= 0)
-            return Fail($"Parent process id missing for child PID {childPid}; fail-closed.");
+        // Walk parent chain until it terminates at the pinned root PID.
+        // Do not accept process-name equality as a substitute for PID ancestry.
+        var currentPid = childPid;
+        var current = identity;
+        var seen = new HashSet<int> { childPid };
 
-        if (parent == rootPid)
-            return Ok();
-
-        if (!_probe.TryGetIdentity(parent, out var parentInfo, out var parentError))
-            return Fail(parentError ?? $"Unable to verify parent lineage for child PID {childPid}.");
-
-        if (parentInfo.ProcessId == rootPid
-            || string.Equals(
-                parentInfo.ProcessName,
-                policy.Application.ProcessName,
-                StringComparison.OrdinalIgnoreCase)
-            || parentInfo.ParentProcessId == rootPid)
+        for (var hops = 0; hops < 32; hops++)
         {
-            return Ok();
+            if (current.ParentProcessId is not int parent || parent <= 0)
+                return Fail($"Parent process id missing while walking lineage from PID {childPid}; fail-closed.");
+
+            if (parent == rootPid)
+                return Ok();
+
+            if (!seen.Add(parent))
+                return Fail($"Cycle detected in process lineage for PID {childPid}; fail-closed.");
+
+            if (!_probe.TryGetIdentity(parent, out var parentInfo, out var parentError))
+                return Fail(parentError ?? $"Unable to resolve parent PID {parent} for child {childPid}.");
+
+            if (parentInfo.ProcessId == rootPid)
+                return Ok();
+
+            currentPid = parent;
+            current = parentInfo;
         }
 
         return Fail(
-            $"Child process '{identity.ProcessName}' parent '{parentInfo.ProcessName}' is outside lineage.");
+            $"Child process '{identity.ProcessName}' (pid {childPid}) ancestry did not reach pinned root {rootPid}.");
     }
 
     private static bool IsProcessNameAllowed(string processName, ExplorationPolicyDocument policy)

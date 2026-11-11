@@ -34,7 +34,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
     private readonly CapabilityResolver _capabilityResolver;
     private readonly UiStabilizationService _stabilization;
     private readonly WindowTransitionDetector _windowDetector;
-    private readonly ProcessIdentityValidator _identityValidator;
+    private readonly IProcessIdentityProbe _identityProbe;
     private readonly ExplorationArtifactWriter _artifactWriter;
     private readonly ILogger<ExplorationCoordinator> _logger;
 
@@ -50,7 +50,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         WindowTransitionDetector windowDetector,
         ExplorationArtifactWriter artifactWriter,
         ILogger<ExplorationCoordinator> logger,
-        ProcessIdentityValidator? identityValidator = null)
+        IProcessIdentityProbe? identityProbe = null)
     {
         _options = options.Value;
         _policyReader = policyReader;
@@ -61,7 +61,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         _capabilityResolver = capabilityResolver;
         _stabilization = stabilization;
         _windowDetector = windowDetector;
-        _identityValidator = identityValidator ?? new ProcessIdentityValidator();
+        _identityProbe = identityProbe ?? new SystemProcessIdentityProbe();
         _artifactWriter = artifactWriter;
         _logger = logger;
     }
@@ -112,6 +112,9 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             return Fail(SecretRedactor.Redact(ex.Message), ExitCodes.SuiteOrWorkspace);
         }
 
+        // Crawl-scoped identity: pin root PID/session for this ExploreAsync only.
+        var identityValidator = new ProcessIdentityValidator(_identityProbe);
+
         var recorder = new TransitionRecorder();
         var frontier = new FrontierQueue();
         var warnings = new List<string>(policyResult.Warnings);
@@ -137,7 +140,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             }
 
             initialSnapshot = initial.Snapshot;
-            if (!TryValidateScope(initialSnapshot, policy, out var initialScopeError))
+            if (!TryValidateScope(initialSnapshot, policy, identityValidator, out var initialScopeError))
             {
                 stopReason = initialScopeError;
                 status = "failed";
@@ -215,7 +218,6 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             }
 
             var windowStack = new ExplorationWindowStack();
-            var backtrackDepth = 0;
 
             while (true)
             {
@@ -224,11 +226,12 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     if (policy.AllowCloseChildWindowsForBacktrack
                         && windowStack.Count > 0
                         && recorder.States.Count < policy.Budgets.MaxStates
+                        && actionsAttempted < policy.Budgets.MaxActions
                         && DateTimeOffset.UtcNow < deadline
                         && !cancellationToken.IsCancellationRequested
                         && !deadlineCts.IsCancellationRequested)
                     {
-                        var backtracked = await TryBacktrackAsync(
+                        var backtrack = await TryBacktrackAsync(
                                 connection,
                                 windowStack,
                                 policy,
@@ -236,14 +239,14 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                                 frontier,
                                 recorder,
                                 deniedSamples,
-                                backtrackDepth,
+                                identityValidator,
+                                deadline,
+                                actionsAttempted,
                                 deadlineCts.Token)
                             .ConfigureAwait(false);
-                        if (backtracked)
-                        {
-                            backtrackDepth = Math.Max(0, backtrackDepth);
+                        actionsAttempted = backtrack.ActionsAttempted;
+                        if (backtrack.Success)
                             continue;
-                        }
                     }
 
                     break;
@@ -373,7 +376,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                 }
 
                 // Blocker: scope after every observation (including pre-action) before resolve/execute.
-                if (!TryValidateScope(beforeSnapshot, policy, out var beforeScopeError))
+                if (!TryValidateScope(beforeSnapshot, policy, identityValidator, out var beforeScopeError))
                 {
                     recorder.Record(
                         fromStateId,
@@ -545,7 +548,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                             {
                                 if (!WindowTransitionDetector.IsSnapshotInScope(snapshot, policy))
                                     return false;
-                                var identity = _identityValidator.ValidateSnapshot(snapshot, policy);
+                                var identity = identityValidator.ValidateSnapshot(snapshot, policy);
                                 return identity.IsValid;
                             },
                             deadlineCts.Token)
@@ -632,7 +635,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     ?? _fingerprinter.Fingerprint(afterSnapshot);
 
                 // Scope after post-action / stabilization observation.
-                if (!TryValidateScope(afterSnapshot, policy, out var afterScopeError))
+                if (!TryValidateScope(afterSnapshot, policy, identityValidator, out var afterScopeError))
                 {
                     recorder.Record(
                         fromStateId,
@@ -676,7 +679,12 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     continue;
                 }
 
-                var transition = _windowDetector.Compare(beforeWindows, afterWindows, afterSnapshot, policy);
+                var transition = _windowDetector.Compare(
+                    beforeWindows,
+                    afterWindows,
+                    afterSnapshot,
+                    policy,
+                    identityValidator);
                 if (transition.ScopeViolation)
                 {
                     var scopeState = recorder.EnsureState(
@@ -704,36 +712,115 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     break;
                 }
 
+                // NewWindow / ModalDialog are independent of fingerprint NoOp — a child can
+                // appear while the parent fingerprint is unchanged. Never assume auto-active.
                 var outcome = ExplorationOutcome.Success;
-                if (string.Equals(beforeFingerprint, afterFingerprint, StringComparison.Ordinal))
-                    outcome = ExplorationOutcome.NoOp;
-                else if (transition.ModalDialog)
+                if (transition.ModalDialog || afterSnapshot.Window?.IsModal == true)
                     outcome = ExplorationOutcome.ModalDialog;
                 else if (transition.NewWindow)
                     outcome = ExplorationOutcome.NewWindow;
                 else if (transition.ClosedWindow)
                     outcome = ExplorationOutcome.ClosedWindow;
+                else if (string.Equals(beforeFingerprint, afterFingerprint, StringComparison.Ordinal))
+                    outcome = ExplorationOutcome.NoOp;
 
-                if (policy.AllowCloseChildWindowsForBacktrack
-                    && (outcome is ExplorationOutcome.ModalDialog or ExplorationOutcome.NewWindow))
+                var nextDepth = action.Depth + 1;
+                var enqueueSnapshot = afterSnapshot;
+                var enqueueFingerprint = afterFingerprint;
+                var didSwitchToChild = false;
+
+                if (outcome is ExplorationOutcome.ModalDialog or ExplorationOutcome.NewWindow)
                 {
                     foreach (var added in transition.AddedWindows)
                     {
-                        if (string.IsNullOrWhiteSpace(added.Title))
+                        if (added.Hwnd is not long childHwnd || childHwnd <= 0)
+                            continue;
+                        if (added.ProcessId is not int childPid || childPid <= 0)
                             continue;
 
-                        windowStack.PushChild(new ExplorationWindowFrame
+                        if (actionsAttempted >= policy.Budgets.MaxActions
+                            || DateTimeOffset.UtcNow >= deadline
+                            || deadlineCts.IsCancellationRequested)
                         {
-                            ChildTitle = added.Title,
-                            ChildHwnd = added.Hwnd,
-                            ParentTitle = beforeSnapshot.Window?.Title,
-                            ParentHwnd = beforeSnapshot.Window?.Hwnd,
-                            IsModal = outcome == ExplorationOutcome.ModalDialog
-                        });
+                            break;
+                        }
+
+                        var switched = await TrySwitchToHwndAsync(
+                                connection,
+                                childHwnd,
+                                childPid,
+                                identityValidator,
+                                policy.Budgets.PerActionTimeoutSeconds,
+                                deadlineCts.Token)
+                            .ConfigureAwait(false);
+                        actionsAttempted++;
+                        if (!switched.Success)
+                        {
+                            warnings.Add(
+                                $"NewWindow switch to HWND 0x{childHwnd:X} failed: {switched.Detail}");
+                            continue;
+                        }
+
+                        didSwitchToChild = true;
+
+                        SemanticSnapshot? childSnapshot = null;
+                        try
+                        {
+                            var childObserve = await _observation
+                                .ObserveAsync(observationOptions, deadlineCts.Token)
+                                .ConfigureAwait(false);
+                            if (childObserve.Success && childObserve.Snapshot is not null)
+                                childSnapshot = childObserve.Snapshot;
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            (stopReason, status, exitCode) = CancelOrDeadline(cancellationToken);
+                            break;
+                        }
+
+                        string? childScopeError = null;
+                        if (childSnapshot is null
+                            || !TryValidateScope(
+                                childSnapshot,
+                                policy,
+                                identityValidator,
+                                out childScopeError))
+                        {
+                            warnings.Add(
+                                childScopeError
+                                ?? $"Post-switch observation failed for HWND 0x{childHwnd:X}.");
+                            continue;
+                        }
+
+                        enqueueSnapshot = childSnapshot;
+                        enqueueFingerprint = _fingerprinter.Fingerprint(childSnapshot);
+                        afterSnapshot = childSnapshot;
+                        afterFingerprint = enqueueFingerprint;
+
+                        if (childSnapshot.Window?.IsModal == true)
+                            outcome = ExplorationOutcome.ModalDialog;
+
+                        if (policy.AllowCloseChildWindowsForBacktrack)
+                        {
+                            windowStack.PushChild(new ExplorationWindowFrame
+                            {
+                                ChildHwnd = childHwnd,
+                                ChildProcessId = childPid,
+                                ChildTitle = added.Title ?? childSnapshot.Window?.Title,
+                                ParentHwnd = beforeSnapshot.Window?.Hwnd,
+                                ParentProcessId = beforeSnapshot.Application.ProcessId,
+                                ParentTitle = beforeSnapshot.Window?.Title,
+                                IsModal = outcome == ExplorationOutcome.ModalDialog
+                                          || childSnapshot.Window?.IsModal == true,
+                                Depth = nextDepth
+                            });
+                        }
                     }
+
+                    if (stopReason is not null)
+                        break;
                 }
 
-                var nextDepth = action.Depth + 1;
                 var toStateId = recorder.EnsureState(
                     afterFingerprint,
                     afterSnapshot.SnapshotId,
@@ -763,42 +850,31 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     break;
                 }
 
-                // Enqueue only when next depth can still execute (strictly below maxDepth).
-                if (nextDepth < policy.Budgets.MaxDepth
+                // Enqueue permitted actions from the (possibly switched) observation.
+                // NewWindow/ModalDialog always re-enqueue even when the pre-switch fingerprint
+                // matched (NoOp on parent) — child surface is the source of truth.
+                var shouldEnqueue =
+                    nextDepth < policy.Budgets.MaxDepth
                     && recorder.States.Count < policy.Budgets.MaxStates
-                    && !string.Equals(beforeFingerprint, afterFingerprint, StringComparison.Ordinal))
+                    && (didSwitchToChild
+                        || outcome is ExplorationOutcome.ModalDialog or ExplorationOutcome.NewWindow
+                        || !string.Equals(beforeFingerprint, enqueueFingerprint, StringComparison.Ordinal));
+
+                if (shouldEnqueue)
                 {
-                    var next = _capabilityResolver.Resolve(afterSnapshot, afterFingerprint, policy, nextDepth);
-                    deniedSamples.AddRange(_capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
+                    var next = _capabilityResolver.Resolve(
+                        enqueueSnapshot,
+                        enqueueFingerprint,
+                        policy,
+                        nextDepth);
+                    deniedSamples.AddRange(
+                        _capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
                     frontier.EnqueueMany(next);
                 }
             }
 
-            // Drain in-scope child windows opened during the crawl when backtrack is allowed.
-            if (policy.AllowCloseChildWindowsForBacktrack
-                && windowStack.Count > 0
-                && !cancellationToken.IsCancellationRequested
-                && !deadlineCts.IsCancellationRequested)
-            {
-                while (windowStack.Count > 0
-                       && DateTimeOffset.UtcNow < deadline
-                       && !deadlineCts.IsCancellationRequested)
-                {
-                    var closed = await TryBacktrackAsync(
-                            connection,
-                            windowStack,
-                            policy,
-                            observationOptions,
-                            frontier,
-                            recorder,
-                            deniedSamples,
-                            backtrackDepth,
-                            deadlineCts.Token)
-                        .ConfigureAwait(false);
-                    if (!closed)
-                        break;
-                }
-            }
+            // Intentionally no post-budget mutating cleanup: when the loop stops for budget/
+            // cancel/scope, do not close remaining stacked windows.
 
             stopReason ??= frontier.Count == 0 ? "frontier-exhausted" : stopReason;
             if (status == "completed" && stopReason is null)
@@ -875,7 +951,13 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         }
     }
 
-    private async Task<bool> TryBacktrackAsync(
+    /// <summary>
+    /// Close the top stacked child by exact HWND + verified PID using WindowPattern close
+    /// (active closewindow after switch — never fixture Close buttons / title search).
+    /// Pop only after inventory confirms the child is gone. Counts every mutation against
+    /// maxActions with per-action timeout. Preserves the frame's original depth.
+    /// </summary>
+    private async Task<(bool Success, int ActionsAttempted)> TryBacktrackAsync(
         DriverConnection connection,
         ExplorationWindowStack windowStack,
         ExplorationPolicyDocument policy,
@@ -883,126 +965,360 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         FrontierQueue frontier,
         TransitionRecorder recorder,
         List<string> deniedSamples,
-        int depth,
+        ProcessIdentityValidator identityValidator,
+        DateTimeOffset deadline,
+        int actionsAttempted,
         CancellationToken cancellationToken)
     {
-        if (!windowStack.TryPop(out var frame) || frame is null)
-            return false;
+        if (!windowStack.TryPeek(out var frame) || frame is null)
+            return (false, actionsAttempted);
 
-        if (string.IsNullOrWhiteSpace(frame.ChildTitle))
-            return false;
+        if (frame.ChildHwnd <= 0 || frame.ChildProcessId <= 0)
+            return (false, actionsAttempted);
 
+        if (actionsAttempted >= policy.Budgets.MaxActions
+            || DateTimeOffset.UtcNow >= deadline
+            || cancellationToken.IsCancellationRequested)
+        {
+            return (false, actionsAttempted);
+        }
+
+        var startedAt = DateTimeOffset.UtcNow;
+        var preservedDepth = frame.Depth;
+        var backtrackAction = new ExplorationActionCandidate
+        {
+            ActionKey = $"backtrack:close:0x{frame.ChildHwnd:X}",
+            Kind = ExplorationActionKind.Invoke,
+            Category = "backtrack",
+            DriverOperation = "closewindow",
+            ElementKey = $"Window|hwnd:0x{frame.ChildHwnd:X}|pid:{frame.ChildProcessId}",
+            Name = frame.ChildTitle,
+            ControlType = "Window",
+            Depth = preservedDepth,
+            StateFingerprint = string.Empty
+        };
+
+        string fromFingerprint;
+        string fromStateId;
         try
         {
-            // Prefer switch + dismiss over closewindow: FlaUI closewindow often fails with
-            // "No process is associated with this object" for owned/top-level children.
-            var switchChild = new PlanStep
+            var beforeObserve = await _observation
+                .ObserveAsync(observationOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (beforeObserve.Success && beforeObserve.Snapshot is not null)
             {
-                Id = "explore-backtrack-switch-child",
-                Operation = "switchwindow",
-                Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
-                {
-                    ["value"] = JsonSerializer.SerializeToElement(frame.ChildTitle)
-                }
-            };
-            await _uiClient.ExecuteStepAsync(connection, switchChild, cancellationToken).ConfigureAwait(false);
+                fromFingerprint = _fingerprinter.Fingerprint(beforeObserve.Snapshot);
+                fromStateId = recorder.EnsureState(
+                    fromFingerprint,
+                    beforeObserve.Snapshot.SnapshotId,
+                    beforeObserve.Snapshot.Window?.Title,
+                    beforeObserve.Snapshot.Window?.ClassName,
+                    beforeObserve.Snapshot.Window?.IsModal,
+                    preservedDepth,
+                    beforeObserve.Snapshot.Nodes.Count,
+                    beforeObserve.Snapshot.CapturedAtUtc);
+            }
+            else
+            {
+                fromFingerprint = $"backtrack-pending:0x{frame.ChildHwnd:X}";
+                fromStateId = recorder.EnsureState(
+                    fromFingerprint,
+                    null,
+                    frame.ChildTitle,
+                    null,
+                    frame.IsModal,
+                    preservedDepth,
+                    0,
+                    startedAt);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, actionsAttempted);
+        }
 
-            var closeButtonName =
-                frame.IsModal
-                || (!string.IsNullOrWhiteSpace(frame.ChildTitle)
-                    && frame.ChildTitle.Contains("Dialog", StringComparison.OrdinalIgnoreCase))
-                    ? "Close"
-                    : "Close Second";
-            var dismiss = new PlanStep
-            {
-                Id = "explore-backtrack-dismiss",
-                Operation = "clickuia",
-                Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
-                {
-                    ["locator"] = ObjectLocatorSerializer.ToJsonElement(new ObjectLocator
-                    {
-                        Name = closeButtonName,
-                        ControlType = "Button"
-                    }),
-                    ["timeoutMs"] = JsonSerializer.SerializeToElement(5_000)
-                }
-            };
-            try
-            {
-                await _uiClient.ExecuteStepAsync(connection, dismiss, cancellationToken).ConfigureAwait(false);
-            }
-            catch (UiExecutionException)
-            {
-                // Fallback: Window-pattern close by title.
-                var closeStep = new PlanStep
-                {
-                    Id = "explore-backtrack-close",
-                    Operation = "closewindow",
-                    Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
-                    {
-                        ["value"] = JsonSerializer.SerializeToElement(frame.ChildTitle)
-                    }
-                };
-                await _uiClient.ExecuteStepAsync(connection, closeStep, cancellationToken).ConfigureAwait(false);
-            }
+        // 1) Switch to child by exact HWND.
+        var switchChild = await TrySwitchToHwndAsync(
+                connection,
+                frame.ChildHwnd,
+                frame.ChildProcessId,
+                identityValidator,
+                policy.Budgets.PerActionTimeoutSeconds,
+                cancellationToken)
+            .ConfigureAwait(false);
+        actionsAttempted++;
+        if (!switchChild.Success)
+        {
+            recorder.Record(
+                fromStateId,
+                null,
+                fromFingerprint,
+                null,
+                backtrackAction,
+                ExplorationOutcome.Failure,
+                switchChild.Detail ?? "Backtrack switch to child HWND failed.",
+                startedAt,
+                DateTimeOffset.UtcNow);
+            return (false, actionsAttempted);
+        }
 
-            if (!string.IsNullOrWhiteSpace(frame.ParentTitle))
+        if (actionsAttempted >= policy.Budgets.MaxActions || DateTimeOffset.UtcNow >= deadline)
+        {
+            recorder.Record(
+                fromStateId,
+                null,
+                fromFingerprint,
+                null,
+                backtrackAction,
+                ExplorationOutcome.BudgetExhausted,
+                "Budget reached after backtrack switch; close skipped (no mutating cleanup).",
+                startedAt,
+                DateTimeOffset.UtcNow);
+            return (false, actionsAttempted);
+        }
+
+        // 2) Scope-validate after switch, before close.
+        SemanticSnapshot? switchedSnapshot;
+        string? scopeAfterSwitch = null;
+        try
+        {
+            var switchedObserve = await _observation
+                .ObserveAsync(observationOptions, cancellationToken)
+                .ConfigureAwait(false);
+            switchedSnapshot = switchedObserve.Success ? switchedObserve.Snapshot : null;
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, actionsAttempted);
+        }
+
+        if (switchedSnapshot is null
+            || !TryValidateScope(switchedSnapshot, policy, identityValidator, out scopeAfterSwitch))
+        {
+            recorder.Record(
+                fromStateId,
+                null,
+                fromFingerprint,
+                null,
+                backtrackAction,
+                ExplorationOutcome.ScopeViolation,
+                scopeAfterSwitch ?? "Scope validation failed after backtrack switch.",
+                startedAt,
+                DateTimeOffset.UtcNow);
+            return (false, actionsAttempted);
+        }
+
+        // 3) WindowPattern close via active closewindow (no title / no fixture Close button).
+        try
+        {
+            using var closeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            closeCts.CancelAfter(TimeSpan.FromSeconds(policy.Budgets.PerActionTimeoutSeconds));
+            var closeStep = new PlanStep
             {
-                var switchParent = new PlanStep
-                {
-                    Id = "explore-backtrack-switch-parent",
-                    Operation = "switchwindow",
-                    Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
-                    {
-                        ["value"] = JsonSerializer.SerializeToElement(frame.ParentTitle)
-                    }
-                };
-                await _uiClient.ExecuteStepAsync(connection, switchParent, cancellationToken).ConfigureAwait(false);
-            }
+                Id = "explore-backtrack-close-windowpattern",
+                Operation = "closewindow",
+                Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            };
+            await _uiClient.ExecuteStepAsync(connection, closeStep, closeCts.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is UiExecutionException or OperationCanceledException)
         {
-            _logger.LogWarning(
-                ex,
-                "Backtrack close/switch failed for child '{ChildTitle}'.",
-                frame.ChildTitle);
-            return false;
+            recorder.Record(
+                fromStateId,
+                null,
+                fromFingerprint,
+                null,
+                backtrackAction,
+                ExplorationOutcome.Failure,
+                SecretRedactor.Redact(ex.Message),
+                startedAt,
+                DateTimeOffset.UtcNow);
+            return (false, actionsAttempted);
         }
 
-        var observed = await _observation.ObserveAsync(observationOptions, cancellationToken).ConfigureAwait(false);
-        if (!observed.Success || observed.Snapshot is null)
-            return false;
+        actionsAttempted++;
 
-        if (!TryValidateScope(observed.Snapshot, policy, out _))
-            return false;
+        // 4) Confirm child HWND gone from inventory before popping.
+        WindowInventory inventory;
+        try
+        {
+            inventory = await _windowDetector.ListWindowsAsync(connection, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is UiExecutionException or OperationCanceledException)
+        {
+            recorder.Record(
+                fromStateId,
+                null,
+                fromFingerprint,
+                null,
+                backtrackAction,
+                ExplorationOutcome.Failure,
+                SecretRedactor.Redact(ex.Message),
+                startedAt,
+                DateTimeOffset.UtcNow);
+            return (false, actionsAttempted);
+        }
 
-        var fingerprint = _fingerprinter.Fingerprint(observed.Snapshot);
-        var backtrackDepth = Math.Min(depth, Math.Max(0, policy.Budgets.MaxDepth - 1));
-        recorder.EnsureState(
-            fingerprint,
-            observed.Snapshot.SnapshotId,
-            observed.Snapshot.Window?.Title,
-            observed.Snapshot.Window?.ClassName,
-            observed.Snapshot.Window?.IsModal,
-            backtrackDepth,
-            observed.Snapshot.Nodes.Count,
-            observed.Snapshot.CapturedAtUtc);
+        var childStillPresent = inventory.Windows.Any(w => w.Hwnd == frame.ChildHwnd);
+        if (childStillPresent)
+        {
+            recorder.Record(
+                fromStateId,
+                null,
+                fromFingerprint,
+                null,
+                backtrackAction,
+                ExplorationOutcome.Failure,
+                $"Child HWND 0x{frame.ChildHwnd:X} still present after WindowPattern close.",
+                startedAt,
+                DateTimeOffset.UtcNow);
+            return (false, actionsAttempted);
+        }
 
-        if (backtrackDepth < policy.Budgets.MaxDepth
+        if (!windowStack.TryPop(out _))
+            return (false, actionsAttempted);
+
+        // 5) Switch back to parent HWND when known (counts as mutation).
+        if (frame.ParentHwnd is long parentHwnd && parentHwnd > 0
+            && actionsAttempted < policy.Budgets.MaxActions
+            && DateTimeOffset.UtcNow < deadline)
+        {
+            var parentPid = frame.ParentProcessId
+                            ?? identityValidator.PinnedRootProcessId
+                            ?? 0;
+            if (parentPid > 0)
+            {
+                var switchParent = await TrySwitchToHwndAsync(
+                        connection,
+                        parentHwnd,
+                        parentPid,
+                        identityValidator,
+                        policy.Budgets.PerActionTimeoutSeconds,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                actionsAttempted++;
+                if (!switchParent.Success)
+                {
+                    _logger.LogWarning(
+                        "Backtrack parent switch to HWND 0x{ParentHwnd:X} failed: {Detail}",
+                        parentHwnd,
+                        switchParent.Detail);
+                }
+            }
+        }
+
+        SemanticSnapshot? afterSnapshot;
+        string? afterScopeError = null;
+        try
+        {
+            var afterObserve = await _observation
+                .ObserveAsync(observationOptions, cancellationToken)
+                .ConfigureAwait(false);
+            afterSnapshot = afterObserve.Success ? afterObserve.Snapshot : null;
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, actionsAttempted);
+        }
+
+        if (afterSnapshot is null
+            || !TryValidateScope(afterSnapshot, policy, identityValidator, out afterScopeError))
+        {
+            recorder.Record(
+                fromStateId,
+                null,
+                fromFingerprint,
+                null,
+                backtrackAction,
+                ExplorationOutcome.ScopeViolation,
+                afterScopeError ?? "Scope validation failed after backtrack close.",
+                startedAt,
+                DateTimeOffset.UtcNow);
+            return (false, actionsAttempted);
+        }
+
+        var afterFingerprint = _fingerprinter.Fingerprint(afterSnapshot);
+        // Preserve the original stacked depth (not depth 0).
+        var enqueueDepth = Math.Min(preservedDepth, Math.Max(0, policy.Budgets.MaxDepth - 1));
+        var toStateId = recorder.EnsureState(
+            afterFingerprint,
+            afterSnapshot.SnapshotId,
+            afterSnapshot.Window?.Title,
+            afterSnapshot.Window?.ClassName,
+            afterSnapshot.Window?.IsModal,
+            enqueueDepth,
+            afterSnapshot.Nodes.Count,
+            afterSnapshot.CapturedAtUtc);
+
+        recorder.Record(
+            fromStateId,
+            toStateId,
+            fromFingerprint,
+            afterFingerprint,
+            backtrackAction,
+            ExplorationOutcome.ClosedWindow,
+            $"backtrack: closed HWND 0x{frame.ChildHwnd:X} (pid {frame.ChildProcessId}) via WindowPattern",
+            startedAt,
+            DateTimeOffset.UtcNow);
+
+        if (enqueueDepth < policy.Budgets.MaxDepth
             && recorder.States.Count < policy.Budgets.MaxStates)
         {
-            var next = _capabilityResolver.Resolve(observed.Snapshot, fingerprint, policy, backtrackDepth);
-            deniedSamples.AddRange(_capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
+            var next = _capabilityResolver.Resolve(
+                afterSnapshot,
+                afterFingerprint,
+                policy,
+                enqueueDepth);
+            deniedSamples.AddRange(
+                _capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
             frontier.EnqueueMany(next);
         }
 
-        // Close/switch succeeded even when no new frontier actions (duplicates already executed).
-        return true;
+        return (true, actionsAttempted);
+    }
+
+    private async Task<(bool Success, string? Detail)> TrySwitchToHwndAsync(
+        DriverConnection connection,
+        long hwnd,
+        int expectedProcessId,
+        ProcessIdentityValidator identityValidator,
+        int timeoutSeconds,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+            var step = new PlanStep
+            {
+                Id = $"explore-switch-hwnd-0x{hwnd:X}",
+                Operation = "switchwindow",
+                Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                {
+                    ["hwnd"] = JsonSerializer.SerializeToElement(hwnd)
+                }
+            };
+            await _uiClient.ExecuteStepAsync(connection, step, cts.Token).ConfigureAwait(false);
+
+            var inventory = await _windowDetector.ListWindowsAsync(connection, cts.Token)
+                .ConfigureAwait(false);
+            var pidCheck = identityValidator.ValidateHwndProcess(hwnd, expectedProcessId, inventory);
+            if (!pidCheck.IsValid)
+                return (false, pidCheck.Detail);
+
+            return (true, null);
+        }
+        catch (Exception ex) when (ex is UiExecutionException or OperationCanceledException)
+        {
+            return (false, SecretRedactor.Redact(ex.Message));
+        }
     }
 
     private bool TryValidateScope(
         SemanticSnapshot snapshot,
         ExplorationPolicyDocument policy,
+        ProcessIdentityValidator identityValidator,
         out string error)
     {
         if (!WindowTransitionDetector.IsSnapshotInScope(snapshot, policy))
@@ -1011,7 +1327,7 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             return false;
         }
 
-        var identity = _identityValidator.ValidateSnapshot(snapshot, policy);
+        var identity = identityValidator.ValidateSnapshot(snapshot, policy);
         if (!identity.IsValid)
         {
             error = identity.Detail ?? "Process identity validation failed.";

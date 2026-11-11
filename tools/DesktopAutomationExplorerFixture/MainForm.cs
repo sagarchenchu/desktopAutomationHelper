@@ -179,21 +179,35 @@ internal sealed class MainForm : Form
     private void OpenDialog()
     {
         Log("Open dialog");
-        // Owned, non-blocking dialog so the explorer can still observe/backtrack.
-        // (ShowDialog freezes the UI thread and blocks dumpuia stabilization.)
+        // True modal via BeginInvoke+ShowDialog: the click handler returns so the driver
+        // invoke can complete, then ShowDialog runs on the UI thread with a nested message
+        // loop (UIA IsModal=true). Direct ShowDialog in the click handler would deadlock
+        // the invoke; modeless Show() is not a true modal.
         if (_openDialog is { IsDisposed: false })
         {
             _openDialog.Activate();
             return;
         }
 
-        _openDialog = new SampleDialog();
-        _openDialog.FormClosed += (_, _) =>
+        var dialog = new SampleDialog();
+        _openDialog = dialog;
+        dialog.FormClosed += (_, _) =>
         {
-            _openDialog = null;
+            if (ReferenceEquals(_openDialog, dialog))
+                _openDialog = null;
             Log("Dialog closed");
         };
-        _openDialog.Show(this);
+        BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                dialog.ShowDialog(this);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Closed/disposed before the queued ShowDialog ran.
+            }
+        }));
     }
 
     private void OpenSecond()

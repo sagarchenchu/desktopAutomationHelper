@@ -43,18 +43,16 @@ public sealed class WindowTransitionResult
 /// <summary>
 /// Detects new/closed windows and scope violations against the exploration policy.
 /// New windows without processName fail closed so they can be process-checked.
+/// Identity validation uses the crawl-scoped <see cref="ProcessIdentityValidator"/>
+/// passed into <see cref="Compare"/> — never a shared singleton.
 /// </summary>
 public sealed class WindowTransitionDetector
 {
     private readonly IDriverUiClient _uiClient;
-    private readonly ProcessIdentityValidator _identityValidator;
 
-    public WindowTransitionDetector(
-        IDriverUiClient uiClient,
-        ProcessIdentityValidator? identityValidator = null)
+    public WindowTransitionDetector(IDriverUiClient uiClient)
     {
         _uiClient = uiClient;
-        _identityValidator = identityValidator ?? new ProcessIdentityValidator();
     }
 
     public async Task<WindowInventory> ListWindowsAsync(
@@ -82,11 +80,13 @@ public sealed class WindowTransitionDetector
         WindowInventory before,
         WindowInventory after,
         SemanticSnapshot? afterSnapshot,
-        ExplorationPolicyDocument policy)
+        ExplorationPolicyDocument policy,
+        ProcessIdentityValidator identityValidator)
     {
         ArgumentNullException.ThrowIfNull(before);
         ArgumentNullException.ThrowIfNull(after);
         ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(identityValidator);
 
         var beforeKeys = before.Windows.Select(WindowKey).ToHashSet(StringComparer.Ordinal);
         var afterKeys = after.Windows.Select(WindowKey).ToHashSet(StringComparer.Ordinal);
@@ -98,7 +98,7 @@ public sealed class WindowTransitionDetector
         // (browser, terminals, etc.) are ignored so listwindows noise cannot fail the crawl.
         foreach (var window in added)
         {
-            var identity = _identityValidator.ValidateNewWindow(window, policy);
+            var identity = identityValidator.ValidateNewWindow(window, policy);
             if (!identity.IsValid || !IsWindowInScope(window, policy))
             {
                 return new WindowTransitionResult
