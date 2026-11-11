@@ -4,6 +4,7 @@ using System.Text.Json;
 using DesktopAutomationDriver.Middleware;
 using DesktopAutomationDriver.Services;
 using DesktopAutomationDriver.Services.NativeUia;
+using DesktopExecutionRuntime;
 using WinForms = System.Windows.Forms.Application;
 
 WinForms.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
@@ -40,6 +41,7 @@ builder.Services.AddControllers()
     });
 
 builder.Services.AddSingleton<IDriverContext>(driverContext);
+builder.Services.AddSingleton<IDesktopEnvironmentProbe, WindowsDesktopEnvironmentProbe>();
 builder.Services.AddSingleton<ISessionManager, SessionManager>();
 builder.Services.AddSingleton<IAutomationService, AutomationService>();
 builder.Services.AddSingleton<IRecordingService, RecordingService>();

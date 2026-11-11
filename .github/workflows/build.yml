@@ -64,6 +64,15 @@ jobs:
           --verbosity normal
           --logger "trx;LogFileName=AgentTestResults.trx"
 
+      - name: Run desktop runtime tests
+        run: >
+          dotnet test
+          src/DesktopExecutionRuntime.Tests/DesktopExecutionRuntime.Tests.csproj
+          --configuration Release
+          --no-build
+          --verbosity normal
+          --logger "trx;LogFileName=RuntimeTestResults.trx"
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -148,6 +157,43 @@ jobs:
           name: DesktopAutomationDriver-win-x64
           path: ./publish/driver/DesktopAutomationDriver.exe
 
+      - name: Publish experimental runtime diagnostics CLI
+        run: >
+          dotnet publish
+          src/DesktopRuntime/DesktopRuntime.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:PublishTrimmed=false
+          -p:DebugType=None
+          -p:DebugSymbols=false
+          -p:Version=0.0.0-ci
+          -p:InformationalVersion=0.0.0-ci
+          -p:IncludeSourceRevisionInInformationalVersion=false
+          --output ./publish/runtime
+
+      - name: Smoke test published runtime diagnostics
+        shell: pwsh
+        run: |
+          & ./publish/runtime/DesktopRuntime.exe doctor --json > ./publish/runtime/runtime.json
+          $doctorExit = $LASTEXITCODE
+          if ($doctorExit -notin @(0, 2)) { throw "Unexpected doctor exit: $doctorExit" }
+          $report = Get-Content ./publish/runtime/runtime.json -Raw | ConvertFrom-Json
+          if ($report.schemaVersion -ne '1.0') { throw "Unexpected diagnostics schema" }
+          if (-not $report.snapshot.isWindows) { throw "Windows probe was not executed" }
+          if (($doctorExit -eq 0) -ne $report.preflightPassed) { throw "Exit code/report mismatch" }
+          # A noninteractive CI session may correctly return a blocked preflight.
+          exit 0
+
+      - name: Upload experimental runtime artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopRuntime-experimental-win-x64
+          path: |
+            ./publish/runtime/DesktopRuntime.exe
+            ./publish/runtime/runtime.json
+
       - name: Upload agent artifact
         uses: actions/upload-artifact@v4
         with:
@@ -155,3 +201,21 @@ jobs:
           path: |
             ./publish/agent/DesktopAutomationAgent.exe
             ./publish/agent/appsettings.json
+
+  runtime-portable-tests:
+    name: Runtime Contracts (Linux)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Test portable policy and unsupported-platform behavior
+        run: dotnet test src/DesktopExecutionRuntime.Tests/DesktopExecutionRuntime.Tests.csproj --configuration Release --logger "trx;LogFileName=RuntimeLinux.trx"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime-linux-test-results
+          path: '**/RuntimeLinux.trx'
