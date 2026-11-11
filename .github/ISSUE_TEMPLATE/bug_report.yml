@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a reproducible problem in the driver, agent, API, or tooling.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve Desktop Automation Helper. Remove all secrets and private data before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag, executable version, or commit SHA.
+      placeholder: v1.0.113
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Desktop Automation Driver
+        - Desktop Automation Agent
+        - REST API
+        - Recording or playback
+        - Object repository or plan runner
+        - Build, packaging, or documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows version, .NET version, UIA backend, and Citrix/RDS/VDI details when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Start the driver with...
+        2. Send this sanitized request...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or request/response
+      description: Redact tokens, credentials, usernames, paths, and customer data. Use a minimal example.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: I removed secrets and personally identifying information.
+          required: true
+        - label: This is not a security vulnerability; security reports follow SECURITY.md.
+          required: true

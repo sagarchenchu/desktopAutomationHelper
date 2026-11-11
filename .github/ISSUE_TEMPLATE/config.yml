@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/sagarchenchu/desktopAutomationHelper/security
+    about: Report vulnerabilities privately; do not create a public issue.
+  - name: Usage documentation
+    url: https://github.com/sagarchenchu/desktopAutomationHelper#readme
+    about: Review setup, API, and usage documentation before filing an issue.
