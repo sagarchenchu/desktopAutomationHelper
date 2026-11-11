@@ -249,6 +249,38 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                             continue;
                     }
 
+                    // Prefer budget/cancel over mislabeling an empty frontier.
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        stopReason = "cancelled";
+                        status = "cancelled";
+                        exitCode = ExitCodes.Cancelled;
+                    }
+                    else if (deadlineCts.IsCancellationRequested || DateTimeOffset.UtcNow >= deadline)
+                    {
+                        stopReason = "total-duration-budget";
+                        status = "budget-exhausted";
+                        exitCode = ExitCodes.Success;
+                    }
+                    else if (actionsAttempted >= policy.Budgets.MaxActions)
+                    {
+                        stopReason = "max-actions-budget";
+                        status = "budget-exhausted";
+                        exitCode = ExitCodes.Success;
+                    }
+                    else if (recorder.States.Count >= policy.Budgets.MaxStates)
+                    {
+                        stopReason = "max-states-budget";
+                        status = "budget-exhausted";
+                        exitCode = ExitCodes.Success;
+                    }
+                    else
+                    {
+                        stopReason = "frontier-exhausted";
+                        status = "completed";
+                        exitCode = ExitCodes.Success;
+                    }
+
                     break;
                 }
 
@@ -792,6 +824,13 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                             continue;
                         }
 
+                        if (childSnapshot.Window?.Hwnd != childHwnd)
+                        {
+                            warnings.Add(
+                                $"Post-switch snapshot HWND 0x{childSnapshot.Window?.Hwnd:X} does not equal requested 0x{childHwnd:X}.");
+                            continue;
+                        }
+
                         enqueueSnapshot = childSnapshot;
                         enqueueFingerprint = _fingerprinter.Fingerprint(childSnapshot);
                         afterSnapshot = childSnapshot;
@@ -876,7 +915,40 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             // Intentionally no post-budget mutating cleanup: when the loop stops for budget/
             // cancel/scope, do not close remaining stacked windows.
 
-            stopReason ??= frontier.Count == 0 ? "frontier-exhausted" : stopReason;
+            // If the main loop broke for an action-path reason, stopReason is already set.
+            // Only default to frontier-exhausted when nothing else explains the stop.
+            if (stopReason is null)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    stopReason = "cancelled";
+                    status = "cancelled";
+                    exitCode = ExitCodes.Cancelled;
+                }
+                else if (deadlineCts.IsCancellationRequested || DateTimeOffset.UtcNow >= deadline)
+                {
+                    stopReason = "total-duration-budget";
+                    status = "budget-exhausted";
+                    exitCode = ExitCodes.Success;
+                }
+                else if (actionsAttempted >= policy.Budgets.MaxActions)
+                {
+                    stopReason = "max-actions-budget";
+                    status = "budget-exhausted";
+                    exitCode = ExitCodes.Success;
+                }
+                else if (recorder.States.Count >= policy.Budgets.MaxStates)
+                {
+                    stopReason = "max-states-budget";
+                    status = "budget-exhausted";
+                    exitCode = ExitCodes.Success;
+                }
+                else if (frontier.Count == 0)
+                {
+                    stopReason = "frontier-exhausted";
+                }
+            }
+
             if (status == "completed" && stopReason is null)
                 stopReason = "frontier-exhausted";
 
@@ -952,10 +1024,11 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
     }
 
     /// <summary>
-    /// Close the top stacked child by exact HWND + verified PID using WindowPattern close
-    /// (active closewindow after switch — never fixture Close buttons / title search).
-    /// Pop only after inventory confirms the child is gone. Counts every mutation against
-    /// maxActions with per-action timeout. Preserves the frame's original depth.
+    /// Close the top stacked child by exact HWND + verified PID using HWND-targeted
+    /// WindowPattern-only closewindow (never ActiveWindow / first top-level / Close button).
+    /// Verifies post-switch snapshot HWND. Pop only after inventory confirms the child is
+    /// gone. Counts every mutation — including failed/timed-out closes — against maxActions
+    /// with per-action timeout. Preserves the frame's original depth.
     /// </summary>
     private async Task<(bool Success, int ActionsAttempted)> TryBacktrackAsync(
         DriverConnection connection,
@@ -1108,7 +1181,23 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             return (false, actionsAttempted);
         }
 
-        // 3) WindowPattern close via active closewindow (no title / no fixture Close button).
+        if (switchedSnapshot.Window?.Hwnd != frame.ChildHwnd)
+        {
+            recorder.Record(
+                fromStateId,
+                null,
+                fromFingerprint,
+                null,
+                backtrackAction,
+                ExplorationOutcome.Failure,
+                $"Post-switch snapshot HWND 0x{switchedSnapshot.Window?.Hwnd:X} does not equal requested 0x{frame.ChildHwnd:X}.",
+                startedAt,
+                DateTimeOffset.UtcNow);
+            return (false, actionsAttempted);
+        }
+
+        // 3) HWND+PID WindowPattern-only close (driver must not use ActiveWindow / Close button).
+        actionsAttempted++; // Count the close attempt even when it fails or times out.
         try
         {
             using var closeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1117,9 +1206,32 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             {
                 Id = "explore-backtrack-close-windowpattern",
                 Operation = "closewindow",
+                CaptureResponse = true,
                 Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                {
+                    ["hwnd"] = JsonSerializer.SerializeToElement(frame.ChildHwnd),
+                    ["processId"] = JsonSerializer.SerializeToElement(frame.ChildProcessId)
+                }
             };
-            await _uiClient.ExecuteStepAsync(connection, closeStep, closeCts.Token).ConfigureAwait(false);
+            var closeResponse = await _uiClient
+                .ExecuteStepAsync(connection, closeStep, closeCts.Token)
+                .ConfigureAwait(false);
+
+            if (!TryReadClosedHwnd(closeResponse.Value, out var closedHwnd)
+                || closedHwnd != frame.ChildHwnd)
+            {
+                recorder.Record(
+                    fromStateId,
+                    null,
+                    fromFingerprint,
+                    null,
+                    backtrackAction,
+                    ExplorationOutcome.Failure,
+                    $"HWND-targeted close did not confirm closed HWND 0x{frame.ChildHwnd:X}.",
+                    startedAt,
+                    DateTimeOffset.UtcNow);
+                return (false, actionsAttempted);
+            }
         }
         catch (Exception ex) when (ex is UiExecutionException or OperationCanceledException)
         {
@@ -1129,14 +1241,14 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                 fromFingerprint,
                 null,
                 backtrackAction,
-                ExplorationOutcome.Failure,
+                ex is OperationCanceledException
+                    ? ExplorationOutcome.BudgetExhausted
+                    : ExplorationOutcome.Failure,
                 SecretRedactor.Redact(ex.Message),
                 startedAt,
                 DateTimeOffset.UtcNow);
             return (false, actionsAttempted);
         }
-
-        actionsAttempted++;
 
         // 4) Confirm child HWND gone from inventory before popping.
         WindowInventory inventory;
@@ -1313,6 +1425,41 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         {
             return (false, SecretRedactor.Redact(ex.Message));
         }
+    }
+
+    private static bool TryReadClosedHwnd(JsonElement? value, out long hwnd)
+    {
+        hwnd = 0;
+        if (value is null
+            || value.Value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
+            return false;
+        }
+
+        var root = value.Value;
+        if (root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("value", out var nested)
+            && nested.ValueKind == JsonValueKind.Object)
+        {
+            root = nested;
+        }
+
+        if (root.ValueKind != JsonValueKind.Object)
+            return false;
+
+        if (root.TryGetProperty("hwnd", out var hwndProp)
+            || root.TryGetProperty("Hwnd", out hwndProp))
+        {
+            if (hwndProp.ValueKind == JsonValueKind.Number && hwndProp.TryGetInt64(out hwnd))
+                return hwnd > 0;
+            if (hwndProp.ValueKind == JsonValueKind.String
+                && long.TryParse(hwndProp.GetString(), out hwnd))
+            {
+                return hwnd > 0;
+            }
+        }
+
+        return false;
     }
 
     private bool TryValidateScope(

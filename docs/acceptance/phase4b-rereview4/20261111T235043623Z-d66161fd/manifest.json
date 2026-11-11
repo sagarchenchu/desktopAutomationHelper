@@ -1,0 +1,10 @@
+{
+  "manifestSchemaVersion": 1,
+  "explorationId": "20261111T235043623Z-d66161fd",
+  "policyId": "acceptance-modal-second-backtrack",
+  "mode": "navigate",
+  "dryRun": false,
+  "startedAtUtc": "2026-11-11T23:50:43.6310541+00:00",
+  "policyPath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase4b-acceptance-rereview4\\modal-second.policy.json",
+  "policySha256": "d81c3c00eee861ed08336d8437d656aada73a88d0374e2a3216186a602671601"
+}

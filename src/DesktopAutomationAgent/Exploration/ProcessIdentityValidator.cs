@@ -232,6 +232,7 @@ public sealed class ProcessIdentityValidator
 
     /// <summary>
     /// Pin the initial in-scope root process for the crawl. Subsequent calls are no-ops.
+    /// Live session id is required (fail-closed).
     /// </summary>
     public void PinRoot(int processId, int? sessionId)
     {
@@ -240,6 +241,8 @@ public sealed class ProcessIdentityValidator
 
         if (processId <= 0)
             throw new ArgumentOutOfRangeException(nameof(processId));
+        if (sessionId is null or <= 0)
+            throw new ArgumentOutOfRangeException(nameof(sessionId), "Live session id is required to pin root.");
 
         _pinnedRootProcessId = processId;
         _pinnedRootSessionId = sessionId;
@@ -281,22 +284,25 @@ public sealed class ProcessIdentityValidator
         if (!pathHash.IsValid)
             return pathHash;
 
-        var actualSession = snapshot.WindowsSession.SessionId ?? identity.SessionId;
+        // Live probed session is authoritative — never let snapshot override it.
+        if (identity.SessionId is not int liveSession)
+            return Fail($"Live Windows session id missing for PID {pid}; fail-closed.");
 
-        if (policy.Scope.WindowsSessionId is int expectedSession)
+        if (snapshot.WindowsSession.SessionId is int snapSession && snapSession != liveSession)
         {
-            if (actualSession is null)
-                return Fail("Windows session id is missing; fail-closed.");
-            if (actualSession != expectedSession)
-            {
-                return Fail(
-                    $"Windows session {actualSession} differs from allowed session {expectedSession}.");
-            }
+            return Fail(
+                $"Snapshot session {snapSession} disagrees with live session {liveSession}; fail-closed.");
+        }
+
+        if (policy.Scope.WindowsSessionId is int expectedSession && liveSession != expectedSession)
+        {
+            return Fail(
+                $"Windows session {liveSession} differs from allowed session {expectedSession}.");
         }
 
         if (!_rootPinned)
         {
-            // First successful observation pins the crawl root.
+            // First successful observation pins the crawl root (live PID + live session).
             if (!string.Equals(
                     snapshot.Application.ProcessName,
                     policy.Application.ProcessName,
@@ -306,23 +312,17 @@ public sealed class ProcessIdentityValidator
                     $"Initial process '{snapshot.Application.ProcessName}' is not the policy root '{policy.Application.ProcessName}'.");
             }
 
-            PinRoot(pid, actualSession);
+            PinRoot(pid, liveSession);
             return Ok();
         }
 
-        // After pin: root windows must equal pinned PID (+ pinned session when known).
+        var sessionPin = EnforcePinnedSession(liveSession);
+        if (!sessionPin.IsValid)
+            return sessionPin;
+
+        // After pin: root windows must equal pinned PID + pinned session.
         if (pid == _pinnedRootProcessId)
-        {
-            if (_pinnedRootSessionId is int pinnedSession
-                && actualSession is int liveSession
-                && pinnedSession != liveSession)
-            {
-                return Fail(
-                    $"Root session {liveSession} differs from pinned session {pinnedSession}; fail-closed.");
-            }
-
             return Ok();
-        }
 
         // Different PID — must be an allowed child whose ancestry terminates at the pinned root.
         return ValidateChildLineage(pid, identity, policy);
@@ -353,17 +353,16 @@ public sealed class ProcessIdentityValidator
         if (!_rootPinned || _pinnedRootProcessId is not int rootPid)
             return Fail("Root process is not pinned; cannot validate new window.");
 
-        // Same process as pinned root — require session match when pinned.
+        if (identity.SessionId is not int liveSession)
+            return Fail($"Live Windows session id missing for new window PID {pid}; fail-closed.");
+
+        var sessionPin = EnforcePinnedSession(liveSession);
+        if (!sessionPin.IsValid)
+            return sessionPin;
+
+        // Same process as pinned root — session already enforced.
         if (pid == rootPid)
         {
-            if (_pinnedRootSessionId is int pinnedSession
-                && identity.SessionId is int liveSession
-                && pinnedSession != liveSession)
-            {
-                return Fail(
-                    $"New window session {liveSession} differs from pinned session {pinnedSession}; fail-closed.");
-            }
-
             var pathHash = ValidatePathAndHash(identity, policy);
             return pathHash.IsValid ? Ok() : pathHash;
         }
@@ -464,9 +463,15 @@ public sealed class ProcessIdentityValidator
         if (_pinnedRootProcessId is not int rootPid)
             return Fail("Root process is not pinned; cannot verify child lineage.");
 
+        if (identity.SessionId is not int childSession)
+            return Fail($"Live Windows session id missing for child PID {childPid}; fail-closed.");
+
+        var sessionPin = EnforcePinnedSession(childSession);
+        if (!sessionPin.IsValid)
+            return sessionPin;
+
         // Walk parent chain until it terminates at the pinned root PID.
         // Do not accept process-name equality as a substitute for PID ancestry.
-        var currentPid = childPid;
         var current = identity;
         var seen = new HashSet<int> { childPid };
 
@@ -484,15 +489,35 @@ public sealed class ProcessIdentityValidator
             if (!_probe.TryGetIdentity(parent, out var parentInfo, out var parentError))
                 return Fail(parentError ?? $"Unable to resolve parent PID {parent} for child {childPid}.");
 
+            if (parentInfo.SessionId is int parentSession)
+            {
+                var parentSessionPin = EnforcePinnedSession(parentSession);
+                if (!parentSessionPin.IsValid)
+                    return parentSessionPin;
+            }
+
             if (parentInfo.ProcessId == rootPid)
                 return Ok();
 
-            currentPid = parent;
             current = parentInfo;
         }
 
         return Fail(
             $"Child process '{identity.ProcessName}' (pid {childPid}) ancestry did not reach pinned root {rootPid}.");
+    }
+
+    private ProcessIdentityValidationResult EnforcePinnedSession(int liveSession)
+    {
+        if (_pinnedRootSessionId is not int pinnedSession)
+            return Fail("Pinned Windows session id is missing; fail-closed.");
+
+        if (liveSession != pinnedSession)
+        {
+            return Fail(
+                $"Live session {liveSession} differs from pinned session {pinnedSession}; fail-closed.");
+        }
+
+        return Ok();
     }
 
     private static bool IsProcessNameAllowed(string processName, ExplorationPolicyDocument policy)

@@ -584,13 +584,16 @@ public partial class UiService : IUiService
     }
 
     /// <summary>
-    /// Closes the currently active window for the session (i.e. <c>session.ActiveWindow</c>
-    /// or the application's main window when no explicit active window is set).
-    /// When <c>req.Value</c> is non-empty, falls back to title-based window search for
-    /// backward compatibility.
+    /// Closes a window. Prefer HWND+PID targeted WindowPattern-only close when
+    /// <see cref="UiRequest.Hwnd"/> is set. Title-based close remains for backward
+    /// compatibility. The no-argument path closes the session active window (or first
+    /// top-level) and may use Close-button fallback — explorers must pass HWND.
     /// </summary>
     private object? CloseActiveWindow(UiRequest req)
     {
+        if (req.Hwnd is long hwnd && hwnd != 0)
+            return CloseWindowByHwnd(req);
+
         // If a title is given, delegate to the existing title-based close for backward compat.
         if (!string.IsNullOrWhiteSpace(req.Value))
             return CloseWindowByTitle(req);
@@ -613,7 +616,7 @@ public partial class UiService : IUiService
             return new { operation = "closewindow", closed = false, reason = "no active or top-level window found" };
         }
 
-        var hwnd      = SafeWindowHandle(window);
+        var activeHwnd = SafeWindowHandle(window);
         var title     = SafeElementName(window);
         var className = SafeElementClassName(window);
         var processId = SafeProcessId(window);
@@ -621,7 +624,7 @@ public partial class UiService : IUiService
         _logger.LogInformation(
             "closewindow: closing active window. title={Title}, hwnd=0x{Hwnd:X}",
             title,
-            hwnd.ToInt64());
+            activeHwnd.ToInt64());
 
         var cf = session.Automation.ConditionFactory;
         CloseWindowElement(window, cf);
@@ -629,13 +632,105 @@ public partial class UiService : IUiService
         return new
         {
             operation = "closewindow",
-            hwnd      = hwnd.ToInt64(),
-            hwndHex   = $"0x{hwnd.ToInt64():X}",
+            hwnd      = activeHwnd.ToInt64(),
+            hwndHex   = $"0x{activeHwnd.ToInt64():X}",
             processId,
             title,
             className,
-            closed    = true
+            closed    = true,
+            method    = "activeWindow"
         };
+    }
+
+    /// <summary>
+    /// HWND+PID-targeted close using UIA WindowPattern only (never ActiveWindow, first
+    /// top-level, title search, or Close-button invoke). Atomically revalidates the live
+    /// Win32 PID against <see cref="UiRequest.ProcessId"/> when provided and returns the
+    /// closed HWND.
+    /// </summary>
+    private object? CloseWindowByHwnd(UiRequest req)
+    {
+        var hwndVal = req.Hwnd
+            ?? throw new ArgumentException("'hwnd' is required for HWND-targeted closewindow.");
+        var hwnd = new IntPtr(hwndVal);
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd))
+        {
+            throw new InvalidOperationException(
+                $"closewindow: HWND 0x{hwndVal:X} is not a valid window.");
+        }
+
+        GetWindowThreadProcessId(hwnd, out var livePid);
+        if (livePid == 0)
+        {
+            throw new InvalidOperationException(
+                $"closewindow: unable to resolve process id for HWND 0x{hwndVal:X}; fail-closed.");
+        }
+
+        if (req.ProcessId is int expectedPid && expectedPid > 0 && expectedPid != (int)livePid)
+        {
+            throw new InvalidOperationException(
+                $"closewindow: HWND 0x{hwndVal:X} live PID {livePid} does not match expected {expectedPid}; fail-closed.");
+        }
+
+        object CloseWith(AutomationBase automation)
+        {
+            AutomationElement element;
+            try
+            {
+                element = automation.FromHandle(hwnd)
+                    ?? throw new InvalidOperationException(
+                        $"closewindow: UIA element missing for HWND 0x{hwndVal:X}; fail-closed.");
+            }
+            catch (InvalidOperationException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"closewindow: unable to resolve UIA element for HWND 0x{hwndVal:X}.", ex);
+            }
+
+            var elementPid = SafeProcessId(element);
+            if (req.ProcessId is int expectedElementPid
+                && expectedElementPid > 0
+                && elementPid is int ep
+                && ep != expectedElementPid)
+            {
+                throw new InvalidOperationException(
+                    $"closewindow: HWND 0x{hwndVal:X} element PID {ep} does not match expected {expectedElementPid}; fail-closed.");
+            }
+
+            var title = SafeElementName(element);
+            var className = SafeElementClassName(element);
+            _logger.LogInformation(
+                "closewindow: WindowPattern-only close hwnd=0x{Hwnd:X} pid={Pid} title={Title}",
+                hwndVal,
+                livePid,
+                title);
+
+            // WindowPattern only — never Close-button invoke for HWND-targeted closes.
+            CloseElement(element);
+
+            return new
+            {
+                operation = "closewindow",
+                hwnd = hwndVal,
+                hwndHex = $"0x{hwndVal:X}",
+                processId = (int)livePid,
+                title,
+                className,
+                closed = true,
+                method = "windowPattern"
+            };
+        }
+
+        var session = _ctx.ActiveSession;
+        if (session != null)
+            return CloseWith(session.Automation);
+
+        using var tempAutomation = new UIA3Automation();
+        return CloseWith(tempAutomation);
     }
 
     /// <summary>

@@ -1,0 +1,44 @@
+﻿{
+  "$schema": "../../schemas/exploration-policy.schema.json",
+  "policySchemaVersion": 1,
+  "policyId": "acceptance-modal-second-backtrack",
+  "mode": "navigate",
+  "application": {
+    "processName": "DesktopAutomationExplorerFixture",
+    "allowedChildProcessNames": []
+  },
+  "scope": {
+    "allowedWindowTitles": [
+      "DA Explorer Fixture",
+      "DA Explorer Child",
+      "DA Explorer Dialog",
+      "DA Explorer Second"
+    ],
+    "deniedWindowTitles": [],
+    "allowedWindowClasses": [],
+    "deniedWindowClasses": []
+  },
+  "allowedActionCategories": ["invoke"],
+  "allowRules": [
+    { "automationId": "ExplorerOpenDialogButton", "action": "invoke", "actionCategory": "invoke" },
+    { "automationId": "ExplorerOpenSecondButton", "action": "invoke", "actionCategory": "invoke" }
+  ],
+  "denyRules": [
+    { "automationId": "ExplorerDeleteButton", "action": "*" },
+    { "nameContains": "Delete", "action": "*" }
+  ],
+  "budgets": {
+    "maxStates": 15,
+    "maxActions": 12,
+    "maxDepth": 4,
+    "totalDurationSeconds": 120,
+    "perActionTimeoutSeconds": 15,
+    "stabilizationTimeoutSeconds": 8,
+    "stabilizationQuietPeriodMilliseconds": 400
+  },
+  "allowCloseChildWindowsForBacktrack": true,
+  "allowHover": false,
+  "allowCoordinateFallback": false,
+  "allowDoubleClick": false
+}
+

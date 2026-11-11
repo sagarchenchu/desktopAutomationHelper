@@ -1557,13 +1557,30 @@ public class Phase4bSafeExplorerTests
                 if (step.Operation == "closewindow")
                 {
                     Assert.True(
-                        step.Arguments is null
-                        || step.Arguments.Count == 0
-                        || !step.Arguments.ContainsKey("value"),
-                        "Backtrack must use WindowPattern closewindow (no title value).");
+                        step.Arguments is not null
+                        && step.Arguments.ContainsKey("hwnd")
+                        && step.Arguments.ContainsKey("processId"),
+                        "Backtrack must use HWND+PID targeted closewindow.");
+                    Assert.False(
+                        step.Arguments.ContainsKey("value"),
+                        "Backtrack must not use title-based closewindow.");
+                    var closedHwnd = step.Arguments["hwnd"].GetInt64();
+                    Assert.Equal(2, closedHwnd);
+                    Assert.Equal(10, step.Arguments["processId"].GetInt32());
                     childClosed = true;
                     activeHwnd = 1;
-                    return new UiExecutionResponse { Success = true };
+                    return new UiExecutionResponse
+                    {
+                        Success = true,
+                        Value = JsonSerializer.SerializeToElement(new
+                        {
+                            operation = "closewindow",
+                            hwnd = closedHwnd,
+                            processId = 10,
+                            closed = true,
+                            method = "windowPattern"
+                        })
+                    };
                 }
 
                 return new UiExecutionResponse { Success = true };
@@ -1714,6 +1731,133 @@ public class Phase4bSafeExplorerTests
         Assert.Contains("newWindow", outcomes);
         // The open transition must be NewWindow even though the parent fingerprint was unchanged.
         Assert.Equal("newWindow", outcomes[0]);
+    }
+
+    [Fact]
+    public void WindowTransitionDetector_TitleChangeAlone_IsNeitherNewNorClosedWindow()
+    {
+        var policy = MinimalPolicy();
+        var probe = new FakeProcessIdentityProbe();
+        probe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = 1
+        });
+        var identity = new ProcessIdentityValidator(probe);
+        Assert.True(identity.ValidateSnapshot(Snapshot(processId: 10), policy).IsValid);
+
+        var before = new WindowInventory
+        {
+            Windows =
+            [
+                new WindowDescriptor
+                {
+                    Hwnd = 42,
+                    Title = "DA Explorer Fixture",
+                    ClassName = "Form",
+                    ProcessName = "DesktopAutomationExplorerFixture",
+                    ProcessId = 10
+                }
+            ]
+        };
+        var afterTitleOnly = new WindowInventory
+        {
+            Windows =
+            [
+                new WindowDescriptor
+                {
+                    Hwnd = 42,
+                    Title = "DA Explorer Fixture — renamed",
+                    ClassName = "Form",
+                    ProcessName = "DesktopAutomationExplorerFixture",
+                    ProcessId = 10
+                }
+            ]
+        };
+
+        var detector = new WindowTransitionDetector(Mock.Of<IDriverUiClient>());
+        var result = detector.Compare(
+            before,
+            afterTitleOnly,
+            Snapshot(processId: 10),
+            policy,
+            identity);
+
+        Assert.False(result.ScopeViolation);
+        Assert.False(result.NewWindow);
+        Assert.False(result.ClosedWindow);
+        Assert.Empty(result.AddedWindows);
+    }
+
+    [Fact]
+    public void ProcessIdentityValidator_SessionPinning_FailClosed_OnMissingOrDisagreeingSession()
+    {
+        var policy = MinimalPolicy();
+        var probe = new FakeProcessIdentityProbe();
+        probe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = null
+        });
+        var missingLive = new ProcessIdentityValidator(probe);
+        Assert.False(missingLive.ValidateSnapshot(Snapshot(processId: 10, sessionId: 1), policy).IsValid);
+
+        probe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = 7
+        });
+        var disagree = new ProcessIdentityValidator(probe);
+        Assert.False(disagree.ValidateSnapshot(Snapshot(processId: 10, sessionId: 1), policy).IsValid);
+
+        probe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = 1
+        });
+        var ok = new ProcessIdentityValidator(probe);
+        Assert.True(ok.ValidateSnapshot(Snapshot(processId: 10, sessionId: 1), policy).IsValid);
+        Assert.Equal(1, ok.PinnedRootSessionId);
+
+        // Child/new-window must match pinned session.
+        probe.Register(11, new ProcessIdentityInfo
+        {
+            ProcessId = 11,
+            ProcessName = "FixtureChild",
+            ParentProcessId = 10,
+            SessionId = 2
+        });
+        policy.Application.AllowedChildProcessNames = ["FixtureChild"];
+        Assert.False(ok.ValidateNewWindow(
+            new WindowDescriptor
+            {
+                Hwnd = 99,
+                Title = "Child",
+                ProcessName = "FixtureChild",
+                ProcessId = 11
+            },
+            policy).IsValid);
+
+        probe.Register(11, new ProcessIdentityInfo
+        {
+            ProcessId = 11,
+            ProcessName = "FixtureChild",
+            ParentProcessId = 10,
+            SessionId = 1
+        });
+        Assert.True(ok.ValidateNewWindow(
+            new WindowDescriptor
+            {
+                Hwnd = 99,
+                Title = "Child",
+                ProcessName = "FixtureChild",
+                ProcessId = 11
+            },
+            policy).IsValid);
     }
 
     [Fact]

@@ -88,16 +88,42 @@ public sealed class WindowTransitionDetector
         ArgumentNullException.ThrowIfNull(policy);
         ArgumentNullException.ThrowIfNull(identityValidator);
 
-        var beforeKeys = before.Windows.Select(WindowKey).ToHashSet(StringComparer.Ordinal);
-        var afterKeys = after.Windows.Select(WindowKey).ToHashSet(StringComparer.Ordinal);
+        // Window identity is HWND + PID only. Title/class changes must not look like
+        // NewWindow / ClosedWindow.
+        var beforeKeys = before.Windows
+            .Select(TryWindowIdentityKey)
+            .Where(k => k is not null)
+            .Cast<string>()
+            .ToHashSet(StringComparer.Ordinal);
+        var afterKeys = after.Windows
+            .Select(TryWindowIdentityKey)
+            .Where(k => k is not null)
+            .Cast<string>()
+            .ToHashSet(StringComparer.Ordinal);
 
-        var added = after.Windows.Where(w => !beforeKeys.Contains(WindowKey(w))).ToList();
-        var removed = before.Windows.Where(w => !afterKeys.Contains(WindowKey(w))).ToList();
+        var added = after.Windows
+            .Where(w => TryWindowIdentityKey(w) is string key && !beforeKeys.Contains(key))
+            .ToList();
+        var removed = before.Windows
+            .Where(w => TryWindowIdentityKey(w) is string key && !afterKeys.Contains(key))
+            .ToList();
 
         // Only newly appeared windows are scope-checked. Pre-existing desktop windows
         // (browser, terminals, etc.) are ignored so listwindows noise cannot fail the crawl.
         foreach (var window in added)
         {
+            if (TryWindowIdentityKey(window) is null)
+            {
+                return new WindowTransitionResult
+                {
+                    ScopeViolation = true,
+                    NewWindow = true,
+                    ClosedWindow = removed.Count > 0,
+                    Detail = $"New window '{window.Title}' is missing hwnd/processId identity; fail-closed.",
+                    Inventory = after
+                };
+            }
+
             var identity = identityValidator.ValidateNewWindow(window, policy);
             if (!identity.IsValid || !IsWindowInScope(window, policy))
             {
@@ -266,8 +292,18 @@ public sealed class WindowTransitionDetector
         return allowed.Any(a => string.Equals(a, className, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static string WindowKey(WindowDescriptor window) =>
-        $"{window.Hwnd?.ToString() ?? "-"}|{window.Title ?? "-"}|{window.ClassName ?? "-"}|{window.ProcessId?.ToString() ?? "-"}";
+    /// <summary>
+    /// Stable window identity for transition detection: HWND + PID only.
+    /// Returns null when either field is missing (cannot identity-track).
+    /// </summary>
+    internal static string? TryWindowIdentityKey(WindowDescriptor window)
+    {
+        if (window.Hwnd is not long hwnd || hwnd <= 0)
+            return null;
+        if (window.ProcessId is not int pid || pid <= 0)
+            return null;
+        return $"{hwnd}|{pid}";
+    }
 
     private static WindowInventory ParseInventory(JsonElement? value)
     {
