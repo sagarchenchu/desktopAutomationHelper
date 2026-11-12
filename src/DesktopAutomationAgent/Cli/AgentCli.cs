@@ -5,6 +5,7 @@ using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Exploration;
+using DesktopAutomationAgent.Compilation;
 using DesktopAutomationAgent.Knowledge;
 using DesktopAutomationAgent.Observation;
 using DesktopAutomationAgent.Plans;
@@ -60,7 +61,11 @@ public static class AgentCli
                 or AgentCommandKind.BuildKnowledge
                 or AgentCommandKind.CompareKnowledge
                 or AgentCommandKind.SearchKnowledge
-                or AgentCommandKind.ApproveKnowledge;
+                or AgentCommandKind.ApproveKnowledge
+                or AgentCommandKind.ValidateTestCase
+                or AgentCommandKind.ValidateStepRegistry
+                or AgentCommandKind.CompileKey
+                or AgentCommandKind.ValidateCompiledKey;
 
         if (parsed.Error is not null)
         {
@@ -136,6 +141,10 @@ public static class AgentCli
                 AgentCommandKind.CompareKnowledge => RunCompareKnowledge(host.Services, parsed),
                 AgentCommandKind.SearchKnowledge => RunSearchKnowledge(host.Services, parsed),
                 AgentCommandKind.ApproveKnowledge => RunApproveKnowledge(host.Services, parsed),
+                AgentCommandKind.ValidateTestCase => RunValidateTestCase(host.Services, parsed),
+                AgentCommandKind.ValidateStepRegistry => RunValidateStepRegistry(host.Services, parsed),
+                AgentCommandKind.CompileKey => RunCompileKey(host.Services, parsed),
+                AgentCommandKind.ValidateCompiledKey => RunValidateCompiledKey(host.Services, parsed),
                 _ => ExitCodes.UsageOrConfiguration
             };
         }
@@ -253,6 +262,7 @@ public static class AgentCli
         builder.Services.AddSingleton<ExplorationArtifactWriter>();
         builder.Services.AddSingleton<IExplorationCoordinator, ExplorationCoordinator>();
         builder.Services.AddSingleton<KnowledgeService>();
+        builder.Services.AddSingleton<BddCompilationService>();
 
         return builder.Build();
     }
@@ -992,6 +1002,231 @@ public static class AgentCli
         }
 
         return result.ExitCode;
+    }
+
+    private static int RunValidateTestCase(IServiceProvider services, ParsedCommand parsed)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Workspace);
+
+        var service = services.GetRequiredService<BddCompilationService>();
+        var result = service.ValidateTestCase(parsed.TestCaseFile!);
+
+        if (parsed.Json)
+        {
+            var payload = new
+            {
+                success = result.IsValid,
+                exitCode = result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace,
+                path = result.Path,
+                sha256 = result.Sha256,
+                jiraKey = result.Document?.JiraKey,
+                errors = result.Errors
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — validate-test-case");
+            Console.WriteLine($"Path    : {result.Path}");
+            if (!string.IsNullOrWhiteSpace(result.Sha256))
+                Console.WriteLine($"SHA-256 : {result.Sha256}");
+            if (!result.IsValid)
+            {
+                Console.Error.WriteLine("Validation failed:");
+                foreach (var error in result.Errors)
+                    Console.Error.WriteLine($"  - {SecretRedactor.Redact(error)}");
+            }
+            else
+            {
+                Console.WriteLine("Test-case validation succeeded.");
+            }
+        }
+
+        return result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
+    }
+
+    private static int RunValidateStepRegistry(IServiceProvider services, ParsedCommand parsed)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Workspace);
+
+        var service = services.GetRequiredService<BddCompilationService>();
+        var result = service.ValidateStepRegistry(parsed.StepRegistryFile);
+
+        if (parsed.Json)
+        {
+            var payload = new
+            {
+                success = result.IsValid,
+                exitCode = result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace,
+                path = result.Path,
+                sha256 = result.Sha256,
+                registryId = result.Document?.RegistryId,
+                mappingCount = result.Document?.Mappings.Count,
+                errors = result.Errors
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — validate-step-registry");
+            Console.WriteLine($"Path    : {result.Path}");
+            if (!string.IsNullOrWhiteSpace(result.Sha256))
+                Console.WriteLine($"SHA-256 : {result.Sha256}");
+            if (!result.IsValid)
+            {
+                Console.Error.WriteLine("Validation failed:");
+                foreach (var error in result.Errors)
+                    Console.Error.WriteLine($"  - {SecretRedactor.Redact(error)}");
+            }
+            else
+            {
+                Console.WriteLine($"Step registry validation succeeded ({result.Document!.Mappings.Count} mappings).");
+            }
+        }
+
+        return result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
+    }
+
+    private static int RunCompileKey(IServiceProvider services, ParsedCommand parsed)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Workspace);
+
+        var service = services.GetRequiredService<BddCompilationService>();
+        CompilationResult result;
+        try
+        {
+            result = service.CompileKey(new CompileKeyRequest
+            {
+                JiraKey = parsed.CompileJiraKey!,
+                TestCasePath = parsed.TestCaseFile,
+                RegistryPath = parsed.StepRegistryFile,
+                ObjectRepositoryPath = parsed.RepositoryFile,
+                KnowledgePath = parsed.KnowledgePath,
+                CatalogPath = parsed.CatalogFile,
+                Explain = parsed.Explain
+            });
+        }
+        catch (WorkspaceException ex)
+        {
+            if (parsed.Json)
+                WriteJsonError(ExitCodes.SuiteOrWorkspace, ex.Message);
+            else
+                Console.Error.WriteLine(SecretRedactor.Redact(ex.Message));
+            return ExitCodes.SuiteOrWorkspace;
+        }
+
+        if (parsed.Json)
+        {
+            var payload = new
+            {
+                success = result.Success,
+                exitCode = result.ExitCode == 0
+                    ? (result.Success ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace)
+                    : result.ExitCode,
+                jiraKey = result.JiraKey,
+                fingerprint = result.Fingerprint,
+                cacheHit = result.CacheHit,
+                planPath = result.PlanPath,
+                compilationPath = result.CompilationPath,
+                planSha256 = result.PlanSha256,
+                errors = result.Errors,
+                warnings = result.Warnings,
+                explain = result.Explain
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — compile-key");
+            Console.WriteLine($"Jira key     : {result.JiraKey}");
+            Console.WriteLine($"Success      : {result.Success}");
+            if (!string.IsNullOrWhiteSpace(result.Fingerprint))
+                Console.WriteLine($"Fingerprint  : {result.Fingerprint}");
+            Console.WriteLine($"Cache hit    : {result.CacheHit}");
+            if (!string.IsNullOrWhiteSpace(result.PlanPath))
+                Console.WriteLine($"Plan         : {result.PlanPath}");
+            if (!string.IsNullOrWhiteSpace(result.CompilationPath))
+                Console.WriteLine($"Compilation  : {result.CompilationPath}");
+            if (!string.IsNullOrWhiteSpace(result.PlanSha256))
+                Console.WriteLine($"Plan SHA-256 : {result.PlanSha256}");
+            Console.WriteLine("Note         : compile-key never calls Jira, AI, or POST /ui.");
+            if (result.Explain is { Count: > 0 })
+            {
+                Console.WriteLine("Explain:");
+                foreach (var entry in result.Explain)
+                {
+                    Console.WriteLine(
+                        $"  [{entry.Ordinal}] {entry.Keyword} {entry.Text} -> {entry.Outcome}" +
+                        (string.IsNullOrWhiteSpace(entry.MappingId) ? string.Empty : $" ({entry.MappingId})"));
+                    foreach (var detail in entry.Details)
+                        Console.WriteLine($"      - {SecretRedactor.Redact(detail)}");
+                }
+            }
+
+            if (!result.Success)
+            {
+                Console.Error.WriteLine("Compilation failed:");
+                foreach (var error in result.Errors)
+                    Console.Error.WriteLine($"  - {SecretRedactor.Redact(error)}");
+            }
+        }
+
+        if (result.ExitCode is 2)
+            return ExitCodes.UsageOrConfiguration;
+        return result.Success ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
+    }
+
+    private static int RunValidateCompiledKey(IServiceProvider services, ParsedCommand parsed)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Workspace);
+
+        var service = services.GetRequiredService<BddCompilationService>();
+        var result = service.ValidateCompiledKey(parsed.CompileJiraKey!, parsed.CompileFingerprint);
+
+        if (parsed.Json)
+        {
+            var payload = new
+            {
+                success = result.IsValid,
+                exitCode = result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace,
+                jiraKey = result.JiraKey,
+                fingerprint = result.Fingerprint,
+                planPath = result.PlanPath,
+                planSha256 = result.PlanSha256,
+                errors = result.Errors,
+                warnings = result.Warnings
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — validate-compiled-key");
+            Console.WriteLine($"Jira key    : {result.JiraKey}");
+            if (!string.IsNullOrWhiteSpace(result.Fingerprint))
+                Console.WriteLine($"Fingerprint : {result.Fingerprint}");
+            if (!string.IsNullOrWhiteSpace(result.PlanPath))
+                Console.WriteLine($"Plan        : {result.PlanPath}");
+            if (!result.IsValid)
+            {
+                Console.Error.WriteLine("Validation failed:");
+                foreach (var error in result.Errors)
+                    Console.Error.WriteLine($"  - {SecretRedactor.Redact(error)}");
+            }
+            else
+            {
+                Console.WriteLine("Compiled key validation succeeded.");
+            }
+        }
+
+        return result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
     }
 
     private static async Task<int> RunDoctorAsync(

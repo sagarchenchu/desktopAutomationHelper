@@ -199,6 +199,10 @@ public sealed class WorkspaceManager : IWorkspaceManager
         "knowledge",
         "knowledge/candidates",
         "knowledge/approved",
+        "step-registry",
+        "test-cases",
+        "test-cases/examples",
+        "compiled",
         "runs"
     ];
 
@@ -223,11 +227,16 @@ public sealed class WorkspaceManager : IWorkspaceManager
             ["schemas/application-state-graph.schema.json"] = ReadEmbeddedKnowledgeSchema("application-state-graph.schema.json"),
             ["schemas/application-workflow.schema.json"] = ReadEmbeddedKnowledgeSchema("application-workflow.schema.json"),
             ["schemas/knowledge-approval.schema.json"] = ReadEmbeddedKnowledgeSchema("knowledge-approval.schema.json"),
+            ["schemas/jira-test-case.schema.json"] = ReadEmbeddedCompilationSchema("jira-test-case.schema.json"),
+            ["schemas/step-registry.schema.json"] = ReadEmbeddedCompilationSchema("step-registry.schema.json"),
             ["observations/.gitignore"] = ObservationsGitIgnore,
             ["exploration/.gitignore"] = ExplorationGitIgnore,
             ["exploration/policies/example.policy.json"] = ExampleExplorationPolicy,
             ["knowledge/.gitignore"] = KnowledgeGitIgnore,
             ["knowledge/README.md"] = KnowledgeReadme,
+            ["step-registry/README.md"] = StepRegistryReadme,
+            ["compiled/.gitignore"] = CompiledGitIgnore,
+            ["test-cases/README.md"] = TestCasesReadme,
             ["runs/.gitignore"] = RunsGitIgnore
         };
 
@@ -240,6 +249,45 @@ public sealed class WorkspaceManager : IWorkspaceManager
         var text = reader.ReadToEnd();
         return text.EndsWith('\n') ? text : text + "\n";
     }
+
+    private static string ReadEmbeddedCompilationSchema(string fileName)
+    {
+        var resourceName = "DesktopAutomationAgent.Compilation." + fileName;
+        using var stream = typeof(WorkspaceManager).Assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Missing embedded compilation schema resource '{resourceName}'.");
+        using var reader = new StreamReader(stream);
+        var text = reader.ReadToEnd();
+        return text.EndsWith('\n') ? text : text + "\n";
+    }
+
+    private const string StepRegistryReadme =
+        """
+        # Step registry (Phase 4D)
+
+        Approved mappings from BDD step text to Phase 2 plan-step templates.
+        Copy or edit `registry.json` in the repository workspace root under
+        `automation/step-registry/`. Patterns are exact or bounded-regex;
+        `risk: prohibited` always fails closed at compile time.
+
+        """;
+
+    private const string CompiledGitIgnore =
+        """
+        # Compiled plans are local cache artifacts (deterministic, regenerable).
+        */
+        !.gitignore
+
+        """;
+
+    private const string TestCasesReadme =
+        """
+        # Offline Jira test-case exports (Phase 4D)
+
+        Place sanitized Jira-exported BDD JSON here (no credentials or raw prod data).
+        Schema: `../schemas/jira-test-case.schema.json`
+        Example: `examples/DEMO-1.json`
+
+        """;
 
     private const string AgentSettingsExample =
         """
@@ -338,7 +386,7 @@ public sealed class WorkspaceManager : IWorkspaceManager
         ## Phase 2 authoring
 
         - Phase 2 supports **manually authored** plans.
-        - Later phases will compile Jira BDD into the same format.
+        - Phase 4D compiles offline Jira BDD exports into the same format (`compile-key`).
         - Existing valid plans execute without AI, Jira, object-repository, or database access.
         - `schemaVersion` must be `1` and `catalogSchemaVersion` must be `2`.
         - `planId` must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`.
