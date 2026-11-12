@@ -98,6 +98,16 @@ public static class AgentOptionsValidator
         if (jira.MaxPages <= 0 || jira.MaxPages > 100)
             throw new AgentConfigurationException("Jira:MaxPages must be between 1 and 100.");
 
+        var searchPagination = (jira.SearchPagination ?? string.Empty).Trim();
+        if (!string.Equals(searchPagination, "jql-token", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AgentConfigurationException(
+                "Jira:SearchPagination must be 'jql-token' (Cloud /rest/api/3/search/jql). " +
+                "Legacy DC offset pagination is not enabled.");
+        }
+
+        jira.SearchPagination = "jql-token";
+
         var mode = (jira.AuthMode ?? "basic").Trim().ToLowerInvariant();
         if (mode is not ("basic" or "bearer" or "pat"))
             throw new AgentConfigurationException("Jira:AuthMode must be one of: basic, bearer, pat.");

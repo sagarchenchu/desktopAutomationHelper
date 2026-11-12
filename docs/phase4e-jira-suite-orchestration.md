@@ -46,6 +46,10 @@ Remote URLs must be **HTTPS**. Non-HTTPS is allowed only when
 explicit local mock servers).
 
 Permissions used: **read-only** issue/search GETs. No Jira writeback.
+Suite/key discovery uses Cloud enhanced search
+`GET /rest/api/3/search/jql` with `nextPageToken` / `isLast` pagination
+(`Jira:SearchPagination=jql-token`). Missing or repeated tokens when
+`isLast=false` fail closed; `MaxPages` still bounds truncation.
 
 ## Adapter
 

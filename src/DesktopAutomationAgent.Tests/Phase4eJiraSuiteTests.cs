@@ -106,30 +106,30 @@ public sealed class Phase4eJiraSuiteTests
     }
 
     [Fact]
-    public async Task Pagination_Aggregates_Search_Pages()
+    public async Task Pagination_Aggregates_Two_Jql_Token_Pages()
     {
         using var temp = TempDir();
         var page = 0;
         var handler = new FakeHttpMessageHandler(req =>
         {
             page++;
-            Assert.Contains("/rest/api/3/search?", req.RequestUri!.PathAndQuery, StringComparison.Ordinal);
+            var path = req.RequestUri!.PathAndQuery;
+            Assert.Contains("/rest/api/3/search/jql?", path, StringComparison.Ordinal);
             if (page == 1)
             {
+                Assert.DoesNotContain("nextPageToken=", path, StringComparison.Ordinal);
                 return FakeHttpMessageHandler.Json(new
                 {
-                    startAt = 0,
-                    maxResults = 1,
-                    total = 2,
+                    isLast = false,
+                    nextPageToken = "token-page-2",
                     issues = new[] { new { key = "DEMO-1" } }
                 });
             }
 
+            Assert.Contains("nextPageToken=token-page-2", path, StringComparison.Ordinal);
             return FakeHttpMessageHandler.Json(new
             {
-                startAt = 1,
-                maxResults = 1,
-                total = 2,
+                isLast = true,
                 issues = new[] { new { key = "DEMO-2" } }
             });
         });
@@ -539,14 +539,13 @@ public sealed class Phase4eJiraSuiteTests
     }
 
     [Fact]
-    public async Task Pagination_Truncates_When_MaxPages_Before_Total()
+    public async Task Pagination_Truncates_When_MaxPages_Before_IsLast()
     {
         using var temp = TempDir();
         var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(new
         {
-            startAt = 0,
-            maxResults = 1,
-            total = 3,
+            isLast = false,
+            nextPageToken = "more",
             issues = new[] { new { key = "DEMO-1" } }
         }));
         var opts = CreateJiraOptions(allowLocalHttp: true);
@@ -574,43 +573,59 @@ public sealed class Phase4eJiraSuiteTests
     }
 
     [Fact]
-    public async Task Pagination_Empty_Page_Before_Total_Is_Truncation()
+    public async Task Pagination_Rejects_Missing_NextPageToken_When_Not_Last()
     {
         using var temp = TempDir();
         var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(new
         {
-            startAt = 0,
-            maxResults = 50,
-            total = 3,
-            issues = Array.Empty<object>()
+            isLast = false,
+            issues = new[] { new { key = "DEMO-1" } }
         }));
         var source = CreateSource(temp.Path, handler, allowLocalHttp: true);
         var result = await source.SearchKeysAsync("project = DEMO");
         Assert.False(result.Success);
-        Assert.Contains("truncated", result.Errors[0], StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("empty page", result.Errors[0], StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(result.Keys);
+        Assert.Contains("nextPageToken", result.Errors[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("isLast=false", result.Errors[0], StringComparison.OrdinalIgnoreCase);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Pagination_Rejects_Missing_Or_Malformed_Total(bool missing)
+    [Fact]
+    public async Task Pagination_Rejects_Repeated_NextPageToken()
     {
         using var temp = TempDir();
-        var handler = new FakeHttpMessageHandler(_ => missing
-            ? FakeHttpMessageHandler.Json(new
+        var page = 0;
+        var handler = new FakeHttpMessageHandler(_ =>
+        {
+            page++;
+            return FakeHttpMessageHandler.Json(new
             {
-                startAt = 0,
-                maxResults = 50,
-                issues = new[] { new { key = "DEMO-1" } }
-            })
-            : FakeHttpMessageHandler.Text(
-                """{"startAt":0,"maxResults":50,"total":"three","issues":[{"key":"DEMO-1"}]}"""));
+                isLast = false,
+                nextPageToken = "same-token",
+                issues = new[] { new { key = page == 1 ? "DEMO-1" : "DEMO-2" } }
+            });
+        });
+        var opts = CreateJiraOptions(allowLocalHttp: true);
+        opts.PageSize = 1;
+        opts.MaxPages = 5;
+        var source = CreateSource(temp.Path, handler, opts);
+        var result = await source.SearchKeysAsync("project = DEMO");
+        Assert.False(result.Success);
+        Assert.Contains("repeated nextPageToken", result.Errors[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, result.PageCount);
+    }
+
+    [Fact]
+    public async Task Pagination_Rejects_Missing_IsLast()
+    {
+        using var temp = TempDir();
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(new
+        {
+            nextPageToken = "t",
+            issues = new[] { new { key = "DEMO-1" } }
+        }));
         var source = CreateSource(temp.Path, handler, allowLocalHttp: true);
         var result = await source.SearchKeysAsync("project = DEMO");
         Assert.False(result.Success);
-        Assert.Contains("total", result.Errors[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("isLast", result.Errors[0], StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

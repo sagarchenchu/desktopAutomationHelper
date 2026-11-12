@@ -219,19 +219,38 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
 
         EnsureReady();
 
+        // Cloud enhanced JQL search (GET /rest/api/3/search/jql) — cursor via nextPageToken/isLast.
+        // Legacy DC startAt/total offset strategy is intentionally not the default; set
+        // Jira:SearchPagination=legacy-offset only if a Data Center adapter is required later.
+        if (!string.Equals(_options!.SearchPagination, "jql-token", StringComparison.OrdinalIgnoreCase))
+        {
+            return new JiraKeySearchResult
+            {
+                Success = false,
+                ExitCode = ExitCodes.UsageOrConfiguration,
+                Errors =
+                [
+                    $"Jira:SearchPagination '{_options.SearchPagination}' is not supported. " +
+                    "Use 'jql-token' (/rest/api/3/search/jql)."
+                ]
+            };
+        }
+
         var keys = new List<string>();
         JiraRateLimitInfo? lastRate = null;
-        var startAt = 0;
+        string? nextPageToken = null;
+        var seenTokens = new HashSet<string>(StringComparer.Ordinal);
         var pageCount = 0;
         var complete = false;
-        var reportedTotal = 0;
 
-        while (pageCount < _options!.MaxPages)
+        while (pageCount < _options.MaxPages)
         {
             pageCount++;
             var path =
-                $"rest/api/3/search?jql={Uri.EscapeDataString(jql)}" +
-                $"&startAt={startAt}&maxResults={_options.PageSize}&fields=key";
+                $"rest/api/3/search/jql?jql={Uri.EscapeDataString(jql)}" +
+                $"&maxResults={_options.PageSize}&fields=key";
+            if (!string.IsNullOrWhiteSpace(nextPageToken))
+                path += $"&nextPageToken={Uri.EscapeDataString(nextPageToken)}";
 
             var response = await _transport!.GetAsync(path, null, cancellationToken).ConfigureAwait(false);
             lastRate = response.RateLimit;
@@ -275,29 +294,15 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
                     {
                         Success = false,
                         ExitCode = ExitCodes.SuiteOrWorkspace,
+                        Keys = keys,
                         PageCount = pageCount,
                         Errors = ["Jira search response missing issues array."],
                         RateLimit = lastRate
                     };
                 }
 
-                if (!TryReadSearchTotal(doc.RootElement, out reportedTotal, out var totalError))
-                {
-                    return new JiraKeySearchResult
-                    {
-                        Success = false,
-                        ExitCode = ExitCodes.SuiteOrWorkspace,
-                        Keys = keys,
-                        PageCount = pageCount,
-                        Errors = [totalError],
-                        RateLimit = lastRate
-                    };
-                }
-
-                var pageKeys = 0;
                 foreach (var issue in issues.EnumerateArray())
                 {
-                    pageKeys++;
                     var key = issue.TryGetProperty("key", out var keyEl) ? keyEl.GetString() : null;
                     if (!JiraKeyContract.IsCanonical(key ?? string.Empty))
                     {
@@ -315,15 +320,7 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
                     keys.Add(key!);
                 }
 
-                var pageStart = startAt;
-                startAt += pageKeys;
-                if (startAt >= reportedTotal)
-                {
-                    complete = true;
-                    break;
-                }
-
-                if (pageKeys == 0)
+                if (!TryReadIsLast(doc.RootElement, out var isLast, out var isLastError))
                 {
                     return new JiraKeySearchResult
                     {
@@ -331,18 +328,48 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
                         ExitCode = ExitCodes.SuiteOrWorkspace,
                         Keys = keys,
                         PageCount = pageCount,
-                        Errors =
-                        [
-                            $"Jira search truncated: empty page at startAt={pageStart} " +
-                            $"with total={reportedTotal}."
-                        ],
+                        Errors = [isLastError],
                         RateLimit = lastRate
                     };
                 }
+
+                if (isLast)
+                {
+                    complete = true;
+                    break;
+                }
+
+                if (!TryReadNextPageToken(doc.RootElement, out var token, out var tokenError))
+                {
+                    return new JiraKeySearchResult
+                    {
+                        Success = false,
+                        ExitCode = ExitCodes.SuiteOrWorkspace,
+                        Keys = keys,
+                        PageCount = pageCount,
+                        Errors = [tokenError],
+                        RateLimit = lastRate
+                    };
+                }
+
+                if (!seenTokens.Add(token))
+                {
+                    return new JiraKeySearchResult
+                    {
+                        Success = false,
+                        ExitCode = ExitCodes.SuiteOrWorkspace,
+                        Keys = keys,
+                        PageCount = pageCount,
+                        Errors = ["Jira search returned a repeated nextPageToken while isLast=false."],
+                        RateLimit = lastRate
+                    };
+                }
+
+                nextPageToken = token;
             }
         }
 
-        if (!complete && startAt < reportedTotal)
+        if (!complete)
         {
             return new JiraKeySearchResult
             {
@@ -353,7 +380,7 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
                 Errors =
                 [
                     $"Jira search truncated after MaxPages={_options.MaxPages} " +
-                    $"(retrieved {startAt} of {reportedTotal} issues)."
+                    $"(retrieved {keys.Count} keys; isLast was still false)."
                 ],
                 RateLimit = lastRate
             };
@@ -369,19 +396,47 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
         };
     }
 
-    private static bool TryReadSearchTotal(JsonElement root, out int total, out string error)
+    private static bool TryReadIsLast(JsonElement root, out bool isLast, out string error)
     {
-        total = 0;
+        isLast = false;
         error = string.Empty;
-        if (!root.TryGetProperty("total", out var totalEl))
+        if (!root.TryGetProperty("isLast", out var isLastEl))
         {
-            error = "Jira search response missing required 'total' field.";
+            error = "Jira search response missing required 'isLast' field.";
             return false;
         }
 
-        if (totalEl.ValueKind != JsonValueKind.Number || !totalEl.TryGetInt32(out total) || total < 0)
+        if (isLastEl.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
         {
-            error = "Jira search response 'total' must be a non-negative integer.";
+            error = "Jira search response 'isLast' must be a boolean.";
+            return false;
+        }
+
+        isLast = isLastEl.GetBoolean();
+        return true;
+    }
+
+    private static bool TryReadNextPageToken(JsonElement root, out string token, out string error)
+    {
+        token = string.Empty;
+        error = string.Empty;
+        if (!root.TryGetProperty("nextPageToken", out var tokenEl)
+            || tokenEl.ValueKind == JsonValueKind.Null)
+        {
+            error = "Jira search response missing nextPageToken while isLast=false.";
+            return false;
+        }
+
+        if (tokenEl.ValueKind != JsonValueKind.String)
+        {
+            error = "Jira search response 'nextPageToken' must be a string when isLast=false.";
+            return false;
+        }
+
+        token = tokenEl.GetString()?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            error = "Jira search response nextPageToken was blank while isLast=false.";
             return false;
         }
 

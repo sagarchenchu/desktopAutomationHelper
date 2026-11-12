@@ -51,6 +51,14 @@ public sealed class JiraOptions
     public int MaxPages { get; set; } = 20;
 
     /// <summary>
+    /// Search pagination strategy. Default <c>jql-token</c> uses Cloud
+    /// <c>GET /rest/api/3/search/jql</c> with <c>nextPageToken</c>/<c>isLast</c>.
+    /// A future Data Center <c>legacy-offset</c> strategy may be added separately;
+    /// unsupported values fail closed.
+    /// </summary>
+    public string SearchPagination { get; set; } = "jql-token";
+
+    /// <summary>
     /// When true, http://127.0.0.1 and http://localhost are allowed (unit tests /
     /// explicit local mock servers only). Remote http is always rejected.
     /// </summary>
