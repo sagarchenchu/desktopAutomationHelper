@@ -44,18 +44,28 @@ public static class CompilationFingerprint
     {
         ArgumentNullException.ThrowIfNull(input);
 
+        // Fail closed before ToLowerInvariant — null/missing required components must not NRE.
+        var inputSha = RequireNonEmpty(input.InputSha256, nameof(input.InputSha256));
+        var jiraRevision = RequireNonEmpty(input.JiraRevision, nameof(input.JiraRevision));
+        var compilerVersion = RequireNonEmpty(input.CompilerVersion, nameof(input.CompilerVersion));
+        var parserVersion = RequireNonEmpty(input.ParserVersion, nameof(input.ParserVersion));
+        var stepRegistrySha = RequireNonEmpty(input.StepRegistrySha256, nameof(input.StepRegistrySha256));
+        var objectRepoSha = RequireNonEmpty(input.ObjectRepositorySha256, nameof(input.ObjectRepositorySha256));
+        _ = input.ObjectRepositoryPath
+            ?? throw new ArgumentException("ObjectRepositoryPath is required (may be empty).", nameof(input));
+
         var payload = new SortedDictionary<string, string?>(StringComparer.Ordinal)
         {
-            ["catalogFingerprint"] = NullIfEmpty(input.CatalogFingerprint),
-            ["compilerVersion"] = input.CompilerVersion,
-            ["inputSha256"] = input.InputSha256.ToLowerInvariant(),
-            ["jiraRevision"] = input.JiraRevision,
+            ["catalogFingerprint"] = NullIfEmpty(input.CatalogFingerprint)?.ToLowerInvariant(),
+            ["compilerVersion"] = compilerVersion,
+            ["inputSha256"] = inputSha.ToLowerInvariant(),
+            ["jiraRevision"] = jiraRevision,
             ["knowledgeSha256"] = NullIfEmpty(input.ApprovedKnowledgeSha256)?.ToLowerInvariant(),
             ["objectRepositoryPath"] = CanonicalizeWorkspaceRelativePath(input.ObjectRepositoryPath),
-            ["objectRepositorySha256"] = input.ObjectRepositorySha256.ToLowerInvariant(),
+            ["objectRepositorySha256"] = objectRepoSha.ToLowerInvariant(),
             ["parameterBindingsSha256"] = NullIfEmpty(input.ParameterBindingsSha256)?.ToLowerInvariant(),
-            ["parserVersion"] = input.ParserVersion,
-            ["stepRegistrySha256"] = input.StepRegistrySha256.ToLowerInvariant()
+            ["parserVersion"] = parserVersion,
+            ["stepRegistrySha256"] = stepRegistrySha.ToLowerInvariant()
         };
 
         var canonical = CompilationJson.CanonicalSerialize(payload);
@@ -111,22 +121,65 @@ public static class CompilationFingerprint
         if (catalog is null)
             return null;
 
-        var operationNames = catalog.Operations
-            .Select(o => o.Name)
-            .Where(n => !string.IsNullOrWhiteSpace(n))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(n => n, StringComparer.Ordinal)
+        // Prefer first descriptor per case-insensitive name; fingerprint includes semantic fields
+        // that affect PlanCatalogPreflight (aliases, deprecation, required inputs, session).
+        var operations = catalog.Operations
+            .Where(o => !string.IsNullOrWhiteSpace(o.Name))
+            .GroupBy(o => o.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .OrderBy(o => o.Name, StringComparer.Ordinal)
+            .Select(o => new
+            {
+                name = o.Name.Trim(),
+                aliases = o.Aliases
+                    .Where(a => !string.IsNullOrWhiteSpace(a))
+                    .Select(a => a.Trim())
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(a => a, StringComparer.Ordinal)
+                    .ToArray(),
+                deprecatedAliases = o.DeprecatedAliases
+                    .Where(a => !string.IsNullOrWhiteSpace(a))
+                    .Select(a => a.Trim())
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(a => a, StringComparer.Ordinal)
+                    .ToArray(),
+                deprecated = o.Deprecated,
+                requiredInputs = o.RequiredInputs
+                    .Where(i => !string.IsNullOrWhiteSpace(i))
+                    .Select(i => i.Trim())
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(i => i, StringComparer.Ordinal)
+                    .ToArray(),
+                requiredInputAlternatives = o.RequiredInputAlternatives
+                    .Select(group => group
+                        .Where(i => !string.IsNullOrWhiteSpace(i))
+                        .Select(i => i.Trim())
+                        .Distinct(StringComparer.Ordinal)
+                        .OrderBy(i => i, StringComparer.Ordinal)
+                        .ToArray())
+                    .Where(group => group.Length > 0)
+                    .OrderBy(group => string.Join('\u001f', group), StringComparer.Ordinal)
+                    .ToArray(),
+                requiresSession = o.RequiresSession
+            })
             .ToArray();
 
         var payload = new
         {
             schemaVersion = catalog.SchemaVersion,
             driverVersion = catalog.DriverVersion ?? string.Empty,
-            operations = operationNames
+            operations
         };
 
         var canonical = CompilationJson.CanonicalSerialize(payload);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
+    private static string RequireNonEmpty(string? value, string name)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException($"{name} is required and must be non-empty.", name);
+        return value;
     }
 
     private static string? NullIfEmpty(string? value) =>

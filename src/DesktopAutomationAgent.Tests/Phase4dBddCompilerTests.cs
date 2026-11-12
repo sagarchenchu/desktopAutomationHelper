@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Compilation;
 using DesktopAutomationAgent.Configuration;
+using DesktopAutomationAgent.Driver.Models;
 using DesktopAutomationAgent.Knowledge;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
@@ -379,7 +381,10 @@ public class Phase4dBddCompilerTests
             KnowledgePath = rogue
         });
         Assert.False(rogueResult.Success);
-        Assert.Contains(rogueResult.Errors, e => e.Contains("knowledge/approved", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(rogueResult.Errors, e =>
+            e.Contains("knowledge/approved", StringComparison.OrdinalIgnoreCase)
+            || e.Contains("containment", StringComparison.OrdinalIgnoreCase)
+            || e.Contains("outside the allowed directory", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -528,6 +533,282 @@ public class Phase4dBddCompilerTests
     }
 
     [Fact]
+    public void CustomRegistry_IsValidated_Recorded_AndDriftChecked()
+    {
+        using var temp = TempWorkspace();
+        SeedWorkspace(temp.Path);
+
+        var customRelative = "step-registry/custom-registry.json";
+        var customFull = Path.Combine(temp.Path, "step-registry", "custom-registry.json");
+        File.Copy(Path.Combine(temp.Path, "step-registry", "registry.json"), customFull, overwrite: true);
+
+        var service = CreateService(temp.Path);
+        var compiled = service.CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-1",
+            RegistryPath = customRelative,
+            CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
+        });
+        Assert.True(compiled.Success, string.Join("; ", compiled.Errors));
+        Assert.Equal(customRelative, compiled.Metadata!.StepRegistryPath);
+
+        // Editing the default registry must not false-drift a custom-registry compile.
+        var defaultRegistry = Path.Combine(temp.Path, "step-registry", "registry.json");
+        var defaultNode = JsonNode.Parse(File.ReadAllText(defaultRegistry))!.AsObject();
+        defaultNode["version"] = "0.0.0-default-changed";
+        File.WriteAllText(defaultRegistry, defaultNode.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        var stillOk = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.True(stillOk.IsValid, string.Join("; ", stillOk.Errors));
+
+        // Editing the recorded custom registry must drift.
+        var customNode = JsonNode.Parse(File.ReadAllText(customFull))!.AsObject();
+        customNode["version"] = "9.9.9-custom";
+        File.WriteAllText(customFull, customNode.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        var drift = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.False(drift.IsValid);
+        Assert.Contains(drift.Errors, e => e.Contains("dependency-drift", StringComparison.Ordinal)
+                                           && e.Contains("step-registry", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void KnowledgeAndCatalogPaths_AreRecorded_AndDriftChecked()
+    {
+        using var temp = TempWorkspace();
+        SeedWorkspace(temp.Path);
+        var knowledgeDir = WriteApprovedKnowledge(temp.Path, stateId: "st_home");
+        var catalogRelative = "catalogs/ops.json";
+        var catalogFull = Path.Combine(temp.Path, "catalogs", "ops.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(catalogFull)!);
+        var catalog = MinimalCatalog();
+        File.WriteAllText(catalogFull, JsonSerializer.Serialize(catalog, CompilationJsonOptions()));
+
+        File.WriteAllText(Path.Combine(temp.Path, "test-cases", "examples", "DEMO-6.json"), """
+            {
+              "schemaVersion": 1,
+              "jiraKey": "DEMO-6",
+              "revision": "1",
+              "summary": "require state",
+              "feature": "Feature: N\n  Scenario: S\n    Given I require approved knowledge state \"st_home\"\n"
+            }
+            """);
+
+        var service = CreateService(temp.Path);
+        var compiled = service.CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-6",
+            KnowledgePath = knowledgeDir,
+            CatalogPath = catalogRelative,
+            CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
+        });
+        Assert.True(compiled.Success, string.Join("; ", compiled.Errors));
+        Assert.False(string.IsNullOrWhiteSpace(compiled.Metadata!.ApprovedKnowledgePath));
+        Assert.Equal(catalogRelative, compiled.Metadata.CatalogPath);
+        Assert.False(string.IsNullOrWhiteSpace(compiled.Metadata.CatalogFingerprint));
+
+        var ok = service.ValidateCompiledKey("DEMO-6", compiled.Fingerprint);
+        Assert.True(ok.IsValid, string.Join("; ", ok.Errors));
+
+        File.WriteAllText(
+            Path.Combine(knowledgeDir, "application-knowledge.json"),
+            File.ReadAllText(Path.Combine(knowledgeDir, "application-knowledge.json")) + "\n");
+        var knowledgeDrift = service.ValidateCompiledKey("DEMO-6", compiled.Fingerprint);
+        Assert.False(knowledgeDrift.IsValid);
+        Assert.Contains(knowledgeDrift.Errors, e => e.Contains("approved knowledge", StringComparison.OrdinalIgnoreCase));
+
+        // Restore knowledge bytes for catalog drift isolation.
+        // Recompile fresh for catalog-only drift.
+        using var temp2 = TempWorkspace();
+        SeedWorkspace(temp2.Path);
+        var knowledgeDir2 = WriteApprovedKnowledge(temp2.Path, stateId: "st_home");
+        var catalogFull2 = Path.Combine(temp2.Path, "catalogs", "ops.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(catalogFull2)!);
+        File.WriteAllText(catalogFull2, JsonSerializer.Serialize(MinimalCatalog(), CompilationJsonOptions()));
+        File.WriteAllText(Path.Combine(temp2.Path, "test-cases", "examples", "DEMO-6.json"), """
+            {
+              "schemaVersion": 1,
+              "jiraKey": "DEMO-6",
+              "revision": "1",
+              "summary": "require state",
+              "feature": "Feature: N\n  Scenario: S\n    Given I require approved knowledge state \"st_home\"\n"
+            }
+            """);
+        var service2 = CreateService(temp2.Path);
+        var compiled2 = service2.CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-6",
+            KnowledgePath = knowledgeDir2,
+            CatalogPath = catalogRelative,
+            CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
+        });
+        Assert.True(compiled2.Success, string.Join("; ", compiled2.Errors));
+
+        catalog.Operations[0].Aliases.Add("listwindows-alias");
+        File.WriteAllText(catalogFull2, JsonSerializer.Serialize(catalog, CompilationJsonOptions()));
+        var catalogDrift = service2.ValidateCompiledKey("DEMO-6", compiled2.Fingerprint);
+        Assert.False(catalogDrift.IsValid);
+        Assert.Contains(catalogDrift.Errors, e => e.Contains("catalog fingerprint", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void CatalogFingerprint_IncludesAliasesDeprecatedInputsAndSession()
+    {
+        var baseline = MinimalCatalog();
+        var baseFp = CompilationFingerprint.ComputeCatalogFingerprint(baseline)!;
+
+        var aliases = MinimalCatalog();
+        aliases.Operations[0].Aliases.Add("extra-alias");
+        Assert.NotEqual(baseFp, CompilationFingerprint.ComputeCatalogFingerprint(aliases));
+
+        var deprecated = MinimalCatalog();
+        deprecated.Operations[0].Deprecated = true;
+        Assert.NotEqual(baseFp, CompilationFingerprint.ComputeCatalogFingerprint(deprecated));
+
+        var deprecatedAliases = MinimalCatalog();
+        deprecatedAliases.Operations[0].DeprecatedAliases.Add("old-name");
+        Assert.NotEqual(baseFp, CompilationFingerprint.ComputeCatalogFingerprint(deprecatedAliases));
+
+        var required = MinimalCatalog();
+        required.Operations[0].RequiredInputs.Add("timeoutMs");
+        Assert.NotEqual(baseFp, CompilationFingerprint.ComputeCatalogFingerprint(required));
+
+        var alternatives = MinimalCatalog();
+        alternatives.Operations[0].RequiredInputAlternatives.Add(["automationId", "name"]);
+        Assert.NotEqual(baseFp, CompilationFingerprint.ComputeCatalogFingerprint(alternatives));
+
+        var session = MinimalCatalog();
+        session.Operations[0].RequiresSession = !session.Operations[0].RequiresSession;
+        Assert.NotEqual(baseFp, CompilationFingerprint.ComputeCatalogFingerprint(session));
+    }
+
+    [Fact]
+    public void MalformedCompilationJson_FailsClosed_BeforeFingerprintRecompute()
+    {
+        using var temp = TempWorkspace();
+        SeedWorkspace(temp.Path);
+        var service = CreateService(temp.Path);
+        var compiled = service.CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-1",
+            CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
+        });
+        Assert.True(compiled.Success, string.Join("; ", compiled.Errors));
+
+        var artifactDir = Path.Combine(temp.Path, "compiled", "DEMO-1", compiled.Fingerprint!);
+        var metaPath = Path.Combine(artifactDir, "compilation.json");
+        var planPath = Path.Combine(artifactDir, "plan.json");
+
+        // Corrupt JSON
+        File.WriteAllText(metaPath, "{ not-json");
+        var corrupt = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.False(corrupt.IsValid);
+        Assert.Contains(corrupt.Errors, e => e.Contains("failed to read", StringComparison.OrdinalIgnoreCase)
+                                             || e.Contains("compilation", StringComparison.OrdinalIgnoreCase));
+
+        // Null required field — must not throw NRE via ToLowerInvariant.
+        var planBytes = File.ReadAllBytes(planPath);
+        File.WriteAllText(metaPath, """
+            {
+              "schemaVersion": "1",
+              "jiraKey": "DEMO-1",
+              "fingerprint": "REPLACE_FP",
+              "compilerVersion": "phase4d-1",
+              "parserVersion": "gherkin-30.1.2",
+              "inputSha256": null,
+              "jiraRevision": "1",
+              "stepRegistrySha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "objectRepositorySha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "objectRepositoryPath": "object-repository/repository.json",
+              "parameterBindingsSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "planSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
+            """.Replace("REPLACE_FP", compiled.Fingerprint!, StringComparison.Ordinal));
+        // Keep plan present so TryReadExisting reaches metadata integrity.
+        File.WriteAllBytes(planPath, planBytes);
+        var nullField = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.False(nullField.IsValid);
+        Assert.Contains(nullField.Errors, e => e.Contains("inputSha256", StringComparison.OrdinalIgnoreCase));
+
+        // Missing required field
+        File.WriteAllText(metaPath, $$"""
+            {
+              "schemaVersion": "1",
+              "jiraKey": "DEMO-1",
+              "fingerprint": "{{compiled.Fingerprint}}",
+              "compilerVersion": "phase4d-1",
+              "parserVersion": "gherkin-30.1.2",
+              "jiraRevision": "1",
+              "stepRegistrySha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "objectRepositorySha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "objectRepositoryPath": "object-repository/repository.json",
+              "parameterBindingsSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "planSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
+            """);
+        var missing = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.False(missing.IsValid);
+        Assert.Contains(missing.Errors, e => e.Contains("inputSha256", StringComparison.OrdinalIgnoreCase));
+
+        // Partial artifact (plan without compilation)
+        File.Delete(metaPath);
+        var partial = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.False(partial.IsValid);
+        Assert.Contains(partial.Errors, e => e.Contains("incomplete", StringComparison.OrdinalIgnoreCase)
+                                             || e.Contains("partial", StringComparison.OrdinalIgnoreCase)
+                                             || e.Contains("corrupt", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void KnowledgeDirectory_JunctionEscape_IsRejected_SafeInsideJunction_Allowed()
+    {
+        using var temp = TempWorkspace();
+        SeedWorkspace(temp.Path);
+        var realDir = WriteApprovedKnowledge(temp.Path, stateId: "st_home");
+        var approvedRoot = Path.Combine(temp.Path, "knowledge", "approved");
+        File.WriteAllText(Path.Combine(temp.Path, "test-cases", "examples", "DEMO-6.json"), """
+            {
+              "schemaVersion": 1,
+              "jiraKey": "DEMO-6",
+              "revision": "1",
+              "summary": "require state",
+              "feature": "Feature: N\n  Scenario: S\n    Given I require approved knowledge state \"st_home\"\n"
+            }
+            """);
+
+        // Escape: junction under approved that points outside approved.
+        var outside = Path.Combine(temp.Path, "outside-knowledge");
+        Directory.CreateDirectory(outside);
+        foreach (var file in Directory.GetFiles(realDir))
+            File.Copy(file, Path.Combine(outside, Path.GetFileName(file)), overwrite: true);
+
+        var escapeLink = Path.Combine(approvedRoot, "escape-junc");
+        if (!TryCreateDirectoryJunction(escapeLink, outside))
+            return; // environment cannot create junctions
+
+        var escapeResult = CreateService(temp.Path).CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-6",
+            KnowledgePath = escapeLink
+        });
+        Assert.False(escapeResult.Success);
+        Assert.Contains(escapeResult.Errors, e =>
+            e.Contains("outside", StringComparison.OrdinalIgnoreCase)
+            || e.Contains("containment", StringComparison.OrdinalIgnoreCase)
+            || e.Contains("knowledge/approved", StringComparison.OrdinalIgnoreCase)
+            || e.Contains("directory link", StringComparison.OrdinalIgnoreCase));
+
+        // Safe-inside: junction under approved pointing at another approved directory.
+        var safeLink = Path.Combine(approvedRoot, "safe-junc");
+        Assert.True(TryCreateDirectoryJunction(safeLink, realDir));
+        var safe = CreateService(temp.Path).CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-6",
+            KnowledgePath = safeLink,
+            CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
+        });
+        Assert.True(safe.Success, string.Join("; ", safe.Errors));
+    }
+
+    [Fact]
     public void CompileKey_Cli_NeverPostsUi_AndValidateCompiledKeyPasses()
     {
         using var temp = TempWorkspace();
@@ -651,6 +932,65 @@ public class Phase4dBddCompilerTests
             ParameterBindingsSha256 = CompilationFingerprint.ComputeParameterBindingsSha256(null)
         };
 
+    private static OperationsCatalogDto MinimalCatalog() =>
+        new()
+        {
+            SchemaVersion = 1,
+            DriverVersion = "test-driver",
+            Operations =
+            [
+                new OperationDescriptorDto
+                {
+                    Name = "listwindows",
+                    Category = "query",
+                    RequiresSession = false,
+                    Deprecated = false,
+                    Aliases = [],
+                    DeprecatedAliases = [],
+                    RequiredInputs = [],
+                    RequiredInputAlternatives = []
+                }
+            ]
+        };
+
+    private static bool TryCreateDirectoryJunction(string linkPath, string targetPath)
+    {
+        try
+        {
+            // Non-recursive: remove the junction node without deleting the target tree.
+            if (Directory.Exists(linkPath))
+                Directory.Delete(linkPath, recursive: false);
+            else if (File.Exists(linkPath))
+                File.Delete(linkPath);
+        }
+        catch
+        {
+            // best-effort
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/c mklink /J \"{linkPath}\" \"{targetPath}\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var process = Process.Start(psi);
+            if (process is null)
+                return false;
+            process.WaitForExit(10_000);
+            return process.ExitCode == 0 && Directory.Exists(linkPath);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static string WriteApprovedKnowledge(string root, string stateId)
     {
         var buildFingerprint = new string('b', 32);
@@ -747,6 +1087,8 @@ public class Phase4dBddCompilerTests
     private static JsonSerializerOptions CompilationJsonOptions() => new()
     {
         PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true
     };

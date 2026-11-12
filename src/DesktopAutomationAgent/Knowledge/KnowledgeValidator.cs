@@ -75,10 +75,36 @@ public sealed class KnowledgeValidator
         return result;
     }
 
-    public KnowledgeValidationResult ValidateDirectory(string knowledgeDirectory)
+    public KnowledgeValidationResult ValidateDirectory(string knowledgeDirectory) =>
+        ValidateDirectory(knowledgeDirectory, containmentRoot: null);
+
+    /// <param name="containmentRoot">
+    /// When set (e.g. knowledge/approved), the directory and every sibling file are checked for
+    /// symlink/junction escape before content verification.
+    /// </param>
+    public KnowledgeValidationResult ValidateDirectory(string knowledgeDirectory, string? containmentRoot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(knowledgeDirectory);
+
+        if (!string.IsNullOrWhiteSpace(containmentRoot))
+        {
+            try
+            {
+                KnowledgePathSafety.EnsureReadablePathInside(knowledgeDirectory, containmentRoot);
+            }
+            catch (KnowledgePathException ex)
+            {
+                return new KnowledgeValidationResult
+                {
+                    Errors = { $"knowledge directory path containment failed: {ex.Message}" }
+                };
+            }
+        }
+
         var path = Path.Combine(knowledgeDirectory, "application-knowledge.json");
+        if (!TryEnsureSiblingReadable(path, "application-knowledge.json", containmentRoot, out var pathError))
+            return new KnowledgeValidationResult { Errors = { pathError! } };
+
         if (!File.Exists(path))
             return new KnowledgeValidationResult { Errors = { $"Missing application-knowledge.json under '{knowledgeDirectory}'." } };
 
@@ -97,17 +123,24 @@ public sealed class KnowledgeValidator
         }
         else if (File.Exists(hashFile))
         {
-            var recorded = File.ReadAllText(hashFile).Trim().ToLowerInvariant();
-            var actual = KnowledgeArtifactWriter.ComputeContentHash(document);
-            if (!string.Equals(recorded, actual, StringComparison.Ordinal))
+            if (!TryEnsureSiblingReadable(hashFile, "content-hash.txt", containmentRoot, out var hashPathError))
             {
-                result.Errors.Add(
-                    $"content-hash.txt mismatch: recorded '{recorded}', recomputed '{actual}'.");
+                result.Errors.Add(hashPathError!);
+            }
+            else
+            {
+                var recorded = File.ReadAllText(hashFile).Trim().ToLowerInvariant();
+                var actual = KnowledgeArtifactWriter.ComputeContentHash(document);
+                if (!string.Equals(recorded, actual, StringComparison.Ordinal))
+                {
+                    result.Errors.Add(
+                        $"content-hash.txt mismatch: recorded '{recorded}', recomputed '{actual}'.");
+                }
             }
         }
 
         if (isApproved)
-            CrossCheckApprovedSiblings(knowledgeDirectory, document, result);
+            CrossCheckApprovedSiblings(knowledgeDirectory, document, result, containmentRoot);
 
         return result;
     }
@@ -115,11 +148,12 @@ public sealed class KnowledgeValidator
     private static void CrossCheckApprovedSiblings(
         string knowledgeDirectory,
         ApplicationKnowledgeDocument document,
-        KnowledgeValidationResult result)
+        KnowledgeValidationResult result,
+        string? containmentRoot)
     {
-        CrossCheckSibling(knowledgeDirectory, "state-graph.json", document.Graph, result);
-        CrossCheckSibling(knowledgeDirectory, "workflows.json", document.Workflows, result);
-        CrossCheckSibling(knowledgeDirectory, "coverage.json", document.Coverage, result);
+        CrossCheckSibling(knowledgeDirectory, "state-graph.json", document.Graph, result, containmentRoot);
+        CrossCheckSibling(knowledgeDirectory, "workflows.json", document.Workflows, result, containmentRoot);
+        CrossCheckSibling(knowledgeDirectory, "coverage.json", document.Coverage, result, containmentRoot);
 
         if (document.Approval is null)
         {
@@ -127,16 +161,23 @@ public sealed class KnowledgeValidator
             return;
         }
 
-        CrossCheckSibling(knowledgeDirectory, "knowledge-approval.json", document.Approval, result);
+        CrossCheckSibling(knowledgeDirectory, "knowledge-approval.json", document.Approval, result, containmentRoot);
     }
 
     private static void CrossCheckSibling<T>(
         string knowledgeDirectory,
         string fileName,
         T expected,
-        KnowledgeValidationResult result)
+        KnowledgeValidationResult result,
+        string? containmentRoot)
     {
         var path = Path.Combine(knowledgeDirectory, fileName);
+        if (!TryEnsureSiblingReadable(path, fileName, containmentRoot, out var pathError))
+        {
+            result.Errors.Add(pathError!);
+            return;
+        }
+
         if (!File.Exists(path))
         {
             result.Errors.Add($"Approved knowledge directory missing required sibling '{fileName}'.");
@@ -164,6 +205,28 @@ public sealed class KnowledgeValidator
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
             result.Errors.Add($"Sibling '{fileName}' could not be verified: {ex.Message}");
+        }
+    }
+
+    private static bool TryEnsureSiblingReadable(
+        string path,
+        string label,
+        string? containmentRoot,
+        out string? error)
+    {
+        error = null;
+        if (string.IsNullOrWhiteSpace(containmentRoot))
+            return true;
+
+        try
+        {
+            KnowledgePathSafety.EnsureReadablePathInside(path, containmentRoot);
+            return true;
+        }
+        catch (KnowledgePathException ex)
+        {
+            error = $"Sibling '{label}' path containment failed: {ex.Message}";
+            return false;
         }
     }
 

@@ -52,13 +52,22 @@ public sealed class CompilationMetadata
 
     public string StepRegistrySha256 { get; init; } = string.Empty;
 
+    /// <summary>Workspace-relative step-registry path used at compile time (for drift checks).</summary>
+    public string StepRegistryPath { get; init; } = string.Empty;
+
     public string ObjectRepositorySha256 { get; init; } = string.Empty;
 
     public string ObjectRepositoryPath { get; init; } = string.Empty;
 
     public string? ApprovedKnowledgeSha256 { get; init; }
 
+    /// <summary>Workspace-relative approved knowledge path when knowledge was used.</summary>
+    public string? ApprovedKnowledgePath { get; init; }
+
     public string? CatalogFingerprint { get; init; }
+
+    /// <summary>Workspace-relative catalog snapshot path when catalog preflight was used.</summary>
+    public string? CatalogPath { get; init; }
 
     public string ParameterBindingsSha256 { get; init; } = string.Empty;
 

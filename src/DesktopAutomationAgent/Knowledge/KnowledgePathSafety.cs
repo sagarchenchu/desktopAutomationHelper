@@ -170,6 +170,35 @@ internal static class KnowledgePathSafety
 
         EnsureAncestorDirectoriesSafe(normalized, containmentRoot);
 
+        // Directory reparse points (junctions / directory symlinks): resolve when the target
+        // stays inside containment; reject escape. Previously FileInfo skipped directories entirely.
+        var directoryInfo = new DirectoryInfo(normalized);
+        if (directoryInfo.Exists)
+        {
+            if (!IsReparsePoint(directoryInfo))
+                return normalized;
+
+            var dirTarget = TryGetLinkTarget(directoryInfo);
+            if (string.IsNullOrWhiteSpace(dirTarget))
+            {
+                throw new KnowledgePathException(
+                    $"path '{fullPath}' is a directory reparse point that cannot be validated safely.");
+            }
+
+            var dirNext = Path.GetFullPath(
+                Path.IsPathRooted(dirTarget)
+                    ? dirTarget
+                    : Path.Combine(directoryInfo.Parent?.FullName ?? normalized, dirTarget));
+
+            if (!IsInsideDirectory(dirNext, containmentRoot))
+            {
+                throw new KnowledgePathException(
+                    $"directory link '{fullPath}' resolves outside the allowed directory.");
+            }
+
+            return ResolveFinalPath(dirNext, containmentRoot, visited, depth + 1);
+        }
+
         var fileInfo = new FileInfo(normalized);
         if (!fileInfo.Exists)
             return normalized;
@@ -208,8 +237,24 @@ internal static class KnowledgePathSafety
         {
             if (current.Exists && IsReparsePoint(current))
             {
-                throw new KnowledgePathException(
-                    $"path '{fullPath}' traverses a symbolic link or reparse point directory '{current.FullName}'.");
+                // Safe directory symlink: allow only when the link target stays inside containment.
+                var linkTarget = TryGetLinkTarget(current);
+                if (string.IsNullOrWhiteSpace(linkTarget))
+                {
+                    throw new KnowledgePathException(
+                        $"path '{fullPath}' traverses a directory reparse point '{current.FullName}' that cannot be validated safely.");
+                }
+
+                var resolved = Path.GetFullPath(
+                    Path.IsPathRooted(linkTarget)
+                        ? linkTarget
+                        : Path.Combine(current.Parent?.FullName ?? normalizedRoot, linkTarget));
+
+                if (!IsInsideDirectory(resolved, containmentRoot))
+                {
+                    throw new KnowledgePathException(
+                        $"path '{fullPath}' traverses directory link '{current.FullName}' that resolves outside the allowed directory.");
+                }
             }
 
             if (WorkspaceManager.PathsEqual(current.FullName, normalizedRoot))

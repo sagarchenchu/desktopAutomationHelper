@@ -13,7 +13,7 @@ Inputs:
 1. Offline Jira test-case export (`automation/schemas/jira-test-case.schema.json`)
 2. Approved step registry (`automation/step-registry/registry.json`)
 3. Approved object repository (for `$objectRef` resolution)
-4. Optional approved application knowledge (navigation refs only)
+4. Optional approved application knowledge (`role=navigation` is **rejected** until workflow expansion is implemented; expected-state knowledge refs are supported)
 5. Optional operations catalog snapshot (catalog preflight only)
 
 Output cache:
@@ -79,6 +79,7 @@ Match rules:
 - `risk: prohibited` → `prohibited-risk`
 - Object refs resolve against **approved/active** repository pages only
 - Knowledge refs require **approved** knowledge; missing / conflicting / ambiguous fail closed
+- `role=navigation` mappings are rejected as `unsupported-feature` (no listwindows / navigation stubs)
 
 ## Compilation pipeline
 
@@ -105,8 +106,12 @@ SHA-256 over a canonical object of:
 | `parserVersion` | `gherkin-30.1.2` |
 | `stepRegistrySha256` | registry file hash |
 | `objectRepositorySha256` | repository aggregate hash |
+| `objectRepositoryPath` | canonical workspace-relative object-repository path |
+| `parameterBindingsSha256` | SHA-256 of canonical sorted compile-time parameter bindings |
 | `knowledgeSha256` | included **only when** knowledge was used |
-| `catalogFingerprint` | catalog schema + sorted operation-set hash when catalog requested |
+| `catalogFingerprint` | when `--catalog` is supplied: schema + driver version + per-operation name, aliases, deprecatedAliases, deprecated, requiredInputs, requiredInputAlternatives, requiresSession |
+
+`compilation.json` also records `stepRegistryPath`, `approvedKnowledgePath`, and `catalogPath` so `validate-compiled-key` drift-checks the **same** files used at compile time (including a custom `--registry`).
 
 Reuse only on full fingerprint match with identical plan bytes.
 

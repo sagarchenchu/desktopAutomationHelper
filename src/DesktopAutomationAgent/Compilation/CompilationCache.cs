@@ -59,10 +59,20 @@ public sealed class CompilationCache
                 return false;
             }
 
+            // Fail closed on null/missing required fields before any ToLowerInvariant / recompute.
+            if (!TryValidateMetadataIntegrity(metadata, jiraKey, fingerprint, errors))
+            {
+                metadata = null;
+                planBytes = null;
+                return false;
+            }
+
             if (!string.Equals(metadata.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
             {
                 errors.Add(
                     $"compiled artifact fingerprint mismatch for {jiraKey}/{fingerprint}: metadata has '{metadata.Fingerprint}'.");
+                metadata = null;
+                planBytes = null;
                 return false;
             }
 
@@ -70,6 +80,8 @@ public sealed class CompilationCache
             if (!string.Equals(metadata.PlanSha256, planSha, StringComparison.OrdinalIgnoreCase))
             {
                 errors.Add($"compiled plan.json sha mismatch for {jiraKey}/{fingerprint}.");
+                metadata = null;
+                planBytes = null;
                 return false;
             }
 
@@ -78,7 +90,50 @@ public sealed class CompilationCache
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
             errors.Add($"failed to read compiled artifact {jiraKey}/{fingerprint}: {ex.Message}");
+            planBytes = null;
+            metadata = null;
             return false;
+        }
+    }
+
+    internal static bool TryValidateMetadataIntegrity(
+        CompilationMetadata metadata,
+        string jiraKey,
+        string fingerprint,
+        List<string> errors)
+    {
+        var before = errors.Count;
+        RequireMetadataField(metadata.JiraKey, "jiraKey", jiraKey, fingerprint, errors);
+        RequireMetadataField(metadata.Fingerprint, "fingerprint", jiraKey, fingerprint, errors);
+        RequireMetadataField(metadata.CompilerVersion, "compilerVersion", jiraKey, fingerprint, errors);
+        RequireMetadataField(metadata.ParserVersion, "parserVersion", jiraKey, fingerprint, errors);
+        RequireMetadataField(metadata.InputSha256, "inputSha256", jiraKey, fingerprint, errors);
+        RequireMetadataField(metadata.JiraRevision, "jiraRevision", jiraKey, fingerprint, errors);
+        RequireMetadataField(metadata.StepRegistrySha256, "stepRegistrySha256", jiraKey, fingerprint, errors);
+        RequireMetadataField(metadata.ObjectRepositorySha256, "objectRepositorySha256", jiraKey, fingerprint, errors);
+        // objectRepositoryPath may be empty only if explicitly present; null is corrupt.
+        if (metadata.ObjectRepositoryPath is null)
+        {
+            errors.Add(
+                $"compiled artifact {jiraKey}/{fingerprint} compilation.json has null objectRepositoryPath.");
+        }
+
+        RequireMetadataField(metadata.ParameterBindingsSha256, "parameterBindingsSha256", jiraKey, fingerprint, errors);
+        RequireMetadataField(metadata.PlanSha256, "planSha256", jiraKey, fingerprint, errors);
+        return errors.Count == before;
+    }
+
+    private static void RequireMetadataField(
+        string? value,
+        string fieldName,
+        string jiraKey,
+        string fingerprint,
+        List<string> errors)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            errors.Add(
+                $"compiled artifact {jiraKey}/{fingerprint} compilation.json missing or null required field '{fieldName}'.");
         }
     }
 

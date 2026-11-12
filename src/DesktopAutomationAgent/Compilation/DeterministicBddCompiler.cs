@@ -284,10 +284,18 @@ public sealed class DeterministicBddCompiler
             InputSha256 = request.InputSha256,
             JiraRevision = request.TestCase.ResolveRevisionToken(),
             StepRegistrySha256 = request.StepRegistrySha256,
+            StepRegistryPath = CompilationFingerprint.CanonicalizeWorkspaceRelativePath(
+                request.StepRegistryRelativePath ?? "step-registry/registry.json"),
             ObjectRepositorySha256 = request.ObjectRepositorySha256,
             ObjectRepositoryPath = objectRepoPath,
             ApprovedKnowledgeSha256 = knowledgeSha,
+            ApprovedKnowledgePath = usedKnowledge
+                ? CompilationFingerprint.CanonicalizeWorkspaceRelativePath(request.ApprovedKnowledgeRelativePath)
+                : null,
             CatalogFingerprint = request.CatalogFingerprint,
+            CatalogPath = string.IsNullOrWhiteSpace(request.CatalogFingerprint)
+                ? null
+                : CompilationFingerprint.CanonicalizeWorkspaceRelativePath(request.CatalogRelativePath),
             ParameterBindingsSha256 = bindingsSha,
             PlanSha256 = planSha,
             CompiledAtUtc = request.CompiledAtUtc ?? DateTimeOffset.UtcNow,
@@ -593,6 +601,8 @@ public sealed class DeterministicCompileRequest
 
     public required string StepRegistrySha256 { get; init; }
 
+    public string? StepRegistryRelativePath { get; init; }
+
     public ObjectRepositorySnapshot? ObjectRepository { get; init; }
 
     public string? ObjectRepositoryRelativePath { get; init; }
@@ -603,9 +613,13 @@ public sealed class DeterministicCompileRequest
 
     public string? ApprovedKnowledgeSha256 { get; init; }
 
+    public string? ApprovedKnowledgeRelativePath { get; init; }
+
     public OperationsCatalogDto? Catalog { get; init; }
 
     public string? CatalogFingerprint { get; init; }
+
+    public string? CatalogRelativePath { get; init; }
 
     public IReadOnlyDictionary<string, string>? ParameterBindings { get; init; }
 
