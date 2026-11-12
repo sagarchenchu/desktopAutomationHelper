@@ -1791,6 +1791,6 @@ public static class CommandLine
           6 UI operation, timeout, capture/verify/observe or assertion failure
           7 execution cancelled
 
-        Phase 4D compiles offline Jira BDD exports into Phase 2 plans. AI and Jira network access are not implemented.
+        Phase 4D compiles offline Jira BDD exports into Phase 2 plans. AI is not implemented. Jira network access is not implemented.
         """;
 }
