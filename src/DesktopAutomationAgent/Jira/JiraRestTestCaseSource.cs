@@ -174,9 +174,9 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
 
             try
             {
-                _cache.WriteAtomic(jiraKey, document, metadata, out _);
+                _cache.WriteAtomic(jiraKey, document, metadata, out _, out metadata, out document);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
             {
                 return new JiraTestCaseFetchResult
                 {
@@ -223,6 +223,8 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
         JiraRateLimitInfo? lastRate = null;
         var startAt = 0;
         var pageCount = 0;
+        var complete = false;
+        var reportedTotal = 0;
 
         while (pageCount < _options!.MaxPages)
         {
@@ -246,47 +248,87 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
                 };
             }
 
-            using var doc = JsonDocument.Parse(response.Body);
-            if (!doc.RootElement.TryGetProperty("issues", out var issues)
-                || issues.ValueKind != JsonValueKind.Array)
+            JsonDocument doc;
+            try
+            {
+                doc = JsonDocument.Parse(response.Body);
+            }
+            catch (JsonException ex)
             {
                 return new JiraKeySearchResult
                 {
                     Success = false,
                     ExitCode = ExitCodes.SuiteOrWorkspace,
+                    Keys = keys,
                     PageCount = pageCount,
-                    Errors = ["Jira search response missing issues array."],
+                    Errors = [$"Jira search page JSON parse failed: {SecretRedactor.Redact(ex.Message)}"],
                     RateLimit = lastRate
                 };
             }
 
-            var pageKeys = 0;
-            foreach (var issue in issues.EnumerateArray())
+            using (doc)
             {
-                pageKeys++;
-                var key = issue.TryGetProperty("key", out var keyEl) ? keyEl.GetString() : null;
-                if (!JiraKeyContract.IsCanonical(key ?? string.Empty))
+                if (!doc.RootElement.TryGetProperty("issues", out var issues)
+                    || issues.ValueKind != JsonValueKind.Array)
                 {
                     return new JiraKeySearchResult
                     {
                         Success = false,
                         ExitCode = ExitCodes.SuiteOrWorkspace,
-                        Keys = keys,
                         PageCount = pageCount,
-                        Errors = [$"search returned non-canonical key '{key}'."],
+                        Errors = ["Jira search response missing issues array."],
                         RateLimit = lastRate
                     };
                 }
 
-                keys.Add(key!);
-            }
+                var pageKeys = 0;
+                foreach (var issue in issues.EnumerateArray())
+                {
+                    pageKeys++;
+                    var key = issue.TryGetProperty("key", out var keyEl) ? keyEl.GetString() : null;
+                    if (!JiraKeyContract.IsCanonical(key ?? string.Empty))
+                    {
+                        return new JiraKeySearchResult
+                        {
+                            Success = false,
+                            ExitCode = ExitCodes.SuiteOrWorkspace,
+                            Keys = keys,
+                            PageCount = pageCount,
+                            Errors = [$"search returned non-canonical key '{key}'."],
+                            RateLimit = lastRate
+                        };
+                    }
 
-            var total = doc.RootElement.TryGetProperty("total", out var totalEl) && totalEl.TryGetInt32(out var t)
-                ? t
-                : keys.Count;
-            startAt += pageKeys;
-            if (pageKeys == 0 || startAt >= total)
-                break;
+                    keys.Add(key!);
+                }
+
+                reportedTotal = doc.RootElement.TryGetProperty("total", out var totalEl) && totalEl.TryGetInt32(out var t)
+                    ? t
+                    : keys.Count;
+                startAt += pageKeys;
+                if (pageKeys == 0 || startAt >= reportedTotal)
+                {
+                    complete = true;
+                    break;
+                }
+            }
+        }
+
+        if (!complete && startAt < reportedTotal)
+        {
+            return new JiraKeySearchResult
+            {
+                Success = false,
+                ExitCode = ExitCodes.SuiteOrWorkspace,
+                Keys = keys,
+                PageCount = pageCount,
+                Errors =
+                [
+                    $"Jira search truncated after MaxPages={_options.MaxPages} " +
+                    $"(retrieved {startAt} of {reportedTotal} issues)."
+                ],
+                RateLimit = lastRate
+            };
         }
 
         return new JiraKeySearchResult

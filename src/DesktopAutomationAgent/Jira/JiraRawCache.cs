@@ -8,7 +8,7 @@ namespace DesktopAutomationAgent.Jira;
 
 /// <summary>
 /// Atomic redacted cache under <c>automation/jira-cache/&lt;jiraKey&gt;/&lt;revision-or-hash&gt;/</c>.
-/// Stores only normalized Phase 4D input + source metadata — never unrestricted issue dumps.
+/// Stores only whitelist-projected Phase 4D input + source metadata — never unrestricted issue dumps.
 /// </summary>
 internal sealed class JiraRawCache
 {
@@ -85,21 +85,32 @@ internal sealed class JiraRawCache
 
         try
         {
-            var testJson = File.ReadAllText(testCasePath);
-            document = JsonSerializer.Deserialize<JiraTestCaseDocument>(testJson, CompilationJson.DocumentRead);
+            var testBytes = File.ReadAllBytes(testCasePath);
             metadata = JsonSerializer.Deserialize<JiraSourceMetadata>(
                 File.ReadAllText(metaPath),
                 CompilationJson.DocumentRead);
-            if (document is null || metadata is null)
+            if (metadata is null)
             {
                 errors.Add($"jira-cache entry corrupt at '{dir}'.");
                 return false;
             }
 
-            if (!string.Equals(document.JiraKey, jiraKey, StringComparison.Ordinal)
-                || !string.Equals(metadata.JiraKey, jiraKey, StringComparison.Ordinal))
+            if (!string.Equals(metadata.JiraKey, jiraKey, StringComparison.Ordinal))
             {
-                errors.Add($"jira-cache key mismatch at '{dir}'.");
+                errors.Add($"jira-cache metadata key mismatch at '{dir}'.");
+                return false;
+            }
+
+            var display = ToDisplay(dir, "test-case.json");
+            if (!JiraTestCaseProjector.TryValidateCachedBytes(
+                    testBytes,
+                    jiraKey,
+                    metadata.ContentSha256,
+                    display,
+                    out document,
+                    out var validateErrors))
+            {
+                errors.AddRange(validateErrors);
                 return false;
             }
 
@@ -117,14 +128,42 @@ internal sealed class JiraRawCache
         string jiraKey,
         JiraTestCaseDocument document,
         JiraSourceMetadata metadata,
-        out string directory)
+        out string directory,
+        out JiraSourceMetadata writtenMetadata,
+        out JiraTestCaseDocument writtenDocument)
     {
         if (!JiraKeyContract.IsCanonical(jiraKey))
             throw new ArgumentException($"invalid jiraKey '{jiraKey}'.");
 
+        var display = $"jira-cache/{jiraKey}/test-case.json";
+        if (!JiraTestCaseProjector.TrySanitizeAndHash(
+                document,
+                display,
+                out var sanitized,
+                out var testCaseBytes,
+                out var contentSha,
+                out var sanitizeErrors))
+        {
+            throw new InvalidOperationException(
+                "refusing to cache invalid/unsanitized Jira test case: " +
+                string.Join("; ", sanitizeErrors.Select(SecretRedactor.Redact)));
+        }
+
+        writtenDocument = sanitized;
+        writtenMetadata = metadata with
+        {
+            JiraKey = jiraKey,
+            ContentSha256 = contentSha,
+            RevisionToken = string.IsNullOrWhiteSpace(metadata.RevisionToken)
+                ? sanitized.ResolveRevisionToken()
+                : metadata.RevisionToken,
+            Redacted = true
+        };
+        metadata = writtenMetadata;
+
         var revision = SanitizeSegment(
             string.IsNullOrWhiteSpace(metadata.RevisionToken)
-                ? metadata.ContentSha256
+                ? contentSha
                 : metadata.RevisionToken);
 
         var parent = Path.Combine(_root, jiraKey);
@@ -134,12 +173,13 @@ internal sealed class JiraRawCache
 
         if (Directory.Exists(finalDir))
         {
-            // Identical revision — leave existing redacted cache in place.
-            if (TryRead(jiraKey, revision, out var existing, out var existingMeta, out _, out _)
-                && existing is not null
+            if (TryRead(jiraKey, revision, out var existingDoc, out var existingMeta, out _, out _)
+                && existingDoc is not null
                 && existingMeta is not null
-                && string.Equals(existingMeta.ContentSha256, metadata.ContentSha256, StringComparison.Ordinal))
+                && string.Equals(existingMeta.ContentSha256, contentSha, StringComparison.OrdinalIgnoreCase))
             {
+                writtenDocument = existingDoc;
+                writtenMetadata = existingMeta;
                 return;
             }
 
@@ -151,14 +191,11 @@ internal sealed class JiraRawCache
         try
         {
             Directory.CreateDirectory(tempDir);
-            var testCaseJson = SecretRedactor.Redact(JsonSerializer.Serialize(document, CompilationJson.Indented));
-            if (!testCaseJson.EndsWith('\n'))
-                testCaseJson += "\n";
             var metaJson = SecretRedactor.Redact(JsonSerializer.Serialize(metadata, CompilationJson.Indented));
             if (!metaJson.EndsWith('\n'))
                 metaJson += "\n";
 
-            WriteCreateNew(Path.Combine(tempDir, "test-case.json"), Encoding.UTF8.GetBytes(testCaseJson));
+            WriteCreateNew(Path.Combine(tempDir, "test-case.json"), testCaseBytes);
             WriteCreateNew(Path.Combine(tempDir, "source-metadata.json"), Encoding.UTF8.GetBytes(metaJson));
             Directory.Move(tempDir, finalDir);
         }
@@ -208,12 +245,14 @@ internal sealed class JiraRawCache
         if (trimmed.IndexOfAny(['/', '\\', ':', ' ', '<', '>', '|', '?', '*']) >= 0
             || trimmed.Contains("..", StringComparison.Ordinal))
         {
-            // Fall back to hash of the token for filesystem safety.
             return JiraVendorMapper.Sha256Hex(Encoding.UTF8.GetBytes(trimmed))[..32];
         }
 
         return trimmed;
     }
+
+    private static string ToDisplay(string dir, string file) =>
+        Path.Combine(dir, file).Replace('\\', '/');
 }
 
 internal sealed record ConditionalCacheHeaders(

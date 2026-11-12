@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Compilation;
 using DesktopAutomationAgent.Configuration;
@@ -478,14 +479,244 @@ public sealed class Phase4eJiraSuiteTests
     }
 
     [Fact]
-    public void JiraUrlRules_Reject_Remote_Http()
+    public void JiraUrlRules_Reject_Remote_Http_And_UserInfo()
     {
         Assert.Throws<AgentConfigurationException>(() =>
             JiraUrlRules.EnsureAllowed("http://evil.example.com", allowLocalHttpTestServer: true));
         Assert.Throws<AgentConfigurationException>(() =>
             JiraUrlRules.EnsureAllowed("http://127.0.0.1:8080", allowLocalHttpTestServer: false));
+        Assert.Throws<AgentConfigurationException>(() =>
+            JiraUrlRules.EnsureAllowed("https://user:secret@example.atlassian.net", allowLocalHttpTestServer: false));
         var ok = JiraUrlRules.EnsureAllowed("http://127.0.0.1:8080", allowLocalHttpTestServer: true);
         Assert.Equal(Uri.UriSchemeHttp, ok.Scheme);
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(2, 3)]
+    public async Task Retry_Exact_Request_Count(int maxRetries, int expectedRequests)
+    {
+        using var temp = TempDir();
+        var calls = 0;
+        var handler = new FakeHttpMessageHandler(_ =>
+        {
+            Interlocked.Increment(ref calls);
+            return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json")
+            };
+        });
+        var opts = CreateJiraOptions(allowLocalHttp: true);
+        opts.MaxRetries = maxRetries;
+        opts.RequestTimeoutSeconds = 5;
+        var source = CreateSource(temp.Path, handler, opts);
+        var result = await source.FetchAsync("DEMO-1");
+        Assert.False(result.Success);
+        Assert.Equal(expectedRequests, calls);
+    }
+
+    [Fact]
+    public async Task Body_Read_Timeout_On_Slow_Stream()
+    {
+        using var temp = TempDir();
+        var handler = new FakeHttpMessageHandler(async (_, ct) =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new SlowHttpContent(TimeSpan.FromSeconds(30))
+            };
+            await Task.Yield();
+            return response;
+        });
+        var opts = CreateJiraOptions(allowLocalHttp: true);
+        opts.MaxRetries = 0;
+        opts.RequestTimeoutSeconds = 1;
+        var source = CreateSource(temp.Path, handler, opts);
+        var result = await source.FetchAsync("DEMO-1");
+        Assert.False(result.Success);
+        Assert.Equal(ExitCodes.ExecutionFailure, result.ExitCode);
+        Assert.Contains("timed out", result.Errors[0], StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Pagination_Truncates_When_MaxPages_Before_Total()
+    {
+        using var temp = TempDir();
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(new
+        {
+            startAt = 0,
+            maxResults = 1,
+            total = 3,
+            issues = new[] { new { key = "DEMO-1" } }
+        }));
+        var opts = CreateJiraOptions(allowLocalHttp: true);
+        opts.PageSize = 1;
+        opts.MaxPages = 1;
+        var source = CreateSource(temp.Path, handler, opts);
+        var result = await source.SearchKeysAsync("project = DEMO");
+        Assert.False(result.Success);
+        Assert.Contains("truncated", result.Errors[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, result.PageCount);
+        Assert.Equal(["DEMO-1"], result.Keys);
+    }
+
+    [Fact]
+    public async Task Pagination_Malformed_Page_Json_Fails()
+    {
+        using var temp = TempDir();
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Text("{not-json"));
+        var opts = CreateJiraOptions(allowLocalHttp: true);
+        opts.MaxRetries = 0;
+        var source = CreateSource(temp.Path, handler, opts);
+        var result = await source.SearchKeysAsync("project = DEMO");
+        Assert.False(result.Success);
+        Assert.Contains("JSON parse failed", result.Errors[0], StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Cache_Whitelist_Hash_And_Schema_On_Read()
+    {
+        using var temp = TempDir();
+        var feature =
+            "Feature: List visible windows\n  Scenario: Enumerate windows\n    Given the desktop is ready\n    When I list visible windows\n    Then the window list is not empty\n";
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(new
+        {
+            key = "DEMO-1",
+            fields = new
+            {
+                summary = "Cached",
+                description = feature,
+                updated = "2026-11-12T00:00:00.000+0000",
+                unusedVendorDump = new { password = "nope", token = "abc" }
+            }
+        }));
+        var source = CreateSource(temp.Path, handler, allowLocalHttp: true);
+        var first = await source.FetchAsync("DEMO-1");
+        Assert.True(first.Success, string.Join("; ", first.Errors));
+        Assert.False(string.IsNullOrWhiteSpace(first.Metadata!.ContentSha256));
+
+        var cacheFiles = Directory.GetFiles(Path.Combine(temp.Path, "jira-cache"), "test-case.json", SearchOption.AllDirectories);
+        Assert.Single(cacheFiles);
+        var bytes = File.ReadAllBytes(cacheFiles[0]);
+        var text = Encoding.UTF8.GetString(bytes);
+        Assert.DoesNotContain("unusedVendorDump", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("password", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("\"description\"", text, StringComparison.Ordinal);
+
+        var validator = new JiraTestCaseValidator();
+        var validated = validator.ValidateBytes(bytes, "cache/test-case.json");
+        Assert.True(validated.IsValid, string.Join("; ", validated.Errors));
+        Assert.Equal(first.Metadata.ContentSha256, validated.Sha256, ignoreCase: true);
+
+        // Tamper hash metadata → read must fail.
+        var metaPath = Path.Combine(Path.GetDirectoryName(cacheFiles[0])!, "source-metadata.json");
+        var meta = File.ReadAllText(metaPath).Replace(first.Metadata.ContentSha256, new string('0', 64), StringComparison.OrdinalIgnoreCase);
+        File.WriteAllText(metaPath, meta);
+        var cache = new JiraRawCache(temp.Path);
+        Assert.False(cache.TryRead("DEMO-1", null, out _, out _, out _, out var errors));
+        Assert.Contains(errors, e => e.Contains("contentSha256 mismatch", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task FromJira_MultiKey_Suite_Http_Cache_Compile_Run_Report()
+    {
+        using var temp = TempDir();
+        SeedWorkspace(temp.Path);
+        WriteSuite(temp.Path, enabledKeys: ["DEMO-1", "DEMO-2"], disabledKey: "DEMO-99");
+
+        var feature1 =
+            "Feature: List visible windows\n  Scenario: Enumerate windows\n    Given the desktop is ready\n    When I list visible windows\n    Then the window list is not empty\n";
+        var feature2 =
+            "Feature: List visible windows again\n  Scenario: Enumerate windows\n    Given the desktop is ready\n    When I list visible windows\n    Then the window list is not empty\n";
+
+        var handler = new FakeHttpMessageHandler(req =>
+        {
+            Assert.Equal(HttpMethod.Get, req.Method);
+            var path = req.RequestUri!.AbsolutePath;
+            if (path.Contains("/issue/DEMO-1", StringComparison.Ordinal))
+            {
+                return FakeHttpMessageHandler.Json(new
+                {
+                    key = "DEMO-1",
+                    fields = new { summary = "One", description = feature1, updated = "2026-11-12T00:00:00.000+0000" }
+                });
+            }
+
+            if (path.Contains("/issue/DEMO-2", StringComparison.Ordinal))
+            {
+                return FakeHttpMessageHandler.Json(new
+                {
+                    key = "DEMO-2",
+                    fields = new { summary = "Two", description = feature2, updated = "2026-11-12T00:00:00.000+0000" }
+                });
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json")
+            };
+        });
+
+        var options = TestSupport.CreateOptions(workspaceRoot: temp.Path);
+        options.Jira = CreateJiraOptions(allowLocalHttp: true);
+        var workspace = new WorkspaceManager(Options.Create(options), NullLogger<WorkspaceManager>.Instance);
+        var jiraSource = new JiraRestTestCaseSource(
+            TestSupport.CreateFactory(handler),
+            options,
+            temp.Path,
+            NullLogger<JiraRestTestCaseSource>.Instance);
+
+        var runOrder = new List<string>();
+        var runner = new FakePlanRunner((path, dryRun, _) =>
+        {
+            runOrder.Add(path);
+            Assert.True(dryRun);
+            Assert.DoesNotContain("/ui", path, StringComparison.OrdinalIgnoreCase);
+            return Task.FromResult(new RunReport
+            {
+                RunId = "run-" + runOrder.Count,
+                Status = "passed",
+                ExitCode = ExitCodes.Success,
+                PlanPath = path,
+                DryRun = true,
+                PlanSha256 = "planhash" + runOrder.Count
+            });
+        });
+
+        var orch = new JiraSuiteOrchestrator(
+            Options.Create(options),
+            workspace,
+            jiraSource,
+            new BddCompilationService(workspace, new ObjectRepositoryReader(Options.Create(options), workspace), Options.Create(options)),
+            new SuiteManifestReader(Options.Create(options), workspace),
+            runner,
+            NullLogger<JiraSuiteOrchestrator>.Instance);
+
+        var result = await orch.RunSuiteAsync(new JiraSuiteRunRequest
+        {
+            SuiteFile = "suites/phase4e-demo.json",
+            DryRun = true,
+            FromJira = true
+        });
+
+        Assert.True(result.Success, string.Join("; ", result.Errors) + " | keys=" +
+            string.Join(",", result.Keys.Select(k => k.JiraKey + ":" + k.Result + ":" + string.Join('/', k.Errors))));
+        Assert.Equal(2, result.Keys.Count);
+        Assert.Equal(["DEMO-1", "DEMO-2"], result.Keys.Select(k => k.JiraKey).ToArray());
+        Assert.Equal(1, result.DisabledExcluded);
+        Assert.All(result.Keys, k =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(k.CompilationFingerprint));
+            Assert.False(string.IsNullOrWhiteSpace(k.PlanHash));
+            Assert.False(string.IsNullOrWhiteSpace(k.RunId));
+            Assert.Equal("passed", k.Result);
+        });
+        Assert.Equal(2, runOrder.Count);
+        Assert.True(Directory.Exists(Path.Combine(temp.Path, "jira-cache", "DEMO-1")));
+        Assert.True(Directory.Exists(Path.Combine(temp.Path, "jira-cache", "DEMO-2")));
+        Assert.True(File.Exists(Path.Combine(temp.Path, result.SuiteReportPath!.Replace('/', Path.DirectorySeparatorChar))));
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, r => Assert.Null(r.Content)); // GET only — no Jira write
     }
 
     [Fact]
@@ -656,5 +887,55 @@ public sealed class Phase4eJiraSuiteTests
                 ExitCode = ExitCodes.UsageOrConfiguration,
                 Errors = ["stub source"]
             });
+    }
+
+    /// <summary>Produces headers immediately, then stalls body reads until cancelled.</summary>
+    private sealed class SlowHttpContent : HttpContent
+    {
+        private readonly TimeSpan _stall;
+
+        public SlowHttpContent(TimeSpan stall) => _stall = stall;
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            SerializeToStreamAsync(stream, context, CancellationToken.None);
+
+        protected override async Task SerializeToStreamAsync(
+            Stream stream,
+            TransportContext? context,
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(_stall, cancellationToken).ConfigureAwait(false);
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new SlowReadStream(_stall));
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = -1;
+            return false;
+        }
+    }
+
+    private sealed class SlowReadStream : Stream
+    {
+        private readonly TimeSpan _stall;
+        public SlowReadStream(TimeSpan stall) => _stall = stall;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException("Use ReadAsync.");
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(_stall, cancellationToken).ConfigureAwait(false);
+            return 0;
+        }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

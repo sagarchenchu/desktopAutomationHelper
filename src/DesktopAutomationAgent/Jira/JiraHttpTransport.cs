@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 namespace DesktopAutomationAgent.Jira;
 
 /// <summary>
-/// Mockable Jira HTTP transport: bounded timeouts, response-size limits,
+/// Mockable Jira HTTP transport: bounded timeouts (headers + body), response-size limits,
 /// idempotent GET retries, rate-limit reporting. Never logs Authorization.
 /// </summary>
 public static class JiraHttpClientNames
@@ -45,20 +45,23 @@ internal sealed class JiraHttpTransport
     {
         var attempt = 0;
         JiraHttpResponse? last = null;
+        // MaxRetries = additional retries after the first attempt.
+        // Total attempts = MaxRetries + 1. Stop when attempt >= MaxRetries + 1.
+        var maxAttempts = _options.MaxRetries + 1;
         while (true)
         {
             attempt++;
             last = await SendOnceAsync(relativeOrAbsolutePath, conditionalHeaders, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (!ShouldRetry(last) || attempt > _options.MaxRetries + 1)
+            if (!ShouldRetry(last) || attempt >= maxAttempts)
                 return last;
 
             var delay = ComputeRetryDelay(last, attempt);
             _logger.LogWarning(
-                "Jira GET retry {Attempt}/{Max} after status {Status} (delay {DelayMs}ms). Authorization redacted.",
+                "Jira GET retry {Attempt}/{MaxAttempts} after status {Status} (delay {DelayMs}ms). Authorization redacted.",
                 attempt,
-                _options.MaxRetries + 1,
+                maxAttempts,
                 (int)last.StatusCode,
                 (int)delay.TotalMilliseconds);
 
@@ -73,7 +76,13 @@ internal sealed class JiraHttpTransport
     {
         using var client = _httpClientFactory.CreateClient(HttpClientName);
         client.BaseAddress = _baseUri;
-        client.Timeout = TimeSpan.FromSeconds(_options.RequestTimeoutSeconds);
+        // Cover headers + body with one linked timeout; HttpClient.Timeout alone
+        // does not bound ResponseHeadersRead body streaming.
+        client.Timeout = Timeout.InfiniteTimeSpan;
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(_options.RequestTimeoutSeconds));
+        var timedToken = timeoutCts.Token;
 
         using var request = new HttpRequestMessage(HttpMethod.Get, relativeOrAbsolutePath);
         request.Headers.Authorization = _auth;
@@ -90,14 +99,14 @@ internal sealed class JiraHttpTransport
             response = await client.SendAsync(
                     request,
                     HttpCompletionOption.ResponseHeadersRead,
-                    cancellationToken)
+                    timedToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException)
         {
             return new JiraHttpResponse
             {
@@ -132,7 +141,26 @@ internal sealed class JiraHttpTransport
                 };
             }
 
-            var bytes = await ReadBoundedAsync(response.Content, cancellationToken).ConfigureAwait(false);
+            byte[]? bytes;
+            try
+            {
+                bytes = await ReadBoundedAsync(response.Content, timedToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                return new JiraHttpResponse
+                {
+                    StatusCode = response.StatusCode,
+                    Errors = ["Jira response body read timed out."],
+                    RateLimit = rate,
+                    ExitCode = ExitCodes.ExecutionFailure
+                };
+            }
+
             if (bytes is null)
             {
                 return new JiraHttpResponse
@@ -196,7 +224,8 @@ internal sealed class JiraHttpTransport
         if (response.RateLimit?.RetryAfterSeconds is int retryAfter && retryAfter > 0)
             return TimeSpan.FromSeconds(Math.Min(retryAfter, 30));
 
-        return TimeSpan.FromMilliseconds(100 * attempt * attempt);
+        // Keep unit tests fast: small bounded backoff.
+        return TimeSpan.FromMilliseconds(Math.Min(50 * attempt * attempt, 200));
     }
 
     private static JiraRateLimitInfo ReadRateLimit(HttpResponseMessage response)

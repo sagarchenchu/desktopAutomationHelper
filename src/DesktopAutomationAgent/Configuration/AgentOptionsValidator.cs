@@ -278,6 +278,13 @@ public static class JiraUrlRules
             throw new AgentConfigurationException($"Jira:BaseUrl '{url}' is not a valid absolute http(s) URL.");
         }
 
+        if (!string.IsNullOrEmpty(uri.UserInfo))
+        {
+            throw new AgentConfigurationException(
+                "Jira:BaseUrl must not embed credentials (userinfo). " +
+                "Use Jira auth options / env / OS secret store instead.");
+        }
+
         var loopback = DriverUrlRules.IsLoopbackHost(uri.Host);
         if (uri.Scheme == Uri.UriSchemeHttp)
         {
