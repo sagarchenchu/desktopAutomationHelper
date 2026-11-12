@@ -681,6 +681,119 @@ public class Phase4dBddCompilerTests
     }
 
     [Fact]
+    public void MissingOrNullStepRegistryPath_FailsClosed_WithoutDefaultFallback()
+    {
+        using var temp = TempWorkspace();
+        SeedWorkspace(temp.Path);
+        var service = CreateService(temp.Path);
+        var compiled = service.CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-1",
+            CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
+        });
+        Assert.True(compiled.Success, string.Join("; ", compiled.Errors));
+        Assert.False(string.IsNullOrWhiteSpace(compiled.Metadata!.StepRegistryPath));
+
+        var artifactDir = Path.Combine(temp.Path, "compiled", "DEMO-1", compiled.Fingerprint!);
+        var metaPath = Path.Combine(artifactDir, "compilation.json");
+        var planBytes = File.ReadAllBytes(Path.Combine(artifactDir, "plan.json"));
+        var meta = JsonNode.Parse(File.ReadAllText(metaPath))!.AsObject();
+
+        meta["stepRegistryPath"] = null;
+        File.WriteAllText(metaPath, meta.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllBytes(Path.Combine(artifactDir, "plan.json"), planBytes);
+        var nullPath = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.False(nullPath.IsValid);
+        Assert.Contains(nullPath.Errors, e => e.Contains("stepRegistryPath", StringComparison.OrdinalIgnoreCase));
+
+        meta.Remove("stepRegistryPath");
+        File.WriteAllText(metaPath, meta.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        var missingPath = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.False(missingPath.IsValid);
+        Assert.Contains(missingPath.Errors, e => e.Contains("stepRegistryPath", StringComparison.OrdinalIgnoreCase));
+
+        meta["stepRegistryPath"] = "   ";
+        File.WriteAllText(metaPath, meta.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        var blankPath = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.False(blankPath.IsValid);
+        Assert.Contains(blankPath.Errors, e => e.Contains("stepRegistryPath", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void AbsoluteRegistryCatalogAndObjectRepoPaths_ResolveThenSealRelative()
+    {
+        using var temp = TempWorkspace();
+        SeedWorkspace(temp.Path);
+
+        var catalogRelative = "catalogs/ops.json";
+        var catalogFull = Path.Combine(temp.Path, "catalogs", "ops.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(catalogFull)!);
+        File.WriteAllText(catalogFull, JsonSerializer.Serialize(MinimalCatalog(), CompilationJsonOptions()));
+
+        var service = CreateService(temp.Path);
+        var compiled = service.CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-1",
+            RegistryPath = Path.Combine(temp.Path, "step-registry", "registry.json"),
+            ObjectRepositoryPath = Path.Combine(temp.Path, "object-repository", "repository.json"),
+            CatalogPath = catalogFull,
+            CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
+        });
+        Assert.True(compiled.Success, string.Join("; ", compiled.Errors));
+        Assert.Equal("step-registry/registry.json", compiled.Metadata!.StepRegistryPath);
+        Assert.Equal("object-repository/repository.json", compiled.Metadata.ObjectRepositoryPath);
+        Assert.Equal(catalogRelative, compiled.Metadata.CatalogPath);
+
+        var ok = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.True(ok.IsValid, string.Join("; ", ok.Errors));
+    }
+
+    [Fact]
+    public void KnowledgeFile_IsSymlinkChecked_BeforeHashing()
+    {
+        using var temp = TempWorkspace();
+        SeedWorkspace(temp.Path);
+        var knowledgeDir = WriteApprovedKnowledge(temp.Path, stateId: "st_home");
+        File.WriteAllText(Path.Combine(temp.Path, "test-cases", "examples", "DEMO-6.json"), """
+            {
+              "schemaVersion": 1,
+              "jiraKey": "DEMO-6",
+              "revision": "1",
+              "summary": "require state",
+              "feature": "Feature: N\n  Scenario: S\n    Given I require approved knowledge state \"st_home\"\n"
+            }
+            """);
+
+        var approvedRoot = KnowledgePathSafety.ApprovedRoot(temp.Path);
+        var knowledgeFile = Path.Combine(knowledgeDir, "application-knowledge.json");
+
+        // ValidateDirectory + file containment must succeed before a hash is usable.
+        var validation = new KnowledgeValidator(Path.Combine(temp.Path, "schemas"))
+            .ValidateDirectory(knowledgeDir, approvedRoot);
+        Assert.True(validation.IsValid, string.Join("; ", validation.Errors));
+        KnowledgePathSafety.EnsureReadablePathInside(knowledgeFile, approvedRoot);
+
+        var service = CreateService(temp.Path);
+        var compiled = service.CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-6",
+            KnowledgePath = knowledgeDir,
+            CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
+        });
+        Assert.True(compiled.Success, string.Join("; ", compiled.Errors));
+        Assert.False(string.IsNullOrWhiteSpace(compiled.Metadata!.ApprovedKnowledgeSha256));
+
+        // Drift path also ValidateDirectory's before hashing: break a sibling so validate fails closed.
+        File.WriteAllText(Path.Combine(knowledgeDir, "state-graph.json"), "{ \"tampered\": true }");
+        var drift = service.ValidateCompiledKey("DEMO-6", compiled.Fingerprint);
+        Assert.False(drift.IsValid);
+        Assert.Contains(drift.Errors, e =>
+            e.Contains("ValidateDirectory", StringComparison.OrdinalIgnoreCase)
+            || e.Contains("Sibling", StringComparison.OrdinalIgnoreCase)
+            || e.Contains("state-graph", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void MalformedCompilationJson_FailsClosed_BeforeFingerprintRecompute()
     {
         using var temp = TempWorkspace();

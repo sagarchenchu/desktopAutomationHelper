@@ -110,13 +110,10 @@ public sealed class CompilationCache
         RequireMetadataField(metadata.InputSha256, "inputSha256", jiraKey, fingerprint, errors);
         RequireMetadataField(metadata.JiraRevision, "jiraRevision", jiraKey, fingerprint, errors);
         RequireMetadataField(metadata.StepRegistrySha256, "stepRegistrySha256", jiraKey, fingerprint, errors);
+        // stepRegistryPath must be nonempty — validate must not fall back to a default registry.
+        RequireMetadataField(metadata.StepRegistryPath, "stepRegistryPath", jiraKey, fingerprint, errors);
         RequireMetadataField(metadata.ObjectRepositorySha256, "objectRepositorySha256", jiraKey, fingerprint, errors);
-        // objectRepositoryPath may be empty only if explicitly present; null is corrupt.
-        if (metadata.ObjectRepositoryPath is null)
-        {
-            errors.Add(
-                $"compiled artifact {jiraKey}/{fingerprint} compilation.json has null objectRepositoryPath.");
-        }
+        RequireMetadataField(metadata.ObjectRepositoryPath, "objectRepositoryPath", jiraKey, fingerprint, errors);
 
         RequireMetadataField(metadata.ParameterBindingsSha256, "parameterBindingsSha256", jiraKey, fingerprint, errors);
         RequireMetadataField(metadata.PlanSha256, "planSha256", jiraKey, fingerprint, errors);

@@ -185,7 +185,7 @@ public sealed class DeterministicBddCompiler
         try
         {
             objectRepoPath = CompilationFingerprint.CanonicalizeWorkspaceRelativePath(
-                request.ObjectRepositoryRelativePath);
+                RequireNonEmptyPath(request.ObjectRepositoryRelativePath, "ObjectRepositoryRelativePath"));
         }
         catch (ArgumentException ex)
         {
@@ -285,7 +285,7 @@ public sealed class DeterministicBddCompiler
             JiraRevision = request.TestCase.ResolveRevisionToken(),
             StepRegistrySha256 = request.StepRegistrySha256,
             StepRegistryPath = CompilationFingerprint.CanonicalizeWorkspaceRelativePath(
-                request.StepRegistryRelativePath ?? "step-registry/registry.json"),
+                RequireNonEmptyPath(request.StepRegistryRelativePath, "StepRegistryRelativePath")),
             ObjectRepositorySha256 = request.ObjectRepositorySha256,
             ObjectRepositoryPath = objectRepoPath,
             ApprovedKnowledgeSha256 = knowledgeSha,
@@ -568,6 +568,13 @@ public sealed class DeterministicBddCompiler
         }
 
         return result;
+    }
+
+    private static string RequireNonEmptyPath(string? path, string name)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException($"{name} is required and must be nonempty.", name);
+        return path;
     }
 
     private static string SanitizeStepId(string id, int index)

@@ -87,12 +87,13 @@ public sealed class BddCompilationService
             };
         }
 
-        var registryRelative = CompilationFingerprint.CanonicalizeWorkspaceRelativePath(
-            string.IsNullOrWhiteSpace(request.RegistryPath)
-                ? "step-registry/registry.json"
-                : request.RegistryPath!);
-        var registryFull = _workspace.ResolveSafePath(registryRelative);
-        var registryResult = _registryValidator.ValidateFile(registryFull, ToRelative(registryFull));
+        // Resolve first (absolute or workspace-relative), then seal ToRelative(resolvedFullPath).
+        var registryInput = string.IsNullOrWhiteSpace(request.RegistryPath)
+            ? "step-registry/registry.json"
+            : request.RegistryPath!;
+        var registryFull = _workspace.ResolveSafePath(registryInput);
+        var registryRelative = CompilationFingerprint.CanonicalizeWorkspaceRelativePath(ToRelative(registryFull));
+        var registryResult = _registryValidator.ValidateFile(registryFull, registryRelative);
         if (!registryResult.IsValid || registryResult.Document is null || registryResult.Sha256 is null)
         {
             return new CompilationResult
@@ -104,10 +105,12 @@ public sealed class BddCompilationService
             };
         }
 
-        var objectRepoRelative = string.IsNullOrWhiteSpace(request.ObjectRepositoryPath)
+        var objectRepoInput = string.IsNullOrWhiteSpace(request.ObjectRepositoryPath)
             ? "object-repository/repository.json"
             : request.ObjectRepositoryPath!;
-        var objectRepoResult = _objectRepositoryReader.Read(objectRepoRelative);
+        var objectRepoFull = _workspace.ResolveSafePath(objectRepoInput);
+        var objectRepoRelative = CompilationFingerprint.CanonicalizeWorkspaceRelativePath(ToRelative(objectRepoFull));
+        var objectRepoResult = _objectRepositoryReader.Read(objectRepoFull);
         if (!objectRepoResult.IsValid || objectRepoResult.Snapshot is null)
         {
             return new CompilationResult
@@ -139,7 +142,8 @@ public sealed class BddCompilationService
                 var approvedRoot = KnowledgePathSafety.ApprovedRoot(_workspace.RootPath);
 
                 // Containment under knowledge/approved — rejects knowledge/approved-rogue via path rules.
-                // ValidateDirectory also checks the directory + every sibling for symlink/junction escape.
+                // ValidateDirectory checks the directory + every sibling (incl. application-knowledge.json)
+                // for symlink/junction escape BEFORE any hash of the knowledge file.
                 var validation = _knowledgeValidator.ValidateDirectory(knowledgeDir, approvedRoot);
                 if (!validation.IsValid)
                 {
@@ -155,6 +159,9 @@ public sealed class BddCompilationService
                 }
 
                 var knowledgeFile = Path.Combine(knowledgeDir, "application-knowledge.json");
+                // Belt-and-suspenders: re-check the knowledge file itself immediately before hashing.
+                KnowledgePathSafety.EnsureReadablePathInside(knowledgeFile, approvedRoot);
+
                 knowledge = JsonSerializer.Deserialize<ApplicationKnowledgeDocument>(
                     File.ReadAllBytes(knowledgeFile),
                     CompilationJson.DocumentRead);
@@ -199,8 +206,8 @@ public sealed class BddCompilationService
         string? catalogRelative = null;
         if (!string.IsNullOrWhiteSpace(request.CatalogPath))
         {
-            catalogRelative = CompilationFingerprint.CanonicalizeWorkspaceRelativePath(request.CatalogPath);
-            var catalogFull = _workspace.ResolveSafePath(catalogRelative);
+            var catalogFull = _workspace.ResolveSafePath(request.CatalogPath);
+            catalogRelative = CompilationFingerprint.CanonicalizeWorkspaceRelativePath(ToRelative(catalogFull));
             catalog = JsonSerializer.Deserialize<OperationsCatalogDto>(
                 File.ReadAllBytes(catalogFull),
                 CompilationJson.DocumentRead);
@@ -226,7 +233,7 @@ public sealed class BddCompilationService
             StepRegistrySha256 = registryResult.Sha256,
             StepRegistryRelativePath = registryRelative,
             ObjectRepository = objectRepoResult.Snapshot,
-            ObjectRepositoryRelativePath = CompilationFingerprint.CanonicalizeWorkspaceRelativePath(objectRepoRelative),
+            ObjectRepositoryRelativePath = objectRepoRelative,
             ObjectRepositorySha256 = objectRepoSha,
             ApprovedKnowledge = knowledge,
             ApprovedKnowledgeSha256 = knowledgeSha,
@@ -503,54 +510,67 @@ public sealed class BddCompilationService
                 $"fingerprint recompute mismatch: directory/metadata '{fingerprint}' vs recomputed '{recomputed}'.");
         }
 
-        // Dependency drift against current workspace artifacts (use recorded paths, not hardcoded defaults).
-        var registryRelative = string.IsNullOrWhiteSpace(metadata.StepRegistryPath)
-            ? "step-registry/registry.json"
-            : metadata.StepRegistryPath;
-        try
+        // Dependency drift against recorded paths only — no default registry fallback.
+        if (string.IsNullOrWhiteSpace(metadata.StepRegistryPath))
         {
-            var registryFull = _workspace.ResolveSafePath(registryRelative);
-            if (!File.Exists(registryFull))
-            {
-                errors.Add(
-                    $"dependency-drift: step-registry '{registryRelative}' recorded in compilation metadata is missing.");
-            }
-            else
-            {
-                var liveRegistry = _registryValidator.ValidateFile(registryFull, ToRelative(registryFull));
-                if (!liveRegistry.IsValid || liveRegistry.Sha256 is null)
-                {
-                    errors.Add("dependency-drift: step-registry failed validation during drift check.");
-                    errors.AddRange(liveRegistry.Errors);
-                }
-                else if (!string.Equals(
-                             liveRegistry.Sha256,
-                             metadata.StepRegistrySha256,
-                             StringComparison.OrdinalIgnoreCase))
-                {
-                    errors.Add("dependency-drift: step-registry sha256 no longer matches compilation metadata.");
-                }
-            }
-        }
-        catch (WorkspaceException ex)
-        {
-            errors.Add($"dependency-drift: step-registry path '{registryRelative}' is not readable: {ex.Message}");
-        }
-
-        var repoRelative = string.IsNullOrWhiteSpace(metadata.ObjectRepositoryPath)
-            ? "object-repository/repository.json"
-            : metadata.ObjectRepositoryPath;
-        var liveRepo = _objectRepositoryReader.Read(repoRelative);
-        if (liveRepo.IsValid)
-        {
-            var liveRepoSha = liveRepo.AggregateSha256 ?? liveRepo.ManifestSha256;
-            if (!string.Equals(liveRepoSha, metadata.ObjectRepositorySha256, StringComparison.OrdinalIgnoreCase))
-                errors.Add("dependency-drift: object-repository sha256 no longer matches compilation metadata.");
+            errors.Add(
+                "dependency-drift: stepRegistryPath is missing or empty; refusing to fall back to a default registry.");
         }
         else
         {
-            errors.Add("dependency-drift: object-repository could not be loaded for drift check.");
-            errors.AddRange(liveRepo.Errors);
+            try
+            {
+                var registryFull = _workspace.ResolveSafePath(metadata.StepRegistryPath);
+                if (!File.Exists(registryFull))
+                {
+                    errors.Add(
+                        $"dependency-drift: step-registry '{metadata.StepRegistryPath}' recorded in compilation metadata is missing.");
+                }
+                else
+                {
+                    var liveRegistry = _registryValidator.ValidateFile(
+                        registryFull,
+                        CompilationFingerprint.CanonicalizeWorkspaceRelativePath(ToRelative(registryFull)));
+                    if (!liveRegistry.IsValid || liveRegistry.Sha256 is null)
+                    {
+                        errors.Add("dependency-drift: step-registry failed validation during drift check.");
+                        errors.AddRange(liveRegistry.Errors);
+                    }
+                    else if (!string.Equals(
+                                 liveRegistry.Sha256,
+                                 metadata.StepRegistrySha256,
+                                 StringComparison.OrdinalIgnoreCase))
+                    {
+                        errors.Add("dependency-drift: step-registry sha256 no longer matches compilation metadata.");
+                    }
+                }
+            }
+            catch (WorkspaceException ex)
+            {
+                errors.Add(
+                    $"dependency-drift: step-registry path '{metadata.StepRegistryPath}' is not readable: {ex.Message}");
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(metadata.ObjectRepositoryPath))
+        {
+            errors.Add(
+                "dependency-drift: objectRepositoryPath is missing or empty; refusing to fall back to a default repository.");
+        }
+        else
+        {
+            var liveRepo = _objectRepositoryReader.Read(metadata.ObjectRepositoryPath);
+            if (liveRepo.IsValid)
+            {
+                var liveRepoSha = liveRepo.AggregateSha256 ?? liveRepo.ManifestSha256;
+                if (!string.Equals(liveRepoSha, metadata.ObjectRepositorySha256, StringComparison.OrdinalIgnoreCase))
+                    errors.Add("dependency-drift: object-repository sha256 no longer matches compilation metadata.");
+            }
+            else
+            {
+                errors.Add("dependency-drift: object-repository could not be loaded for drift check.");
+                errors.AddRange(liveRepo.Errors);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(metadata.ApprovedKnowledgeSha256))
@@ -565,17 +585,20 @@ public sealed class BddCompilationService
                 try
                 {
                     var knowledgeDir = _workspace.ResolveSafePath(metadata.ApprovedKnowledgePath);
-                    KnowledgePathSafety.EnsureReadablePathInside(
-                        knowledgeDir,
-                        KnowledgePathSafety.ApprovedRoot(_workspace.RootPath));
-                    var knowledgeFile = Path.Combine(knowledgeDir, "application-knowledge.json");
-                    if (!File.Exists(knowledgeFile))
+                    var approvedRoot = KnowledgePathSafety.ApprovedRoot(_workspace.RootPath);
+
+                    // ValidateDirectory (dir + siblings, including application-knowledge.json symlink checks)
+                    // must succeed before hashing the knowledge file.
+                    var knowledgeValidation = _knowledgeValidator.ValidateDirectory(knowledgeDir, approvedRoot);
+                    if (!knowledgeValidation.IsValid)
                     {
-                        errors.Add(
-                            $"dependency-drift: approved knowledge missing at '{metadata.ApprovedKnowledgePath}'.");
+                        errors.Add("dependency-drift: approved knowledge failed ValidateDirectory before hash.");
+                        errors.AddRange(knowledgeValidation.Errors);
                     }
                     else
                     {
+                        var knowledgeFile = Path.Combine(knowledgeDir, "application-knowledge.json");
+                        KnowledgePathSafety.EnsureReadablePathInside(knowledgeFile, approvedRoot);
                         var liveKnowledgeSha = CompilationFingerprint.ComputeFileSha256(knowledgeFile);
                         if (!string.Equals(
                                 liveKnowledgeSha,
