@@ -18,6 +18,7 @@ public sealed class BddCompilationService
     private readonly DeterministicBddCompiler _compiler = new();
     private readonly CompilationCache _cache;
     private readonly PlanValidator _planValidator = new();
+    private readonly KnowledgeValidator _knowledgeValidator;
 
     public BddCompilationService(
         IWorkspaceManager workspace,
@@ -27,6 +28,8 @@ public sealed class BddCompilationService
         _workspace = workspace;
         _objectRepositoryReader = objectRepositoryReader;
         _cache = new CompilationCache(workspace.RootPath);
+        var schemaDir = Path.Combine(workspace.RootPath, "schemas");
+        _knowledgeValidator = new KnowledgeValidator(Directory.Exists(schemaDir) ? schemaDir : null);
         _ = options; // reserved for future size limits
     }
 
@@ -123,50 +126,70 @@ public sealed class BddCompilationService
         string? knowledgeSha = null;
         if (!string.IsNullOrWhiteSpace(request.KnowledgePath))
         {
-            var knowledgeDir = _workspace.ResolveSafePath(request.KnowledgePath);
-            var knowledgeFile = File.Exists(knowledgeDir) && knowledgeDir.EndsWith("application-knowledge.json", StringComparison.OrdinalIgnoreCase)
-                ? knowledgeDir
-                : Path.Combine(knowledgeDir, "application-knowledge.json");
-            if (!File.Exists(knowledgeFile))
+            try
+            {
+                var resolved = _workspace.ResolveSafePath(request.KnowledgePath);
+                var knowledgeDir = File.Exists(resolved)
+                                   && resolved.EndsWith("application-knowledge.json", StringComparison.OrdinalIgnoreCase)
+                    ? Path.GetDirectoryName(resolved)!
+                    : resolved;
+
+                // Containment under knowledge/approved — rejects knowledge/approved-rogue via path rules.
+                KnowledgePathSafety.EnsureReadablePathInside(
+                    knowledgeDir,
+                    KnowledgePathSafety.ApprovedRoot(_workspace.RootPath));
+
+                var validation = _knowledgeValidator.ValidateDirectory(knowledgeDir);
+                if (!validation.IsValid)
+                {
+                    return new CompilationResult
+                    {
+                        Success = false,
+                        ExitCode = 5,
+                        JiraKey = request.JiraKey,
+                        Errors = validation.Errors
+                            .Select(e => $"knowledge-validation: {e}")
+                            .ToList()
+                    };
+                }
+
+                var knowledgeFile = Path.Combine(knowledgeDir, "application-knowledge.json");
+                knowledge = JsonSerializer.Deserialize<ApplicationKnowledgeDocument>(
+                    File.ReadAllBytes(knowledgeFile),
+                    CompilationJson.DocumentRead);
+                if (knowledge is null || !string.Equals(knowledge.Status, "approved", StringComparison.Ordinal))
+                {
+                    return new CompilationResult
+                    {
+                        Success = false,
+                        ExitCode = 5,
+                        JiraKey = request.JiraKey,
+                        Errors = ["knowledge document must have status=approved."]
+                    };
+                }
+
+                knowledgeSha = CompilationFingerprint.ComputeFileSha256(knowledgeFile);
+            }
+            catch (KnowledgePathException ex)
             {
                 return new CompilationResult
                 {
                     Success = false,
                     ExitCode = 5,
                     JiraKey = request.JiraKey,
-                    Errors = [$"approved knowledge not found at '{ToRelative(knowledgeFile)}'."]
+                    Errors = [$"knowledge path must resolve under knowledge/approved: {ex.Message}"]
                 };
             }
-
-            // Approved knowledge must live under knowledge/approved.
-            var approvedRoot = Path.GetFullPath(Path.Combine(_workspace.RootPath, "knowledge", "approved"));
-            var knowledgeFull = Path.GetFullPath(knowledgeFile);
-            if (!knowledgeFull.StartsWith(approvedRoot, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            catch (WorkspaceException ex)
             {
                 return new CompilationResult
                 {
                     Success = false,
                     ExitCode = 5,
                     JiraKey = request.JiraKey,
-                    Errors = ["knowledge path must resolve under knowledge/approved (approved artifacts only)."]
+                    Errors = [ex.Message]
                 };
             }
-
-            knowledge = JsonSerializer.Deserialize<ApplicationKnowledgeDocument>(
-                File.ReadAllBytes(knowledgeFile),
-                CompilationJson.DocumentRead);
-            if (knowledge is null || !string.Equals(knowledge.Status, "approved", StringComparison.Ordinal))
-            {
-                return new CompilationResult
-                {
-                    Success = false,
-                    ExitCode = 5,
-                    JiraKey = request.JiraKey,
-                    Errors = ["knowledge document must have status=approved."]
-                };
-            }
-
-            knowledgeSha = CompilationFingerprint.ComputeFileSha256(knowledgeFile);
         }
 
         OperationsCatalogDto? catalog = null;
@@ -198,7 +221,7 @@ public sealed class BddCompilationService
             Registry = registryResult.Document,
             StepRegistrySha256 = registryResult.Sha256,
             ObjectRepository = objectRepoResult.Snapshot,
-            ObjectRepositoryRelativePath = objectRepoRelative.Replace('\\', '/'),
+            ObjectRepositoryRelativePath = CompilationFingerprint.CanonicalizeWorkspaceRelativePath(objectRepoRelative),
             ObjectRepositorySha256 = objectRepoSha,
             ApprovedKnowledge = knowledge,
             ApprovedKnowledgeSha256 = knowledgeSha,
@@ -343,7 +366,33 @@ public sealed class BddCompilationService
         string artifactDir;
         if (!string.IsNullOrWhiteSpace(fingerprint))
         {
+            if (!CompilationFingerprint.IsHexFingerprint(fingerprint))
+            {
+                return new CompiledArtifactValidationResult
+                {
+                    IsValid = false,
+                    JiraKey = jiraKey,
+                    Fingerprint = fingerprint,
+                    Errors = ["fingerprint must be a 64-character lowercase hex SHA-256 (path traversal rejected)."]
+                };
+            }
+
             artifactDir = Path.Combine(keyRoot, fingerprint);
+            try
+            {
+                KnowledgePathSafety.EnsureReadablePathInside(artifactDir, keyRoot);
+            }
+            catch (KnowledgePathException ex)
+            {
+                return new CompiledArtifactValidationResult
+                {
+                    IsValid = false,
+                    JiraKey = jiraKey,
+                    Fingerprint = fingerprint,
+                    Errors = [$"fingerprint path containment failed: {ex.Message}"]
+                };
+            }
+
             if (!Directory.Exists(artifactDir))
             {
                 return new CompiledArtifactValidationResult
@@ -358,6 +407,7 @@ public sealed class BddCompilationService
         else
         {
             var dirs = Directory.GetDirectories(keyRoot)
+                .Where(d => CompilationFingerprint.IsHexFingerprint(Path.GetFileName(d)))
                 .OrderBy(d => d, StringComparer.Ordinal)
                 .ToArray();
             if (dirs.Length == 0)
@@ -387,57 +437,89 @@ public sealed class BddCompilationService
             fingerprint = Path.GetFileName(artifactDir);
         }
 
-        var planPath = Path.Combine(artifactDir, "plan.json");
-        var metaPath = Path.Combine(artifactDir, "compilation.json");
-        var errors = new List<string>();
-        if (!File.Exists(planPath))
-            errors.Add("plan.json missing.");
-        if (!File.Exists(metaPath))
-            errors.Add("compilation.json missing.");
-        if (errors.Count > 0)
+        if (!_cache.TryReadExisting(jiraKey, fingerprint!, out var planBytes, out var metadata, out var cacheErrors)
+            || planBytes is null
+            || metadata is null)
         {
             return new CompiledArtifactValidationResult
             {
                 IsValid = false,
                 JiraKey = jiraKey,
                 Fingerprint = fingerprint,
-                Errors = errors
+                Errors = cacheErrors.Count > 0
+                    ? cacheErrors
+                    : ["compiled artifact missing or corrupt."]
             };
         }
 
-        var planBytes = File.ReadAllBytes(planPath);
+        var errors = new List<string>();
+        var planPath = Path.Combine(artifactDir, "plan.json");
         var planSha = CompilationFingerprint.ComputeBytesSha256(planBytes);
-        CompilationMetadata? metadata;
+
+        // Jira identity
+        if (!string.Equals(metadata.JiraKey, jiraKey, StringComparison.Ordinal))
+            errors.Add($"compilation metadata jiraKey '{metadata.JiraKey}' does not match requested '{jiraKey}'.");
+
+        // Recompute fingerprint from sealed metadata components.
+        string recomputed;
         try
         {
-            metadata = JsonSerializer.Deserialize<CompilationMetadata>(File.ReadAllBytes(metaPath), CompilationJson.DocumentRead);
+            recomputed = CompilationFingerprint.Compute(new CompilationFingerprintInput
+            {
+                InputSha256 = metadata.InputSha256,
+                JiraRevision = metadata.JiraRevision,
+                CompilerVersion = metadata.CompilerVersion,
+                ParserVersion = metadata.ParserVersion,
+                StepRegistrySha256 = metadata.StepRegistrySha256,
+                ObjectRepositorySha256 = metadata.ObjectRepositorySha256,
+                ObjectRepositoryPath = metadata.ObjectRepositoryPath,
+                ApprovedKnowledgeSha256 = metadata.ApprovedKnowledgeSha256,
+                CatalogFingerprint = metadata.CatalogFingerprint,
+                ParameterBindingsSha256 = metadata.ParameterBindingsSha256
+            });
         }
-        catch (JsonException ex)
+        catch (ArgumentException ex)
         {
             return new CompiledArtifactValidationResult
             {
                 IsValid = false,
                 JiraKey = jiraKey,
                 Fingerprint = fingerprint,
-                Errors = [$"invalid compilation.json ({ex.Message})."]
+                Errors = [$"fingerprint recompute failed: {ex.Message}"]
             };
         }
 
-        if (metadata is null)
+        if (!string.Equals(recomputed, fingerprint, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(recomputed, metadata.Fingerprint, StringComparison.OrdinalIgnoreCase))
         {
-            return new CompiledArtifactValidationResult
-            {
-                IsValid = false,
-                JiraKey = jiraKey,
-                Fingerprint = fingerprint,
-                Errors = ["compilation.json deserialized empty."]
-            };
+            errors.Add(
+                $"fingerprint recompute mismatch: directory/metadata '{fingerprint}' vs recomputed '{recomputed}'.");
         }
 
-        if (!string.Equals(metadata.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
-            errors.Add("compilation.json fingerprint does not match directory name.");
-        if (!string.Equals(metadata.PlanSha256, planSha, StringComparison.OrdinalIgnoreCase))
-            errors.Add("plan.json sha256 does not match compilation metadata.");
+        // Dependency drift against current workspace artifacts.
+        var registryFull = _workspace.ResolveSafePath("step-registry/registry.json");
+        if (File.Exists(registryFull))
+        {
+            var liveRegistrySha = CompilationFingerprint.ComputeFileSha256(registryFull);
+            if (!string.Equals(liveRegistrySha, metadata.StepRegistrySha256, StringComparison.OrdinalIgnoreCase))
+                errors.Add("dependency-drift: step-registry sha256 no longer matches compilation metadata.");
+        }
+
+        var repoRelative = string.IsNullOrWhiteSpace(metadata.ObjectRepositoryPath)
+            ? "object-repository/repository.json"
+            : metadata.ObjectRepositoryPath;
+        var liveRepo = _objectRepositoryReader.Read(repoRelative);
+        if (liveRepo.IsValid)
+        {
+            var liveRepoSha = liveRepo.AggregateSha256 ?? liveRepo.ManifestSha256;
+            if (!string.Equals(liveRepoSha, metadata.ObjectRepositorySha256, StringComparison.OrdinalIgnoreCase))
+                errors.Add("dependency-drift: object-repository sha256 no longer matches compilation metadata.");
+        }
+        else
+        {
+            errors.Add("dependency-drift: object-repository could not be loaded for drift check.");
+            errors.AddRange(liveRepo.Errors);
+        }
 
         PlanManifest? plan;
         try
@@ -461,10 +543,12 @@ public sealed class BddCompilationService
         }
         else
         {
+            if (!string.Equals(plan.PlanId, jiraKey, StringComparison.Ordinal))
+                errors.Add($"planId '{plan.PlanId}' does not match requested jiraKey '{jiraKey}'.");
+
             var validation = _planValidator.Validate(plan, ToRelative(planPath));
             errors.AddRange(validation.Errors);
 
-            // Object expansion when repository declared.
             if (!string.IsNullOrWhiteSpace(plan.ObjectRepository))
             {
                 var repo = _objectRepositoryReader.Read(plan.ObjectRepository);

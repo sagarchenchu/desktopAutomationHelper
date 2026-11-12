@@ -332,41 +332,79 @@ public class Phase4dBddCompilerTests
         Assert.False(missing.Success);
         Assert.Contains(missing.Errors, e => e.Contains("object-resolution", StringComparison.Ordinal));
 
-        // Knowledge navigation
+        // Knowledge expectedState resolution (navigation role is rejected separately).
         var knowledgeDir = WriteApprovedKnowledge(temp.Path, stateId: "st_home");
         File.WriteAllText(Path.Combine(temp.Path, "test-cases", "examples", "DEMO-6.json"), """
             {
               "schemaVersion": 1,
               "jiraKey": "DEMO-6",
               "revision": "1",
-              "summary": "nav",
-              "feature": "Feature: N\n  Scenario: S\n    When I navigate using approved knowledge state \"st_home\"\n"
+              "summary": "require state",
+              "feature": "Feature: N\n  Scenario: S\n    Given I require approved knowledge state \"st_home\"\n"
             }
             """);
-        var nav = CreateService(temp.Path).CompileKey(new CompileKeyRequest
+        var require = CreateService(temp.Path).CompileKey(new CompileKeyRequest
         {
             JiraKey = "DEMO-6",
             KnowledgePath = knowledgeDir
         });
-        Assert.True(nav.Success, string.Join("; ", nav.Errors));
-        Assert.False(string.IsNullOrWhiteSpace(nav.Metadata!.ApprovedKnowledgeSha256));
+        Assert.True(require.Success, string.Join("; ", require.Errors));
+        Assert.False(string.IsNullOrWhiteSpace(require.Metadata!.ApprovedKnowledgeSha256));
 
         File.WriteAllText(Path.Combine(temp.Path, "test-cases", "examples", "DEMO-7.json"), """
             {
               "schemaVersion": 1,
               "jiraKey": "DEMO-7",
               "revision": "1",
-              "summary": "nav miss",
-              "feature": "Feature: N\n  Scenario: S\n    When I navigate using approved knowledge state \"st_missing\"\n"
+              "summary": "state miss",
+              "feature": "Feature: N\n  Scenario: S\n    Given I require approved knowledge state \"st_missing\"\n"
             }
             """);
-        var navMiss = CreateService(temp.Path).CompileKey(new CompileKeyRequest
+        var miss = CreateService(temp.Path).CompileKey(new CompileKeyRequest
         {
             JiraKey = "DEMO-7",
             KnowledgePath = knowledgeDir
         });
-        Assert.False(navMiss.Success);
-        Assert.Contains(navMiss.Errors, e => e.Contains("knowledge-resolution", StringComparison.Ordinal));
+        Assert.False(miss.Success);
+        Assert.Contains(miss.Errors, e => e.Contains("knowledge-resolution", StringComparison.Ordinal));
+
+        // approved-rogue must not pass containment (StartsWith would falsely allow it).
+        var rogue = Path.Combine(temp.Path, "knowledge", "approved-rogue", "demo-app", "fp1");
+        Directory.CreateDirectory(rogue);
+        foreach (var file in Directory.GetFiles(knowledgeDir))
+            File.Copy(file, Path.Combine(rogue, Path.GetFileName(file)), overwrite: true);
+        var rogueResult = CreateService(temp.Path).CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-6",
+            KnowledgePath = rogue
+        });
+        Assert.False(rogueResult.Success);
+        Assert.Contains(rogueResult.Errors, e => e.Contains("knowledge/approved", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void NavigationRole_IsRejected_WithoutStub()
+    {
+        using var temp = TempWorkspace();
+        SeedWorkspace(temp.Path);
+        var knowledgeDir = WriteApprovedKnowledge(temp.Path, stateId: "st_home");
+        File.WriteAllText(Path.Combine(temp.Path, "test-cases", "examples", "DEMO-9.json"), """
+            {
+              "schemaVersion": 1,
+              "jiraKey": "DEMO-9",
+              "revision": "1",
+              "summary": "nav rejected",
+              "feature": "Feature: N\n  Scenario: S\n    When I navigate using approved knowledge state \"st_home\"\n"
+            }
+            """);
+        var result = CreateService(temp.Path).CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-9",
+            KnowledgePath = knowledgeDir
+        });
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, e => e.Contains("unsupported-feature", StringComparison.Ordinal)
+                                            && e.Contains("navigation", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -392,19 +430,38 @@ public class Phase4dBddCompilerTests
     [Fact]
     public void CacheInvalidation_PerFingerprintComponent()
     {
+        var baseline = BaseFingerprintInput();
+        var baseFp = CompilationFingerprint.Compute(baseline);
+
+        Assert.NotEqual(baseFp, CompilationFingerprint.Compute(baseline with { InputSha256 = new string('1', 64) }));
+        Assert.NotEqual(baseFp, CompilationFingerprint.Compute(baseline with { JiraRevision = "2" }));
+        Assert.NotEqual(baseFp, CompilationFingerprint.Compute(baseline with { CompilerVersion = "phase4d-2" }));
+        Assert.NotEqual(baseFp, CompilationFingerprint.Compute(baseline with { ParserVersion = "gherkin-99" }));
+        Assert.NotEqual(baseFp, CompilationFingerprint.Compute(baseline with { StepRegistrySha256 = new string('2', 64) }));
+        Assert.NotEqual(baseFp, CompilationFingerprint.Compute(baseline with { ObjectRepositorySha256 = new string('3', 64) }));
+        Assert.NotEqual(baseFp, CompilationFingerprint.Compute(baseline with { ObjectRepositoryPath = "object-repository/other.json" }));
+        Assert.NotEqual(baseFp, CompilationFingerprint.Compute(baseline with { ApprovedKnowledgeSha256 = new string('4', 64) }));
+        Assert.NotEqual(baseFp, CompilationFingerprint.Compute(baseline with { CatalogFingerprint = new string('5', 64) }));
+        Assert.NotEqual(
+            baseFp,
+            CompilationFingerprint.Compute(baseline with
+            {
+                ParameterBindingsSha256 = CompilationFingerprint.ComputeParameterBindingsSha256(
+                    new Dictionary<string, string> { ["x"] = "1" })
+            }));
+
+        // Integration: mutable workspace inputs also invalidate.
         using var temp = TempWorkspace();
         SeedWorkspace(temp.Path);
         var service = CreateService(temp.Path);
 
-        var baseline = service.CompileKey(new CompileKeyRequest
+        var first = service.CompileKey(new CompileKeyRequest
         {
             JiraKey = "DEMO-1",
             CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
         });
-        Assert.True(baseline.Success, string.Join("; ", baseline.Errors));
-        var fp1 = baseline.Fingerprint!;
+        Assert.True(first.Success, string.Join("; ", first.Errors));
 
-        // Change revision => new fingerprint
         var demoPath = Path.Combine(temp.Path, "test-cases", "examples", "DEMO-1.json");
         var demo = JsonNode.Parse(File.ReadAllText(demoPath))!.AsObject();
         demo["revision"] = "2";
@@ -415,9 +472,8 @@ public class Phase4dBddCompilerTests
             CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
         });
         Assert.True(rev2.Success, string.Join("; ", rev2.Errors));
-        Assert.NotEqual(fp1, rev2.Fingerprint);
+        Assert.NotEqual(first.Fingerprint, rev2.Fingerprint);
 
-        // Change step registry => new fingerprint
         var registryPath = Path.Combine(temp.Path, "step-registry", "registry.json");
         var registry = JsonNode.Parse(File.ReadAllText(registryPath))!.AsObject();
         registry["version"] = "1.0.1";
@@ -429,6 +485,46 @@ public class Phase4dBddCompilerTests
         });
         Assert.True(reg2.Success, string.Join("; ", reg2.Errors));
         Assert.NotEqual(rev2.Fingerprint, reg2.Fingerprint);
+
+        var withBindings = service.CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-1",
+            ParameterBindings = new Dictionary<string, string> { ["extra"] = "value" },
+            CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
+        });
+        Assert.True(withBindings.Success, string.Join("; ", withBindings.Errors));
+        Assert.NotEqual(reg2.Fingerprint, withBindings.Fingerprint);
+    }
+
+    [Fact]
+    public void ValidateCompiledKey_RejectsBadFingerprintAndDrift()
+    {
+        using var temp = TempWorkspace();
+        SeedWorkspace(temp.Path);
+        var service = CreateService(temp.Path);
+        var compiled = service.CompileKey(new CompileKeyRequest
+        {
+            JiraKey = "DEMO-1",
+            CompiledAtUtc = DateTimeOffset.Parse("2026-11-12T00:00:00Z")
+        });
+        Assert.True(compiled.Success, string.Join("; ", compiled.Errors));
+
+        var ok = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.True(ok.IsValid, string.Join("; ", ok.Errors));
+
+        var traversal = service.ValidateCompiledKey("DEMO-1", "../" + compiled.Fingerprint);
+        Assert.False(traversal.IsValid);
+        Assert.Contains(traversal.Errors, e => e.Contains("hex", StringComparison.OrdinalIgnoreCase)
+                                               || e.Contains("fingerprint", StringComparison.OrdinalIgnoreCase));
+
+        // Dependency drift after registry edit.
+        var registryPath = Path.Combine(temp.Path, "step-registry", "registry.json");
+        var registry = JsonNode.Parse(File.ReadAllText(registryPath))!.AsObject();
+        registry["version"] = "9.9.9";
+        File.WriteAllText(registryPath, registry.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        var drift = service.ValidateCompiledKey("DEMO-1", compiled.Fingerprint);
+        Assert.False(drift.IsValid);
+        Assert.Contains(drift.Errors, e => e.Contains("dependency-drift", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -540,22 +636,47 @@ public class Phase4dBddCompilerTests
             """);
     }
 
+    private static CompilationFingerprintInput BaseFingerprintInput() =>
+        new()
+        {
+            InputSha256 = new string('a', 64),
+            JiraRevision = "1",
+            CompilerVersion = BddCompilerVersions.CompilerVersion,
+            ParserVersion = BddCompilerVersions.ParserVersion,
+            StepRegistrySha256 = new string('b', 64),
+            ObjectRepositorySha256 = new string('c', 64),
+            ObjectRepositoryPath = "object-repository/repository.json",
+            ApprovedKnowledgeSha256 = null,
+            CatalogFingerprint = null,
+            ParameterBindingsSha256 = CompilationFingerprint.ComputeParameterBindingsSha256(null)
+        };
+
     private static string WriteApprovedKnowledge(string root, string stateId)
     {
-        var dir = Path.Combine(root, "knowledge", "approved", "demo-app", "fp1");
+        var buildFingerprint = new string('b', 32);
+        var dir = Path.Combine(root, "knowledge", "approved", "demo-app", buildFingerprint);
         Directory.CreateDirectory(dir);
         var knowledge = new ApplicationKnowledgeDocument
         {
             KnowledgeSchemaVersion = 1,
             KnowledgeId = "kn_demo",
             ApplicationId = "demo-app",
-            BuildFingerprint = "fp1",
-            Status = "approved",
+            BuildFingerprint = buildFingerprint,
+            Status = "candidate",
             CreatedAtUtc = DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
+            SourceExplorationRuns =
+            [
+                new SourceExplorationRun
+                {
+                    ExplorationId = "exp1",
+                    ArtifactHash = new string('e', 64),
+                    PolicySha256 = new string('b', 64)
+                }
+            ],
             Fingerprint = new ApplicationFingerprint
             {
                 ApplicationId = "demo-app",
-                ExecutablePath = "C:/demo.exe",
+                ExecutablePath = "demo.exe",
                 ExecutableSha256 = new string('a', 64),
                 DriverVersion = "1.0.0",
                 SnapshotSchemaVersion = 1,
@@ -566,7 +687,7 @@ public class Phase4dBddCompilerTests
             Graph = new ApplicationStateGraph
             {
                 GraphSchemaVersion = 1,
-                Windows = [new KnowledgeWindowNode { WindowId = "win_1", Title = "Demo", ClassName = "Form", Role = "window" }],
+                Windows = [new KnowledgeWindowNode { WindowId = "win_1", Title = "Demo", ClassName = "Form", Role = "main" }],
                 States =
                 [
                     new KnowledgeStateNode
@@ -581,21 +702,23 @@ public class Phase4dBddCompilerTests
                 Transitions = []
             },
             Workflows = [],
-            Coverage = new KnowledgeCoverageReport(),
-            Approval = new KnowledgeApproval
-            {
-                ApprovalSchemaVersion = 1,
-                Reviewer = "tester",
-                ReviewedAtUtc = DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
-                SourceKnowledgeHash = new string('d', 64),
-                SourceKnowledgeId = "kn_demo",
-                Decision = "approve",
-                PromotesPageObjects = false
-            }
+            Coverage = new KnowledgeCoverageReport()
         };
 
-        var json = JsonSerializer.Serialize(knowledge, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(Path.Combine(dir, "application-knowledge.json"), json);
+        var contentHash = KnowledgeArtifactWriter.ComputeContentHash(knowledge);
+        knowledge.Status = "approved";
+        knowledge.Approval = new KnowledgeApproval
+        {
+            ApprovalSchemaVersion = 1,
+            Reviewer = "tester",
+            ReviewedAtUtc = DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
+            SourceKnowledgeHash = contentHash,
+            SourceKnowledgeId = "kn_demo",
+            Decision = "approve",
+            PromotesPageObjects = false
+        };
+
+        new KnowledgeArtifactWriter().WriteApproved(dir, knowledge, overwrite: true);
         return dir;
     }
 

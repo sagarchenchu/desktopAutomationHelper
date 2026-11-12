@@ -54,9 +54,13 @@ public sealed class CompilationMetadata
 
     public string ObjectRepositorySha256 { get; init; } = string.Empty;
 
+    public string ObjectRepositoryPath { get; init; } = string.Empty;
+
     public string? ApprovedKnowledgeSha256 { get; init; }
 
     public string? CatalogFingerprint { get; init; }
+
+    public string ParameterBindingsSha256 { get; init; } = string.Empty;
 
     public string PlanSha256 { get; init; } = string.Empty;
 

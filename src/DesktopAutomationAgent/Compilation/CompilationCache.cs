@@ -26,11 +26,27 @@ public sealed class CompilationCache
         metadata = null;
         errors = [];
 
+        if (!CompilationFingerprint.IsHexFingerprint(fingerprint))
+        {
+            errors.Add($"compiled fingerprint '{fingerprint}' must be a 64-char lowercase hex SHA-256.");
+            return false;
+        }
+
         var dir = GetArtifactDirectory(jiraKey, fingerprint);
         var planPath = Path.Combine(dir, "plan.json");
         var metaPath = Path.Combine(dir, "compilation.json");
-        if (!File.Exists(planPath) || !File.Exists(metaPath))
+
+        var planExists = File.Exists(planPath);
+        var metaExists = File.Exists(metaPath);
+        if (!planExists && !metaExists)
             return false;
+
+        if (planExists != metaExists)
+        {
+            errors.Add(
+                $"compiled artifact {jiraKey}/{fingerprint} is incomplete (partial/corrupt: plan={planExists}, compilation={metaExists}).");
+            return false;
+        }
 
         try
         {
@@ -53,8 +69,7 @@ public sealed class CompilationCache
             var planSha = CompilationFingerprint.ComputeBytesSha256(planBytes);
             if (!string.Equals(metadata.PlanSha256, planSha, StringComparison.OrdinalIgnoreCase))
             {
-                errors.Add(
-                    $"compiled plan.json sha mismatch for {jiraKey}/{fingerprint}.");
+                errors.Add($"compiled plan.json sha mismatch for {jiraKey}/{fingerprint}.");
                 return false;
             }
 
@@ -75,76 +90,76 @@ public sealed class CompilationCache
         out string planPath,
         out string compilationPath)
     {
-        var dir = GetArtifactDirectory(jiraKey, fingerprint);
-        Directory.CreateDirectory(dir);
-        planPath = Path.Combine(dir, "plan.json");
-        compilationPath = Path.Combine(dir, "compilation.json");
+        if (!CompilationFingerprint.IsHexFingerprint(fingerprint))
+            throw new ArgumentException($"Fingerprint '{fingerprint}' must be a 64-char hex SHA-256.");
 
-        if (File.Exists(planPath) || File.Exists(compilationPath))
+        if (!JiraKeyLooksSafe(jiraKey))
+            throw new ArgumentException($"Jira key '{jiraKey}' is not a safe path segment.");
+
+        var finalDir = GetArtifactDirectory(jiraKey, fingerprint);
+        planPath = Path.Combine(finalDir, "plan.json");
+        compilationPath = Path.Combine(finalDir, "compilation.json");
+
+        if (Directory.Exists(finalDir) || File.Exists(planPath) || File.Exists(compilationPath))
         {
-            // Never overwrite a different artifact. Identical bytes are a cache hit.
-            if (File.Exists(planPath))
+            if (TryReadExisting(jiraKey, fingerprint, out var existingPlan, out _, out var readErrors)
+                && existingPlan is not null
+                && existingPlan.AsSpan().SequenceEqual(planBytes))
             {
-                var existing = File.ReadAllBytes(planPath);
-                if (!existing.AsSpan().SequenceEqual(planBytes))
-                {
-                    throw new IOException(
-                        $"refusing to overwrite different compiled plan at '{planPath}'.");
-                }
-            }
-
-            if (File.Exists(compilationPath))
-            {
-                // Metadata may differ only by CompiledAtUtc — do not overwrite on reuse path.
+                // Identical cache hit — do not rewrite.
                 return;
             }
+
+            var detail = readErrors.Count > 0 ? string.Join("; ", readErrors) : "content differs";
+            throw new IOException(
+                $"refusing to overwrite existing compiled artifact at '{finalDir}' ({detail}).");
         }
 
-        var metaJson = JsonSerializer.Serialize(metadata, CompilationJson.Indented);
-        if (!metaJson.EndsWith('\n'))
-            metaJson += "\n";
+        var parent = Path.Combine(_compiledRoot, jiraKey);
+        Directory.CreateDirectory(parent);
 
-        WriteAtomicBytes(planPath, planBytes);
-        WriteAtomicText(compilationPath, metaJson);
-    }
-
-    private static void WriteAtomicBytes(string path, byte[] content)
-    {
-        if (File.Exists(path))
-            throw new IOException($"Compiled artifact already exists and must not be overwritten: {path}");
-
-        var directory = Path.GetDirectoryName(path)
-                        ?? throw new IOException($"Unable to resolve directory for '{path}'.");
-        Directory.CreateDirectory(directory);
-        var tempPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+        var tempDir = Path.Combine(parent, $".tmp-{Guid.NewGuid():N}");
         try
         {
-            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            {
-                stream.Write(content);
-                stream.Flush(true);
-            }
+            Directory.CreateDirectory(tempDir);
+            var tempPlan = Path.Combine(tempDir, "plan.json");
+            var tempMeta = Path.Combine(tempDir, "compilation.json");
 
-            File.Move(tempPath, path);
+            var metaJson = JsonSerializer.Serialize(metadata, CompilationJson.Indented);
+            if (!metaJson.EndsWith('\n'))
+                metaJson += "\n";
+
+            WriteFileCreateNew(tempPlan, planBytes);
+            WriteFileCreateNew(tempMeta, Encoding.UTF8.GetBytes(metaJson));
+
+            // Atomic publish: rename sibling temp directory into place.
+            Directory.Move(tempDir, finalDir);
         }
         catch
         {
             try
             {
-                if (File.Exists(tempPath))
-                    File.Delete(tempPath);
+                if (Directory.Exists(tempDir))
+                    Directory.Delete(tempDir, recursive: true);
             }
             catch
             {
-                // best-effort
+                // best-effort cleanup of partial temp sibling
             }
 
             throw;
         }
     }
 
-    private static void WriteAtomicText(string path, string content)
+    private static void WriteFileCreateNew(string path, byte[] content)
     {
-        WriteAtomicBytes(path, Encoding.UTF8.GetBytes(content));
+        using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        stream.Write(content);
+        stream.Flush(true);
     }
+
+    private static bool JiraKeyLooksSafe(string jiraKey) =>
+        !string.IsNullOrWhiteSpace(jiraKey)
+        && jiraKey.IndexOfAny(['/', '\\', ':', '.', ' ']) < 0
+        && jiraKey.IndexOf("..", StringComparison.Ordinal) < 0;
 }

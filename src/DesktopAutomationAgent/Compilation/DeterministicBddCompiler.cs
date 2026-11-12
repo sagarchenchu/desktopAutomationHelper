@@ -108,6 +108,18 @@ public sealed class DeterministicBddCompiler
                     {
                         foreach (var knowledgeRef in match.Mapping.ApprovedKnowledgeRefs)
                         {
+                            var role = string.IsNullOrWhiteSpace(knowledgeRef.Role)
+                                ? "navigation"
+                                : knowledgeRef.Role.Trim();
+                            if (role.Equals("navigation", StringComparison.OrdinalIgnoreCase))
+                            {
+                                knowledgeErrors.Add(
+                                    $"unsupported-feature: knowledge role 'navigation' is not implemented " +
+                                    $"(mapping '{match.Mapping.MappingId}'); refusing listwindows/navigation stubs. " +
+                                    "Use expectedState/postcondition until workflow/transition expansion ships.");
+                                continue;
+                            }
+
                             var id = ApplyTemplate(knowledgeRef.Id, binding);
                             if (!TryResolveKnowledge(request.ApprovedKnowledge, knowledgeRef.Kind, id, out var knowledgeError))
                             {
@@ -169,6 +181,17 @@ public sealed class DeterministicBddCompiler
             .OrderBy(t => t, StringComparer.Ordinal)
             .ToList();
 
+        string objectRepoPath;
+        try
+        {
+            objectRepoPath = CompilationFingerprint.CanonicalizeWorkspaceRelativePath(
+                request.ObjectRepositoryRelativePath);
+        }
+        catch (ArgumentException ex)
+        {
+            return Fail(5, [ex.Message], explain);
+        }
+
         var plan = new PlanManifest
         {
             Schema = "../schemas/plan.schema.json",
@@ -178,7 +201,7 @@ public sealed class DeterministicBddCompiler
             Name = request.TestCase.Summary,
             Description = $"Compiled from offline BDD export {request.TestCase.JiraKey} (revision {request.TestCase.ResolveRevisionToken()}).",
             Tags = tags,
-            ObjectRepository = request.ObjectRepositoryRelativePath,
+            ObjectRepository = string.IsNullOrWhiteSpace(objectRepoPath) ? null : objectRepoPath,
             Steps = planSteps,
             Metadata = new Dictionary<string, JsonElement>
             {
@@ -228,6 +251,7 @@ public sealed class DeterministicBddCompiler
             ? request.ApprovedKnowledgeSha256
             : null;
 
+        var bindingsSha = CompilationFingerprint.ComputeParameterBindingsSha256(request.ParameterBindings);
         var fingerprint = CompilationFingerprint.Compute(new CompilationFingerprintInput
         {
             InputSha256 = request.InputSha256,
@@ -236,8 +260,10 @@ public sealed class DeterministicBddCompiler
             ParserVersion = BddCompilerVersions.ParserVersion,
             StepRegistrySha256 = request.StepRegistrySha256,
             ObjectRepositorySha256 = request.ObjectRepositorySha256,
+            ObjectRepositoryPath = objectRepoPath,
             ApprovedKnowledgeSha256 = knowledgeSha,
-            CatalogFingerprint = request.CatalogFingerprint
+            CatalogFingerprint = request.CatalogFingerprint,
+            ParameterBindingsSha256 = bindingsSha
         });
 
         var planBytes = CompilationJson.CanonicalSerializeUtf8(plan);
@@ -259,8 +285,10 @@ public sealed class DeterministicBddCompiler
             JiraRevision = request.TestCase.ResolveRevisionToken(),
             StepRegistrySha256 = request.StepRegistrySha256,
             ObjectRepositorySha256 = request.ObjectRepositorySha256,
+            ObjectRepositoryPath = objectRepoPath,
             ApprovedKnowledgeSha256 = knowledgeSha,
             CatalogFingerprint = request.CatalogFingerprint,
+            ParameterBindingsSha256 = bindingsSha,
             PlanSha256 = planSha,
             CompiledAtUtc = request.CompiledAtUtc ?? DateTimeOffset.UtcNow,
             Steps = traces

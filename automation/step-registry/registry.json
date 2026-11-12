@@ -184,7 +184,55 @@
       }
     },
     {
-      "mappingId": "navigate-approved-state",
+      "mappingId": "require-approved-state",
+      "pattern": {
+        "kind": "exact",
+        "value": "I require approved knowledge state \"{stateId}\""
+      },
+      "keywords": ["Given", "Then"],
+      "parameters": [
+        {
+          "name": "stateId",
+          "type": "string"
+        }
+      ],
+      "planSteps": [
+        {
+          "idTemplate": "require-state-{stateId}",
+          "operation": "listwindows",
+          "arguments": {
+            "includeDesktopDescendants": false
+          },
+          "captureResponse": true,
+          "assertions": [
+            {
+              "path": "",
+              "operator": "isNotNull"
+            }
+          ]
+        }
+      ],
+      "approvedObjectRefs": [],
+      "approvedKnowledgeRefs": [
+        {
+          "kind": "state",
+          "id": "{stateId}",
+          "role": "expectedState"
+        }
+      ],
+      "expectedState": "{stateId}",
+      "postcondition": null,
+      "risk": "low",
+      "source": "phase4d-fixture",
+      "version": "1",
+      "approval": {
+        "approvedBy": "phase4d",
+        "approvedAt": "2026-11-12T00:00:00Z",
+        "notes": "expectedState resolution only — navigation expansion is not implemented."
+      }
+    },
+    {
+      "mappingId": "navigate-stub-rejected",
       "pattern": {
         "kind": "exact",
         "value": "I navigate using approved knowledge state \"{stateId}\""
@@ -202,8 +250,7 @@
           "operation": "listwindows",
           "arguments": {
             "includeDesktopDescendants": false
-          },
-          "captureResponse": true
+          }
         }
       ],
       "approvedObjectRefs": [],
@@ -221,7 +268,8 @@
       "version": "1",
       "approval": {
         "approvedBy": "phase4d",
-        "approvedAt": "2026-11-12T00:00:00Z"
+        "approvedAt": "2026-11-12T00:00:00Z",
+        "notes": "Present only to prove role=navigation fails closed (no listwindows stub execution path)."
       }
     },
     {
