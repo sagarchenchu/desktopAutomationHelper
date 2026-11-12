@@ -426,6 +426,118 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     break;
                 }
 
+                // Window-aware frontier: switch/revalidate the candidate's target HWND+PID
+                // before execution so sibling-window queues cannot act on the wrong surface.
+                if (action.TargetHwnd is long targetHwnd && targetHwnd > 0
+                    && action.TargetProcessId is int targetPid && targetPid > 0
+                    && beforeSnapshot.Window?.Hwnd != targetHwnd)
+                {
+                    if (actionsAttempted >= policy.Budgets.MaxActions
+                        || DateTimeOffset.UtcNow >= deadline
+                        || deadlineCts.IsCancellationRequested)
+                    {
+                        (stopReason, status, exitCode) = BudgetOrCancel(
+                            cancellationToken,
+                            actionsAttempted,
+                            policy.Budgets.MaxActions,
+                            deadline);
+                        break;
+                    }
+
+                    var retarget = await TrySwitchToHwndAsync(
+                            connection,
+                            targetHwnd,
+                            targetPid,
+                            identityValidator,
+                            policy.Budgets.PerActionTimeoutSeconds,
+                            deadlineCts.Token)
+                        .ConfigureAwait(false);
+                    actionsAttempted++;
+                    if (!retarget.Success)
+                    {
+                        recorder.Record(
+                            fromStateId,
+                            null,
+                            beforeFingerprint,
+                            null,
+                            action,
+                            ExplorationOutcome.StaleRef,
+                            retarget.Detail ?? "Target HWND switch failed before execution.",
+                            actionStarted,
+                            DateTimeOffset.UtcNow);
+                        continue;
+                    }
+
+                    try
+                    {
+                        var retargetObserve = await _observation
+                            .ObserveAsync(observationOptions, deadlineCts.Token)
+                            .ConfigureAwait(false);
+                        if (!retargetObserve.Success || retargetObserve.Snapshot is null)
+                        {
+                            recorder.Record(
+                                fromStateId,
+                                null,
+                                beforeFingerprint,
+                                null,
+                                action,
+                                ExplorationOutcome.Failure,
+                                retargetObserve.Error ?? "Post-retarget observation failed.",
+                                actionStarted,
+                                DateTimeOffset.UtcNow);
+                            continue;
+                        }
+
+                        beforeSnapshot = retargetObserve.Snapshot;
+                        beforeFingerprint = _fingerprinter.Fingerprint(beforeSnapshot);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        (stopReason, status, exitCode) = CancelOrDeadline(cancellationToken);
+                        break;
+                    }
+
+                    if (!TryValidateScope(
+                            beforeSnapshot,
+                            policy,
+                            identityValidator,
+                            out var retargetScopeError))
+                    {
+                        recorder.Record(
+                            fromStateId,
+                            null,
+                            beforeFingerprint,
+                            null,
+                            action,
+                            ExplorationOutcome.ScopeViolation,
+                            retargetScopeError,
+                            actionStarted,
+                            DateTimeOffset.UtcNow);
+                        stopReason = "scope-violation";
+                        status = "failed";
+                        exitCode = ExitCodes.ExecutionFailure;
+                        break;
+                    }
+
+                    var livePid = beforeSnapshot.Window?.ProcessId
+                                  ?? beforeSnapshot.Application.ProcessId;
+                    if (beforeSnapshot.Window?.Hwnd != targetHwnd || livePid != targetPid)
+                    {
+                        recorder.Record(
+                            fromStateId,
+                            null,
+                            beforeFingerprint,
+                            null,
+                            action,
+                            ExplorationOutcome.StaleRef,
+                            $"Post-retarget HWND/PID 0x{beforeSnapshot.Window?.Hwnd:X}/{livePid} " +
+                            $"does not match target 0x{targetHwnd:X}/{targetPid}.",
+                            actionStarted,
+                            DateTimeOffset.UtcNow);
+                        continue;
+                    }
+                }
+
                 if (!string.Equals(beforeFingerprint, action.StateFingerprint, StringComparison.Ordinal))
                 {
                     // State drifted; re-seed frontier from current in-scope state and skip stale action.
@@ -782,7 +894,13 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                                 || DateTimeOffset.UtcNow >= deadline
                                 || deadlineCts.IsCancellationRequested)
                             {
-                                bindDetail = "Budget/cancel reached while binding new window HWND.";
+                                // Prefer budget/cancel over new-window-bind-failed.
+                                (stopReason, status, exitCode) = BudgetOrCancel(
+                                    cancellationToken,
+                                    actionsAttempted,
+                                    policy.Budgets.MaxActions,
+                                    deadline);
+                                bindDetail = stopReason;
                                 break;
                             }
 
@@ -888,6 +1006,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
 
                     if (newWindowBindFailure is not null)
                     {
+                        // If binding stopped because the budget/cancel already applied,
+                        // BudgetOrCancel set stopReason above — never rewrite as bind-failed.
                         recorder.Record(
                             fromStateId,
                             null,
@@ -1467,7 +1587,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                 Operation = "switchwindow",
                 Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
                 {
-                    ["hwnd"] = JsonSerializer.SerializeToElement(hwnd)
+                    ["hwnd"] = JsonSerializer.SerializeToElement(hwnd),
+                    ["processId"] = JsonSerializer.SerializeToElement(expectedProcessId)
                 }
             };
             await _uiClient.ExecuteStepAsync(connection, step, cts.Token).ConfigureAwait(false);
@@ -1621,6 +1742,22 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         cancellationToken.IsCancellationRequested
             ? ("cancelled", "cancelled", ExitCodes.Cancelled)
             : ("total-duration-budget", "budget-exhausted", ExitCodes.Success);
+
+    private static (string stopReason, string status, int exitCode) BudgetOrCancel(
+        CancellationToken cancellationToken,
+        int actionsAttempted,
+        int maxActions,
+        DateTimeOffset deadline)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return ("cancelled", "cancelled", ExitCodes.Cancelled);
+        if (actionsAttempted >= maxActions)
+            return ("max-actions-budget", "budget-exhausted", ExitCodes.Success);
+        if (DateTimeOffset.UtcNow >= deadline)
+            return ("total-duration-budget", "budget-exhausted", ExitCodes.Success);
+        // Linked deadline CTS fired without wall-clock race — treat as duration budget.
+        return ("total-duration-budget", "budget-exhausted", ExitCodes.Success);
+    }
 
     private static PlanStep BuildStep(
         ExplorationActionCandidate action,

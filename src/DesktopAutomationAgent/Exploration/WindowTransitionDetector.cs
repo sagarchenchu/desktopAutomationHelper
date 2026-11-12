@@ -88,25 +88,38 @@ public sealed class WindowTransitionDetector
         ArgumentNullException.ThrowIfNull(policy);
         ArgumentNullException.ThrowIfNull(identityValidator);
 
-        // Diff by HWND even when PID is missing so title/class renames stay stable and
-        // inaccessible/elevated windows (HWND present, PID absent) are not silently dropped.
-        var beforeKeys = before.Windows
-            .Select(TryHwndKey)
-            .Where(k => k is not null)
-            .Cast<string>()
-            .ToHashSet(StringComparer.Ordinal);
-        var afterKeys = after.Windows
-            .Select(TryHwndKey)
-            .Where(k => k is not null)
-            .Cast<string>()
-            .ToHashSet(StringComparer.Ordinal);
+        // Diff by HWND so title/class renames stay stable. Matching HWNDs still compare
+        // ProcessId: Windows can reuse a handle for another process — that must surface as
+        // remove+add (and then identity validation), never as a silent no-op.
+        // Inaccessible/elevated windows (HWND present, PID absent) are not dropped from the
+        // diff; missing PID on an added window fails closed below.
+        var beforeByHwnd = IndexByHwnd(before.Windows);
+        var afterByHwnd = IndexByHwnd(after.Windows);
 
-        var added = after.Windows
-            .Where(w => TryHwndKey(w) is string key && !beforeKeys.Contains(key))
-            .ToList();
-        var removed = before.Windows
-            .Where(w => TryHwndKey(w) is string key && !afterKeys.Contains(key))
-            .ToList();
+        var added = new List<WindowDescriptor>();
+        var removed = new List<WindowDescriptor>();
+
+        foreach (var (hwndKey, afterWindow) in afterByHwnd)
+        {
+            if (!beforeByHwnd.TryGetValue(hwndKey, out var beforeWindow))
+            {
+                added.Add(afterWindow);
+                continue;
+            }
+
+            // Same HWND, different (or newly missing) PID ⇒ treat as closed + opened.
+            if (!Nullable.Equals(beforeWindow.ProcessId, afterWindow.ProcessId))
+            {
+                removed.Add(beforeWindow);
+                added.Add(afterWindow);
+            }
+        }
+
+        foreach (var (hwndKey, beforeWindow) in beforeByHwnd)
+        {
+            if (!afterByHwnd.ContainsKey(hwndKey))
+                removed.Add(beforeWindow);
+        }
 
         // Only newly appeared windows are scope-checked. Pre-existing desktop windows
         // (browser, terminals, etc.) are ignored so listwindows noise cannot fail the crawl.
@@ -308,10 +321,26 @@ public sealed class WindowTransitionDetector
     }
 
     /// <summary>
-    /// Diff key for NewWindow/ClosedWindow detection: HWND only (PID validated separately).
+    /// Diff key for NewWindow/ClosedWindow detection: HWND only (PID compared separately
+    /// for matching HWNDs so handle reuse across processes cannot be ignored).
     /// </summary>
     internal static string? TryHwndKey(WindowDescriptor window) =>
         window.Hwnd is long hwnd && hwnd > 0 ? hwnd.ToString() : null;
+
+    private static Dictionary<string, WindowDescriptor> IndexByHwnd(
+        IEnumerable<WindowDescriptor> windows)
+    {
+        var map = new Dictionary<string, WindowDescriptor>(StringComparer.Ordinal);
+        foreach (var window in windows)
+        {
+            if (TryHwndKey(window) is not string key)
+                continue;
+            // First occurrence wins; duplicate HWNDs in one inventory are pathological.
+            map.TryAdd(key, window);
+        }
+
+        return map;
+    }
 
     private static WindowInventory ParseInventory(JsonElement? value)
     {

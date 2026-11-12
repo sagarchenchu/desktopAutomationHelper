@@ -40,6 +40,12 @@ public sealed class CapabilityResolver
 
         var allowedCategories = new HashSet<string>(policy.AllowedActionCategories, StringComparer.Ordinal);
         var candidates = new List<ExplorationActionCandidate>();
+        var targetHwnd = snapshot.Window?.Hwnd is long hwnd && hwnd > 0 ? hwnd : (long?)null;
+        var targetPid = snapshot.Window?.ProcessId is int windowPid && windowPid > 0
+            ? windowPid
+            : snapshot.Application.ProcessId is int appPid && appPid > 0
+                ? appPid
+                : (int?)null;
 
         foreach (var node in snapshot.Nodes)
         {
@@ -72,6 +78,8 @@ public sealed class CapabilityResolver
                     Depth = depth,
                     Priority = CategoryPriority[proposal.Kind],
                     Ordinal = node.Ordinal,
+                    TargetHwnd = targetHwnd,
+                    TargetProcessId = targetPid,
                     DriverArguments = proposal.Arguments
                 });
             }

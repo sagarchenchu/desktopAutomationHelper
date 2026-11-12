@@ -1313,7 +1313,8 @@ public partial class UiService : IUiService
     {
         var criteria = BuildWin32SwitchCriteria(req, session);
 
-        // 1. Exact HWND wins unconditionally.
+        // 1. Exact HWND — when the caller supplied processId, reject PID mismatch
+        // before activation (handle reuse across processes must fail closed).
         if (criteria.Hwnd.HasValue && criteria.Hwnd.Value != IntPtr.Zero)
         {
             var hwnd = criteria.Hwnd.Value;
@@ -1321,6 +1322,16 @@ public partial class UiService : IUiService
             if (IsWindow(hwnd))
             {
                 GetWindowThreadProcessId(hwnd, out var pid);
+
+                if (req.ProcessId is int expectedPid && expectedPid > 0)
+                {
+                    if (pid == 0 || (int)pid != expectedPid)
+                    {
+                        throw new InvalidOperationException(
+                            $"switchwindow: HWND 0x{hwnd.ToInt64():X} Win32 PID {pid} does not match " +
+                            $"expected {expectedPid}; fail-closed.");
+                    }
+                }
 
                 var info = new Win32WindowInfo
                 {

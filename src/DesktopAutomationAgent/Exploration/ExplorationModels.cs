@@ -159,6 +159,18 @@ public sealed class ExplorationActionCandidate
 
     public int Ordinal { get; init; }
 
+    /// <summary>
+    /// HWND of the window this candidate was resolved from. Before execution the
+    /// coordinator switches/revalidates this HWND so sibling-window frontiers cannot
+    /// run against the wrong active surface.
+    /// </summary>
+    public long? TargetHwnd { get; init; }
+
+    /// <summary>
+    /// Expected process id for <see cref="TargetHwnd"/> (fail-closed on mismatch).
+    /// </summary>
+    public int? TargetProcessId { get; init; }
+
     public Dictionary<string, string>? DriverArguments { get; init; }
 }
 
