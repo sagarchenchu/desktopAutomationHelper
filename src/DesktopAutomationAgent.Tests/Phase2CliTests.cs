@@ -134,6 +134,7 @@ public class Phase2CliTests
         Assert.Contains("sync-key", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("run-key", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("run-suite", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("AI is not implemented", CommandLine.HelpText, StringComparison.Ordinal);
     }
 
     private static FakeHttpMessageHandler ReadyHandler() =>

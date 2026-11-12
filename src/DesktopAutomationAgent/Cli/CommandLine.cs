@@ -2147,6 +2147,6 @@ public static class CommandLine
           7 execution cancelled
 
         Phase 4E adds a provider-neutral read-only Jira test-source and sequential suite execution.
-        AI, scheduling, notifications, parallel runs, and Jira writeback are not implemented.
+        AI is not implemented. Scheduling, notifications, parallel runs, and Jira writeback are not implemented.
         """;
 }
