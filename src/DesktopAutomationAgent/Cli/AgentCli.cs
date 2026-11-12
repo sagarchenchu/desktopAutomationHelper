@@ -6,6 +6,7 @@ using DesktopAutomationAgent.Execution;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Exploration;
 using DesktopAutomationAgent.Compilation;
+using DesktopAutomationAgent.Jira;
 using DesktopAutomationAgent.Knowledge;
 using DesktopAutomationAgent.Observation;
 using DesktopAutomationAgent.Plans;
@@ -65,7 +66,10 @@ public static class AgentCli
                 or AgentCommandKind.ValidateTestCase
                 or AgentCommandKind.ValidateStepRegistry
                 or AgentCommandKind.CompileKey
-                or AgentCommandKind.ValidateCompiledKey;
+                or AgentCommandKind.ValidateCompiledKey
+                or AgentCommandKind.SyncKey
+                or AgentCommandKind.RunKey
+                or AgentCommandKind.RunSuite;
 
         if (parsed.Error is not null)
         {
@@ -143,8 +147,17 @@ public static class AgentCli
                 AgentCommandKind.ApproveKnowledge => RunApproveKnowledge(host.Services, parsed),
                 AgentCommandKind.ValidateTestCase => RunValidateTestCase(host.Services, parsed),
                 AgentCommandKind.ValidateStepRegistry => RunValidateStepRegistry(host.Services, parsed),
-                AgentCommandKind.CompileKey => RunCompileKey(host.Services, parsed),
+                AgentCommandKind.CompileKey => parsed.FromJira
+                    ? await RunCompileKeyFromJiraAsync(host.Services, parsed, cancellationToken)
+                        .ConfigureAwait(false)
+                    : RunCompileKey(host.Services, parsed),
                 AgentCommandKind.ValidateCompiledKey => RunValidateCompiledKey(host.Services, parsed),
+                AgentCommandKind.SyncKey => await RunSyncKeyAsync(host.Services, parsed, cancellationToken)
+                    .ConfigureAwait(false),
+                AgentCommandKind.RunKey => await RunRunKeyAsync(host.Services, parsed, cancellationToken)
+                    .ConfigureAwait(false),
+                AgentCommandKind.RunSuite => await RunRunSuiteAsync(host.Services, parsed, cancellationToken)
+                    .ConfigureAwait(false),
                 _ => ExitCodes.UsageOrConfiguration
             };
         }
@@ -231,6 +244,7 @@ public static class AgentCli
 
         builder.Services.AddHttpClient("driver-unauthenticated");
         builder.Services.AddHttpClient("driver-authenticated");
+        builder.Services.AddHttpClient(JiraHttpClientNames.Default);
 
         builder.Services.AddSingleton<IWorkspaceManager, WorkspaceManager>();
         builder.Services.AddSingleton<ISuiteManifestReader, SuiteManifestReader>();
@@ -263,6 +277,8 @@ public static class AgentCli
         builder.Services.AddSingleton<IExplorationCoordinator, ExplorationCoordinator>();
         builder.Services.AddSingleton<KnowledgeService>();
         builder.Services.AddSingleton<BddCompilationService>();
+        builder.Services.AddSingleton<IJiraTestCaseSource, JiraRestTestCaseSource>();
+        builder.Services.AddSingleton<JiraSuiteOrchestrator>();
 
         return builder.Build();
     }
@@ -1121,6 +1137,49 @@ public static class AgentCli
             return ExitCodes.SuiteOrWorkspace;
         }
 
+        return WriteCompileResult(result, parsed, fromJira: false);
+    }
+
+    private static async Task<int> RunCompileKeyFromJiraAsync(
+        IServiceProvider services,
+        ParsedCommand parsed,
+        CancellationToken cancellationToken)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Jira);
+
+        var orchestrator = services.GetRequiredService<JiraSuiteOrchestrator>();
+        CompilationResult result;
+        try
+        {
+            result = await orchestrator.CompileKeyFromJiraAsync(
+                    new CompileKeyFromJiraRequest
+                    {
+                        JiraKey = parsed.CompileJiraKey!,
+                        RegistryPath = parsed.StepRegistryFile,
+                        ObjectRepositoryPath = parsed.RepositoryFile,
+                        KnowledgePath = parsed.KnowledgePath,
+                        CatalogPath = parsed.CatalogFile,
+                        Explain = parsed.Explain
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (WorkspaceException ex)
+        {
+            if (parsed.Json)
+                WriteJsonError(ExitCodes.SuiteOrWorkspace, ex.Message);
+            else
+                Console.Error.WriteLine(SecretRedactor.Redact(ex.Message));
+            return ExitCodes.SuiteOrWorkspace;
+        }
+
+        return WriteCompileResult(result, parsed, fromJira: true);
+    }
+
+    private static int WriteCompileResult(CompilationResult result, ParsedCommand parsed, bool fromJira)
+    {
         if (parsed.Json)
         {
             var payload = new
@@ -1132,6 +1191,7 @@ public static class AgentCli
                 jiraKey = result.JiraKey,
                 fingerprint = result.Fingerprint,
                 cacheHit = result.CacheHit,
+                fromJira,
                 planPath = result.PlanPath,
                 compilationPath = result.CompilationPath,
                 planSha256 = result.PlanSha256,
@@ -1143,7 +1203,9 @@ public static class AgentCli
         }
         else
         {
-            Console.WriteLine("Desktop Automation Agent — compile-key");
+            Console.WriteLine(fromJira
+                ? "Desktop Automation Agent — compile-key --from-jira"
+                : "Desktop Automation Agent — compile-key");
             Console.WriteLine($"Jira key     : {result.JiraKey}");
             Console.WriteLine($"Success      : {result.Success}");
             if (!string.IsNullOrWhiteSpace(result.Fingerprint))
@@ -1155,7 +1217,9 @@ public static class AgentCli
                 Console.WriteLine($"Compilation  : {result.CompilationPath}");
             if (!string.IsNullOrWhiteSpace(result.PlanSha256))
                 Console.WriteLine($"Plan SHA-256 : {result.PlanSha256}");
-            Console.WriteLine("Note         : compile-key never calls Jira, AI, or POST /ui.");
+            Console.WriteLine(fromJira
+                ? "Note         : --from-jira is read-only; never writes to Jira or calls POST /ui."
+                : "Note         : compile-key never calls Jira, AI, or POST /ui.");
             if (result.Explain is { Count: > 0 })
             {
                 Console.WriteLine("Explain:");
@@ -1179,7 +1243,176 @@ public static class AgentCli
 
         if (result.ExitCode is 2)
             return ExitCodes.UsageOrConfiguration;
+        if (result.ExitCode is 3 or 4 or 6 or 7)
+            return result.ExitCode;
         return result.Success ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
+    }
+
+    private static async Task<int> RunSyncKeyAsync(
+        IServiceProvider services,
+        ParsedCommand parsed,
+        CancellationToken cancellationToken)
+    {
+        var orchestrator = services.GetRequiredService<JiraSuiteOrchestrator>();
+        var result = await orchestrator.SyncKeyAsync(parsed.CompileJiraKey!, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (parsed.Json)
+        {
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(result, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — sync-key");
+            Console.WriteLine($"Jira key   : {result.JiraKey}");
+            Console.WriteLine($"Success    : {result.Success}");
+            Console.WriteLine($"From cache : {result.FromCache}");
+            if (!string.IsNullOrWhiteSpace(result.RevisionToken))
+                Console.WriteLine($"Revision   : {result.RevisionToken}");
+            if (!string.IsNullOrWhiteSpace(result.CacheDirectory))
+                Console.WriteLine($"Cache      : {result.CacheDirectory}");
+            if (result.RateLimit is not null)
+            {
+                Console.WriteLine(
+                    $"Rate limit : remaining={result.RateLimit.Remaining?.ToString() ?? "?"} " +
+                    $"limit={result.RateLimit.Limit?.ToString() ?? "?"}");
+            }
+
+            if (!result.Success)
+            {
+                Console.Error.WriteLine("Sync failed:");
+                foreach (var error in result.Errors)
+                    Console.Error.WriteLine($"  - {SecretRedactor.Redact(error)}");
+            }
+        }
+
+        return result.ExitCode;
+    }
+
+    private static async Task<int> RunRunKeyAsync(
+        IServiceProvider services,
+        ParsedCommand parsed,
+        CancellationToken cancellationToken)
+    {
+        if (parsed.FromJira)
+            AgentOptionsValidator.Validate(services.GetRequiredService<IOptions<AgentOptions>>().Value, OptionsValidationScope.Jira);
+        else
+            AgentOptionsValidator.Validate(services.GetRequiredService<IOptions<AgentOptions>>().Value, OptionsValidationScope.Workspace);
+
+        var orchestrator = services.GetRequiredService<JiraSuiteOrchestrator>();
+        var result = await orchestrator.RunKeyAsync(
+                new JiraRunKeyRequest
+                {
+                    JiraKey = parsed.CompileJiraKey!,
+                    DryRun = parsed.DryRun,
+                    FromJira = parsed.FromJira,
+                    RegistryPath = parsed.StepRegistryFile,
+                    ObjectRepositoryPath = parsed.RepositoryFile,
+                    KnowledgePath = parsed.KnowledgePath,
+                    CatalogPath = parsed.CatalogFile
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (parsed.Json)
+        {
+            var payload = new
+            {
+                success = result.Success,
+                exitCode = result.ExitCode,
+                jiraKey = result.JiraKey,
+                compilationFingerprint = result.CompilationFingerprint,
+                planHash = result.PlanHash,
+                runId = result.RunId,
+                result = result.Result,
+                dryRun = result.DryRun,
+                durationMilliseconds = result.DurationMilliseconds,
+                errors = result.Errors
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine(parsed.DryRun
+                ? "Desktop Automation Agent — run-key (dry-run)"
+                : "Desktop Automation Agent — run-key");
+            Console.WriteLine($"Jira key    : {result.JiraKey}");
+            Console.WriteLine($"Success     : {result.Success}");
+            Console.WriteLine($"Result      : {result.Result}");
+            if (!string.IsNullOrWhiteSpace(result.CompilationFingerprint))
+                Console.WriteLine($"Fingerprint : {result.CompilationFingerprint}");
+            if (!string.IsNullOrWhiteSpace(result.PlanHash))
+                Console.WriteLine($"Plan SHA    : {result.PlanHash}");
+            if (!string.IsNullOrWhiteSpace(result.RunId))
+                Console.WriteLine($"Run ID      : {result.RunId}");
+            if (!result.Success)
+            {
+                foreach (var error in result.Errors)
+                    Console.Error.WriteLine($"  - {SecretRedactor.Redact(error)}");
+            }
+        }
+
+        return result.ExitCode;
+    }
+
+    private static async Task<int> RunRunSuiteAsync(
+        IServiceProvider services,
+        ParsedCommand parsed,
+        CancellationToken cancellationToken)
+    {
+        if (parsed.FromJira)
+            AgentOptionsValidator.Validate(services.GetRequiredService<IOptions<AgentOptions>>().Value, OptionsValidationScope.Jira);
+        else
+            AgentOptionsValidator.Validate(services.GetRequiredService<IOptions<AgentOptions>>().Value, OptionsValidationScope.Suites);
+
+        var orchestrator = services.GetRequiredService<JiraSuiteOrchestrator>();
+        var result = await orchestrator.RunSuiteAsync(
+                new JiraSuiteRunRequest
+                {
+                    SuiteFile = parsed.SuiteFile!,
+                    DryRun = parsed.DryRun,
+                    FromJira = parsed.FromJira,
+                    ContinueOnFailure = parsed.ContinueOnFailure,
+                    MaxFailures = parsed.MaxFailures ?? 0,
+                    RegistryPath = parsed.StepRegistryFile,
+                    ObjectRepositoryPath = parsed.RepositoryFile,
+                    KnowledgePath = parsed.KnowledgePath,
+                    CatalogPath = parsed.CatalogFile
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (parsed.Json)
+        {
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(result, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine(parsed.DryRun
+                ? "Desktop Automation Agent — run-suite (dry-run)"
+                : "Desktop Automation Agent — run-suite");
+            Console.WriteLine($"Suite run   : {result.SuiteRunId}");
+            Console.WriteLine($"Suite       : {result.SuiteName}");
+            Console.WriteLine($"Success     : {result.Success}");
+            Console.WriteLine($"Fail-fast   : {result.FailFast}");
+            Console.WriteLine($"Disabled    : {result.DisabledExcluded} excluded");
+            if (!string.IsNullOrWhiteSpace(result.SuiteReportPath))
+                Console.WriteLine($"Report      : {result.SuiteReportPath}");
+            foreach (var key in result.Keys)
+            {
+                Console.WriteLine(
+                    $"  - {key.JiraKey}: {key.Result} " +
+                    $"(fp={key.CompilationFingerprint ?? "-"}, run={key.RunId ?? "-"}, ms={key.DurationMilliseconds:0})");
+            }
+
+            if (!result.Success)
+            {
+                foreach (var error in result.Errors)
+                    Console.Error.WriteLine($"  - {SecretRedactor.Redact(error)}");
+            }
+        }
+
+        return result.ExitCode;
     }
 
     private static int RunValidateCompiledKey(IServiceProvider services, ParsedCommand parsed)

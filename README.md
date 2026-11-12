@@ -1769,7 +1769,8 @@ It never references driver internals (no project reference, no FlaUI).
 | Phase 4A — semantic desktop observation | Complete (`docs/phase4a-semantic-observation.md`) |
 | Phase 4B — safe explorer | Complete (`docs/phase4b-safe-explorer.md`) |
 | Phase 4C — application knowledge | Complete (`docs/phase4c-application-knowledge.md`) |
-| Phase 4D — deterministic BDD compiler | This work (`docs/phase4d-deterministic-bdd-compiler.md`) — offline compile; no Jira/AI/`POST /ui` |
+| Phase 4D — deterministic BDD compiler | Complete (`docs/phase4d-deterministic-bdd-compiler.md`) — offline compile; no Jira/AI/`POST /ui` |
+| Phase 4E — Jira adapter + suite orchestration | This work (`docs/phase4e-jira-suite-orchestration.md`) — read-only provider-neutral Jira source; sequential suites |
 
 The agent does **not** call live Jira, invent steps with AI, self-heal, or schedule suites. Phase 4D compiles offline BDD exports only.
 
@@ -1883,10 +1884,11 @@ DesktopAutomationAgent (separate process; HTTP client only)
   Semantic observation (Phase 4A) — observe-app snapshots under automation/observations/
   Safe explorer / knowledge (Phase 4B/4C) — exploration runs + approved knowledge
   Deterministic BDD compiler (Phase 4D) — offline Jira export → compiled plan cache
-  Suite manifests — Jira-key lists for future suite orchestration (validation only today)
+  Jira adapter + suite orchestration (Phase 4E) — read-only sync, compile-key --from-jira, run-key, run-suite
+  Suite manifests — Jira-key lists for validation and sequential suite execution
   Schemas under automation/schemas/
   Run artifacts under automation/runs/
-  Does not call live Jira, invent steps with AI, schedule suites, or self-heal
+  Live Jira is read-only (Phase 4E sync); never invents steps with AI, schedules suites, or self-heals
 
 Artifact distinctions
   Approved Page Objects     automation/object-repository (manual promotion)
@@ -1895,6 +1897,8 @@ Artifact distinctions
   Assistive bdd-action-map  capture sidecar; not a compiled plan
   Semantic snapshots        automation/observations/ (observe-only; ephemeral refs)
   Compiled BDD plans        automation/compiled/<jiraKey>/<fingerprint>/ (Phase 4D cache)
+  Jira cache (redacted)     automation/jira-cache/<jiraKey>/<revision>/ (Phase 4E)
+  Suite run summaries       automation/runs/<suiteRunId>/suite-run.json (Phase 4E)
 ```
 
 Shared-host discovery limits: [`docs/shared-host-driver-discovery-security.md`](docs/shared-host-driver-discovery-security.md).

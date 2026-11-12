@@ -203,6 +203,7 @@ public sealed class WorkspaceManager : IWorkspaceManager
         "test-cases",
         "test-cases/examples",
         "compiled",
+        "jira-cache",
         "runs"
     ];
 
@@ -236,6 +237,8 @@ public sealed class WorkspaceManager : IWorkspaceManager
             ["knowledge/README.md"] = KnowledgeReadme,
             ["step-registry/README.md"] = StepRegistryReadme,
             ["compiled/.gitignore"] = CompiledGitIgnore,
+            ["jira-cache/.gitignore"] = JiraCacheGitIgnore,
+            ["jira-cache/README.md"] = JiraCacheReadme,
             ["test-cases/README.md"] = TestCasesReadme,
             ["runs/.gitignore"] = RunsGitIgnore
         };
@@ -276,6 +279,25 @@ public sealed class WorkspaceManager : IWorkspaceManager
         # Compiled plans are local cache artifacts (deterministic, regenerable).
         */
         !.gitignore
+
+        """;
+
+    private const string JiraCacheGitIgnore =
+        """
+        # Redacted normalized Jira cache only — never commit issue dumps or secrets.
+        */
+        !.gitignore
+        !README.md
+
+        """;
+
+    private const string JiraCacheReadme =
+        """
+        # Jira cache (Phase 4E)
+
+        Stores normalized Phase 4D `test-case.json` + redacted `source-metadata.json`
+        under `<jiraKey>/<revision-or-hash>/`. Never commit credentials or unrestricted
+        issue JSON. Sync is read-only.
 
         """;
 
@@ -323,6 +345,20 @@ public sealed class WorkspaceManager : IWorkspaceManager
           "Knowledge": {
             "MaxFileBytes": 10485760,
             "MaxExplorationRuns": 500
+          },
+          "Jira": {
+            "BaseUrl": "https://example.atlassian.net",
+            "AuthMode": "basic",
+            "Email": "REPLACE_WITH_EMAIL",
+            "ApiToken": "REPLACE_FROM_ENV_OR_SECRET_STORE",
+            "MappingProfile": "plain-fields",
+            "FieldMapping": {
+              "FeaturePath": "fields.description"
+            },
+            "RequestTimeoutSeconds": 30,
+            "MaxResponseBytes": 2097152,
+            "MaxRetries": 2,
+            "AllowLocalHttpTestServer": false
           }
         }
         """;

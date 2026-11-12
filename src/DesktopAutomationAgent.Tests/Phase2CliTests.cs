@@ -122,15 +122,18 @@ public class Phase2CliTests
     }
 
     [Fact]
-    public void HelpText_IsPhase4D()
+    public void HelpText_IsPhase4E()
     {
-        Assert.Contains("Phase 4D", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("Phase 4E", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("validate-object-repository", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("capture-page", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("observe-app", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("explore-app", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("compile-key", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("validate-compiled-key", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("sync-key", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("run-key", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("run-suite", CommandLine.HelpText, StringComparison.Ordinal);
     }
 
     private static FakeHttpMessageHandler ReadyHandler() =>

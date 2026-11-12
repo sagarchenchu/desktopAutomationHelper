@@ -7,7 +7,8 @@ public enum OptionsValidationScope
     Driver,
     Runner,
     ObjectRepository,
-    Knowledge
+    Knowledge,
+    Jira
 }
 
 public sealed class AgentConfigurationException : Exception
@@ -65,6 +66,47 @@ public static class AgentOptionsValidator
         if (scope is OptionsValidationScope.Knowledge)
         {
             ValidateKnowledgeOptions(options.Knowledge);
+        }
+
+        if (scope is OptionsValidationScope.Jira)
+        {
+            ValidateJiraOptions(options.Jira);
+        }
+    }
+
+    public static void ValidateJiraOptions(JiraOptions jira)
+    {
+        ArgumentNullException.ThrowIfNull(jira);
+
+        if (string.IsNullOrWhiteSpace(jira.BaseUrl))
+            throw new AgentConfigurationException("Jira:BaseUrl is required for Jira sync commands.");
+
+        _ = JiraUrlRules.EnsureAllowed(jira.BaseUrl!, jira.AllowLocalHttpTestServer);
+
+        if (jira.RequestTimeoutSeconds <= 0 || jira.RequestTimeoutSeconds > 300)
+            throw new AgentConfigurationException("Jira:RequestTimeoutSeconds must be between 1 and 300.");
+
+        if (jira.MaxResponseBytes <= 0 || jira.MaxResponseBytes > 16_777_216)
+            throw new AgentConfigurationException("Jira:MaxResponseBytes must be between 1 and 16777216.");
+
+        if (jira.MaxRetries < 0 || jira.MaxRetries > 3)
+            throw new AgentConfigurationException("Jira:MaxRetries must be between 0 and 3.");
+
+        if (jira.PageSize <= 0 || jira.PageSize > 100)
+            throw new AgentConfigurationException("Jira:PageSize must be between 1 and 100.");
+
+        if (jira.MaxPages <= 0 || jira.MaxPages > 100)
+            throw new AgentConfigurationException("Jira:MaxPages must be between 1 and 100.");
+
+        var mode = (jira.AuthMode ?? "basic").Trim().ToLowerInvariant();
+        if (mode is not ("basic" or "bearer" or "pat"))
+            throw new AgentConfigurationException("Jira:AuthMode must be one of: basic, bearer, pat.");
+
+        var profile = (jira.MappingProfile ?? "plain-fields").Trim().ToLowerInvariant();
+        if (profile is not ("plain-fields" or "xray" or "zephyr" or "normalized" or "custom"))
+        {
+            throw new AgentConfigurationException(
+                "Jira:MappingProfile must be one of: plain-fields, xray, zephyr, normalized, custom.");
         }
     }
 
@@ -216,6 +258,35 @@ public static class DriverUrlRules
             throw new AgentConfigurationException(
                 $"Remote driver URL host '{uri.Host}' is not allowed. " +
                 "Use a loopback address or set Driver:AllowRemoteDriver=true.");
+        }
+
+        return uri;
+    }
+}
+
+/// <summary>
+/// Jira remote URL policy: HTTPS required for remote hosts; non-HTTPS allowed only
+/// for explicit local test servers when <see cref="JiraOptions.AllowLocalHttpTestServer"/> is true.
+/// </summary>
+public static class JiraUrlRules
+{
+    public static Uri EnsureAllowed(string url, bool allowLocalHttpTestServer)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new AgentConfigurationException($"Jira:BaseUrl '{url}' is not a valid absolute http(s) URL.");
+        }
+
+        var loopback = DriverUrlRules.IsLoopbackHost(uri.Host);
+        if (uri.Scheme == Uri.UriSchemeHttp)
+        {
+            if (!(allowLocalHttpTestServer && loopback))
+            {
+                throw new AgentConfigurationException(
+                    "Jira:BaseUrl must use HTTPS for remote hosts. " +
+                    "Non-HTTPS is allowed only when Jira:AllowLocalHttpTestServer=true and the host is loopback.");
+            }
         }
 
         return uri;

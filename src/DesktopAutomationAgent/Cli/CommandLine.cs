@@ -23,7 +23,10 @@ public enum AgentCommandKind
     ValidateTestCase,
     ValidateStepRegistry,
     CompileKey,
-    ValidateCompiledKey
+    ValidateCompiledKey,
+    SyncKey,
+    RunKey,
+    RunSuite
 }
 
 public sealed class ParsedCommand
@@ -104,6 +107,12 @@ public sealed class ParsedCommand
 
     public bool DryRun { get; init; }
 
+    public bool FromJira { get; init; }
+
+    public bool ContinueOnFailure { get; init; }
+
+    public int? MaxFailures { get; init; }
+
     public string? Error { get; init; }
 
     public string[] ConfigurationArgs { get; init; } = Array.Empty<string>();
@@ -144,6 +153,9 @@ public static class CommandLine
             "validate-step-registry" => ParseValidateStepRegistry(rest),
             "compile-key" => ParseCompileKey(rest),
             "validate-compiled-key" => ParseValidateCompiledKey(rest),
+            "sync-key" => ParseSyncKey(rest),
+            "run-key" => ParseRunKey(rest),
+            "run-suite" => ParseRunSuite(rest),
             _ => new ParsedCommand
             {
                 Kind = AgentCommandKind.Help,
@@ -1126,6 +1138,7 @@ public static class CommandLine
         string? knowledge = null;
         string? catalog = null;
         var explain = false;
+        var fromJira = false;
         var json = false;
         var config = new List<string>();
         var unknown = new List<string>();
@@ -1193,6 +1206,12 @@ public static class CommandLine
                 continue;
             }
 
+            if (arg == "--from-jira")
+            {
+                fromJira = true;
+                continue;
+            }
+
             if (arg == "--explain")
             {
                 explain = true;
@@ -1225,6 +1244,9 @@ public static class CommandLine
         if (string.IsNullOrWhiteSpace(key))
             return Error(AgentCommandKind.CompileKey, json, "compile-key requires --key <JIRA-KEY>.", config);
 
+        if (fromJira && !string.IsNullOrWhiteSpace(file))
+            return Error(AgentCommandKind.CompileKey, json, "compile-key --from-jira cannot be combined with --file.", config);
+
         return new ParsedCommand
         {
             Kind = AgentCommandKind.CompileKey,
@@ -1235,6 +1257,7 @@ public static class CommandLine
             KnowledgePath = knowledge,
             CatalogFile = catalog,
             Explain = explain,
+            FromJira = fromJira,
             Json = json,
             ConfigurationArgs = config.ToArray()
         };
@@ -1302,6 +1325,324 @@ public static class CommandLine
             Kind = AgentCommandKind.ValidateCompiledKey,
             CompileJiraKey = key,
             CompileFingerprint = fingerprint,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand ParseSyncKey(string[] rest)
+    {
+        string? key = null;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--key" or "-k")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.SyncKey, json, "--key requires a Jira key.", config);
+                if (key is not null)
+                    return Error(AgentCommandKind.SyncKey, json, "--key may not be repeated.", config);
+                key = value;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.SyncKey,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(key))
+            return Error(AgentCommandKind.SyncKey, json, "sync-key requires --key <JIRA-KEY>.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.SyncKey,
+            CompileJiraKey = key,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand ParseRunKey(string[] rest)
+    {
+        string? key = null;
+        string? registry = null;
+        string? objectRepo = null;
+        string? knowledge = null;
+        string? catalog = null;
+        var dryRun = false;
+        var fromJira = false;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--key" or "-k")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.RunKey, json, "--key requires a Jira key.", config);
+                if (key is not null)
+                    return Error(AgentCommandKind.RunKey, json, "--key may not be repeated.", config);
+                key = value;
+                continue;
+            }
+
+            if (arg == "--registry")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.RunKey, json, "--registry requires a path.", config);
+                if (registry is not null)
+                    return Error(AgentCommandKind.RunKey, json, "--registry may not be repeated.", config);
+                registry = value;
+                continue;
+            }
+
+            if (arg is "--object-repository" or "--repository")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.RunKey, json, "--object-repository requires a path.", config);
+                if (objectRepo is not null)
+                    return Error(AgentCommandKind.RunKey, json, "--object-repository may not be repeated.", config);
+                objectRepo = value;
+                continue;
+            }
+
+            if (arg == "--knowledge")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.RunKey, json, "--knowledge requires a path.", config);
+                if (knowledge is not null)
+                    return Error(AgentCommandKind.RunKey, json, "--knowledge may not be repeated.", config);
+                knowledge = value;
+                continue;
+            }
+
+            if (arg == "--catalog")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.RunKey, json, "--catalog requires a path.", config);
+                if (catalog is not null)
+                    return Error(AgentCommandKind.RunKey, json, "--catalog may not be repeated.", config);
+                catalog = value;
+                continue;
+            }
+
+            if (arg == "--from-jira")
+            {
+                fromJira = true;
+                continue;
+            }
+
+            if (arg == "--dry-run")
+            {
+                dryRun = true;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.RunKey,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(key))
+            return Error(AgentCommandKind.RunKey, json, "run-key requires --key <JIRA-KEY>.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.RunKey,
+            CompileJiraKey = key,
+            StepRegistryFile = registry,
+            RepositoryFile = objectRepo,
+            KnowledgePath = knowledge,
+            CatalogFile = catalog,
+            FromJira = fromJira,
+            DryRun = dryRun,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand ParseRunSuite(string[] rest)
+    {
+        string? file = null;
+        string? registry = null;
+        string? objectRepo = null;
+        string? knowledge = null;
+        string? catalog = null;
+        var dryRun = false;
+        var fromJira = false;
+        var continueOnFailure = false;
+        int? maxFailures = null;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--file" or "-f")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.RunSuite, json, "--file requires a path.", config);
+                if (file is not null)
+                    return Error(AgentCommandKind.RunSuite, json, "--file may not be repeated.", config);
+                file = value;
+                continue;
+            }
+
+            if (arg == "--registry")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.RunSuite, json, "--registry requires a path.", config);
+                if (registry is not null)
+                    return Error(AgentCommandKind.RunSuite, json, "--registry may not be repeated.", config);
+                registry = value;
+                continue;
+            }
+
+            if (arg is "--object-repository" or "--repository")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.RunSuite, json, "--object-repository requires a path.", config);
+                if (objectRepo is not null)
+                    return Error(AgentCommandKind.RunSuite, json, "--object-repository may not be repeated.", config);
+                objectRepo = value;
+                continue;
+            }
+
+            if (arg == "--knowledge")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.RunSuite, json, "--knowledge requires a path.", config);
+                if (knowledge is not null)
+                    return Error(AgentCommandKind.RunSuite, json, "--knowledge may not be repeated.", config);
+                knowledge = value;
+                continue;
+            }
+
+            if (arg == "--catalog")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.RunSuite, json, "--catalog requires a path.", config);
+                if (catalog is not null)
+                    return Error(AgentCommandKind.RunSuite, json, "--catalog may not be repeated.", config);
+                catalog = value;
+                continue;
+            }
+
+            if (arg == "--from-jira")
+            {
+                fromJira = true;
+                continue;
+            }
+
+            if (arg == "--continue-on-failure")
+            {
+                continueOnFailure = true;
+                continue;
+            }
+
+            if (arg == "--max-failures")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.RunSuite, json, "--max-failures requires an integer.", config);
+                if (maxFailures is not null)
+                    return Error(AgentCommandKind.RunSuite, json, "--max-failures may not be repeated.", config);
+                if (!int.TryParse(value, out var n) || n <= 0)
+                    return Error(AgentCommandKind.RunSuite, json, "--max-failures must be a positive integer.", config);
+                maxFailures = n;
+                continue;
+            }
+
+            if (arg == "--dry-run")
+            {
+                dryRun = true;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.RunSuite,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(file))
+            return Error(AgentCommandKind.RunSuite, json, "run-suite requires --file <suite.json>.", config);
+
+        if (maxFailures is not null && !continueOnFailure)
+            return Error(AgentCommandKind.RunSuite, json, "--max-failures requires --continue-on-failure.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.RunSuite,
+            SuiteFile = file,
+            StepRegistryFile = registry,
+            RepositoryFile = objectRepo,
+            KnowledgePath = knowledge,
+            CatalogFile = catalog,
+            FromJira = fromJira,
+            ContinueOnFailure = continueOnFailure,
+            MaxFailures = maxFailures,
+            DryRun = dryRun,
             Json = json,
             ConfigurationArgs = config.ToArray()
         };
@@ -1694,7 +2035,7 @@ public static class CommandLine
 
     public static string HelpText =>
         """
-        Desktop Automation Agent (Phase 4D)
+        Desktop Automation Agent (Phase 4E)
 
         Commands:
           init
@@ -1767,14 +2108,28 @@ public static class CommandLine
           validate-step-registry [--file <path>] [--json]
               Offline step-registry validation (default: step-registry/registry.json).
 
-          compile-key --key <JIRA-KEY> [--file <test-case>] [--registry <path>]
+          compile-key --key <JIRA-KEY> [--file <test-case>] [--from-jira] [--registry <path>]
               [--object-repository <path>] [--knowledge <approved-dir>] [--catalog <path>]
               [--explain] [--json]
-              Compile offline BDD into a deterministic Phase 2 plan cache entry.
-              Never calls Jira, AI, or POST /ui.
+              Compile BDD into a deterministic Phase 2 plan cache entry.
+              Without --from-jira: offline only (never calls Jira).
+              With --from-jira: read-only sync into jira-cache, then compile. Never POST /ui.
 
           validate-compiled-key --key <JIRA-KEY> [--fingerprint <sha>] [--json]
               Validate a compiled plan.json + compilation.json cache entry offline.
+
+          sync-key --key <JIRA-KEY> [--json]
+              Read-only fetch of one Jira key into automation/jira-cache (normalized Phase 4D only).
+              Rejects invalid keys before HTTP. Never writes back to Jira.
+
+          run-key --key <JIRA-KEY> [--from-jira] [--dry-run] [--json]
+              Compile (or reuse cache) then execute via the Phase 2 runner.
+              --dry-run never calls POST /ui.
+
+          run-suite --file <suite.json> [--from-jira] [--dry-run]
+              [--continue-on-failure] [--max-failures N] [--json]
+              Sequential suite orchestration. Fail-fast by default. Never runs disabled keys.
+              Writes automation/runs/<suiteRunId>/suite-run.json (does not overwrite Phase 2 run dirs).
 
           doctor [--json]
               Run configuration, workspace, driver discovery, status, and catalog checks.
@@ -1791,6 +2146,7 @@ public static class CommandLine
           6 UI operation, timeout, capture/verify/observe or assertion failure
           7 execution cancelled
 
-        Phase 4D compiles offline Jira BDD exports into Phase 2 plans. AI is not implemented. Jira network access is not implemented.
+        Phase 4E adds a provider-neutral read-only Jira test-source and sequential suite execution.
+        AI, scheduling, notifications, parallel runs, and Jira writeback are not implemented.
         """;
 }

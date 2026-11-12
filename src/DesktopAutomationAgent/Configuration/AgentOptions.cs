@@ -17,4 +17,6 @@ public sealed class AgentOptions
     public ObjectRepositoryOptions ObjectRepository { get; set; } = new();
 
     public KnowledgeOptions Knowledge { get; set; } = new();
+
+    public JiraOptions Jira { get; set; } = new();
 }
