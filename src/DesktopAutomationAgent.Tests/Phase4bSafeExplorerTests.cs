@@ -97,6 +97,56 @@ public class Phase4bSafeExplorerTests
     }
 
     [Fact]
+    public void CapabilityResolver_MissingWindowProcessId_EmitsNoCandidates_DoesNotUseAppPid()
+    {
+        var baseSnap = Snapshot(
+            processId: 10,
+            hwnd: 1,
+            nodes:
+            [
+                Node("n0", null, 0, 0, "Window", "Main", "main", true, ["Window"]),
+                Node("n1", "n0", 0, 1, "Button", "Open Second", "ExplorerOpenSecondButton", true, ["Invoke"])
+            ]);
+        // Application PID present, but Window.ProcessId missing — must not substitute.
+        var snapshot = new SemanticSnapshot
+        {
+            SnapshotSchemaVersion = baseSnap.SnapshotSchemaVersion,
+            SnapshotId = baseSnap.SnapshotId,
+            CapturedAtUtc = baseSnap.CapturedAtUtc,
+            DriverVersion = baseSnap.DriverVersion,
+            SnapshotHash = baseSnap.SnapshotHash,
+            Application = baseSnap.Application,
+            WindowsSession = baseSnap.WindowsSession,
+            Window = new WindowIdentity
+            {
+                Ref = baseSnap.Window?.Ref,
+                Hwnd = 1,
+                Title = baseSnap.Window?.Title,
+                ClassName = baseSnap.Window?.ClassName,
+                ProcessId = null,
+                IsModal = false
+            },
+            Nodes = baseSnap.Nodes
+        };
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.AllowedActionCategories = ["invoke"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule
+            {
+                AutomationId = "ExplorerOpenSecondButton",
+                Action = "invoke",
+                ActionCategory = "invoke"
+            }
+        ];
+
+        var candidates = new CapabilityResolver().Resolve(snapshot, "fp", policy, 0);
+        Assert.Empty(candidates);
+    }
+
+    [Fact]
     public void CapabilityResolver_HoverRequiresAllowHover()
     {
         var snapshot = Snapshot(
@@ -1837,6 +1887,192 @@ public class Phase4bSafeExplorerTests
         Assert.Single(result.AddedWindows);
         Assert.Equal(42, result.AddedWindows[0].Hwnd);
         Assert.Equal(99, result.AddedWindows[0].ProcessId);
+    }
+
+    [Fact]
+    public async Task Coordinator_MissingWindowProcessId_FailsClosed_ExecutesNothing()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.Budgets.MaxActions = 5;
+        policy.Budgets.StabilizationQuietPeriodMilliseconds = 0;
+        policy.AllowedActionCategories = ["invoke"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule
+            {
+                AutomationId = "ExplorerOpenSecondButton",
+                Action = "invoke",
+                ActionCategory = "invoke"
+            }
+        ];
+        var policyPath = WritePolicy(workspace.RootPath, policy);
+
+        var baseSnap = Snapshot(
+            processName: "DesktopAutomationExplorerFixture",
+            processId: 10,
+            snapshotId: "snap-missing-pid",
+            nodes:
+            [
+                Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                Node("n1", "n0", 0, 1, "Button", "Open Second", "ExplorerOpenSecondButton", true, ["Invoke"])
+            ]);
+        var missingWindowPid = new SemanticSnapshot
+        {
+            SnapshotSchemaVersion = baseSnap.SnapshotSchemaVersion,
+            SnapshotId = baseSnap.SnapshotId,
+            CapturedAtUtc = baseSnap.CapturedAtUtc,
+            DriverVersion = baseSnap.DriverVersion,
+            SnapshotHash = baseSnap.SnapshotHash,
+            Application = baseSnap.Application,
+            WindowsSession = baseSnap.WindowsSession,
+            Window = new WindowIdentity
+            {
+                Ref = baseSnap.Window?.Ref,
+                Hwnd = 1,
+                Title = "DA Explorer Fixture",
+                ClassName = "Form",
+                ProcessId = null,
+                IsModal = false
+            },
+            Nodes = baseSnap.Nodes
+        };
+
+        var clicked = false;
+        var observe = new Mock<ISemanticObservationService>();
+        observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new ObservationResult
+            {
+                Success = true,
+                ExitCode = 0,
+                Snapshot = missingWindowPid,
+                NodeCount = missingWindowPid.Nodes.Count
+            });
+
+        var ui = new Mock<IDriverUiClient>();
+        ui.Setup(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((DriverConnection _, PlanStep step, CancellationToken _) =>
+            {
+                if (step.Operation == "clickuia")
+                {
+                    clicked = true;
+                    throw new InvalidOperationException("Must not execute without Window.ProcessId.");
+                }
+
+                return ListWindowsResponse([(1L, "DA Explorer Fixture", 10)]);
+            });
+
+        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, MockConnection());
+        var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
+        Assert.False(result.Success);
+        Assert.False(clicked);
+        var stop = result.Summary?.StopReason ?? result.Error ?? string.Empty;
+        Assert.True(
+            stop.Contains("Window.ProcessId", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(stop, "scope-violation", StringComparison.Ordinal),
+            $"unexpected stop={stop}");
+    }
+
+    [Fact]
+    public async Task Coordinator_CandidateMissingTargetIdentity_FailsClosed()
+    {
+        // Seed a valid frontier, then drift observe to a snapshot that keeps HWND but
+        // drops Window.ProcessId after enqueue — pre-action scope must fail closed.
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.Budgets.MaxActions = 5;
+        policy.Budgets.StabilizationQuietPeriodMilliseconds = 0;
+        policy.AllowedActionCategories = ["invoke"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule
+            {
+                AutomationId = "ExplorerOpenSecondButton",
+                Action = "invoke",
+                ActionCategory = "invoke"
+            }
+        ];
+        var policyPath = WritePolicy(workspace.RootPath, policy);
+
+        var valid = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                snapshotId: "snap-valid",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                    Node("n1", "n0", 0, 1, "Button", "Open Second", "ExplorerOpenSecondButton", true, ["Invoke"])
+                ]),
+            "DA Explorer Fixture",
+            "Form",
+            false,
+            1,
+            10);
+
+        var missingPid = new SemanticSnapshot
+        {
+            SnapshotSchemaVersion = valid.SnapshotSchemaVersion,
+            SnapshotId = "snap-missing",
+            CapturedAtUtc = valid.CapturedAtUtc,
+            DriverVersion = valid.DriverVersion,
+            SnapshotHash = valid.SnapshotHash,
+            Application = valid.Application,
+            WindowsSession = valid.WindowsSession,
+            Window = new WindowIdentity
+            {
+                Ref = valid.Window?.Ref,
+                Hwnd = 1,
+                Title = "DA Explorer Fixture",
+                ClassName = "Form",
+                ProcessId = null,
+                IsModal = false
+            },
+            Nodes = valid.Nodes
+        };
+
+        var call = 0;
+        var clicked = false;
+        var observe = new Mock<ISemanticObservationService>();
+        observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                call++;
+                var snap = call == 1 ? valid : missingPid;
+                return new ObservationResult
+                {
+                    Success = true,
+                    ExitCode = 0,
+                    Snapshot = snap,
+                    NodeCount = snap.Nodes.Count
+                };
+            });
+
+        var ui = new Mock<IDriverUiClient>();
+        ui.Setup(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((DriverConnection _, PlanStep step, CancellationToken _) =>
+            {
+                if (step.Operation == "clickuia")
+                {
+                    clicked = true;
+                    throw new InvalidOperationException("Must not click after Window.ProcessId disappeared.");
+                }
+
+                return ListWindowsResponse([(1L, "DA Explorer Fixture", 10)]);
+            });
+
+        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, MockConnection());
+        var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
+        Assert.False(result.Success);
+        Assert.False(clicked);
+        Assert.Equal("scope-violation", result.Summary?.StopReason);
     }
 
     [Fact]

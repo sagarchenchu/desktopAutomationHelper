@@ -38,14 +38,16 @@ public sealed class CapabilityResolver
         if (!string.Equals(policy.Mode, "navigate", StringComparison.OrdinalIgnoreCase))
             return [];
 
+        // Navigate mode is window-aware: never substitute Application.ProcessId for a
+        // missing Window.ProcessId, and never emit candidates without a target HWND+PID.
+        if (snapshot.Window?.Hwnd is not long targetHwnd || targetHwnd <= 0
+            || snapshot.Window?.ProcessId is not int targetPid || targetPid <= 0)
+        {
+            return [];
+        }
+
         var allowedCategories = new HashSet<string>(policy.AllowedActionCategories, StringComparer.Ordinal);
         var candidates = new List<ExplorationActionCandidate>();
-        var targetHwnd = snapshot.Window?.Hwnd is long hwnd && hwnd > 0 ? hwnd : (long?)null;
-        var targetPid = snapshot.Window?.ProcessId is int windowPid && windowPid > 0
-            ? windowPid
-            : snapshot.Application.ProcessId is int appPid && appPid > 0
-                ? appPid
-                : (int?)null;
 
         foreach (var node in snapshot.Nodes)
         {
