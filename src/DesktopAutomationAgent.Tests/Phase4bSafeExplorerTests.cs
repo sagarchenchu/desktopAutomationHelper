@@ -1225,7 +1225,14 @@ public class Phase4bSafeExplorerTests
         observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ObservationResult { Success = true, ExitCode = 0, Snapshot = snapshot, NodeCount = 2 });
 
+        // Navigate mode lists windows for initial HWND owner validation even when maxDepth
+        // prevents enqueue/execute — allow listwindows only; never clickuia.
         var ui = new Mock<IDriverUiClient>(MockBehavior.Strict);
+        ui.Setup(u => u.ExecuteStepAsync(
+                It.IsAny<DriverConnection>(),
+                It.Is<PlanStep>(s => s.Operation == "listwindows"),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ListWindowsResponse([(1L, "DA Explorer Fixture", 10)]));
         var connection = new Mock<IDriverConnectionResolver>();
         connection.Setup(c => c.ResolveAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new DriverConnection
@@ -1239,7 +1246,12 @@ public class Phase4bSafeExplorerTests
         var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
         Assert.True(result.Success);
         Assert.Equal(0, result.Summary!.ActionsAttempted);
-        ui.Verify(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()), Times.Never);
+        ui.Verify(
+            u => u.ExecuteStepAsync(
+                It.IsAny<DriverConnection>(),
+                It.Is<PlanStep>(s => s.Operation != "listwindows"),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [Fact]
@@ -1980,8 +1992,8 @@ public class Phase4bSafeExplorerTests
     [Fact]
     public async Task Coordinator_CandidateMissingTargetIdentity_FailsClosed()
     {
-        // Seed a valid frontier, then drift observe to a snapshot that keeps HWND but
-        // drops Window.ProcessId after enqueue — pre-action scope must fail closed.
+        // Snapshot scope stays valid; resolver emits candidates without TargetHwnd/PID so
+        // the missing-target-identity branch runs (not the earlier Window.ProcessId scope check).
         var options = TestSupport.CreateOptions();
         var workspace = TestSupport.CreateWorkspace(options);
         workspace.Initialize();
@@ -2017,42 +2029,15 @@ public class Phase4bSafeExplorerTests
             1,
             10);
 
-        var missingPid = new SemanticSnapshot
-        {
-            SnapshotSchemaVersion = valid.SnapshotSchemaVersion,
-            SnapshotId = "snap-missing",
-            CapturedAtUtc = valid.CapturedAtUtc,
-            DriverVersion = valid.DriverVersion,
-            SnapshotHash = valid.SnapshotHash,
-            Application = valid.Application,
-            WindowsSession = valid.WindowsSession,
-            Window = new WindowIdentity
-            {
-                Ref = valid.Window?.Ref,
-                Hwnd = 1,
-                Title = "DA Explorer Fixture",
-                ClassName = "Form",
-                ProcessId = null,
-                IsModal = false
-            },
-            Nodes = valid.Nodes
-        };
-
-        var call = 0;
         var clicked = false;
         var observe = new Mock<ISemanticObservationService>();
         observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(() =>
+            .ReturnsAsync(() => new ObservationResult
             {
-                call++;
-                var snap = call == 1 ? valid : missingPid;
-                return new ObservationResult
-                {
-                    Success = true,
-                    ExitCode = 0,
-                    Snapshot = snap,
-                    NodeCount = snap.Nodes.Count
-                };
+                Success = true,
+                ExitCode = 0,
+                Snapshot = valid,
+                NodeCount = valid.Nodes.Count
             });
 
         var ui = new Mock<IDriverUiClient>();
@@ -2062,17 +2047,120 @@ public class Phase4bSafeExplorerTests
                 if (step.Operation == "clickuia")
                 {
                     clicked = true;
-                    throw new InvalidOperationException("Must not click after Window.ProcessId disappeared.");
+                    throw new InvalidOperationException("Must not click without target HWND/PID.");
                 }
 
                 return ListWindowsResponse([(1L, "DA Explorer Fixture", 10)]);
             });
 
-        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, MockConnection());
+        var coordinator = CreateCoordinator(
+            options,
+            workspace,
+            observe.Object,
+            ui.Object,
+            MockConnection(),
+            capabilityResolver: new MissingTargetCapabilityResolver());
         var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
         Assert.False(result.Success);
         Assert.False(clicked);
         Assert.Equal("scope-violation", result.Summary?.StopReason);
+
+        var transitions = File.ReadAllLines(Path.Combine(result.ArtifactDirectory!, "transitions.jsonl"))
+            .Where(l => !string.IsNullOrWhiteSpace(l))
+            .Select(l => JsonDocument.Parse(l).RootElement)
+            .ToList();
+        Assert.Contains(
+            transitions,
+            t => (t.GetProperty("detail").GetString() ?? string.Empty)
+                .Contains("TargetHwnd/TargetProcessId", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Coordinator_MismatchedApplicationAndWindowPid_ExecutesNoClick()
+    {
+        // Application.ProcessId is the pinned root; Window.ProcessId is an unrelated PID.
+        // Window lineage/inventory validation must fail closed before any click.
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.Budgets.MaxActions = 5;
+        policy.Budgets.StabilizationQuietPeriodMilliseconds = 0;
+        policy.AllowedActionCategories = ["invoke"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule
+            {
+                AutomationId = "ExplorerOpenSecondButton",
+                Action = "invoke",
+                ActionCategory = "invoke"
+            }
+        ];
+        var policyPath = WritePolicy(workspace.RootPath, policy);
+
+        var mismatched = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                processId: 10,
+                snapshotId: "snap-mismatch",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                    Node("n1", "n0", 0, 1, "Button", "Open Second", "ExplorerOpenSecondButton", true, ["Invoke"])
+                ]),
+            "DA Explorer Fixture",
+            "Form",
+            false,
+            1,
+            99);
+
+        var clicked = false;
+        var observe = new Mock<ISemanticObservationService>();
+        observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new ObservationResult
+            {
+                Success = true,
+                ExitCode = 0,
+                Snapshot = mismatched,
+                NodeCount = mismatched.Nodes.Count
+            });
+
+        var ui = new Mock<IDriverUiClient>();
+        ui.Setup(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((DriverConnection _, PlanStep step, CancellationToken _) =>
+            {
+                if (step.Operation == "clickuia")
+                {
+                    clicked = true;
+                    throw new InvalidOperationException("Must not click when Window.ProcessId is outside the tree.");
+                }
+
+                return ListWindowsResponse([(1L, "DA Explorer Fixture", 99)]);
+            });
+
+        var coordinator = CreateCoordinator(
+            options,
+            workspace,
+            observe.Object,
+            ui.Object,
+            MockConnection(),
+            configureProbe: probe =>
+            {
+                probe.Register(99, new ProcessIdentityInfo
+                {
+                    ProcessId = 99,
+                    ProcessName = "NotAllowedExternal",
+                    SessionId = 1,
+                    ParentProcessId = 1
+                });
+            });
+        var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
+        Assert.False(result.Success);
+        Assert.False(clicked);
+        var stop = result.Summary?.StopReason ?? result.Error ?? string.Empty;
+        Assert.False(string.IsNullOrWhiteSpace(stop));
     }
 
     [Fact]
@@ -2098,6 +2186,9 @@ public class Phase4bSafeExplorerTests
                 ActionCategory = "invoke"
             }
         ];
+        // PID 99 is an allowed child so active-window lineage passes; candidate still
+        // targets PID 10, so retarget must run and fail the inventory owner check.
+        policy.Application.AllowedChildProcessNames = ["FixtureChild"];
         var policyPath = WritePolicy(workspace.RootPath, policy);
 
         // Candidate was resolved against HWND 1 / PID 10, but live observe now shows
@@ -2136,6 +2227,7 @@ public class Phase4bSafeExplorerTests
             99);
 
         var observeCalls = 0;
+        var listCalls = 0;
         var switchAttempted = false;
         var observe = new Mock<ISemanticObservationService>();
         observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
@@ -2160,8 +2252,10 @@ public class Phase4bSafeExplorerTests
             {
                 if (step.Operation == "listwindows")
                 {
-                    // After reuse the live inventory advertises HWND 1 under PID 99.
-                    return ListWindowsResponse([(1L, "DA Explorer Fixture", 99)]);
+                    listCalls++;
+                    // Initial inventory matches HWND 1 / PID 10; later inventory shows reuse under 99.
+                    var pid = listCalls == 1 ? 10 : 99;
+                    return ListWindowsResponse([(1L, "DA Explorer Fixture", pid)]);
                 }
 
                 if (step.Operation == "switchwindow")
@@ -2179,7 +2273,22 @@ public class Phase4bSafeExplorerTests
                 return new UiExecutionResponse { Success = true };
             });
 
-        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, MockConnection());
+        var coordinator = CreateCoordinator(
+            options,
+            workspace,
+            observe.Object,
+            ui.Object,
+            MockConnection(),
+            configureProbe: probe =>
+            {
+                probe.Register(99, new ProcessIdentityInfo
+                {
+                    ProcessId = 99,
+                    ProcessName = "FixtureChild",
+                    SessionId = 1,
+                    ParentProcessId = 10
+                });
+            });
         var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
         Assert.True(switchAttempted, "Retarget must switch when HWND matches but PID differs.");
 
@@ -2714,7 +2823,9 @@ public class Phase4bSafeExplorerTests
         Workspace.IWorkspaceManager workspace,
         ISemanticObservationService observation,
         IDriverUiClient ui,
-        IDriverConnectionResolver connection)
+        IDriverConnectionResolver connection,
+        CapabilityResolver? capabilityResolver = null,
+        Action<FakeProcessIdentityProbe>? configureProbe = null)
     {
         var fingerprinter = new StateFingerprinter();
         var probe = new FakeProcessIdentityProbe();
@@ -2731,6 +2842,7 @@ public class Phase4bSafeExplorerTests
             SessionId = 1,
             ParentProcessId = 10
         });
+        configureProbe?.Invoke(probe);
         return new ExplorationCoordinator(
             Options.Create(options),
             new ExplorationPolicyReader(),
@@ -2738,12 +2850,46 @@ public class Phase4bSafeExplorerTests
             connection,
             ui,
             fingerprinter,
-            new CapabilityResolver(),
+            capabilityResolver ?? new CapabilityResolver(),
             new UiStabilizationService(observation, fingerprinter),
             new WindowTransitionDetector(ui),
             new ExplorationArtifactWriter(workspace),
             NullLogger<ExplorationCoordinator>.Instance,
             probe);
+    }
+
+    private sealed class MissingTargetCapabilityResolver : CapabilityResolver
+    {
+        public override IReadOnlyList<ExplorationActionCandidate> Resolve(
+            SemanticSnapshot snapshot,
+            string stateFingerprint,
+            ExplorationPolicyDocument policy,
+            int depth)
+        {
+            return base.Resolve(snapshot, stateFingerprint, policy, depth)
+                .Select(c => new ExplorationActionCandidate
+                {
+                    ActionKey = c.ActionKey,
+                    Kind = c.Kind,
+                    Category = c.Category,
+                    DriverOperation = c.DriverOperation,
+                    ElementKey = c.ElementKey,
+                    AutomationId = c.AutomationId,
+                    Name = c.Name,
+                    ControlType = c.ControlType,
+                    ClassName = c.ClassName,
+                    SnapshotId = c.SnapshotId,
+                    NodeRef = c.NodeRef,
+                    StateFingerprint = c.StateFingerprint,
+                    Depth = c.Depth,
+                    Priority = c.Priority,
+                    Ordinal = c.Ordinal,
+                    TargetHwnd = null,
+                    TargetProcessId = null,
+                    DriverArguments = c.DriverArguments
+                })
+                .ToList();
+        }
     }
 
     private sealed class FakeProcessIdentityProbe : IProcessIdentityProbe

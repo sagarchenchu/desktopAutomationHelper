@@ -6,7 +6,7 @@ namespace DesktopAutomationAgent.Exploration;
 /// Derives technical navigation candidates from a semantic snapshot and policy.
 /// Deny-by-default: InvokePattern alone never authorizes a click.
 /// </summary>
-public sealed class CapabilityResolver
+public class CapabilityResolver
 {
     private static readonly Dictionary<ExplorationActionKind, int> CategoryPriority = new()
     {
@@ -25,7 +25,7 @@ public sealed class CapabilityResolver
 
     public IReadOnlyList<string> DeniedActionSamples => _deniedSamples;
 
-    public IReadOnlyList<ExplorationActionCandidate> Resolve(
+    public virtual IReadOnlyList<ExplorationActionCandidate> Resolve(
         SemanticSnapshot snapshot,
         string stateFingerprint,
         ExplorationPolicyDocument policy,

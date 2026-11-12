@@ -140,7 +140,55 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             }
 
             initialSnapshot = initial.Snapshot;
-            if (!TryValidateScope(initialSnapshot, policy, identityValidator, out var initialScopeError))
+
+            // Resolve the driver early for navigate so initial HWND owner can be checked
+            // against a live inventory before any candidates are enqueued.
+            DriverConnection? connection = null;
+            WindowInventory? initialWindows = null;
+            var needsLiveInventory =
+                !request.DryRun
+                && string.Equals(policy.Mode, "navigate", StringComparison.OrdinalIgnoreCase);
+            if (needsLiveInventory)
+            {
+                try
+                {
+                    connection = await _connectionResolver.ResolveAsync(deadlineCts.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (DriverConnectionException ex)
+                {
+                    stopReason = ex.Message;
+                    status = "failed";
+                    exitCode = ExitCodes.DriverUnavailable;
+                    return Finish();
+                }
+
+                try
+                {
+                    initialWindows = await _windowDetector
+                        .ListWindowsAsync(connection, deadlineCts.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    (stopReason, status, exitCode) = CancelOrDeadline(cancellationToken);
+                    return Finish();
+                }
+                catch (UiExecutionException ex)
+                {
+                    stopReason = SecretRedactor.Redact(ex.Message);
+                    status = "failed";
+                    exitCode = ExitCodes.ExecutionFailure;
+                    return Finish();
+                }
+            }
+
+            if (!TryValidateScope(
+                    initialSnapshot,
+                    policy,
+                    identityValidator,
+                    out var initialScopeError,
+                    initialWindows))
             {
                 stopReason = initialScopeError;
                 status = "failed";
@@ -204,17 +252,20 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                 frontier.EnqueueMany(candidates);
             _ = stateId;
 
-            DriverConnection connection;
-            try
+            if (connection is null)
             {
-                connection = await _connectionResolver.ResolveAsync(deadlineCts.Token).ConfigureAwait(false);
-            }
-            catch (DriverConnectionException ex)
-            {
-                stopReason = ex.Message;
-                status = "failed";
-                exitCode = ExitCodes.DriverUnavailable;
-                return Finish();
+                try
+                {
+                    connection = await _connectionResolver.ResolveAsync(deadlineCts.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (DriverConnectionException ex)
+                {
+                    stopReason = ex.Message;
+                    status = "failed";
+                    exitCode = ExitCodes.DriverUnavailable;
+                    return Finish();
+                }
             }
 
             var windowStack = new ExplorationWindowStack();
@@ -408,7 +459,13 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                 }
 
                 // Blocker: scope after every observation (including pre-action) before resolve/execute.
-                if (!TryValidateScope(beforeSnapshot, policy, identityValidator, out var beforeScopeError))
+                // Pre-action validates Window HWND/PID against live inventory + process lineage.
+                if (!TryValidateScope(
+                        beforeSnapshot,
+                        policy,
+                        identityValidator,
+                        out var beforeScopeError,
+                        beforeWindows))
                 {
                     recorder.Record(
                         fromStateId,
@@ -1665,7 +1722,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         SemanticSnapshot snapshot,
         ExplorationPolicyDocument policy,
         ProcessIdentityValidator identityValidator,
-        out string error)
+        out string error,
+        WindowInventory? windowInventory = null)
     {
         if (!WindowTransitionDetector.IsSnapshotInScope(snapshot, policy))
         {
@@ -1675,6 +1733,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
 
         // Navigate mode requires a positive active-window HWND+PID. Missing either is a
         // scope violation — never fall back to Application.ProcessId or execute blind.
+        long? navigateHwnd = null;
+        int? navigateWindowPid = null;
         if (string.Equals(policy.Mode, "navigate", StringComparison.OrdinalIgnoreCase))
         {
             if (snapshot.Window?.Hwnd is not long hwnd || hwnd <= 0
@@ -1684,6 +1744,9 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     "Navigate mode requires positive Window.Hwnd and Window.ProcessId; fail-closed.";
                 return false;
             }
+
+            navigateHwnd = hwnd;
+            navigateWindowPid = windowPid;
         }
 
         var identity = identityValidator.ValidateSnapshot(snapshot, policy);
@@ -1691,6 +1754,33 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
         {
             error = identity.Detail ?? "Process identity validation failed.";
             return false;
+        }
+
+        // Validate Window.ProcessId against the pinned process tree (not only Application.ProcessId).
+        if (string.Equals(policy.Mode, "navigate", StringComparison.OrdinalIgnoreCase)
+            && snapshot.Window is { } activeWindow)
+        {
+            var windowIdentity = identityValidator.ValidateActiveWindow(activeWindow, policy);
+            if (!windowIdentity.IsValid)
+            {
+                error = windowIdentity.Detail
+                        ?? "Active window process identity validation failed.";
+                return false;
+            }
+
+            // When a live inventory is available (initial / pre-action), require HWND owner match.
+            if (windowInventory is not null
+                && navigateHwnd is long ownedHwnd
+                && navigateWindowPid is int ownedPid)
+            {
+                var owner = identityValidator.ValidateHwndProcess(ownedHwnd, ownedPid, windowInventory);
+                if (!owner.IsValid)
+                {
+                    error = owner.Detail
+                            ?? $"HWND 0x{ownedHwnd:X} owner validation failed; fail-closed.";
+                    return false;
+                }
+            }
         }
 
         error = string.Empty;

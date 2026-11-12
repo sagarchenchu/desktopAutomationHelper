@@ -379,13 +379,16 @@ public sealed class ProcessIdentityValidator
     }
 
     /// <summary>
-    /// Verifies a live HWND's process id matches the expected PID after switchwindow.
+    /// Verifies a live HWND's process id matches the expected PID after switchwindow
+    /// or against a pre-action/initial window inventory.
     /// </summary>
     public ProcessIdentityValidationResult ValidateHwndProcess(
         long hwnd,
         int expectedProcessId,
         WindowInventory inventory)
     {
+        ArgumentNullException.ThrowIfNull(inventory);
+
         var match = inventory.Windows.FirstOrDefault(w => w.Hwnd == hwnd);
         if (match is null)
             return Fail($"HWND 0x{hwnd:X} is not present in the window inventory.");
@@ -400,6 +403,43 @@ public sealed class ProcessIdentityValidator
         }
 
         return Ok();
+    }
+
+    /// <summary>
+    /// Validates the active snapshot window's ProcessId against the pinned process tree
+    /// (root or allowed-child lineage). Does not accept Application.ProcessId as a
+    /// substitute for Window.ProcessId.
+    /// </summary>
+    public ProcessIdentityValidationResult ValidateActiveWindow(
+        WindowIdentity window,
+        ExplorationPolicyDocument policy)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+        ArgumentNullException.ThrowIfNull(policy);
+
+        if (window.Hwnd is not long hwnd || hwnd <= 0)
+            return Fail("Active window HWND is missing; fail-closed.");
+
+        if (window.ProcessId is not int pid || pid <= 0)
+            return Fail("Active window processId is missing; fail-closed.");
+
+        if (!_probe.TryGetIdentity(pid, out var identity, out var probeError))
+            return Fail(probeError ?? $"Unable to resolve process identity for active window PID {pid}.");
+
+        if (string.IsNullOrWhiteSpace(identity.ProcessName))
+            return Fail($"Active window PID {pid} is missing a live process name; fail-closed.");
+
+        // Reuse new-window rules: same session pin + root or allowed-child ancestry.
+        return ValidateNewWindow(
+            new WindowDescriptor
+            {
+                Hwnd = hwnd,
+                Title = window.Title,
+                ClassName = window.ClassName,
+                ProcessId = pid,
+                ProcessName = identity.ProcessName
+            },
+            policy);
     }
 
     private ProcessIdentityValidationResult ValidatePathAndHash(
