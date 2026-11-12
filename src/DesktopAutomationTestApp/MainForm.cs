@@ -149,34 +149,38 @@ public sealed class MainForm : Form
         // Button suppresses StandardDoubleClick; use a control that raises MouseDoubleClick,
         // plus Click timing fallback for drivers that emit two rapid single clicks.
         var dbl = DoubleClickButton(UiIds.DoubleClickButton, "Double-Click Me");
-        var lastDblClickUtc = DateTime.MinValue;
-        var doubleClickHandled = false;
-        dbl.MouseDoubleClick += (_, _) =>
+        var lastSingleClickUtc = DateTime.MinValue;
+        var lastDoubleClickUtc = DateTime.MinValue;
+        void MarkDoubleClicked()
         {
-            doubleClickHandled = true;
-            lastDblClickUtc = DateTime.MinValue;
+            var now = DateTime.UtcNow;
+            // MouseDoubleClick and the second Click can both arrive; emit one status/log.
+            if (lastDoubleClickUtc != DateTime.MinValue
+                && (now - lastDoubleClickUtc).TotalMilliseconds <= SystemInformation.DoubleClickTime)
+                return;
+
+            lastDoubleClickUtc = now;
+            lastSingleClickUtc = DateTime.MinValue;
             SetStatus("DoubleClickButton double-clicked");
             Log("DoubleClickButton: double click");
-        };
+        }
+
+        dbl.MouseDoubleClick += (_, _) => MarkDoubleClicked();
         dbl.Click += (_, _) =>
         {
-            if (doubleClickHandled)
-            {
-                doubleClickHandled = false;
-                return;
-            }
-
             var now = DateTime.UtcNow;
-            if (lastDblClickUtc != DateTime.MinValue
-                && (now - lastDblClickUtc).TotalMilliseconds <= SystemInformation.DoubleClickTime)
+            if (lastDoubleClickUtc != DateTime.MinValue
+                && (now - lastDoubleClickUtc).TotalMilliseconds <= SystemInformation.DoubleClickTime)
+                return;
+
+            if (lastSingleClickUtc != DateTime.MinValue
+                && (now - lastSingleClickUtc).TotalMilliseconds <= SystemInformation.DoubleClickTime)
             {
-                lastDblClickUtc = DateTime.MinValue;
-                SetStatus("DoubleClickButton double-clicked");
-                Log("DoubleClickButton: double click");
+                MarkDoubleClicked();
                 return;
             }
 
-            lastDblClickUtc = now;
+            lastSingleClickUtc = now;
             Log("DoubleClickButton: single click (use double-click for primary assert)");
         };
 
@@ -501,7 +505,10 @@ public sealed class MainForm : Form
 
     private void SetStatus(string text)
     {
-        _statusLabel.Text = $"Status: {text}";
+        var status = $"Status: {text}";
+        _statusLabel.Text = status;
+        // Keep UIA Name in sync so driver gettext reads the live status, not a stale AccessibleName.
+        _statusLabel.AccessibleName = status;
     }
 
     private void Log(string message)
