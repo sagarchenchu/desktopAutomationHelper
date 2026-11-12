@@ -489,7 +489,43 @@ public class Phase4bSafeExplorerTests
         Assert.Equal(ExplorationActionKind.Expand, first!.Kind);
         Assert.Equal(ExplorationActionKind.TabSelect, second!.Kind);
         Assert.Equal(ExplorationActionKind.Invoke, third!.Kind);
-        Assert.True(frontier.HasExecuted("fp", a.ActionKey));
+        Assert.True(frontier.HasExecuted(a));
+    }
+
+    [Fact]
+    public void FrontierQueue_IdenticalSiblingCandidates_DoNotCollapse()
+    {
+        var frontier = new FrontierQueue();
+        // Same fingerprint + action identity; only TargetHwnd differs (identical sibling windows).
+        var left = Candidate(
+            "same-fp",
+            "Invoke:Button|ExplorerSiblingPing|Ping|o1|d1",
+            ExplorationActionKind.Invoke,
+            "invoke",
+            priority: 80,
+            elementKey: "Button|ExplorerSiblingPing|Ping|o1|d1",
+            targetHwnd: 2,
+            targetProcessId: 10);
+        var right = Candidate(
+            "same-fp",
+            "Invoke:Button|ExplorerSiblingPing|Ping|o1|d1",
+            ExplorationActionKind.Invoke,
+            "invoke",
+            priority: 80,
+            elementKey: "Button|ExplorerSiblingPing|Ping|o1|d1",
+            targetHwnd: 3,
+            targetProcessId: 10);
+
+        Assert.True(frontier.TryEnqueue(left));
+        Assert.True(frontier.TryEnqueue(right));
+        Assert.Equal(2, frontier.Count);
+        Assert.False(frontier.TryEnqueue(left));
+
+        Assert.True(frontier.TryDequeue(out var first));
+        Assert.True(frontier.TryDequeue(out var second));
+        Assert.Equal(2L, first!.TargetHwnd);
+        Assert.Equal(3L, second!.TargetHwnd);
+        Assert.Equal(left.ActionKey, second.ActionKey);
     }
 
     [Fact]
@@ -1804,6 +1840,127 @@ public class Phase4bSafeExplorerTests
     }
 
     [Fact]
+    public async Task Coordinator_SameHwndDifferentPid_RetargetsAndRejectsMismatch()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var policy = MinimalPolicy();
+        policy.Mode = "navigate";
+        policy.AllowCloseChildWindowsForBacktrack = false;
+        policy.Budgets.MaxActions = 5;
+        policy.Budgets.MaxDepth = 2;
+        policy.Budgets.StabilizationQuietPeriodMilliseconds = 0;
+        policy.AllowedActionCategories = ["invoke"];
+        policy.AllowRules =
+        [
+            new ExplorationElementRule
+            {
+                AutomationId = "ExplorerOpenSecondButton",
+                Action = "invoke",
+                ActionCategory = "invoke"
+            }
+        ];
+        var policyPath = WritePolicy(workspace.RootPath, policy);
+
+        // Candidate was resolved against HWND 1 / PID 10, but live observe now shows
+        // the same HWND owned by PID 99 (handle reuse) — retarget must run and fail closed.
+        var expected = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                processId: 10,
+                snapshotId: "snap-expected",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                    Node("n1", "n0", 0, 1, "Button", "Open Second", "ExplorerOpenSecondButton", true, ["Invoke"])
+                ]),
+            "DA Explorer Fixture",
+            "Form",
+            false,
+            1,
+            10);
+
+        // Application PID stays 10 (scope-valid); Window PID flips to 99 (HWND reuse).
+        var reused = CloneWithWindow(
+            Snapshot(
+                processName: "DesktopAutomationExplorerFixture",
+                processId: 10,
+                snapshotId: "snap-reused",
+                nodes:
+                [
+                    Node("n0", null, 0, 0, "Window", "DA Explorer Fixture", "ExplorerMainWindow", true, ["Window"]),
+                    Node("n1", "n0", 0, 1, "Button", "Open Second", "ExplorerOpenSecondButton", true, ["Invoke"])
+                ]),
+            "DA Explorer Fixture",
+            "Form",
+            false,
+            1,
+            99);
+
+        var observeCalls = 0;
+        var switchAttempted = false;
+        var observe = new Mock<ISemanticObservationService>();
+        observe.Setup(o => o.ObserveAsync(It.IsAny<ObservationOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                observeCalls++;
+                // First observation seeds the frontier from the expected identity.
+                // Subsequent pre-action observes simulate HWND reuse under a new PID.
+                var snap = observeCalls == 1 ? expected : reused;
+                return new ObservationResult
+                {
+                    Success = true,
+                    ExitCode = 0,
+                    Snapshot = snap,
+                    NodeCount = snap.Nodes.Count
+                };
+            });
+
+        var ui = new Mock<IDriverUiClient>();
+        ui.Setup(u => u.ExecuteStepAsync(It.IsAny<DriverConnection>(), It.IsAny<PlanStep>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((DriverConnection _, PlanStep step, CancellationToken _) =>
+            {
+                if (step.Operation == "listwindows")
+                {
+                    // After reuse the live inventory advertises HWND 1 under PID 99.
+                    return ListWindowsResponse([(1L, "DA Explorer Fixture", 99)]);
+                }
+
+                if (step.Operation == "switchwindow")
+                {
+                    switchAttempted = true;
+                    Assert.Equal(1, step.Arguments!["hwnd"].GetInt64());
+                    Assert.Equal(10, step.Arguments["processId"].GetInt32());
+                    // Switch "succeeds" at the driver layer; inventory PID check must fail closed.
+                    return new UiExecutionResponse { Success = true };
+                }
+
+                if (step.Operation == "clickuia")
+                    throw new InvalidOperationException("Click must not run after HWND/PID mismatch.");
+
+                return new UiExecutionResponse { Success = true };
+            });
+
+        var coordinator = CreateCoordinator(options, workspace, observe.Object, ui.Object, MockConnection());
+        var result = await coordinator.ExploreAsync(new ExplorationRequest { PolicyPath = policyPath });
+        Assert.True(switchAttempted, "Retarget must switch when HWND matches but PID differs.");
+
+        var transitions = File.ReadAllLines(Path.Combine(result.ArtifactDirectory!, "transitions.jsonl"))
+            .Where(l => !string.IsNullOrWhiteSpace(l))
+            .Select(l => JsonDocument.Parse(l).RootElement)
+            .ToList();
+        Assert.Contains(
+            transitions,
+            t => string.Equals(t.GetProperty("outcome").GetString(), "staleRef", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            transitions,
+            t => string.Equals(t.GetProperty("outcome").GetString(), "success", StringComparison.Ordinal)
+                 || string.Equals(t.GetProperty("outcome").GetString(), "newWindow", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Coordinator_TwoSiblingWindows_RetargetsHwndBeforeEachUniqueAction()
     {
         var options = TestSupport.CreateOptions();
@@ -2433,7 +2590,9 @@ public class Phase4bSafeExplorerTests
         ExplorationActionKind kind,
         string category,
         int priority,
-        string elementKey) =>
+        string elementKey,
+        long? targetHwnd = null,
+        int? targetProcessId = null) =>
         new()
         {
             ActionKey = actionKey,
@@ -2444,7 +2603,9 @@ public class Phase4bSafeExplorerTests
             SnapshotId = "snap",
             NodeRef = "n1",
             StateFingerprint = fingerprint,
-            Priority = priority
+            Priority = priority,
+            TargetHwnd = targetHwnd,
+            TargetProcessId = targetProcessId
         };
 
     private static SemanticSnapshot Snapshot(

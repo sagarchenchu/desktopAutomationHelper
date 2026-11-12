@@ -426,54 +426,37 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     break;
                 }
 
-                // Window-aware frontier: switch/revalidate the candidate's target HWND+PID
-                // before execution so sibling-window queues cannot act on the wrong surface.
+                // Window-aware frontier: switch/revalidate when either target HWND or PID
+                // differs (handle reuse can keep HWND while changing PID).
                 if (action.TargetHwnd is long targetHwnd && targetHwnd > 0
-                    && action.TargetProcessId is int targetPid && targetPid > 0
-                    && beforeSnapshot.Window?.Hwnd != targetHwnd)
+                    && action.TargetProcessId is int targetPid && targetPid > 0)
                 {
-                    if (actionsAttempted >= policy.Budgets.MaxActions
-                        || DateTimeOffset.UtcNow >= deadline
-                        || deadlineCts.IsCancellationRequested)
+                    var activePid = beforeSnapshot.Window?.ProcessId
+                                    ?? beforeSnapshot.Application.ProcessId;
+                    if (beforeSnapshot.Window?.Hwnd != targetHwnd || activePid != targetPid)
                     {
-                        (stopReason, status, exitCode) = BudgetOrCancel(
-                            cancellationToken,
-                            actionsAttempted,
-                            policy.Budgets.MaxActions,
-                            deadline);
-                        break;
-                    }
+                        if (actionsAttempted >= policy.Budgets.MaxActions
+                            || DateTimeOffset.UtcNow >= deadline
+                            || deadlineCts.IsCancellationRequested)
+                        {
+                            (stopReason, status, exitCode) = BudgetOrCancel(
+                                cancellationToken,
+                                actionsAttempted,
+                                policy.Budgets.MaxActions,
+                                deadline);
+                            break;
+                        }
 
-                    var retarget = await TrySwitchToHwndAsync(
-                            connection,
-                            targetHwnd,
-                            targetPid,
-                            identityValidator,
-                            policy.Budgets.PerActionTimeoutSeconds,
-                            deadlineCts.Token)
-                        .ConfigureAwait(false);
-                    actionsAttempted++;
-                    if (!retarget.Success)
-                    {
-                        recorder.Record(
-                            fromStateId,
-                            null,
-                            beforeFingerprint,
-                            null,
-                            action,
-                            ExplorationOutcome.StaleRef,
-                            retarget.Detail ?? "Target HWND switch failed before execution.",
-                            actionStarted,
-                            DateTimeOffset.UtcNow);
-                        continue;
-                    }
-
-                    try
-                    {
-                        var retargetObserve = await _observation
-                            .ObserveAsync(observationOptions, deadlineCts.Token)
+                        var retarget = await TrySwitchToHwndAsync(
+                                connection,
+                                targetHwnd,
+                                targetPid,
+                                identityValidator,
+                                policy.Budgets.PerActionTimeoutSeconds,
+                                deadlineCts.Token)
                             .ConfigureAwait(false);
-                        if (!retargetObserve.Success || retargetObserve.Snapshot is null)
+                        actionsAttempted++;
+                        if (!retarget.Success)
                         {
                             recorder.Record(
                                 fromStateId,
@@ -481,60 +464,81 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                                 beforeFingerprint,
                                 null,
                                 action,
-                                ExplorationOutcome.Failure,
-                                retargetObserve.Error ?? "Post-retarget observation failed.",
+                                ExplorationOutcome.StaleRef,
+                                retarget.Detail ?? "Target HWND/PID switch failed before execution.",
                                 actionStarted,
                                 DateTimeOffset.UtcNow);
                             continue;
                         }
 
-                        beforeSnapshot = retargetObserve.Snapshot;
-                        beforeFingerprint = _fingerprinter.Fingerprint(beforeSnapshot);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        (stopReason, status, exitCode) = CancelOrDeadline(cancellationToken);
-                        break;
-                    }
+                        try
+                        {
+                            var retargetObserve = await _observation
+                                .ObserveAsync(observationOptions, deadlineCts.Token)
+                                .ConfigureAwait(false);
+                            if (!retargetObserve.Success || retargetObserve.Snapshot is null)
+                            {
+                                recorder.Record(
+                                    fromStateId,
+                                    null,
+                                    beforeFingerprint,
+                                    null,
+                                    action,
+                                    ExplorationOutcome.Failure,
+                                    retargetObserve.Error ?? "Post-retarget observation failed.",
+                                    actionStarted,
+                                    DateTimeOffset.UtcNow);
+                                continue;
+                            }
 
-                    if (!TryValidateScope(
-                            beforeSnapshot,
-                            policy,
-                            identityValidator,
-                            out var retargetScopeError))
-                    {
-                        recorder.Record(
-                            fromStateId,
-                            null,
-                            beforeFingerprint,
-                            null,
-                            action,
-                            ExplorationOutcome.ScopeViolation,
-                            retargetScopeError,
-                            actionStarted,
-                            DateTimeOffset.UtcNow);
-                        stopReason = "scope-violation";
-                        status = "failed";
-                        exitCode = ExitCodes.ExecutionFailure;
-                        break;
-                    }
+                            beforeSnapshot = retargetObserve.Snapshot;
+                            beforeFingerprint = _fingerprinter.Fingerprint(beforeSnapshot);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            (stopReason, status, exitCode) = CancelOrDeadline(cancellationToken);
+                            break;
+                        }
 
-                    var livePid = beforeSnapshot.Window?.ProcessId
-                                  ?? beforeSnapshot.Application.ProcessId;
-                    if (beforeSnapshot.Window?.Hwnd != targetHwnd || livePid != targetPid)
-                    {
-                        recorder.Record(
-                            fromStateId,
-                            null,
-                            beforeFingerprint,
-                            null,
-                            action,
-                            ExplorationOutcome.StaleRef,
-                            $"Post-retarget HWND/PID 0x{beforeSnapshot.Window?.Hwnd:X}/{livePid} " +
-                            $"does not match target 0x{targetHwnd:X}/{targetPid}.",
-                            actionStarted,
-                            DateTimeOffset.UtcNow);
-                        continue;
+                        if (!TryValidateScope(
+                                beforeSnapshot,
+                                policy,
+                                identityValidator,
+                                out var retargetScopeError))
+                        {
+                            recorder.Record(
+                                fromStateId,
+                                null,
+                                beforeFingerprint,
+                                null,
+                                action,
+                                ExplorationOutcome.ScopeViolation,
+                                retargetScopeError,
+                                actionStarted,
+                                DateTimeOffset.UtcNow);
+                            stopReason = "scope-violation";
+                            status = "failed";
+                            exitCode = ExitCodes.ExecutionFailure;
+                            break;
+                        }
+
+                        var livePid = beforeSnapshot.Window?.ProcessId
+                                      ?? beforeSnapshot.Application.ProcessId;
+                        if (beforeSnapshot.Window?.Hwnd != targetHwnd || livePid != targetPid)
+                        {
+                            recorder.Record(
+                                fromStateId,
+                                null,
+                                beforeFingerprint,
+                                null,
+                                action,
+                                ExplorationOutcome.StaleRef,
+                                $"Post-retarget HWND/PID 0x{beforeSnapshot.Window?.Hwnd:X}/{livePid} " +
+                                $"does not match target 0x{targetHwnd:X}/{targetPid}.",
+                                actionStarted,
+                                DateTimeOffset.UtcNow);
+                            continue;
+                        }
                     }
                 }
 

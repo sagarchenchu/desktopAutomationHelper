@@ -2,7 +2,7 @@ namespace DesktopAutomationAgent.Exploration;
 
 /// <summary>
 /// Deterministic frontier of permitted navigation actions. Never re-queues an already
-/// recorded state/action pair for the same crawl.
+/// recorded state/action/window pair for the same crawl.
 /// </summary>
 public sealed class FrontierQueue
 {
@@ -14,8 +14,18 @@ public sealed class FrontierQueue
 
     public int ExecutedPairCount => _seenPairs.Count;
 
-    public bool HasExecuted(string stateFingerprint, string actionKey) =>
-        _seenPairs.Contains(PairKey(stateFingerprint, actionKey));
+    public bool HasExecuted(ExplorationActionCandidate candidate)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        return _seenPairs.Contains(PairKey(candidate));
+    }
+
+    public bool HasExecuted(
+        string stateFingerprint,
+        string actionKey,
+        long? targetHwnd = null,
+        int? targetProcessId = null) =>
+        _seenPairs.Contains(PairKey(stateFingerprint, actionKey, targetHwnd, targetProcessId));
 
     public bool TryEnqueue(ExplorationActionCandidate candidate)
     {
@@ -23,11 +33,18 @@ public sealed class FrontierQueue
         if (string.IsNullOrWhiteSpace(candidate.ActionKey) || string.IsNullOrWhiteSpace(candidate.StateFingerprint))
             return false;
 
-        var pair = PairKey(candidate.StateFingerprint, candidate.ActionKey);
+        var pair = PairKey(candidate);
         if (_seenPairs.Contains(pair) || !_queuedKeys.Add(pair))
             return false;
 
-        _queue.Add(new FrontierEntry(candidate));
+        if (!_queue.Add(new FrontierEntry(candidate)))
+        {
+            // Pair key said unique but comparer treated entries as equal — fail closed.
+            _queuedKeys.Remove(pair);
+            throw new InvalidOperationException(
+                $"Frontier SortedSet.Add failed for pair '{pair}' despite unique pair key; fail-closed.");
+        }
+
         return true;
     }
 
@@ -51,7 +68,7 @@ public sealed class FrontierQueue
 
         var next = _queue.Min!;
         _queue.Remove(next);
-        var pair = PairKey(next.Candidate.StateFingerprint, next.Candidate.ActionKey);
+        var pair = PairKey(next.Candidate);
         _queuedKeys.Remove(pair);
         _seenPairs.Add(pair);
         candidate = next.Candidate;
@@ -61,11 +78,35 @@ public sealed class FrontierQueue
     public IReadOnlyList<ExplorationActionCandidate> Snapshot() =>
         _queue.Select(e => e.Candidate).ToList();
 
-    public void MarkExecuted(string stateFingerprint, string actionKey) =>
-        _seenPairs.Add(PairKey(stateFingerprint, actionKey));
+    public void MarkExecuted(ExplorationActionCandidate candidate)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        _seenPairs.Add(PairKey(candidate));
+    }
 
-    private static string PairKey(string stateFingerprint, string actionKey) =>
-        stateFingerprint + "\u001f" + actionKey;
+    public void MarkExecuted(
+        string stateFingerprint,
+        string actionKey,
+        long? targetHwnd = null,
+        int? targetProcessId = null) =>
+        _seenPairs.Add(PairKey(stateFingerprint, actionKey, targetHwnd, targetProcessId));
+
+    private static string PairKey(ExplorationActionCandidate candidate) =>
+        PairKey(
+            candidate.StateFingerprint,
+            candidate.ActionKey,
+            candidate.TargetHwnd,
+            candidate.TargetProcessId);
+
+    private static string PairKey(
+        string stateFingerprint,
+        string actionKey,
+        long? targetHwnd,
+        int? targetProcessId) =>
+        stateFingerprint
+        + "\u001f" + actionKey
+        + "\u001f" + (targetHwnd is long hwnd && hwnd > 0 ? hwnd.ToString() : "-")
+        + "\u001f" + (targetProcessId is int pid && pid > 0 ? pid.ToString() : "-");
 
     private sealed record FrontierEntry(ExplorationActionCandidate Candidate);
 
@@ -105,7 +146,21 @@ public sealed class FrontierQueue
             if (byKind != 0)
                 return byKind;
 
-            return string.CompareOrdinal(cx.ActionKey, cy.ActionKey);
+            var byAction = string.CompareOrdinal(cx.ActionKey, cy.ActionKey);
+            if (byAction != 0)
+                return byAction;
+
+            // PairKey includes StateFingerprint — comparer must too or SortedSet.Add
+            // collapses distinct state/action pairs with identical action identity.
+            var byFingerprint = string.CompareOrdinal(cx.StateFingerprint, cy.StateFingerprint);
+            if (byFingerprint != 0)
+                return byFingerprint;
+
+            var byHwnd = Nullable.Compare(cx.TargetHwnd, cy.TargetHwnd);
+            if (byHwnd != 0)
+                return byHwnd;
+
+            return Nullable.Compare(cx.TargetProcessId, cy.TargetProcessId);
         }
     }
 }
