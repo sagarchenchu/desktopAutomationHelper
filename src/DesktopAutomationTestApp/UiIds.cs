@@ -17,6 +17,8 @@ public static class UiIds
     public const string ClickButton = "ClickButton";
     public const string DoubleClickButton = "DoubleClickButton";
     public const string RightClickButton = "RightClickButton";
+    public const string RightClickCopyMenuItem = "RightClickCopyMenuItem";
+    public const string RightClickInspectMenuItem = "RightClickInspectMenuItem";
     public const string DisabledButton = "DisabledButton";
 
     public const string NameEdit = "NameEdit";

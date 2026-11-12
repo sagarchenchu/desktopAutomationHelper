@@ -146,19 +146,54 @@ public sealed class MainForm : Form
             Log("ClickButton: single click");
         };
 
-        var dbl = Button(UiIds.DoubleClickButton, "Double-Click Me");
+        // Button suppresses StandardDoubleClick; use a control that raises MouseDoubleClick,
+        // plus Click timing fallback for drivers that emit two rapid single clicks.
+        var dbl = DoubleClickButton(UiIds.DoubleClickButton, "Double-Click Me");
+        var lastDblClickUtc = DateTime.MinValue;
+        var doubleClickHandled = false;
         dbl.MouseDoubleClick += (_, _) =>
         {
+            doubleClickHandled = true;
+            lastDblClickUtc = DateTime.MinValue;
             SetStatus("DoubleClickButton double-clicked");
             Log("DoubleClickButton: double click");
         };
-        // Also count Click so Assistive single-click still produces a signal.
-        dbl.Click += (_, _) => Log("DoubleClickButton: single click (use double-click for primary assert)");
+        dbl.Click += (_, _) =>
+        {
+            if (doubleClickHandled)
+            {
+                doubleClickHandled = false;
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            if (lastDblClickUtc != DateTime.MinValue
+                && (now - lastDblClickUtc).TotalMilliseconds <= SystemInformation.DoubleClickTime)
+            {
+                lastDblClickUtc = DateTime.MinValue;
+                SetStatus("DoubleClickButton double-clicked");
+                Log("DoubleClickButton: double click");
+                return;
+            }
+
+            lastDblClickUtc = now;
+            Log("DoubleClickButton: single click (use double-click for primary assert)");
+        };
 
         var right = Button(UiIds.RightClickButton, "Right-Click Me");
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Copy", null, (_, _) => Log("RightClickButton context: Copy"));
-        menu.Items.Add("Inspect", null, (_, _) => Log("RightClickButton context: Inspect"));
+        menu.Items.Add(new ToolStripMenuItem("Copy")
+        {
+            Name = UiIds.RightClickCopyMenuItem,
+            AccessibleName = "Copy"
+        });
+        menu.Items[^1].Click += (_, _) => Log("RightClickButton context: Copy");
+        menu.Items.Add(new ToolStripMenuItem("Inspect")
+        {
+            Name = UiIds.RightClickInspectMenuItem,
+            AccessibleName = "Inspect"
+        });
+        menu.Items[^1].Click += (_, _) => Log("RightClickButton context: Inspect");
         right.ContextMenuStrip = menu;
         right.MouseUp += (_, e) =>
         {
@@ -488,6 +523,16 @@ public sealed class MainForm : Form
         };
 
     private static Button Button(string id, string text) =>
+        new()
+        {
+            Name = id,
+            AccessibleName = text,
+            Text = text,
+            AutoSize = true,
+            Margin = new Padding(4)
+        };
+
+    private static DoubleClickAwareButton DoubleClickButton(string id, string text) =>
         new()
         {
             Name = id,
