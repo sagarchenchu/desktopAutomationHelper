@@ -158,7 +158,7 @@ Without a Jira key:
 Unit tests do **not** exercise the real overlay/menu workflow. After merges, run this interactive checklist on Windows.
 Record results in [`docs/assistive-windows-acceptance-results.md`](assistive-windows-acceptance-results.md).
 
-1. Launch a simple WPF/WinForms test app.
+1. Launch a simple WPF/WinForms test app (recommended: `src/DesktopAutomationTestApp` — see `docs/desktop-automation-test-app.md`).
 2. Start recording; press Ctrl+A.
 3. Start Jira recording with `ABC-1234`.
 4. Arm a next-action BDD; double-click a button; confirm association on that action only.
