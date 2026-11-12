@@ -49,7 +49,8 @@ public sealed class ExplorationArtifactWriter
         ExplorationManifest manifest,
         IReadOnlyList<ExplorationStateRecord> states,
         IReadOnlyList<ExplorationTransitionRecord> transitions,
-        ExplorationSummary summary)
+        ExplorationSummary summary,
+        ExplorationBuildIdentity? buildIdentity = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runDirectory);
         ArgumentNullException.ThrowIfNull(manifest);
@@ -61,6 +62,8 @@ public sealed class ExplorationArtifactWriter
         WriteAtomicJsonl(Path.Combine(runDirectory, "states.jsonl"), states);
         WriteAtomicJsonl(Path.Combine(runDirectory, "transitions.jsonl"), transitions);
         WriteAtomicJson(Path.Combine(runDirectory, "summary.json"), summary);
+        if (buildIdentity is not null)
+            WriteAtomicJson(Path.Combine(runDirectory, "build-identity.json"), buildIdentity);
     }
 
     private static void WriteAtomicJson<T>(string path, T value)

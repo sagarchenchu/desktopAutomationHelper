@@ -196,6 +196,9 @@ public sealed class WorkspaceManager : IWorkspaceManager
         "exploration",
         "exploration/policies",
         "exploration/runs",
+        "knowledge",
+        "knowledge/candidates",
+        "knowledge/approved",
         "runs"
     ];
 
@@ -216,11 +219,27 @@ public sealed class WorkspaceManager : IWorkspaceManager
             ["schemas/page-object.schema.json"] = PageObjectSchema,
             ["schemas/semantic-snapshot.schema.json"] = SemanticSnapshotSchema,
             ["schemas/exploration-policy.schema.json"] = ExplorationPolicySchema,
+            ["schemas/application-knowledge.schema.json"] = ReadEmbeddedKnowledgeSchema("application-knowledge.schema.json"),
+            ["schemas/application-state-graph.schema.json"] = ReadEmbeddedKnowledgeSchema("application-state-graph.schema.json"),
+            ["schemas/application-workflow.schema.json"] = ReadEmbeddedKnowledgeSchema("application-workflow.schema.json"),
+            ["schemas/knowledge-approval.schema.json"] = ReadEmbeddedKnowledgeSchema("knowledge-approval.schema.json"),
             ["observations/.gitignore"] = ObservationsGitIgnore,
             ["exploration/.gitignore"] = ExplorationGitIgnore,
             ["exploration/policies/example.policy.json"] = ExampleExplorationPolicy,
+            ["knowledge/.gitignore"] = KnowledgeGitIgnore,
+            ["knowledge/README.md"] = KnowledgeReadme,
             ["runs/.gitignore"] = RunsGitIgnore
         };
+
+    private static string ReadEmbeddedKnowledgeSchema(string fileName)
+    {
+        var resourceName = "DesktopAutomationAgent.Knowledge." + fileName;
+        using var stream = typeof(WorkspaceManager).Assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Missing embedded knowledge schema resource '{resourceName}'.");
+        using var reader = new StreamReader(stream);
+        var text = reader.ReadToEnd();
+        return text.EndsWith('\n') ? text : text + "\n";
+    }
 
     private const string AgentSettingsExample =
         """
@@ -252,6 +271,10 @@ public sealed class WorkspaceManager : IWorkspaceManager
             "MaxElementsPerPage": 5000,
             "MaxTotalElements": 50000,
             "DiagnosticTimeoutMilliseconds": 15000
+          },
+          "Knowledge": {
+            "MaxFileBytes": 10485760,
+            "MaxExplorationRuns": 500
           }
         }
         """;
@@ -1170,6 +1193,40 @@ public sealed class WorkspaceManager : IWorkspaceManager
         """
         *
         !.gitignore
+        """;
+
+    private const string KnowledgeGitIgnore =
+        """
+        candidates/**
+        *.tmp
+        *.partial
+        """;
+
+    private const string KnowledgeReadme =
+        """
+        # Application knowledge (Phase 4C)
+
+        Versioned application state graphs derived from Phase 4B exploration runs.
+
+        ## Layout
+
+        ```
+        knowledge/
+          candidates/<applicationId>/<buildFingerprint>/<knowledgeRunId>/
+          approved/<applicationId>/<buildFingerprint>/
+        ```
+
+        - **candidates/** — gitignored merge outputs and intermediate artifacts
+        - **approved/** — human-reviewed knowledge only (sanitized examples may be tracked)
+
+        ## Separation
+
+        - Candidate knowledge never silently becomes approved.
+        - `approve-knowledge` copies a reviewed candidate after verifying source hash + reviewer.
+        - Knowledge approval **never** promotes Page Objects (`promotesPageObjects` is always `false`).
+        - Page Object suggestions are written only under `object-repository/candidates/`.
+
+        See `docs/phase4c-application-knowledge.md`.
         """;
 
     private const string ExplorationGitIgnore =

@@ -15,6 +15,10 @@ public sealed class ProcessIdentityInfo
 
     public string? ExecutableSha256 { get; init; }
 
+    public string? ProductVersion { get; init; }
+
+    public string? FileVersion { get; init; }
+
     public int? SessionId { get; init; }
 
     public int? ParentProcessId { get; init; }
@@ -47,6 +51,8 @@ public sealed class SystemProcessIdentityProbe : IProcessIdentityProbe
             using var process = Process.GetProcessById(processId);
             string? path = null;
             string? sha = null;
+            string? productVersion = null;
+            string? fileVersion = null;
             string? pathError = null;
             try
             {
@@ -55,6 +61,20 @@ public sealed class SystemProcessIdentityProbe : IProcessIdentityProbe
                 {
                     var bytes = SHA256.HashData(File.ReadAllBytes(path));
                     sha = Convert.ToHexString(bytes).ToLowerInvariant();
+                    try
+                    {
+                        var versionInfo = FileVersionInfo.GetVersionInfo(path);
+                        productVersion = string.IsNullOrWhiteSpace(versionInfo.ProductVersion)
+                            ? null
+                            : versionInfo.ProductVersion.Trim();
+                        fileVersion = string.IsNullOrWhiteSpace(versionInfo.FileVersion)
+                            ? null
+                            : versionInfo.FileVersion.Trim();
+                    }
+                    catch
+                    {
+                        // Version resources are optional; SHA still counts as an immutable build id.
+                    }
                 }
             }
             catch (Exception ex)
@@ -84,6 +104,8 @@ public sealed class SystemProcessIdentityProbe : IProcessIdentityProbe
                 ProcessName = string.IsNullOrWhiteSpace(process.ProcessName) ? null : process.ProcessName,
                 ExecutablePath = path,
                 ExecutableSha256 = sha,
+                ProductVersion = productVersion,
+                FileVersion = fileVersion,
                 SessionId = sessionId,
                 ParentProcessId = parentPid
             };

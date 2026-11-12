@@ -122,9 +122,9 @@ public class Phase2CliTests
     }
 
     [Fact]
-    public void HelpText_IsPhase4B()
+    public void HelpText_IsPhase4C()
     {
-        Assert.Contains("Phase 4B", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("Phase 4C", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("validate-object-repository", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("capture-page", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("observe-app", CommandLine.HelpText, StringComparison.Ordinal);

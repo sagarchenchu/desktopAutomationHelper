@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/desktop-automation-agent/application-state-graph.schema.json",
+  "title": "ApplicationStateGraph",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "graphSchemaVersion",
+    "windows",
+    "states",
+    "elements",
+    "transitions",
+    "entryStateIds",
+    "terminalStateIds",
+    "unresolvedElements",
+    "ambiguousElements"
+  ],
+  "properties": {
+    "graphSchemaVersion": { "const": 1 },
+    "windows": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/windowNode" }
+    },
+    "states": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": { "$ref": "#/$defs/stateNode" }
+    },
+    "elements": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": { "$ref": "#/$defs/elementNode" }
+    },
+    "transitions": {
+      "type": "array",
+      "maxItems": 50000,
+      "items": { "$ref": "#/$defs/transitionEdge" }
+    },
+    "entryStateIds": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    },
+    "terminalStateIds": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    },
+    "dialogs": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/dialogRelation" }
+    },
+    "childWindows": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/childWindowRelation" }
+    },
+    "unresolvedElements": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": { "$ref": "#/$defs/unresolvedElement" }
+    },
+    "ambiguousElements": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": { "$ref": "#/$defs/ambiguousElement" }
+    }
+  },
+  "$defs": {
+    "windowNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["windowId", "title", "isModal"],
+      "properties": {
+        "windowId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 512 },
+        "className": { "type": ["string", "null"], "maxLength": 256 },
+        "isModal": { "type": "boolean" },
+        "role": {
+          "type": "string",
+          "enum": ["main", "dialog", "child", "unknown"]
+        },
+        "firstObservedAtUtc": { "type": ["string", "null"], "format": "date-time" },
+        "lastObservedAtUtc": { "type": ["string", "null"], "format": "date-time" },
+        "observationCount": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "stateNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stateId", "semanticFingerprint", "windowId"],
+      "properties": {
+        "stateId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "semanticFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "windowId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "label": { "type": ["string", "null"], "maxLength": 256 },
+        "isEntry": { "type": "boolean" },
+        "isTerminal": { "type": "boolean" },
+        "observedValues": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "maxProperties": 64
+        },
+        "elementIds": {
+          "type": "array",
+          "maxItems": 5000,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "firstObservedAtUtc": { "type": ["string", "null"], "format": "date-time" },
+        "lastObservedAtUtc": { "type": ["string", "null"], "format": "date-time" },
+        "observationCount": { "type": "integer", "minimum": 1 },
+        "provenance": {
+          "type": "array",
+          "maxItems": 500,
+          "items": { "type": "string", "maxLength": 128 }
+        }
+      }
+    },
+    "elementNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["elementId", "identity", "capabilities"],
+      "properties": {
+        "elementId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "identity": { "$ref": "#/$defs/elementIdentity" },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "maxLength": 64 }
+        },
+        "locatorEvidence": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/locatorEvidence" }
+        },
+        "approvedObjectRef": {
+          "type": ["string", "null"],
+          "pattern": "^[a-z][a-z0-9-]{0,63}\\.[a-z][a-z0-9-]{0,63}$"
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "firstObservedAtUtc": { "type": ["string", "null"], "format": "date-time" },
+        "lastObservedAtUtc": { "type": ["string", "null"], "format": "date-time" },
+        "observationCount": { "type": "integer", "minimum": 1 },
+        "provenance": {
+          "type": "array",
+          "maxItems": 500,
+          "items": { "type": "string", "maxLength": 128 }
+        }
+      }
+    },
+    "elementIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["controlType"],
+      "properties": {
+        "automationId": { "type": ["string", "null"], "maxLength": 256 },
+        "name": { "type": ["string", "null"], "maxLength": 512 },
+        "controlType": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "className": { "type": ["string", "null"], "maxLength": 256 },
+        "role": { "type": ["string", "null"], "maxLength": 128 }
+      }
+    },
+    "locatorEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "status", "locator"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["candidate", "approved"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["suggested", "validated", "rejected"]
+        },
+        "locator": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "boolean", "null"]
+          },
+          "maxProperties": 32
+        },
+        "objectRef": {
+          "type": ["string", "null"],
+          "maxLength": 128
+        }
+      }
+    },
+    "transitionEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transitionId",
+        "action",
+        "actionCategory",
+        "sourceStateId",
+        "outcome",
+        "observationCount",
+        "evidence"
+      ],
+      "properties": {
+        "transitionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "action": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "actionKind": { "type": ["string", "null"], "maxLength": 64 },
+        "actionCategory": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "actionParams": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "maxProperties": 32
+        },
+        "elementId": { "type": ["string", "null"], "maxLength": 128 },
+        "sourceStateId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "targetStateId": { "type": ["string", "null"], "maxLength": 128 },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "success",
+            "noOp",
+            "failure",
+            "modalDialog",
+            "newWindow",
+            "closedWindow",
+            "scopeViolation",
+            "budgetExhausted",
+            "cancelled",
+            "stabilizationTimeout",
+            "staleRef",
+            "dryRun",
+            "denied"
+          ]
+        },
+        "conflictGroupId": { "type": ["string", "null"], "maxLength": 128 },
+        "observationCount": { "type": "integer", "minimum": 1 },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 500,
+          "items": { "$ref": "#/$defs/transitionEvidence" }
+        },
+        "firstObservedAtUtc": { "type": ["string", "null"], "format": "date-time" },
+        "lastObservedAtUtc": { "type": ["string", "null"], "format": "date-time" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "transitionEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["explorationId"],
+      "properties": {
+        "explorationId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "transitionId": { "type": ["string", "null"], "maxLength": 128 },
+        "detail": { "type": ["string", "null"], "maxLength": 2000 }
+      }
+    },
+    "dialogRelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dialogWindowId", "ownerWindowId"],
+      "properties": {
+        "dialogWindowId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerWindowId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "observationCount": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "childWindowRelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["childWindowId", "parentWindowId"],
+      "properties": {
+        "childWindowId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "parentWindowId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "observationCount": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "unresolvedElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "rawKey"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "rawKey": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "controlType": { "type": ["string", "null"], "maxLength": 128 },
+        "name": { "type": ["string", "null"], "maxLength": 512 }
+      }
+    },
+    "ambiguousElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "candidateKeys"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "candidateKeys": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 32,
+          "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+        },
+        "stableId": { "type": ["string", "null"], "maxLength": 128 }
+      }
+    }
+  }
+}

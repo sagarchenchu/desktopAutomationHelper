@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text.Json;
 using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Configuration;
@@ -234,7 +236,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     BuildManifest(explorationId, policy, policyResult, request, startedAt),
                     recorder.States,
                     recorder.Transitions,
-                    summary);
+                    summary,
+                    BuildBuildIdentity(policy, policyResult, initialSnapshot));
 
                 return new ExplorationResult
                 {
@@ -1257,7 +1260,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     BuildManifest(explorationId, policy, policyResult, request, startedAt),
                     recorder.States,
                     recorder.Transitions,
-                    summary);
+                    summary,
+                    BuildBuildIdentity(policy, policyResult, initialSnapshot));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -1939,6 +1943,97 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             PolicyPath = policyResult.FilePath,
             PolicySha256 = policyResult.Sha256
         };
+
+    private ExplorationBuildIdentity BuildBuildIdentity(
+        ExplorationPolicyDocument policy,
+        ExplorationPolicyValidationResult policyResult,
+        SemanticSnapshot? snapshot)
+    {
+        var config = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(policy.Application.ProcessName))
+            config["processName"] = policy.Application.ProcessName.Trim();
+
+        // Prefer live process identity over mutable policy fields — seal at explore time.
+        string? executablePath = string.IsNullOrWhiteSpace(policy.Application.ExecutablePath)
+            ? null
+            : policy.Application.ExecutablePath.Trim();
+        string? executableSha256 = string.IsNullOrWhiteSpace(policy.Application.ExecutableSha256)
+            ? null
+            : policy.Application.ExecutableSha256.Trim().ToLowerInvariant();
+        string? productVersion = null;
+        string? fileVersion = null;
+
+        var processId = snapshot?.Window?.ProcessId ?? snapshot?.Application.ProcessId;
+        if (processId is > 0
+            && _identityProbe.TryGetIdentity(processId.Value, out var liveIdentity, out _))
+        {
+            if (!string.IsNullOrWhiteSpace(liveIdentity.ExecutablePath))
+                executablePath = liveIdentity.ExecutablePath.Trim();
+            if (!string.IsNullOrWhiteSpace(liveIdentity.ExecutableSha256))
+                executableSha256 = liveIdentity.ExecutableSha256.Trim().ToLowerInvariant();
+            if (!string.IsNullOrWhiteSpace(liveIdentity.ProductVersion))
+                productVersion = liveIdentity.ProductVersion.Trim();
+            if (!string.IsNullOrWhiteSpace(liveIdentity.FileVersion))
+                fileVersion = liveIdentity.FileVersion.Trim();
+        }
+
+        // Fallback: hash + FileVersionInfo from path when the probe did not supply them.
+        if (!string.IsNullOrWhiteSpace(executablePath) && File.Exists(executablePath))
+        {
+            if (string.IsNullOrWhiteSpace(executableSha256))
+            {
+                try
+                {
+                    var bytes = SHA256.HashData(File.ReadAllBytes(executablePath));
+                    executableSha256 = Convert.ToHexString(bytes).ToLowerInvariant();
+                }
+                catch
+                {
+                    // Leave null; knowledge merge fails closed without an immutable build id.
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(productVersion) || string.IsNullOrWhiteSpace(fileVersion))
+            {
+                try
+                {
+                    var versionInfo = FileVersionInfo.GetVersionInfo(executablePath);
+                    if (string.IsNullOrWhiteSpace(productVersion)
+                        && !string.IsNullOrWhiteSpace(versionInfo.ProductVersion))
+                    {
+                        productVersion = versionInfo.ProductVersion.Trim();
+                    }
+
+                    if (string.IsNullOrWhiteSpace(fileVersion)
+                        && !string.IsNullOrWhiteSpace(versionInfo.FileVersion))
+                    {
+                        fileVersion = versionInfo.FileVersion.Trim();
+                    }
+                }
+                catch
+                {
+                    // Version resources are optional when SHA is present.
+                }
+            }
+        }
+
+        // Capture non-secret application identity at explore time — never re-read later.
+        return new ExplorationBuildIdentity
+        {
+            BuildIdentitySchemaVersion = ExplorationBuildIdentity.SchemaVersion,
+            ProcessName = policy.Application.ProcessName?.Trim() ?? string.Empty,
+            ExecutablePath = executablePath,
+            ExecutableSha256 = executableSha256,
+            ProductVersion = productVersion,
+            FileVersion = fileVersion,
+            DriverVersion = snapshot?.DriverVersion?.Trim() ?? string.Empty,
+            SnapshotSchemaVersion = snapshot?.SnapshotSchemaVersion
+                                    ?? Observation.SemanticSnapshot.SchemaVersion,
+            ExplorerVersion = "phase4b-1",
+            PolicySha256 = policyResult.Sha256?.Trim().ToLowerInvariant() ?? string.Empty,
+            ConfigIdentity = config
+        };
+    }
 
     private static ExplorationSummary BuildSummary(
         string explorationId,
