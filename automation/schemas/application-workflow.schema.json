@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/desktop-automation-agent/application-workflow.schema.json",
+  "title": "ApplicationWorkflow",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workflowId",
+    "name",
+    "entryStateId",
+    "steps",
+    "observationCount"
+  ],
+  "properties": {
+    "workflowSchemaVersion": { "const": 1 },
+    "workflowId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "entryStateId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "terminalStateId": { "type": ["string", "null"], "maxLength": 128 },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": { "$ref": "#/$defs/workflowStep" }
+    },
+    "observationCount": { "type": "integer", "minimum": 1 },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "provenance": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "type": "string", "maxLength": 128 }
+    }
+  },
+  "$defs": {
+    "workflowStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ordinal", "transitionId", "action", "sourceStateId"],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "transitionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "action": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "sourceStateId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "targetStateId": { "type": ["string", "null"], "maxLength": 128 },
+        "outcome": { "type": ["string", "null"], "maxLength": 64 }
+      }
+    }
+  }
+}

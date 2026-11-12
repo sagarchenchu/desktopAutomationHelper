@@ -22,6 +22,14 @@
   <ItemGroup>
     <EmbeddedResource Include="..\..\automation\schemas\exploration-policy.schema.json"
                       LogicalName="DesktopAutomationAgent.Exploration.exploration-policy.schema.json" />
+    <EmbeddedResource Include="..\..\automation\schemas\application-knowledge.schema.json"
+                      LogicalName="DesktopAutomationAgent.Knowledge.application-knowledge.schema.json" />
+    <EmbeddedResource Include="..\..\automation\schemas\application-state-graph.schema.json"
+                      LogicalName="DesktopAutomationAgent.Knowledge.application-state-graph.schema.json" />
+    <EmbeddedResource Include="..\..\automation\schemas\application-workflow.schema.json"
+                      LogicalName="DesktopAutomationAgent.Knowledge.application-workflow.schema.json" />
+    <EmbeddedResource Include="..\..\automation\schemas\knowledge-approval.schema.json"
+                      LogicalName="DesktopAutomationAgent.Knowledge.knowledge-approval.schema.json" />
   </ItemGroup>
 
   <ItemGroup>

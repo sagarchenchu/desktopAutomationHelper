@@ -15,4 +15,6 @@ public sealed class AgentOptions
     public RunnerOptions Runner { get; set; } = new();
 
     public ObjectRepositoryOptions ObjectRepository { get; set; } = new();
+
+    public KnowledgeOptions Knowledge { get; set; } = new();
 }

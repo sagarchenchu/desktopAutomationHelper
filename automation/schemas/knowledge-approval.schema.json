@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/desktop-automation-agent/knowledge-approval.schema.json",
+  "title": "KnowledgeApproval",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "approvalSchemaVersion",
+    "reviewer",
+    "reviewedAtUtc",
+    "sourceKnowledgeHash",
+    "sourceKnowledgeId",
+    "decision",
+    "promotesPageObjects"
+  ],
+  "properties": {
+    "approvalSchemaVersion": { "const": 1 },
+    "reviewer": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "reviewedAtUtc": { "type": "string", "format": "date-time" },
+    "sourceKnowledgeHash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "sourceKnowledgeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "decision": {
+      "type": "string",
+      "enum": ["approve", "reject"]
+    },
+    "notes": { "type": ["string", "null"], "maxLength": 4000 },
+    "promotesPageObjects": {
+      "type": "boolean",
+      "const": false,
+      "description": "Knowledge approval never promotes Page Objects. Must always be false."
+    },
+    "reviewedInputPath": { "type": ["string", "null"], "maxLength": 1024 },
+    "reviewedInputHash": {
+      "type": ["string", "null"],
+      "pattern": "^([a-f0-9]{64})?$"
+    }
+  }
+}

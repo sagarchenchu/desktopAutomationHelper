@@ -5,6 +5,7 @@ using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Exploration;
+using DesktopAutomationAgent.Knowledge;
 using DesktopAutomationAgent.Observation;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Readiness;
@@ -54,7 +55,12 @@ public static class AgentCli
                 or AgentCommandKind.CapturePage
                 or AgentCommandKind.VerifyObjectRepository
                 or AgentCommandKind.ObserveApp
-                or AgentCommandKind.ExploreApp;
+                or AgentCommandKind.ExploreApp
+                or AgentCommandKind.ValidateKnowledge
+                or AgentCommandKind.BuildKnowledge
+                or AgentCommandKind.CompareKnowledge
+                or AgentCommandKind.SearchKnowledge
+                or AgentCommandKind.ApproveKnowledge;
 
         if (parsed.Error is not null)
         {
@@ -125,6 +131,11 @@ public static class AgentCli
                         parsed,
                         cancellationToken)
                     .ConfigureAwait(false),
+                AgentCommandKind.ValidateKnowledge => RunValidateKnowledge(host.Services, parsed),
+                AgentCommandKind.BuildKnowledge => RunBuildKnowledge(host.Services, parsed),
+                AgentCommandKind.CompareKnowledge => RunCompareKnowledge(host.Services, parsed),
+                AgentCommandKind.SearchKnowledge => RunSearchKnowledge(host.Services, parsed),
+                AgentCommandKind.ApproveKnowledge => RunApproveKnowledge(host.Services, parsed),
                 _ => ExitCodes.UsageOrConfiguration
             };
         }
@@ -241,6 +252,7 @@ public static class AgentCli
         builder.Services.AddSingleton<WindowTransitionDetector>();
         builder.Services.AddSingleton<ExplorationArtifactWriter>();
         builder.Services.AddSingleton<IExplorationCoordinator, ExplorationCoordinator>();
+        builder.Services.AddSingleton<KnowledgeService>();
 
         return builder.Build();
     }
@@ -761,6 +773,211 @@ public static class AgentCli
                 }
             }
 
+            if (!string.IsNullOrWhiteSpace(result.Error))
+                Console.Error.WriteLine(SecretRedactor.Redact(result.Error));
+        }
+
+        return result.ExitCode;
+    }
+
+    private static int RunValidateKnowledge(IServiceProvider services, ParsedCommand parsed)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Knowledge);
+
+        var knowledge = services.GetRequiredService<KnowledgeService>();
+        var result = knowledge.ValidatePath(parsed.KnowledgePath!);
+
+        if (parsed.Json)
+        {
+            var payload = new
+            {
+                success = result.IsValid,
+                exitCode = result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace,
+                errors = result.Errors,
+                warnings = result.Warnings
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — validate-knowledge");
+            Console.WriteLine($"Valid    : {result.IsValid}");
+            foreach (var error in result.Errors)
+                Console.Error.WriteLine($"  - {SecretRedactor.Redact(error)}");
+            foreach (var warning in result.Warnings)
+                Console.Error.WriteLine($"Warning: {SecretRedactor.Redact(warning)}");
+        }
+
+        return result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
+    }
+
+    private static int RunBuildKnowledge(IServiceProvider services, ParsedCommand parsed)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Knowledge);
+
+        var knowledge = services.GetRequiredService<KnowledgeService>();
+        var result = knowledge.Build(
+            parsed.ApplicationId!,
+            parsed.ExplorationRuns,
+            parsed.SuggestPageObjects,
+            parsed.OutputPath);
+
+        if (parsed.Json)
+        {
+            var payload = new
+            {
+                success = result.Success,
+                exitCode = result.ExitCode,
+                error = result.Error,
+                outputDirectory = result.OutputDirectory,
+                knowledgeId = result.Knowledge?.KnowledgeId,
+                buildFingerprint = result.Knowledge?.BuildFingerprint,
+                coverage = result.Knowledge?.Coverage,
+                conflicts = result.Knowledge?.Coverage.Conflicts,
+                suggestedPageObjectPaths = result.SuggestedPageObjectPaths,
+                warnings = result.Knowledge?.Warnings
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — build-knowledge");
+            Console.WriteLine($"Success           : {result.Success}");
+            Console.WriteLine($"Exit code         : {result.ExitCode}");
+            if (result.Knowledge is not null)
+            {
+                Console.WriteLine($"Knowledge id      : {result.Knowledge.KnowledgeId}");
+                Console.WriteLine($"Build fingerprint : {result.Knowledge.BuildFingerprint}");
+                Console.WriteLine($"States            : {result.Knowledge.Coverage.UniqueStates}");
+                Console.WriteLine($"Transitions       : {result.Knowledge.Coverage.PermittedTransitionsAttempted}");
+                Console.WriteLine($"Conflicts         : {result.Knowledge.Coverage.Conflicts}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.OutputDirectory))
+                Console.WriteLine($"Output            : {result.OutputDirectory}");
+            foreach (var path in result.SuggestedPageObjectPaths)
+                Console.WriteLine($"Candidate PO      : {path}");
+            if (!string.IsNullOrWhiteSpace(result.Error))
+                Console.Error.WriteLine(SecretRedactor.Redact(result.Error));
+        }
+
+        return result.ExitCode;
+    }
+
+    private static int RunCompareKnowledge(IServiceProvider services, ParsedCommand parsed)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Knowledge);
+
+        try
+        {
+            var knowledge = services.GetRequiredService<KnowledgeService>();
+            var result = knowledge.Compare(parsed.KnowledgeLeftPath!, parsed.KnowledgeRightPath!);
+
+            if (parsed.Json)
+            {
+                Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(result, JsonOutputOptions)));
+            }
+            else
+            {
+                Console.WriteLine("Desktop Automation Agent — compare-knowledge");
+                Console.WriteLine($"Compatible fingerprints : {result.CompatibleFingerprints}");
+                Console.WriteLine($"Graphs equal            : {result.GraphsEqual}");
+                Console.WriteLine($"Left fingerprint        : {result.LeftBuildFingerprint}");
+                Console.WriteLine($"Right fingerprint       : {result.RightBuildFingerprint}");
+                foreach (var diff in result.Differences)
+                    Console.WriteLine($"  - {diff}");
+            }
+
+            if (!result.CompatibleFingerprints)
+                return ExitCodes.SuiteOrWorkspace;
+            return ExitCodes.Success;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException or KnowledgePathException or IOException)
+        {
+            if (parsed.Json)
+                WriteJsonError(ExitCodes.SuiteOrWorkspace, ex.Message);
+            else
+                Console.Error.WriteLine(SecretRedactor.Redact(ex.Message));
+            return ExitCodes.SuiteOrWorkspace;
+        }
+    }
+
+    private static int RunSearchKnowledge(IServiceProvider services, ParsedCommand parsed)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Knowledge);
+
+        try
+        {
+            var knowledge = services.GetRequiredService<KnowledgeService>();
+            var hits = knowledge.Search(parsed.KnowledgePath!, parsed.KnowledgeQuery!);
+
+            if (parsed.Json)
+            {
+                var payload = new { success = true, query = parsed.KnowledgeQuery, hits };
+                Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+            }
+            else
+            {
+                Console.WriteLine("Desktop Automation Agent — search-knowledge");
+                Console.WriteLine($"Query : {parsed.KnowledgeQuery}");
+                Console.WriteLine($"Hits  : {hits.Count}");
+                foreach (var hit in hits)
+                    Console.WriteLine($"  [{hit.Score}] {hit.Kind} {hit.Id}: {hit.Text}");
+            }
+
+            return ExitCodes.Success;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException or KnowledgePathException or IOException or ArgumentException)
+        {
+            if (parsed.Json)
+                WriteJsonError(ExitCodes.SuiteOrWorkspace, ex.Message);
+            else
+                Console.Error.WriteLine(SecretRedactor.Redact(ex.Message));
+            return ExitCodes.SuiteOrWorkspace;
+        }
+    }
+
+    private static int RunApproveKnowledge(IServiceProvider services, ParsedCommand parsed)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Knowledge);
+
+        var knowledge = services.GetRequiredService<KnowledgeService>();
+        var result = knowledge.Approve(
+            parsed.KnowledgeSourcePath!,
+            parsed.Reviewer!,
+            parsed.ReviewedInputPath!);
+
+        if (parsed.Json)
+        {
+            var payload = new
+            {
+                success = result.Success,
+                exitCode = result.ExitCode,
+                error = result.Error,
+                outputDirectory = result.OutputDirectory,
+                knowledgeId = result.Knowledge?.KnowledgeId,
+                status = result.Knowledge?.Status,
+                promotesPageObjects = result.Knowledge?.Approval?.PromotesPageObjects
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — approve-knowledge");
+            Console.WriteLine($"Success : {result.Success}");
+            if (!string.IsNullOrWhiteSpace(result.OutputDirectory))
+                Console.WriteLine($"Output  : {result.OutputDirectory}");
+            Console.WriteLine("Note    : Knowledge approval never promotes Page Objects.");
             if (!string.IsNullOrWhiteSpace(result.Error))
                 Console.Error.WriteLine(SecretRedactor.Redact(result.Error));
         }

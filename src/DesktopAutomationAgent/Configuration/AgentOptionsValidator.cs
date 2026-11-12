@@ -6,7 +6,8 @@ public enum OptionsValidationScope
     Suites,
     Driver,
     Runner,
-    ObjectRepository
+    ObjectRepository,
+    Knowledge
 }
 
 public sealed class AgentConfigurationException : Exception
@@ -59,6 +60,28 @@ public static class AgentOptionsValidator
         if (scope is OptionsValidationScope.ObjectRepository)
         {
             ValidateObjectRepositoryOptions(options.ObjectRepository);
+        }
+
+        if (scope is OptionsValidationScope.Knowledge)
+        {
+            ValidateKnowledgeOptions(options.Knowledge);
+        }
+    }
+
+    public static void ValidateKnowledgeOptions(KnowledgeOptions knowledge)
+    {
+        ArgumentNullException.ThrowIfNull(knowledge);
+
+        const int maxFiftyMegabytes = 52_428_800;
+        if (knowledge.MaxFileBytes <= 0 || knowledge.MaxFileBytes > maxFiftyMegabytes)
+        {
+            throw new AgentConfigurationException(
+                $"Knowledge:MaxFileBytes must be between 1 and {maxFiftyMegabytes}.");
+        }
+
+        if (knowledge.MaxExplorationRuns <= 0 || knowledge.MaxExplorationRuns > 500)
+        {
+            throw new AgentConfigurationException("Knowledge:MaxExplorationRuns must be between 1 and 500.");
         }
     }
 

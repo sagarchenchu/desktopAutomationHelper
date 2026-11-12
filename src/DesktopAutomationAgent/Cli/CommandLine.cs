@@ -14,7 +14,12 @@ public enum AgentCommandKind
     CapturePage,
     VerifyObjectRepository,
     ObserveApp,
-    ExploreApp
+    ExploreApp,
+    ValidateKnowledge,
+    BuildKnowledge,
+    CompareKnowledge,
+    SearchKnowledge,
+    ApproveKnowledge
 }
 
 public sealed class ParsedCommand
@@ -57,6 +62,26 @@ public sealed class ParsedCommand
 
     public string? PolicyFile { get; init; }
 
+    public string? KnowledgePath { get; init; }
+
+    public string? KnowledgeLeftPath { get; init; }
+
+    public string? KnowledgeRightPath { get; init; }
+
+    public string? KnowledgeQuery { get; init; }
+
+    public string? ApplicationId { get; init; }
+
+    public string? Reviewer { get; init; }
+
+    public string? ReviewedInputPath { get; init; }
+
+    public string? KnowledgeSourcePath { get; init; }
+
+    public IReadOnlyList<string> ExplorationRuns { get; init; } = Array.Empty<string>();
+
+    public bool SuggestPageObjects { get; init; }
+
     public IReadOnlyList<string> Keys { get; init; } = Array.Empty<string>();
 
     public bool Json { get; init; }
@@ -94,6 +119,11 @@ public static class CommandLine
             "verify-object-repository" => ParseVerifyObjectRepository(rest),
             "observe-app" => ParseObserveApp(rest),
             "explore-app" => ParseExploreApp(rest),
+            "validate-knowledge" => ParseValidateKnowledge(rest),
+            "build-knowledge" => ParseBuildKnowledge(rest),
+            "compare-knowledge" => ParseCompareKnowledge(rest),
+            "search-knowledge" => ParseSearchKnowledge(rest),
+            "approve-knowledge" => ParseApproveKnowledge(rest),
             _ => new ParsedCommand
             {
                 Kind = AgentCommandKind.Help,
@@ -599,6 +629,367 @@ public static class CommandLine
         };
     }
 
+    private static ParsedCommand ParseValidateKnowledge(string[] rest)
+    {
+        string? path = null;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--path" or "--file")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.ValidateKnowledge, json, "--path requires a path.", config);
+                if (path is not null)
+                    return Error(AgentCommandKind.ValidateKnowledge, json, "--path may not be repeated.", config);
+                path = value;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.ValidateKnowledge,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(path))
+            return Error(AgentCommandKind.ValidateKnowledge, json, "validate-knowledge requires --path <knowledge-dir>.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.ValidateKnowledge,
+            KnowledgePath = path,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand ParseBuildKnowledge(string[] rest)
+    {
+        string? applicationId = null;
+        string? output = null;
+        var runs = new List<string>();
+        var suggest = false;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg == "--application-id")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.BuildKnowledge, json, "--application-id requires a value.", config);
+                if (applicationId is not null)
+                    return Error(AgentCommandKind.BuildKnowledge, json, "--application-id may not be repeated.", config);
+                applicationId = value;
+                continue;
+            }
+
+            if (arg == "--exploration-run")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.BuildKnowledge, json, "--exploration-run requires a value.", config);
+                runs.Add(value);
+                continue;
+            }
+
+            if (arg == "--output")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.BuildKnowledge, json, "--output requires a path.", config);
+                if (output is not null)
+                    return Error(AgentCommandKind.BuildKnowledge, json, "--output may not be repeated.", config);
+                output = value;
+                continue;
+            }
+
+            if (arg == "--suggest-page-objects")
+            {
+                suggest = true;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.BuildKnowledge,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(applicationId))
+            return Error(AgentCommandKind.BuildKnowledge, json, "build-knowledge requires --application-id <id>.", config);
+        if (runs.Count == 0)
+            return Error(AgentCommandKind.BuildKnowledge, json, "build-knowledge requires at least one --exploration-run.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.BuildKnowledge,
+            ApplicationId = applicationId,
+            ExplorationRuns = runs,
+            OutputPath = output,
+            SuggestPageObjects = suggest,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand ParseCompareKnowledge(string[] rest)
+    {
+        string? left = null;
+        string? right = null;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg == "--left")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.CompareKnowledge, json, "--left requires a path.", config);
+                if (left is not null)
+                    return Error(AgentCommandKind.CompareKnowledge, json, "--left may not be repeated.", config);
+                left = value;
+                continue;
+            }
+
+            if (arg == "--right")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.CompareKnowledge, json, "--right requires a path.", config);
+                if (right is not null)
+                    return Error(AgentCommandKind.CompareKnowledge, json, "--right may not be repeated.", config);
+                right = value;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.CompareKnowledge,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return Error(AgentCommandKind.CompareKnowledge, json, "compare-knowledge requires --left and --right.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.CompareKnowledge,
+            KnowledgeLeftPath = left,
+            KnowledgeRightPath = right,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand ParseSearchKnowledge(string[] rest)
+    {
+        string? path = null;
+        string? query = null;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--path" or "--file")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.SearchKnowledge, json, "--path requires a path.", config);
+                if (path is not null)
+                    return Error(AgentCommandKind.SearchKnowledge, json, "--path may not be repeated.", config);
+                path = value;
+                continue;
+            }
+
+            if (arg is "--query" or "-q")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.SearchKnowledge, json, "--query requires a value.", config);
+                if (query is not null)
+                    return Error(AgentCommandKind.SearchKnowledge, json, "--query may not be repeated.", config);
+                query = value;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.SearchKnowledge,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(path))
+            return Error(AgentCommandKind.SearchKnowledge, json, "search-knowledge requires --path <knowledge-dir>.", config);
+        if (string.IsNullOrWhiteSpace(query))
+            return Error(AgentCommandKind.SearchKnowledge, json, "search-knowledge requires --query <text>.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.SearchKnowledge,
+            KnowledgePath = path,
+            KnowledgeQuery = query,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand ParseApproveKnowledge(string[] rest)
+    {
+        string? source = null;
+        string? reviewer = null;
+        string? reviewedInput = null;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg == "--source")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--source requires a path.", config);
+                if (source is not null)
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--source may not be repeated.", config);
+                source = value;
+                continue;
+            }
+
+            if (arg == "--reviewer")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewer requires a value.", config);
+                if (reviewer is not null)
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewer may not be repeated.", config);
+                reviewer = value;
+                continue;
+            }
+
+            if (arg == "--reviewed-input")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewed-input requires a path.", config);
+                if (reviewedInput is not null)
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewed-input may not be repeated.", config);
+                reviewedInput = value;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.ApproveKnowledge,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(source))
+            return Error(AgentCommandKind.ApproveKnowledge, json, "approve-knowledge requires --source <candidate-dir>.", config);
+        if (string.IsNullOrWhiteSpace(reviewer))
+            return Error(AgentCommandKind.ApproveKnowledge, json, "approve-knowledge requires --reviewer <name>.", config);
+        if (string.IsNullOrWhiteSpace(reviewedInput))
+            return Error(AgentCommandKind.ApproveKnowledge, json, "approve-knowledge requires --reviewed-input <file>.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.ApproveKnowledge,
+            KnowledgeSourcePath = source,
+            Reviewer = reviewer,
+            ReviewedInputPath = reviewedInput,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
     private static ParsedCommand ParseExploreApp(string[] rest)
     {
         var json = HasFlag(rest, "--json");
@@ -904,6 +1295,11 @@ public static class CommandLine
             AgentCommandKind.VerifyObjectRepository => "verify-object-repository",
             AgentCommandKind.ObserveApp => "observe-app",
             AgentCommandKind.ExploreApp => "explore-app",
+            AgentCommandKind.ValidateKnowledge => "validate-knowledge",
+            AgentCommandKind.BuildKnowledge => "build-knowledge",
+            AgentCommandKind.CompareKnowledge => "compare-knowledge",
+            AgentCommandKind.SearchKnowledge => "search-knowledge",
+            AgentCommandKind.ApproveKnowledge => "approve-knowledge",
             _ => kind.ToString()
         };
 
@@ -952,11 +1348,13 @@ public static class CommandLine
             || arg.StartsWith("--Suites:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("--Runner:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("--ObjectRepository:", StringComparison.OrdinalIgnoreCase)
+            || arg.StartsWith("--Knowledge:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Driver__", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Workspace__", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Suites__", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Runner__", StringComparison.OrdinalIgnoreCase)
-            || arg.StartsWith("ObjectRepository__", StringComparison.OrdinalIgnoreCase))
+            || arg.StartsWith("ObjectRepository__", StringComparison.OrdinalIgnoreCase)
+            || arg.StartsWith("Knowledge__", StringComparison.OrdinalIgnoreCase))
         {
             config.Add(arg);
             if (!arg.Contains('=', StringComparison.Ordinal) && index + 1 < args.Length)
@@ -975,7 +1373,7 @@ public static class CommandLine
 
     public static string HelpText =>
         """
-        Desktop Automation Agent (Phase 4B)
+        Desktop Automation Agent (Phase 4C)
 
         Commands:
           init
@@ -1023,6 +1421,25 @@ public static class CommandLine
               Policy-bounded observe/navigate explorer. Deny-by-default. No AI, typing, or
               transactional actions. --dry-run lists permitted candidates without UI mutation.
 
+          validate-knowledge --path <knowledge-dir> [--json]
+              Offline knowledge validation. No driver or network access.
+
+          build-knowledge --application-id <id> --exploration-run <id-or-path>
+              [--exploration-run ...] [--output <dir>] [--suggest-page-objects] [--json]
+              Merge exploration runs into candidate application knowledge. Offline only.
+              --suggest-page-objects writes only under object-repository/candidates/.
+
+          compare-knowledge --left <path> --right <path> [--json]
+              Compare two knowledge documents. Incompatible fingerprints are reported, not merged.
+
+          search-knowledge --path <knowledge-dir> --query <text> [--json]
+              Deterministic lexical search only (no embeddings / vector DB).
+
+          approve-knowledge --source <candidate-dir> --reviewer <name>
+              --reviewed-input <approval.json> [--json]
+              Promote reviewed candidate knowledge. Requires source hash + reviewer.
+              Never promotes Page Objects.
+
           doctor [--json]
               Run configuration, workspace, driver discovery, status, and catalog checks.
 
@@ -1034,10 +1451,10 @@ public static class CommandLine
           2 usage or configuration error
           3 driver unavailable or unsafe discovery
           4 authentication or catalog incompatibility
-          5 suite, plan, workspace, object repository or artifact validation failure
+          5 suite, plan, workspace, object repository, knowledge or artifact validation failure
           6 UI operation, timeout, capture/verify/observe or assertion failure
           7 execution cancelled
 
-        Phase 4B adds explore-app (observe + approved navigate only). AI is not implemented.
+        Phase 4C adds versioned application knowledge from exploration runs. AI is not implemented.
         """;
 }
