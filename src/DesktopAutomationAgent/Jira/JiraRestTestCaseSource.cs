@@ -281,6 +281,19 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
                     };
                 }
 
+                if (!TryReadSearchTotal(doc.RootElement, out reportedTotal, out var totalError))
+                {
+                    return new JiraKeySearchResult
+                    {
+                        Success = false,
+                        ExitCode = ExitCodes.SuiteOrWorkspace,
+                        Keys = keys,
+                        PageCount = pageCount,
+                        Errors = [totalError],
+                        RateLimit = lastRate
+                    };
+                }
+
                 var pageKeys = 0;
                 foreach (var issue in issues.EnumerateArray())
                 {
@@ -302,14 +315,29 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
                     keys.Add(key!);
                 }
 
-                reportedTotal = doc.RootElement.TryGetProperty("total", out var totalEl) && totalEl.TryGetInt32(out var t)
-                    ? t
-                    : keys.Count;
+                var pageStart = startAt;
                 startAt += pageKeys;
-                if (pageKeys == 0 || startAt >= reportedTotal)
+                if (startAt >= reportedTotal)
                 {
                     complete = true;
                     break;
+                }
+
+                if (pageKeys == 0)
+                {
+                    return new JiraKeySearchResult
+                    {
+                        Success = false,
+                        ExitCode = ExitCodes.SuiteOrWorkspace,
+                        Keys = keys,
+                        PageCount = pageCount,
+                        Errors =
+                        [
+                            $"Jira search truncated: empty page at startAt={pageStart} " +
+                            $"with total={reportedTotal}."
+                        ],
+                        RateLimit = lastRate
+                    };
                 }
             }
         }
@@ -339,6 +367,25 @@ public sealed class JiraRestTestCaseSource : IJiraTestCaseSource
             PageCount = pageCount,
             RateLimit = lastRate
         };
+    }
+
+    private static bool TryReadSearchTotal(JsonElement root, out int total, out string error)
+    {
+        total = 0;
+        error = string.Empty;
+        if (!root.TryGetProperty("total", out var totalEl))
+        {
+            error = "Jira search response missing required 'total' field.";
+            return false;
+        }
+
+        if (totalEl.ValueKind != JsonValueKind.Number || !totalEl.TryGetInt32(out total) || total < 0)
+        {
+            error = "Jira search response 'total' must be a non-negative integer.";
+            return false;
+        }
+
+        return true;
     }
 
     private void EnsureReady()

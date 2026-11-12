@@ -574,6 +574,46 @@ public sealed class Phase4eJiraSuiteTests
     }
 
     [Fact]
+    public async Task Pagination_Empty_Page_Before_Total_Is_Truncation()
+    {
+        using var temp = TempDir();
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(new
+        {
+            startAt = 0,
+            maxResults = 50,
+            total = 3,
+            issues = Array.Empty<object>()
+        }));
+        var source = CreateSource(temp.Path, handler, allowLocalHttp: true);
+        var result = await source.SearchKeysAsync("project = DEMO");
+        Assert.False(result.Success);
+        Assert.Contains("truncated", result.Errors[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("empty page", result.Errors[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(result.Keys);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Pagination_Rejects_Missing_Or_Malformed_Total(bool missing)
+    {
+        using var temp = TempDir();
+        var handler = new FakeHttpMessageHandler(_ => missing
+            ? FakeHttpMessageHandler.Json(new
+            {
+                startAt = 0,
+                maxResults = 50,
+                issues = new[] { new { key = "DEMO-1" } }
+            })
+            : FakeHttpMessageHandler.Text(
+                """{"startAt":0,"maxResults":50,"total":"three","issues":[{"key":"DEMO-1"}]}"""));
+        var source = CreateSource(temp.Path, handler, allowLocalHttp: true);
+        var result = await source.SearchKeysAsync("project = DEMO");
+        Assert.False(result.Success);
+        Assert.Contains("total", result.Errors[0], StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Cache_Whitelist_Hash_And_Schema_On_Read()
     {
         using var temp = TempDir();
@@ -615,6 +655,150 @@ public sealed class Phase4eJiraSuiteTests
         var cache = new JiraRawCache(temp.Path);
         Assert.False(cache.TryRead("DEMO-1", null, out _, out _, out _, out var errors));
         Assert.Contains(errors, e => e.Contains("contentSha256 mismatch", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("abc")]
+    [InlineData("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde")] // 63
+    [InlineData("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefg")] // 65 with non-hex
+    public void ContentSha256_Required_Valid_64_Hex(string? sha)
+    {
+        Assert.False(JiraTestCaseProjector.IsValidContentSha256(sha));
+        var errors = new List<string>();
+        Assert.False(JiraTestCaseProjector.TryValidateCachedBytes(
+            Encoding.UTF8.GetBytes("{}"),
+            "DEMO-1",
+            sha,
+            "cache/test-case.json",
+            out _,
+            out errors));
+        Assert.Contains(errors, e => e.Contains("contentSha256 is required", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ContentSha256_Blank_Metadata_Fails_Cache_Read()
+    {
+        using var temp = TempDir();
+        var feature =
+            "Feature: List visible windows\n  Scenario: Enumerate windows\n    Given the desktop is ready\n    When I list visible windows\n    Then the window list is not empty\n";
+        var doc = new JiraTestCaseDocument
+        {
+            SchemaVersion = 1,
+            JiraKey = "DEMO-1",
+            Revision = "1",
+            Summary = "Blank hash",
+            Feature = feature
+        };
+        var cache = new JiraRawCache(temp.Path);
+        cache.WriteAtomic(
+            "DEMO-1",
+            doc,
+            new JiraSourceMetadata { JiraKey = "DEMO-1", RevisionToken = "1", MappingProfile = "plain-fields" },
+            out var directory,
+            out var writtenMeta,
+            out _);
+        Assert.True(JiraTestCaseProjector.IsValidContentSha256(writtenMeta.ContentSha256));
+
+        var metaPath = Path.Combine(directory, "source-metadata.json");
+        var blanked = File.ReadAllText(metaPath)
+            .Replace($"\"{writtenMeta.ContentSha256}\"", "\"\"", StringComparison.OrdinalIgnoreCase);
+        File.WriteAllText(metaPath, blanked);
+        Assert.False(cache.TryRead("DEMO-1", "1", out _, out _, out _, out var errors));
+        Assert.Contains(errors, e => e.Contains("contentSha256 is required", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Nested_Arrays_Validated_Before_Projection()
+    {
+        var feature =
+            "Feature: List visible windows\n  Scenario: Enumerate windows\n    Given the desktop is ready\n    When I list visible windows\n    Then the window list is not empty\n";
+        var withNullScenario = new JiraTestCaseDocument
+        {
+            SchemaVersion = 1,
+            JiraKey = "DEMO-1",
+            Revision = "1",
+            Summary = "Bad",
+            Feature = feature,
+            Scenarios = [null!]
+        };
+        Assert.False(JiraTestCaseProjector.TrySanitizeAndHash(
+            withNullScenario,
+            "bad.json",
+            out _,
+            out _,
+            out _,
+            out var nullScenarioErrors));
+        Assert.Contains(nullScenarioErrors, e => e.Contains("scenarios[0] must not be null", StringComparison.Ordinal));
+
+        var withNullSteps = new JiraTestCaseDocument
+        {
+            SchemaVersion = 1,
+            JiraKey = "DEMO-1",
+            Revision = "1",
+            Summary = "Bad",
+            Feature = feature,
+            Scenarios =
+            [
+                new StructuredScenario
+                {
+                    Name = "Broken",
+                    Steps = null!
+                }
+            ]
+        };
+        Assert.False(JiraTestCaseProjector.TrySanitizeAndHash(
+            withNullSteps,
+            "bad.json",
+            out _,
+            out _,
+            out _,
+            out var nullStepsErrors));
+        Assert.Contains(nullStepsErrors, e => e.Contains("scenarios[0].steps must not be null", StringComparison.Ordinal));
+
+        var withNullStepEntry = new JiraTestCaseDocument
+        {
+            SchemaVersion = 1,
+            JiraKey = "DEMO-1",
+            Revision = "1",
+            Summary = "Bad",
+            Feature = feature,
+            Scenarios =
+            [
+                new StructuredScenario
+                {
+                    Name = "Broken",
+                    Steps = [null!]
+                }
+            ]
+        };
+        Assert.False(JiraTestCaseProjector.TrySanitizeAndHash(
+            withNullStepEntry,
+            "bad.json",
+            out _,
+            out _,
+            out _,
+            out var nullStepErrors));
+        Assert.Contains(nullStepErrors, e => e.Contains("scenarios[0].steps[0] must not be null", StringComparison.Ordinal));
+
+        // Null-safe projection still filters if called directly after structural rejection path.
+        var projected = JiraTestCaseProjector.ProjectWhitelist(new JiraTestCaseDocument
+        {
+            SchemaVersion = 1,
+            JiraKey = "DEMO-1",
+            Revision = "1",
+            Summary = "Ok",
+            Feature = feature,
+            Scenarios =
+            [
+                new StructuredScenario { Name = "Keep", Steps = [new StructuredStep { Keyword = "Given", Text = "x" }] },
+                null!
+            ]
+        });
+        Assert.NotNull(projected.Scenarios);
+        Assert.Single(projected.Scenarios!);
     }
 
     [Fact]
