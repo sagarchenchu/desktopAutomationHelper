@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "name": "phase4e-demo",
+  "enabled": true,
+  "testCases": [
+    { "jiraKey": "DEMO-1", "enabled": true },
+    { "jiraKey": "DEMO-2", "enabled": true },
+    { "jiraKey": "DEMO-99", "enabled": false }
+  ]
+}

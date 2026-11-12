@@ -16,11 +16,15 @@ public static class SecretRedactor
         RegexOptions.Compiled);
 
     private static readonly Regex JsonTokenRegex = new(
-        @"(?i)(""(?:token|bearerToken|authorizationHeader)""\s*:\s*)""[^""]*""",
+        @"(?i)(""(?:token|bearerToken|authorizationHeader|apiToken|personalAccessToken|password|secret)""\s*:\s*)""[^""]*""",
         RegexOptions.Compiled);
 
     private static readonly Regex AssignmentTokenRegex = new(
-        @"(?i)\b((?:token|bearerToken|authorizationHeader)\s*[:=]\s*)\S+",
+        @"(?i)\b((?:token|bearerToken|authorizationHeader|apiToken|personalAccessToken|password|secret)\s*[:=]\s*)\S+",
+        RegexOptions.Compiled);
+
+    private static readonly Regex BasicAuthHeaderRegex = new(
+        @"(?i)(Authorization\s*[:=]\s*)Basic\s+\S+",
         RegexOptions.Compiled);
 
     public static string Redact(string? text)
@@ -29,6 +33,7 @@ public static class SecretRedactor
             return text ?? string.Empty;
 
         var result = BearerHeaderRegex.Replace(text, "$1Bearer [REDACTED]");
+        result = BasicAuthHeaderRegex.Replace(result, "$1Basic [REDACTED]");
         result = BearerTokenRegex.Replace(result, "Bearer [REDACTED]");
         result = JsonTokenRegex.Replace(result, "$1\"[REDACTED]\"");
         result = AssignmentTokenRegex.Replace(result, "$1[REDACTED]");

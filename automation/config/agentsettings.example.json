@@ -30,5 +30,19 @@
   "Knowledge": {
     "MaxFileBytes": 10485760,
     "MaxExplorationRuns": 500
+  },
+  "Jira": {
+    "BaseUrl": "https://example.atlassian.net",
+    "AuthMode": "basic",
+    "Email": "REPLACE_WITH_EMAIL",
+    "ApiToken": "REPLACE_FROM_ENV_OR_SECRET_STORE",
+    "MappingProfile": "plain-fields",
+    "FieldMapping": {
+      "FeaturePath": "fields.description"
+    },
+    "RequestTimeoutSeconds": 30,
+    "MaxResponseBytes": 2097152,
+    "MaxRetries": 2,
+    "AllowLocalHttpTestServer": false
   }
 }
