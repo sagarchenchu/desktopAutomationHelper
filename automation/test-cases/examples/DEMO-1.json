@@ -1,0 +1,11 @@
+{
+  "$schema": "../../schemas/jira-test-case.schema.json",
+  "schemaVersion": 1,
+  "jiraKey": "DEMO-1",
+  "revision": "1",
+  "updatedAt": "2026-11-12T00:00:00Z",
+  "summary": "List visible windows (offline BDD fixture)",
+  "description": "Sanitized offline fixture. No credentials or production data.",
+  "tags": ["smoke", "phase4d"],
+  "feature": "Feature: List visible windows\n  Background:\n    Given the desktop is ready\n  Scenario: Enumerate windows\n    When I list visible windows\n    Then the window list is not empty\n"
+}

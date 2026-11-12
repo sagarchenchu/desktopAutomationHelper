@@ -1766,10 +1766,12 @@ It never references driver internals (no project reference, no FlaUI).
 | Phase 3 — object repository | Complete |
 | Assistive BDD recording (candidates) | Complete — interactive Windows acceptance recorded (`docs/assistive-windows-acceptance-results.md`, 14/14 PASS) |
 | Phase 3.5 — post-merge hardening | Complete (`docs/phase3-5-post-merge-hardening.md`) |
-| Phase 4A — semantic desktop observation | This work (`docs/phase4a-semantic-observation.md`) — observe-only; crawling not implemented |
-| Phase 4 — deterministic BDD compiler | Not started |
+| Phase 4A — semantic desktop observation | Complete (`docs/phase4a-semantic-observation.md`) |
+| Phase 4B — safe explorer | Complete (`docs/phase4b-safe-explorer.md`) |
+| Phase 4C — application knowledge | Complete (`docs/phase4c-application-knowledge.md`) |
+| Phase 4D — deterministic BDD compiler | This work (`docs/phase4d-deterministic-bdd-compiler.md`) — offline compile; no Jira/AI/`POST /ui` |
 
-The agent does **not** currently read Jira, understand BDD, crawl the UI, run/schedule suites, repair failures, or invoke AI.
+The agent does **not** call live Jira, invent steps with AI, self-heal, or schedule suites. Phase 4D compiles offline BDD exports only.
 
 ```cmd
 dotnet run --project src/DesktopAutomationAgent -- init
@@ -1783,6 +1785,10 @@ dotnet run --project src/DesktopAutomationAgent -- resolve-object --file automat
 dotnet run --project src/DesktopAutomationAgent -- capture-page --file automation/object-repository/repository.json --page login --name "Login"
 dotnet run --project src/DesktopAutomationAgent -- verify-object-repository --file automation/object-repository/repository.json
 dotnet run --project src/DesktopAutomationAgent -- observe-app --json
+dotnet run --project src/DesktopAutomationAgent -- validate-test-case --file automation/test-cases/examples/DEMO-1.json
+dotnet run --project src/DesktopAutomationAgent -- validate-step-registry
+dotnet run --project src/DesktopAutomationAgent -- compile-key --key DEMO-1 --json
+dotnet run --project src/DesktopAutomationAgent -- validate-compiled-key --key DEMO-1 --json
 dotnet run --project src/DesktopAutomationAgent -- doctor
 dotnet run --project src/DesktopAutomationAgent -- doctor --json
 ```
@@ -1792,8 +1798,11 @@ Configuration precedence: `appsettings.json` → `automation/config/agentsetting
 [`docs/phase1-agent-foundation.md`](docs/phase1-agent-foundation.md),
 [`docs/phase2-deterministic-runner.md`](docs/phase2-deterministic-runner.md),
 [`docs/phase3-object-repository.md`](docs/phase3-object-repository.md),
-[`docs/phase3-5-post-merge-hardening.md`](docs/phase3-5-post-merge-hardening.md), and
-[`docs/phase4a-semantic-observation.md`](docs/phase4a-semantic-observation.md).
+[`docs/phase3-5-post-merge-hardening.md`](docs/phase3-5-post-merge-hardening.md),
+[`docs/phase4a-semantic-observation.md`](docs/phase4a-semantic-observation.md),
+[`docs/phase4b-safe-explorer.md`](docs/phase4b-safe-explorer.md),
+[`docs/phase4c-application-knowledge.md`](docs/phase4c-application-knowledge.md), and
+[`docs/phase4d-deterministic-bdd-compiler.md`](docs/phase4d-deterministic-bdd-compiler.md).
 
 ---
 
@@ -1872,10 +1881,12 @@ DesktopAutomationAgent (separate process; HTTP client only)
   Deterministic plan runner (Phase 2) — executes already-compiled JSON plans
   Object repository (Phase 3) — approved Page Objects under automation/object-repository
   Semantic observation (Phase 4A) — observe-app snapshots under automation/observations/
+  Safe explorer / knowledge (Phase 4B/4C) — exploration runs + approved knowledge
+  Deterministic BDD compiler (Phase 4D) — offline Jira export → compiled plan cache
   Suite manifests — Jira-key lists for future suite orchestration (validation only today)
   Schemas under automation/schemas/
   Run artifacts under automation/runs/
-  Does not read Jira, compile BDD, crawl, schedule suites, self-heal, or call AI
+  Does not call live Jira, invent steps with AI, schedule suites, or self-heal
 
 Artifact distinctions
   Approved Page Objects     automation/object-repository (manual promotion)
@@ -1883,7 +1894,7 @@ Artifact distinctions
   Phase 2 execution plans   automation/plans/*.plan.json
   Assistive bdd-action-map  capture sidecar; not a compiled plan
   Semantic snapshots        automation/observations/ (observe-only; ephemeral refs)
-  Future BDD compiler       Phase 4 — not implemented
+  Compiled BDD plans        automation/compiled/<jiraKey>/<fingerprint>/ (Phase 4D cache)
 ```
 
 Shared-host discovery limits: [`docs/shared-host-driver-discovery-security.md`](docs/shared-host-driver-discovery-security.md).

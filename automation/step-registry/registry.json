@@ -1,0 +1,306 @@
+{
+  "$schema": "../schemas/step-registry.schema.json",
+  "schemaVersion": 1,
+  "registryId": "default",
+  "name": "Default Phase 4D step registry",
+  "version": "1.0.0",
+  "mappings": [
+    {
+      "mappingId": "desktop-ready",
+      "pattern": {
+        "kind": "exact",
+        "value": "the desktop is ready"
+      },
+      "keywords": ["Given"],
+      "parameters": [],
+      "planSteps": [
+        {
+          "idTemplate": "desktop-ready",
+          "operation": "listwindows",
+          "arguments": {
+            "includeDesktopDescendants": false
+          },
+          "captureResponse": true,
+          "assertions": [
+            {
+              "path": "",
+              "operator": "isNotNull"
+            }
+          ]
+        }
+      ],
+      "approvedObjectRefs": [],
+      "approvedKnowledgeRefs": [],
+      "expectedState": null,
+      "postcondition": null,
+      "risk": "low",
+      "source": "phase4d-fixture",
+      "version": "1",
+      "approval": {
+        "approvedBy": "phase4d",
+        "approvedAt": "2026-11-12T00:00:00Z",
+        "notes": "Session-free readiness probe via listwindows."
+      }
+    },
+    {
+      "mappingId": "list-visible-windows",
+      "pattern": {
+        "kind": "exact",
+        "value": "I list visible windows"
+      },
+      "keywords": ["When"],
+      "parameters": [],
+      "planSteps": [
+        {
+          "idTemplate": "list-visible-windows",
+          "operation": "listwindows",
+          "arguments": {
+            "includeDesktopDescendants": false
+          },
+          "captureResponse": true
+        }
+      ],
+      "approvedObjectRefs": [],
+      "approvedKnowledgeRefs": [],
+      "expectedState": null,
+      "postcondition": null,
+      "risk": "low",
+      "source": "phase4d-fixture",
+      "version": "1",
+      "approval": {
+        "approvedBy": "phase4d",
+        "approvedAt": "2026-11-12T00:00:00Z"
+      }
+    },
+    {
+      "mappingId": "window-list-not-empty",
+      "pattern": {
+        "kind": "exact",
+        "value": "the window list is not empty"
+      },
+      "keywords": ["Then"],
+      "parameters": [],
+      "planSteps": [
+        {
+          "idTemplate": "assert-window-list",
+          "operation": "listwindows",
+          "arguments": {
+            "includeDesktopDescendants": false
+          },
+          "captureResponse": true,
+          "assertions": [
+            {
+              "path": "",
+              "operator": "isNotNull"
+            }
+          ]
+        }
+      ],
+      "approvedObjectRefs": [],
+      "approvedKnowledgeRefs": [],
+      "expectedState": null,
+      "postcondition": "window-list-present",
+      "risk": "low",
+      "source": "phase4d-fixture",
+      "version": "1",
+      "approval": {
+        "approvedBy": "phase4d",
+        "approvedAt": "2026-11-12T00:00:00Z"
+      }
+    },
+    {
+      "mappingId": "click-named-object",
+      "pattern": {
+        "kind": "exact",
+        "value": "I click \"{name}\""
+      },
+      "keywords": ["When", "Given"],
+      "parameters": [
+        {
+          "name": "name",
+          "type": "string"
+        }
+      ],
+      "planSteps": [
+        {
+          "idTemplate": "click-{name}",
+          "operation": "clickuia",
+          "arguments": {
+            "locator": {
+              "$objectRef": "{objectRef}"
+            },
+            "timeoutMs": 20000
+          }
+        }
+      ],
+      "approvedObjectRefs": [],
+      "approvedKnowledgeRefs": [],
+      "expectedState": null,
+      "postcondition": null,
+      "risk": "medium",
+      "source": "phase4d-fixture",
+      "version": "1",
+      "approval": {
+        "approvedBy": "phase4d",
+        "approvedAt": "2026-11-12T00:00:00Z",
+        "notes": "objectRef must be supplied via test-data binding or registry parameter map; fixture tests inject objectRef."
+      }
+    },
+    {
+      "mappingId": "click-object-ref",
+      "pattern": {
+        "kind": "regex",
+        "value": "^I click object (?<objectRef>[a-z][a-z0-9-]{0,63}\\.[a-z][a-z0-9-]{0,63})$"
+      },
+      "keywords": ["When"],
+      "parameters": [
+        {
+          "name": "objectRef",
+          "type": "objectRef"
+        }
+      ],
+      "planSteps": [
+        {
+          "idTemplate": "click-ref-{objectRef}",
+          "operation": "clickuia",
+          "arguments": {
+            "locator": {
+              "$objectRef": "{objectRef}"
+            },
+            "timeoutMs": 20000
+          }
+        }
+      ],
+      "approvedObjectRefs": [],
+      "approvedKnowledgeRefs": [],
+      "expectedState": null,
+      "postcondition": null,
+      "risk": "medium",
+      "source": "phase4d-fixture",
+      "version": "1",
+      "approval": {
+        "approvedBy": "phase4d",
+        "approvedAt": "2026-11-12T00:00:00Z"
+      }
+    },
+    {
+      "mappingId": "require-approved-state",
+      "pattern": {
+        "kind": "exact",
+        "value": "I require approved knowledge state \"{stateId}\""
+      },
+      "keywords": ["Given", "Then"],
+      "parameters": [
+        {
+          "name": "stateId",
+          "type": "string"
+        }
+      ],
+      "planSteps": [
+        {
+          "idTemplate": "require-state-{stateId}",
+          "operation": "listwindows",
+          "arguments": {
+            "includeDesktopDescendants": false
+          },
+          "captureResponse": true,
+          "assertions": [
+            {
+              "path": "",
+              "operator": "isNotNull"
+            }
+          ]
+        }
+      ],
+      "approvedObjectRefs": [],
+      "approvedKnowledgeRefs": [
+        {
+          "kind": "state",
+          "id": "{stateId}",
+          "role": "expectedState"
+        }
+      ],
+      "expectedState": "{stateId}",
+      "postcondition": null,
+      "risk": "low",
+      "source": "phase4d-fixture",
+      "version": "1",
+      "approval": {
+        "approvedBy": "phase4d",
+        "approvedAt": "2026-11-12T00:00:00Z",
+        "notes": "expectedState resolution only — navigation expansion is not implemented."
+      }
+    },
+    {
+      "mappingId": "navigate-stub-rejected",
+      "pattern": {
+        "kind": "exact",
+        "value": "I navigate using approved knowledge state \"{stateId}\""
+      },
+      "keywords": ["When", "Given"],
+      "parameters": [
+        {
+          "name": "stateId",
+          "type": "string"
+        }
+      ],
+      "planSteps": [
+        {
+          "idTemplate": "navigate-{stateId}",
+          "operation": "listwindows",
+          "arguments": {
+            "includeDesktopDescendants": false
+          }
+        }
+      ],
+      "approvedObjectRefs": [],
+      "approvedKnowledgeRefs": [
+        {
+          "kind": "state",
+          "id": "{stateId}",
+          "role": "navigation"
+        }
+      ],
+      "expectedState": "{stateId}",
+      "postcondition": null,
+      "risk": "medium",
+      "source": "phase4d-fixture",
+      "version": "1",
+      "approval": {
+        "approvedBy": "phase4d",
+        "approvedAt": "2026-11-12T00:00:00Z",
+        "notes": "Present only to prove role=navigation fails closed (no listwindows stub execution path)."
+      }
+    },
+    {
+      "mappingId": "prohibited-delete-all",
+      "pattern": {
+        "kind": "exact",
+        "value": "I delete all records"
+      },
+      "keywords": ["When"],
+      "parameters": [],
+      "planSteps": [
+        {
+          "idTemplate": "delete-all",
+          "operation": "listwindows",
+          "arguments": {
+            "includeDesktopDescendants": false
+          }
+        }
+      ],
+      "approvedObjectRefs": [],
+      "approvedKnowledgeRefs": [],
+      "expectedState": null,
+      "postcondition": null,
+      "risk": "prohibited",
+      "source": "phase4d-fixture",
+      "version": "1",
+      "approval": {
+        "approvedBy": "phase4d",
+        "approvedAt": "2026-11-12T00:00:00Z",
+        "notes": "Present only to exercise prohibited-risk rejection."
+      }
+    }
+  ]
+}

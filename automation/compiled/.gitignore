@@ -1,0 +1,3 @@
+# Compiled plans are local cache artifacts (deterministic, regenerable).
+*/
+!.gitignore

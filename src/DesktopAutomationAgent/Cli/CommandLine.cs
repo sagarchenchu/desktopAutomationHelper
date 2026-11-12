@@ -19,7 +19,11 @@ public enum AgentCommandKind
     BuildKnowledge,
     CompareKnowledge,
     SearchKnowledge,
-    ApproveKnowledge
+    ApproveKnowledge,
+    ValidateTestCase,
+    ValidateStepRegistry,
+    CompileKey,
+    ValidateCompiledKey
 }
 
 public sealed class ParsedCommand
@@ -84,6 +88,18 @@ public sealed class ParsedCommand
 
     public IReadOnlyList<string> Keys { get; init; } = Array.Empty<string>();
 
+    public string? TestCaseFile { get; init; }
+
+    public string? StepRegistryFile { get; init; }
+
+    public string? CompileJiraKey { get; init; }
+
+    public string? CatalogFile { get; init; }
+
+    public string? CompileFingerprint { get; init; }
+
+    public bool Explain { get; init; }
+
     public bool Json { get; init; }
 
     public bool DryRun { get; init; }
@@ -124,6 +140,10 @@ public static class CommandLine
             "compare-knowledge" => ParseCompareKnowledge(rest),
             "search-knowledge" => ParseSearchKnowledge(rest),
             "approve-knowledge" => ParseApproveKnowledge(rest),
+            "validate-test-case" => ParseValidateTestCase(rest),
+            "validate-step-registry" => ParseValidateStepRegistry(rest),
+            "compile-key" => ParseCompileKey(rest),
+            "validate-compiled-key" => ParseValidateCompiledKey(rest),
             _ => new ParsedCommand
             {
                 Kind = AgentCommandKind.Help,
@@ -990,6 +1010,303 @@ public static class CommandLine
         };
     }
 
+    private static ParsedCommand ParseValidateTestCase(string[] rest)
+    {
+        string? file = null;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--file" or "-f")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.ValidateTestCase, json, "--file requires a path.", config);
+                if (file is not null)
+                    return Error(AgentCommandKind.ValidateTestCase, json, "--file may not be repeated.", config);
+                file = value;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.ValidateTestCase,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(file))
+            return Error(AgentCommandKind.ValidateTestCase, json, "validate-test-case requires --file <path>.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.ValidateTestCase,
+            TestCaseFile = file,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand ParseValidateStepRegistry(string[] rest)
+    {
+        string? file = null;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--file" or "-f")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.ValidateStepRegistry, json, "--file requires a path.", config);
+                if (file is not null)
+                    return Error(AgentCommandKind.ValidateStepRegistry, json, "--file may not be repeated.", config);
+                file = value;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.ValidateStepRegistry,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.ValidateStepRegistry,
+            StepRegistryFile = file,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand ParseCompileKey(string[] rest)
+    {
+        string? key = null;
+        string? file = null;
+        string? registry = null;
+        string? objectRepo = null;
+        string? knowledge = null;
+        string? catalog = null;
+        var explain = false;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--key" or "-k")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.CompileKey, json, "--key requires a Jira key.", config);
+                if (key is not null)
+                    return Error(AgentCommandKind.CompileKey, json, "--key may not be repeated.", config);
+                key = value;
+                continue;
+            }
+
+            if (arg is "--file" or "-f")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.CompileKey, json, "--file requires a path.", config);
+                if (file is not null)
+                    return Error(AgentCommandKind.CompileKey, json, "--file may not be repeated.", config);
+                file = value;
+                continue;
+            }
+
+            if (arg == "--registry")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.CompileKey, json, "--registry requires a path.", config);
+                if (registry is not null)
+                    return Error(AgentCommandKind.CompileKey, json, "--registry may not be repeated.", config);
+                registry = value;
+                continue;
+            }
+
+            if (arg is "--object-repository" or "--repository")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.CompileKey, json, "--object-repository requires a path.", config);
+                if (objectRepo is not null)
+                    return Error(AgentCommandKind.CompileKey, json, "--object-repository may not be repeated.", config);
+                objectRepo = value;
+                continue;
+            }
+
+            if (arg == "--knowledge")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.CompileKey, json, "--knowledge requires a path.", config);
+                if (knowledge is not null)
+                    return Error(AgentCommandKind.CompileKey, json, "--knowledge may not be repeated.", config);
+                knowledge = value;
+                continue;
+            }
+
+            if (arg == "--catalog")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.CompileKey, json, "--catalog requires a path.", config);
+                if (catalog is not null)
+                    return Error(AgentCommandKind.CompileKey, json, "--catalog may not be repeated.", config);
+                catalog = value;
+                continue;
+            }
+
+            if (arg == "--explain")
+            {
+                explain = true;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.CompileKey,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(key))
+            return Error(AgentCommandKind.CompileKey, json, "compile-key requires --key <JIRA-KEY>.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.CompileKey,
+            CompileJiraKey = key,
+            TestCaseFile = file,
+            StepRegistryFile = registry,
+            RepositoryFile = objectRepo,
+            KnowledgePath = knowledge,
+            CatalogFile = catalog,
+            Explain = explain,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
+    private static ParsedCommand ParseValidateCompiledKey(string[] rest)
+    {
+        string? key = null;
+        string? fingerprint = null;
+        var json = false;
+        var config = new List<string>();
+        var unknown = new List<string>();
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            if (arg is "--key" or "-k")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--key requires a Jira key.", config);
+                if (key is not null)
+                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--key may not be repeated.", config);
+                key = value;
+                continue;
+            }
+
+            if (arg == "--fingerprint")
+            {
+                if (!TryReadFlagValue(rest, ref i, out var value))
+                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--fingerprint requires a value.", config);
+                if (fingerprint is not null)
+                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--fingerprint may not be repeated.", config);
+                fingerprint = value;
+                continue;
+            }
+
+            if (arg == "--json")
+            {
+                json = true;
+                continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.ValidateCompiledKey,
+                Json = json,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(key))
+            return Error(AgentCommandKind.ValidateCompiledKey, json, "validate-compiled-key requires --key <JIRA-KEY>.", config);
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.ValidateCompiledKey,
+            CompileJiraKey = key,
+            CompileFingerprint = fingerprint,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
     private static ParsedCommand ParseExploreApp(string[] rest)
     {
         var json = HasFlag(rest, "--json");
@@ -1300,6 +1617,10 @@ public static class CommandLine
             AgentCommandKind.CompareKnowledge => "compare-knowledge",
             AgentCommandKind.SearchKnowledge => "search-knowledge",
             AgentCommandKind.ApproveKnowledge => "approve-knowledge",
+            AgentCommandKind.ValidateTestCase => "validate-test-case",
+            AgentCommandKind.ValidateStepRegistry => "validate-step-registry",
+            AgentCommandKind.CompileKey => "compile-key",
+            AgentCommandKind.ValidateCompiledKey => "validate-compiled-key",
             _ => kind.ToString()
         };
 
@@ -1373,7 +1694,7 @@ public static class CommandLine
 
     public static string HelpText =>
         """
-        Desktop Automation Agent (Phase 4C)
+        Desktop Automation Agent (Phase 4D)
 
         Commands:
           init
@@ -1440,6 +1761,21 @@ public static class CommandLine
               Promote reviewed candidate knowledge. Requires source hash + reviewer.
               Never promotes Page Objects.
 
+          validate-test-case --file <path> [--json]
+              Offline Jira test-case export validation. No Jira network access.
+
+          validate-step-registry [--file <path>] [--json]
+              Offline step-registry validation (default: step-registry/registry.json).
+
+          compile-key --key <JIRA-KEY> [--file <test-case>] [--registry <path>]
+              [--object-repository <path>] [--knowledge <approved-dir>] [--catalog <path>]
+              [--explain] [--json]
+              Compile offline BDD into a deterministic Phase 2 plan cache entry.
+              Never calls Jira, AI, or POST /ui.
+
+          validate-compiled-key --key <JIRA-KEY> [--fingerprint <sha>] [--json]
+              Validate a compiled plan.json + compilation.json cache entry offline.
+
           doctor [--json]
               Run configuration, workspace, driver discovery, status, and catalog checks.
 
@@ -1451,10 +1787,10 @@ public static class CommandLine
           2 usage or configuration error
           3 driver unavailable or unsafe discovery
           4 authentication or catalog incompatibility
-          5 suite, plan, workspace, object repository, knowledge or artifact validation failure
+          5 suite, plan, workspace, object repository, knowledge, BDD compile or artifact validation failure
           6 UI operation, timeout, capture/verify/observe or assertion failure
           7 execution cancelled
 
-        Phase 4C adds versioned application knowledge from exploration runs. AI is not implemented.
+        Phase 4D compiles offline Jira BDD exports into Phase 2 plans. AI is not implemented. Jira network access is not implemented.
         """;
 }
