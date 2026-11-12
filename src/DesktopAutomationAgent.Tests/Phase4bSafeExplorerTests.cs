@@ -1734,6 +1734,62 @@ public class Phase4bSafeExplorerTests
     }
 
     [Fact]
+    public void WindowTransitionDetector_MissingProcessId_FailsClosed_AndIsNotIgnored()
+    {
+        var policy = MinimalPolicy();
+        var probe = new FakeProcessIdentityProbe();
+        probe.Register(10, new ProcessIdentityInfo
+        {
+            ProcessId = 10,
+            ProcessName = "DesktopAutomationExplorerFixture",
+            SessionId = 1
+        });
+        var identity = new ProcessIdentityValidator(probe);
+        Assert.True(identity.ValidateSnapshot(Snapshot(processId: 10), policy).IsValid);
+
+        var before = new WindowInventory
+        {
+            Windows =
+            [
+                new WindowDescriptor
+                {
+                    Hwnd = 1,
+                    Title = "DA Explorer Fixture",
+                    ProcessName = "DesktopAutomationExplorerFixture",
+                    ProcessId = 10
+                }
+            ]
+        };
+        var afterMissingPid = new WindowInventory
+        {
+            Windows =
+            [
+                before.Windows[0],
+                new WindowDescriptor
+                {
+                    Hwnd = 99,
+                    Title = "Elevated Mystery",
+                    ProcessName = "DesktopAutomationExplorerFixture",
+                    ProcessId = null
+                }
+            ]
+        };
+
+        var detector = new WindowTransitionDetector(Mock.Of<IDriverUiClient>());
+        var result = detector.Compare(
+            before,
+            afterMissingPid,
+            Snapshot(processId: 10),
+            policy,
+            identity);
+
+        Assert.True(result.ScopeViolation);
+        Assert.True(result.NewWindow);
+        Assert.Contains("processId", result.Detail ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("fail closed", result.Detail ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void WindowTransitionDetector_TitleChangeAlone_IsNeitherNewNorClosedWindow()
     {
         var policy = MinimalPolicy();

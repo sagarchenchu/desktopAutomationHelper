@@ -757,84 +757,111 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     outcome = ExplorationOutcome.NoOp;
 
                 var nextDepth = action.Depth + 1;
-                var enqueueSnapshot = afterSnapshot;
-                var enqueueFingerprint = afterFingerprint;
+                var boundChildSurfaces = new List<(SemanticSnapshot Snapshot, string Fingerprint)>();
                 var didSwitchToChild = false;
+                string? newWindowBindFailure = null;
 
                 if (outcome is ExplorationOutcome.ModalDialog or ExplorationOutcome.NewWindow)
                 {
                     foreach (var added in transition.AddedWindows)
                     {
-                        if (added.Hwnd is not long childHwnd || childHwnd <= 0)
-                            continue;
-                        if (added.ProcessId is not int childPid || childPid <= 0)
-                            continue;
-
-                        if (actionsAttempted >= policy.Budgets.MaxActions
-                            || DateTimeOffset.UtcNow >= deadline
-                            || deadlineCts.IsCancellationRequested)
+                        if (added.Hwnd is not long childHwnd || childHwnd <= 0
+                            || added.ProcessId is not int childPid || childPid <= 0)
                         {
+                            newWindowBindFailure =
+                                $"New window '{added.Title}' is missing hwnd/processId; fail-closed.";
                             break;
                         }
 
-                        var switched = await TrySwitchToHwndAsync(
-                                connection,
-                                childHwnd,
-                                childPid,
-                                identityValidator,
-                                policy.Budgets.PerActionTimeoutSeconds,
-                                deadlineCts.Token)
-                            .ConfigureAwait(false);
-                        actionsAttempted++;
-                        if (!switched.Success)
+                        SemanticSnapshot? childSnapshot = null;
+                        string? bindDetail = null;
+                        const int maxBindAttempts = 3;
+                        for (var attempt = 1; attempt <= maxBindAttempts; attempt++)
                         {
-                            warnings.Add(
-                                $"NewWindow switch to HWND 0x{childHwnd:X} failed: {switched.Detail}");
-                            continue;
+                            if (actionsAttempted >= policy.Budgets.MaxActions
+                                || DateTimeOffset.UtcNow >= deadline
+                                || deadlineCts.IsCancellationRequested)
+                            {
+                                bindDetail = "Budget/cancel reached while binding new window HWND.";
+                                break;
+                            }
+
+                            var switched = await TrySwitchToHwndAsync(
+                                    connection,
+                                    childHwnd,
+                                    childPid,
+                                    identityValidator,
+                                    policy.Budgets.PerActionTimeoutSeconds,
+                                    deadlineCts.Token)
+                                .ConfigureAwait(false);
+                            actionsAttempted++;
+                            if (!switched.Success)
+                            {
+                                bindDetail = switched.Detail ?? "switchwindow failed.";
+                                continue;
+                            }
+
+                            try
+                            {
+                                var childObserve = await _observation
+                                    .ObserveAsync(observationOptions, deadlineCts.Token)
+                                    .ConfigureAwait(false);
+                                if (!childObserve.Success || childObserve.Snapshot is null)
+                                {
+                                    bindDetail = childObserve.Error ?? "Post-switch observation failed.";
+                                    continue;
+                                }
+
+                                childSnapshot = childObserve.Snapshot;
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                (stopReason, status, exitCode) = CancelOrDeadline(cancellationToken);
+                                break;
+                            }
+
+                            if (!TryValidateScope(
+                                    childSnapshot,
+                                    policy,
+                                    identityValidator,
+                                    out var childScopeError))
+                            {
+                                bindDetail = childScopeError;
+                                childSnapshot = null;
+                                continue;
+                            }
+
+                            // Exact-HWND verification — only then mark switch successful.
+                            if (childSnapshot.Window?.Hwnd != childHwnd)
+                            {
+                                bindDetail =
+                                    $"Post-switch snapshot HWND 0x{childSnapshot.Window?.Hwnd:X} " +
+                                    $"does not equal requested 0x{childHwnd:X}.";
+                                childSnapshot = null;
+                                continue;
+                            }
+
+                            bindDetail = null;
+                            break;
+                        }
+
+                        if (stopReason is not null)
+                            break;
+
+                        if (childSnapshot is null || childSnapshot.Window?.Hwnd != childHwnd)
+                        {
+                            newWindowBindFailure =
+                                $"Failed to bind new window HWND 0x{childHwnd:X}: {bindDetail ?? "unknown"}.";
+                            break;
                         }
 
                         didSwitchToChild = true;
+                        var childFp = _fingerprinter.Fingerprint(childSnapshot);
+                        boundChildSurfaces.Add((childSnapshot, childFp));
 
-                        SemanticSnapshot? childSnapshot = null;
-                        try
-                        {
-                            var childObserve = await _observation
-                                .ObserveAsync(observationOptions, deadlineCts.Token)
-                                .ConfigureAwait(false);
-                            if (childObserve.Success && childObserve.Snapshot is not null)
-                                childSnapshot = childObserve.Snapshot;
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            (stopReason, status, exitCode) = CancelOrDeadline(cancellationToken);
-                            break;
-                        }
-
-                        string? childScopeError = null;
-                        if (childSnapshot is null
-                            || !TryValidateScope(
-                                childSnapshot,
-                                policy,
-                                identityValidator,
-                                out childScopeError))
-                        {
-                            warnings.Add(
-                                childScopeError
-                                ?? $"Post-switch observation failed for HWND 0x{childHwnd:X}.");
-                            continue;
-                        }
-
-                        if (childSnapshot.Window?.Hwnd != childHwnd)
-                        {
-                            warnings.Add(
-                                $"Post-switch snapshot HWND 0x{childSnapshot.Window?.Hwnd:X} does not equal requested 0x{childHwnd:X}.");
-                            continue;
-                        }
-
-                        enqueueSnapshot = childSnapshot;
-                        enqueueFingerprint = _fingerprinter.Fingerprint(childSnapshot);
+                        // Keep the latest bound surface as the recorded after-state.
                         afterSnapshot = childSnapshot;
-                        afterFingerprint = enqueueFingerprint;
+                        afterFingerprint = childFp;
 
                         if (childSnapshot.Window?.IsModal == true)
                             outcome = ExplorationOutcome.ModalDialog;
@@ -858,6 +885,24 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
 
                     if (stopReason is not null)
                         break;
+
+                    if (newWindowBindFailure is not null)
+                    {
+                        recorder.Record(
+                            fromStateId,
+                            null,
+                            beforeFingerprint,
+                            afterFingerprint,
+                            action,
+                            ExplorationOutcome.ScopeViolation,
+                            newWindowBindFailure,
+                            actionStarted,
+                            DateTimeOffset.UtcNow);
+                        stopReason = "new-window-bind-failed";
+                        status = "failed";
+                        exitCode = ExitCodes.ExecutionFailure;
+                        break;
+                    }
                 }
 
                 var toStateId = recorder.EnsureState(
@@ -889,26 +934,40 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     break;
                 }
 
-                // Enqueue permitted actions from the (possibly switched) observation.
-                // NewWindow/ModalDialog always re-enqueue even when the pre-switch fingerprint
-                // matched (NoOp on parent) — child surface is the source of truth.
-                var shouldEnqueue =
-                    nextDepth < policy.Budgets.MaxDepth
-                    && recorder.States.Count < policy.Budgets.MaxStates
-                    && (didSwitchToChild
-                        || outcome is ExplorationOutcome.ModalDialog or ExplorationOutcome.NewWindow
-                        || !string.Equals(beforeFingerprint, enqueueFingerprint, StringComparison.Ordinal));
-
-                if (shouldEnqueue)
+                // Enqueue every successfully bound added window separately (not only the last).
+                if (nextDepth < policy.Budgets.MaxDepth
+                    && recorder.States.Count < policy.Budgets.MaxStates)
                 {
-                    var next = _capabilityResolver.Resolve(
-                        enqueueSnapshot,
-                        enqueueFingerprint,
-                        policy,
-                        nextDepth);
-                    deniedSamples.AddRange(
-                        _capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
-                    frontier.EnqueueMany(next);
+                    if (boundChildSurfaces.Count > 0)
+                    {
+                        foreach (var bound in boundChildSurfaces)
+                        {
+                            if (recorder.States.Count >= policy.Budgets.MaxStates)
+                                break;
+
+                            var next = _capabilityResolver.Resolve(
+                                bound.Snapshot,
+                                bound.Fingerprint,
+                                policy,
+                                nextDepth);
+                            deniedSamples.AddRange(
+                                _capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
+                            frontier.EnqueueMany(next);
+                        }
+                    }
+                    else if (didSwitchToChild
+                             || outcome is ExplorationOutcome.ModalDialog or ExplorationOutcome.NewWindow
+                             || !string.Equals(beforeFingerprint, afterFingerprint, StringComparison.Ordinal))
+                    {
+                        var next = _capabilityResolver.Resolve(
+                            afterSnapshot,
+                            afterFingerprint,
+                            policy,
+                            nextDepth);
+                        deniedSamples.AddRange(
+                            _capabilityResolver.DeniedActionSamples.Where(s => !deniedSamples.Contains(s)));
+                        frontier.EnqueueMany(next);
+                    }
                 }
             }
 

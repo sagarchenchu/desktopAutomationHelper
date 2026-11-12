@@ -31,4 +31,6 @@ internal static class UiIds
     public const string ChildWindow = "ExplorerChildWindow";
     public const string DialogWindow = "ExplorerDialogWindow";
     public const string SecondWindow = "ExplorerSecondWindow";
+    public const string SecondPingButton = "ExplorerSecondPingButton";
+    public const string SecondStatusLabel = "ExplorerSecondStatusLabel";
 }
