@@ -13,7 +13,8 @@ public enum AgentCommandKind
     ResolveObject,
     CapturePage,
     VerifyObjectRepository,
-    ObserveApp
+    ObserveApp,
+    ExploreApp
 }
 
 public sealed class ParsedCommand
@@ -54,6 +55,8 @@ public sealed class ParsedCommand
 
     public string? OutputPath { get; init; }
 
+    public string? PolicyFile { get; init; }
+
     public IReadOnlyList<string> Keys { get; init; } = Array.Empty<string>();
 
     public bool Json { get; init; }
@@ -90,6 +93,7 @@ public static class CommandLine
             "capture-page" => ParseCapturePage(rest),
             "verify-object-repository" => ParseVerifyObjectRepository(rest),
             "observe-app" => ParseObserveApp(rest),
+            "explore-app" => ParseExploreApp(rest),
             _ => new ParsedCommand
             {
                 Kind = AgentCommandKind.Help,
@@ -595,6 +599,65 @@ public static class CommandLine
         };
     }
 
+    private static ParsedCommand ParseExploreApp(string[] rest)
+    {
+        var json = HasFlag(rest, "--json");
+        var dryRun = HasFlag(rest, "--dry-run");
+        string? policy = null;
+        var config = new List<string>();
+        var unknown = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        for (var i = 0; i < rest.Length; i++)
+        {
+            var arg = rest[i];
+            switch (arg)
+            {
+                case "--policy":
+                    if (!TryReadFlagValue(rest, ref i, out var policyValue))
+                        return Error(AgentCommandKind.ExploreApp, json, "--policy requires a path.", config);
+                    if (!seen.Add("policy"))
+                        return Error(AgentCommandKind.ExploreApp, json, "--policy may not be repeated.", config);
+                    policy = policyValue;
+                    continue;
+                case "--json":
+                case "--dry-run":
+                    continue;
+            }
+
+            if (TryTakeConfigArg(rest, ref i, config))
+                continue;
+
+            unknown.Add(arg);
+        }
+
+        if (unknown.Count > 0)
+        {
+            return new ParsedCommand
+            {
+                Kind = AgentCommandKind.ExploreApp,
+                Json = json,
+                DryRun = dryRun,
+                Error = $"Unexpected argument(s): {string.Join(' ', unknown)}",
+                ConfigurationArgs = config.ToArray()
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(policy))
+        {
+            return Error(AgentCommandKind.ExploreApp, json, "explore-app requires --policy <file>.", config);
+        }
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.ExploreApp,
+            PolicyFile = policy,
+            Json = json,
+            DryRun = dryRun,
+            ConfigurationArgs = config.ToArray()
+        };
+    }
+
     private static ParsedCommand ParseRepositoryCommand(
         AgentCommandKind kind,
         string[] rest,
@@ -840,6 +903,7 @@ public static class CommandLine
             AgentCommandKind.CapturePage => "capture-page",
             AgentCommandKind.VerifyObjectRepository => "verify-object-repository",
             AgentCommandKind.ObserveApp => "observe-app",
+            AgentCommandKind.ExploreApp => "explore-app",
             _ => kind.ToString()
         };
 
@@ -911,7 +975,7 @@ public static class CommandLine
 
     public static string HelpText =>
         """
-        Desktop Automation Agent (Phase 4A)
+        Desktop Automation Agent (Phase 4B)
 
         Commands:
           init
@@ -955,6 +1019,10 @@ public static class CommandLine
               [--output <workspace-relative-or-safe-path>]
               Observe-only semantic snapshot via dumpuia. Never clicks, types, crawls, or plans.
 
+          explore-app --policy <file> [--dry-run] [--json]
+              Policy-bounded observe/navigate explorer. Deny-by-default. No AI, typing, or
+              transactional actions. --dry-run lists permitted candidates without UI mutation.
+
           doctor [--json]
               Run configuration, workspace, driver discovery, status, and catalog checks.
 
@@ -970,6 +1038,6 @@ public static class CommandLine
           6 UI operation, timeout, capture/verify/observe or assertion failure
           7 execution cancelled
 
-        Phase 4A adds observe-app semantic snapshots. Crawling and AI are not implemented.
+        Phase 4B adds explore-app (observe + approved navigate only). AI is not implemented.
         """;
 }

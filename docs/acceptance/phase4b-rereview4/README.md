@@ -1,0 +1,13 @@
+# Phase 4B acceptance evidence (fourth re-review)
+
+Committed so PR reviewers can audit without the local `artifacts/` tree.
+
+| Run | Folder / file |
+|---|---|
+| Dry-run | [`20261111T235005558Z-faa3ad86/`](./20261111T235005558Z-faa3ad86/) · [`dry-run.json`](./dry-run.json) |
+| Navigate | [`20261111T235006862Z-f56059b0/`](./20261111T235006862Z-f56059b0/) · [`navigate.json`](./navigate.json) |
+| Modal + HWND backtrack | [`20261111T235043623Z-d66161fd/`](./20261111T235043623Z-d66161fd/) · [`modal-second.json`](./modal-second.json) |
+
+Policies used: [`acceptance.policy.json`](./acceptance.policy.json), [`modal-second.policy.json`](./modal-second.policy.json).
+
+Backtrack proof (from modal transitions): `actionKey=backtrack:close:0x…`, `outcome=closedWindow`, detail contains `via WindowPattern`.

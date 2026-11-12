@@ -1,0 +1,10 @@
+{
+  "manifestSchemaVersion": 1,
+  "explorationId": "20261112T024849579Z-1206ebc4",
+  "policyId": "acceptance-second-window-crawl",
+  "mode": "navigate",
+  "dryRun": false,
+  "startedAtUtc": "2026-11-12T02:48:49.5873796+00:00",
+  "policyPath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase4b-acceptance-rereview5\\second-window.policy.json",
+  "policySha256": "30970600a54a2d1c07581c15b79fbb553bc0f23cc4947dc723c1a7cfba024517"
+}

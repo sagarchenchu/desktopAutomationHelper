@@ -96,6 +96,13 @@ public sealed class SemanticNode
 
     public List<string> Capabilities { get; init; } = [];
 
+    /// <summary>
+    /// Optional pattern interaction state (expand/selected/toggle) projected from dumpuia.
+    /// Included in exploration fingerprints so expand/tab/toggle mutations are observable.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NodeInteractionState? Interaction { get; init; }
+
     public BoundingRectangleDto? Bounds { get; init; }
 
     /// <summary>
@@ -104,6 +111,18 @@ public sealed class SemanticNode
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RuntimeId { get; init; }
+}
+
+public sealed class NodeInteractionState
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExpandCollapse { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Selected { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Toggle { get; init; }
 }
 
 public sealed class BoundingRectangleDto
@@ -164,6 +183,12 @@ public sealed record ObservationOptions
     /// Must not overwrite an existing file.
     /// </summary>
     public string? OutputPath { get; init; }
+
+    /// <summary>
+    /// When false, skips writing observation artifacts (used by exploration polling).
+    /// Defaults to true for observe-app CLI behavior.
+    /// </summary>
+    public bool PersistArtifact { get; init; } = true;
 }
 
 public sealed record ObservationResult

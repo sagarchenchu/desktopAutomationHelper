@@ -1,0 +1,10 @@
+{
+  "manifestSchemaVersion": 1,
+  "explorationId": "20261112T060740200Z-f6a6c903",
+  "policyId": "acceptance-modal-hwnd-backtrack",
+  "mode": "navigate",
+  "dryRun": false,
+  "startedAtUtc": "2026-11-12T06:07:40.2078441+00:00",
+  "policyPath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase4b-acceptance-rereview6\\modal-second.policy.json",
+  "policySha256": "370d08527b888b4cf243168d7f897275683f6ba80f86cae7a40bc1e89ef0263c"
+}

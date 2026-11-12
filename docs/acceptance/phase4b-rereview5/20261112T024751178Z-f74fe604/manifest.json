@@ -1,0 +1,10 @@
+{
+  "manifestSchemaVersion": 1,
+  "explorationId": "20261112T024751178Z-f74fe604",
+  "policyId": "example-safe-navigate",
+  "mode": "navigate",
+  "dryRun": false,
+  "startedAtUtc": "2026-11-12T02:47:51.1864597+00:00",
+  "policyPath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase4b-acceptance-rereview5\\acceptance.policy.json",
+  "policySha256": "c38ce776804339290516e16848b6117f65dfb80aeecc3ffaddae0a8b86fd237b"
+}
