@@ -75,6 +75,8 @@ public sealed class KnowledgeArtifactWriter
         new
         {
             knowledge.KnowledgeSchemaVersion,
+            // Bind knowledgeId into the content hash so id swaps invalidate approvals.
+            knowledge.KnowledgeId,
             knowledge.ApplicationId,
             knowledge.BuildFingerprint,
             fingerprint = ApplicationFingerprintBuilder.ToHashable(knowledge.Fingerprint),

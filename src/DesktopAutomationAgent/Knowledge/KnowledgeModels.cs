@@ -45,6 +45,15 @@ public sealed class ApplicationFingerprint
     public string ExplorerVersion { get; set; } = KnowledgeConstants.ExplorerVersion;
 
     public string ExplorationPolicyHash { get; set; } = string.Empty;
+
+    /// <summary>
+    /// True when at least one immutable build id is present:
+    /// executableSha256, productVersion, or fileVersion.
+    /// </summary>
+    public bool HasImmutableBuildId() =>
+        !string.IsNullOrWhiteSpace(ExecutableSha256)
+        || !string.IsNullOrWhiteSpace(ProductVersion)
+        || !string.IsNullOrWhiteSpace(FileVersion);
 }
 
 public sealed class SourceExplorationRun

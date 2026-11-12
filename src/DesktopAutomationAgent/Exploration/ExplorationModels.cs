@@ -280,6 +280,15 @@ public sealed class ExplorationBuildIdentity
     public string PolicySha256 { get; init; } = string.Empty;
 
     public Dictionary<string, string> ConfigIdentity { get; init; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// True when at least one immutable build id is present:
+    /// executableSha256, productVersion, or fileVersion.
+    /// </summary>
+    public bool HasImmutableBuildId() =>
+        !string.IsNullOrWhiteSpace(ExecutableSha256)
+        || !string.IsNullOrWhiteSpace(ProductVersion)
+        || !string.IsNullOrWhiteSpace(FileVersion);
 }
 
 public sealed class ExplorationSummary

@@ -83,6 +83,15 @@ public sealed class KnowledgeApprover
                     $"sourceKnowledgeHash mismatch: reviewed input has '{reviewedInput.SourceKnowledgeHash}', actual content hash is '{actualHash}'.");
             }
 
+            if (!string.IsNullOrWhiteSpace(reviewedInput.SourceKnowledgeId)
+                && !string.Equals(reviewedInput.SourceKnowledgeId, knowledge.KnowledgeId, StringComparison.Ordinal))
+            {
+                return Fail(
+                    5,
+                    $"sourceKnowledgeId mismatch: reviewed input has '{reviewedInput.SourceKnowledgeId}', "
+                    + $"knowledge has '{knowledge.KnowledgeId}'.");
+            }
+
             var effectiveReviewer = string.IsNullOrWhiteSpace(reviewedInput.Reviewer)
                 ? reviewer.Trim()
                 : reviewedInput.Reviewer.Trim();

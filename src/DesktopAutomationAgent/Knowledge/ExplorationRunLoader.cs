@@ -122,7 +122,25 @@ public sealed class ExplorationRunLoader
 
         if (identity.SnapshotSchemaVersion <= 0)
             throw new InvalidOperationException($"build-identity.json has invalid snapshotSchemaVersion ({identityPath}).");
+
+        if (!identity.HasImmutableBuildId())
+        {
+            throw new InvalidOperationException(
+                $"build-identity.json requires at least one immutable build id "
+                + $"(executableSha256, productVersion, or fileVersion) ({identityPath}).");
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.ExecutableSha256)
+            && !IsLowerHex64(identity.ExecutableSha256))
+        {
+            throw new InvalidOperationException(
+                $"build-identity.json executableSha256 must be a 64-char lowercase hex digest ({identityPath}).");
+        }
     }
+
+    private static bool IsLowerHex64(string value) =>
+        value.Length == 64
+        && value.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
 
     private string ResolveRunDirectory(string explorationRun)
     {

@@ -22,6 +22,13 @@ public sealed class ApplicationFingerprintBuilder
         if (string.IsNullOrWhiteSpace(identity.ProcessName))
             throw new InvalidOperationException("build identity is missing required processName.");
 
+        if (!identity.HasImmutableBuildId())
+        {
+            throw new InvalidOperationException(
+                "build identity requires at least one immutable build id "
+                + "(executableSha256, productVersion, or fileVersion).");
+        }
+
         var fingerprint = new ApplicationFingerprint
         {
             ApplicationId = applicationId.Trim().ToLowerInvariant(),

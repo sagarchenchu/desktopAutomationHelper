@@ -484,7 +484,7 @@ public class Phase4cApplicationKnowledgeTests
         File.WriteAllText(Path.Combine(runDir, "transitions.jsonl"), new string('x', 2000));
         File.WriteAllText(
             Path.Combine(runDir, "build-identity.json"),
-            "{\"buildIdentitySchemaVersion\":1,\"processName\":\"Demo\",\"driverVersion\":\"1.0.0\",\"snapshotSchemaVersion\":1,\"explorerVersion\":\"phase4b-1\",\"policySha256\":\"" + policyHash + "\",\"configIdentity\":{\"processName\":\"Demo\"}}");
+            "{\"buildIdentitySchemaVersion\":1,\"processName\":\"Demo\",\"executableSha256\":\"" + new string('1', 64) + "\",\"driverVersion\":\"1.0.0\",\"snapshotSchemaVersion\":1,\"explorerVersion\":\"phase4b-1\",\"policySha256\":\"" + policyHash + "\",\"configIdentity\":{\"processName\":\"Demo\"}}");
 
         var options = Options.Create(new AgentOptions
         {
@@ -656,6 +656,7 @@ public class Phase4cApplicationKnowledgeTests
         {
             buildIdentitySchemaVersion = 1,
             processName = "Demo",
+            executableSha256 = new string('2', 64),
             driverVersion = "1.0.0-test",
             snapshotSchemaVersion = 1,
             explorerVersion = "phase4b-1",
@@ -723,11 +724,234 @@ public class Phase4cApplicationKnowledgeTests
         Assert.Equal(result.ContentHash, File.ReadAllText(Path.Combine(result.OutputDirectory!, "content-hash.txt")).Trim());
     }
 
+    [Fact]
+    public void Fingerprint_SamePolicyDifferentExecutableHash_IsIncompatible()
+    {
+        var builder = new ApplicationFingerprintBuilder();
+        var policyHash = new string('a', 64);
+        var leftIdentity = new ExplorationBuildIdentity
+        {
+            BuildIdentitySchemaVersion = 1,
+            ProcessName = "Demo",
+            ExecutableSha256 = new string('1', 64),
+            DriverVersion = "1.0.0-test",
+            SnapshotSchemaVersion = 1,
+            ExplorerVersion = KnowledgeConstants.ExplorerVersion,
+            PolicySha256 = policyHash,
+            ConfigIdentity = new Dictionary<string, string> { ["processName"] = "Demo" }
+        };
+        var rightIdentity = new ExplorationBuildIdentity
+        {
+            BuildIdentitySchemaVersion = 1,
+            ProcessName = "Demo",
+            ExecutableSha256 = new string('2', 64),
+            DriverVersion = "1.0.0-test",
+            SnapshotSchemaVersion = 1,
+            ExplorerVersion = KnowledgeConstants.ExplorerVersion,
+            PolicySha256 = policyHash,
+            ConfigIdentity = new Dictionary<string, string> { ["processName"] = "Demo" }
+        };
+
+        var left = builder.BuildFromIdentity("demo-app", leftIdentity);
+        var right = builder.BuildFromIdentity("demo-app", rightIdentity);
+
+        Assert.False(builder.AreCompatible(left, right, out var mismatches));
+        Assert.Contains("ExecutableSha256", mismatches);
+        Assert.NotEqual(builder.ComputeBuildFingerprint(left), builder.ComputeBuildFingerprint(right));
+    }
+
+    [Fact]
+    public void Build_FailsClosed_WhenImmutableBuildIdMissing()
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var run = WriteExplorationRunWithIdentity(
+            temp.Path,
+            "no-immutable",
+            new string('a', 64),
+            executableSha256: null,
+            productVersion: null,
+            fileVersion: null);
+
+        var result = CreateKnowledgeService(workspace).Build("demo-app", [run], false);
+        Assert.False(result.Success);
+        Assert.Contains("immutable build id", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SystemProcessIdentityProbe_CapturesShaAndVersions()
+    {
+        var probe = new SystemProcessIdentityProbe();
+        Assert.True(
+            probe.TryGetIdentity(Environment.ProcessId, out var info, out var error),
+            error ?? "probe failed");
+        Assert.False(string.IsNullOrWhiteSpace(info.ExecutablePath));
+        Assert.False(string.IsNullOrWhiteSpace(info.ExecutableSha256));
+        Assert.Equal(64, info.ExecutableSha256!.Length);
+        Assert.True(
+            !string.IsNullOrWhiteSpace(info.ProductVersion)
+            || !string.IsNullOrWhiteSpace(info.FileVersion)
+            || !string.IsNullOrWhiteSpace(info.ExecutableSha256),
+            "Probe must capture at least one immutable build id.");
+    }
+
+    [Fact]
+    public void ValidateApproved_RejectsMissingContentHash()
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var approvedDir = ApproveMinimal(temp.Path, workspace, "missing-hash");
+        File.Delete(Path.Combine(approvedDir, "content-hash.txt"));
+
+        var validation = CreateKnowledgeService(workspace).ValidatePath(approvedDir);
+        Assert.False(validation.IsValid);
+        Assert.Contains(validation.Errors, e => e.Contains("content-hash.txt", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ValidateApproved_RejectsSourceKnowledgeIdMismatch()
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var approvedDir = ApproveMinimal(temp.Path, workspace, "id-mismatch");
+        var knowledgePath = Path.Combine(approvedDir, "application-knowledge.json");
+        var doc = JsonSerializer.Deserialize<ApplicationKnowledgeDocument>(
+            File.ReadAllText(knowledgePath),
+            KnowledgeJsonOptions())!;
+        doc.Approval!.SourceKnowledgeId = "kn_wrong_id";
+        File.WriteAllText(knowledgePath, JsonSerializer.Serialize(doc, KnowledgeJsonOptions()) + "\n");
+        File.WriteAllText(
+            Path.Combine(approvedDir, "knowledge-approval.json"),
+            JsonSerializer.Serialize(doc.Approval, KnowledgeJsonOptions()) + "\n");
+
+        var validation = CreateKnowledgeService(workspace).ValidatePath(approvedDir);
+        Assert.False(validation.IsValid);
+        Assert.Contains(
+            validation.Errors,
+            e => e.Contains("sourceKnowledgeId", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData("state-graph.json")]
+    [InlineData("workflows.json")]
+    [InlineData("coverage.json")]
+    [InlineData("knowledge-approval.json")]
+    public void ValidateApproved_DetectsSiblingTampering(string siblingFileName)
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var approvedDir = ApproveMinimal(temp.Path, workspace, "sibling-" + Path.GetFileNameWithoutExtension(siblingFileName));
+        var siblingPath = Path.Combine(approvedDir, siblingFileName);
+
+        if (siblingFileName == "state-graph.json")
+        {
+            var graph = JsonSerializer.Deserialize<ApplicationStateGraph>(
+                File.ReadAllText(siblingPath),
+                KnowledgeJsonOptions())!;
+            graph.States.Add(new KnowledgeStateNode
+            {
+                StateId = "st_sibling_tamper",
+                SemanticFingerprint = new string('e', 64),
+                WindowId = graph.Windows[0].WindowId,
+                ObservationCount = 1
+            });
+            File.WriteAllText(siblingPath, JsonSerializer.Serialize(graph, KnowledgeJsonOptions()) + "\n");
+        }
+        else if (siblingFileName == "workflows.json")
+        {
+            var workflows = JsonSerializer.Deserialize<List<ApplicationWorkflow>>(
+                File.ReadAllText(siblingPath),
+                KnowledgeJsonOptions()) ?? [];
+            workflows.Add(new ApplicationWorkflow
+            {
+                WorkflowSchemaVersion = 1,
+                WorkflowId = "wf_tampered",
+                EntryStateId = "st_1",
+                Steps =
+                [
+                    new KnowledgeWorkflowStep
+                    {
+                        Ordinal = 0,
+                        TransitionId = "tr_1",
+                        Action = "invoke:Button|x",
+                        SourceStateId = "st_1",
+                        TargetStateId = "st_2",
+                        Outcome = "success"
+                    }
+                ],
+                ObservationCount = 1
+            });
+            File.WriteAllText(siblingPath, JsonSerializer.Serialize(workflows, KnowledgeJsonOptions()) + "\n");
+        }
+        else if (siblingFileName == "coverage.json")
+        {
+            var coverage = JsonSerializer.Deserialize<KnowledgeCoverageReport>(
+                File.ReadAllText(siblingPath),
+                KnowledgeJsonOptions())!;
+            coverage.Conflicts = coverage.Conflicts + 99;
+            File.WriteAllText(siblingPath, JsonSerializer.Serialize(coverage, KnowledgeJsonOptions()) + "\n");
+        }
+        else
+        {
+            var approval = JsonSerializer.Deserialize<KnowledgeApproval>(
+                File.ReadAllText(siblingPath),
+                KnowledgeJsonOptions())!;
+            approval.Notes = "tampered sibling notes";
+            File.WriteAllText(siblingPath, JsonSerializer.Serialize(approval, KnowledgeJsonOptions()) + "\n");
+        }
+
+        var validation = CreateKnowledgeService(workspace).ValidatePath(approvedDir);
+        Assert.False(validation.IsValid);
+        Assert.Contains(
+            validation.Errors,
+            e => e.Contains(siblingFileName, StringComparison.OrdinalIgnoreCase)
+                 && e.Contains("match", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ContentHash_BindsKnowledgeId()
+    {
+        var doc = MinimalKnowledge();
+        var original = KnowledgeArtifactWriter.ComputeContentHash(doc);
+        doc.KnowledgeId = "kn_changed";
+        var changed = KnowledgeArtifactWriter.ComputeContentHash(doc);
+        Assert.NotEqual(original, changed);
+    }
+
+    private static string ApproveMinimal(string root, IWorkspaceManager workspace, string runSuffix)
+    {
+        var run = WriteExplorationRun(root, "approve-" + runSuffix, new string('b', 64), 2, false);
+        var service = CreateKnowledgeService(workspace);
+        var built = service.Build("demo-app", [run], false, createdAtUtc: DateTimeOffset.UnixEpoch);
+        Assert.True(built.Success, built.Error);
+
+        var reviewed = Path.Combine(root, "review-" + runSuffix + ".json");
+        File.WriteAllText(reviewed, JsonSerializer.Serialize(new KnowledgeApproval
+        {
+            ApprovalSchemaVersion = 1,
+            Reviewer = "alice",
+            ReviewedAtUtc = DateTimeOffset.UnixEpoch,
+            SourceKnowledgeHash = built.ContentHash!,
+            SourceKnowledgeId = built.Knowledge!.KnowledgeId,
+            Decision = "approve",
+            PromotesPageObjects = false
+        }, KnowledgeJsonOptions()));
+
+        var approved = service.Approve(built.OutputDirectory!, "alice", reviewed);
+        Assert.True(approved.Success, approved.Error);
+        return approved.OutputDirectory!;
+    }
+
     private static ApplicationKnowledgeDocument MinimalKnowledge()
     {
         var fp = new ApplicationFingerprint
         {
             ApplicationId = "demo-app",
+            ExecutableSha256 = new string('a', 64),
             SnapshotSchemaVersion = 1,
             ExplorerVersion = KnowledgeConstants.ExplorerVersion,
             ExplorationPolicyHash = new string('a', 64),
@@ -972,7 +1196,9 @@ public class Phase4cApplicationKnowledgeTests
             buildIdentitySchemaVersion = 1,
             processName = "DesktopAutomationExplorerFixture",
             executablePath = (string?)null,
-            executableSha256 = (string?)null,
+            executableSha256 = new string('f', 64),
+            productVersion = (string?)null,
+            fileVersion = (string?)null,
             driverVersion = "1.0.0-test",
             snapshotSchemaVersion = 1,
             explorerVersion = "phase4b-1",
@@ -985,6 +1211,36 @@ public class Phase4cApplicationKnowledgeTests
         WriteJsonl(Path.Combine(runDir, "states.jsonl"), stateRecords);
         WriteJsonl(Path.Combine(runDir, "transitions.jsonl"), transitions);
         return explorationId;
+    }
+
+    private static string WriteExplorationRunWithIdentity(
+        string root,
+        string explorationId,
+        string policySha256,
+        string? executableSha256,
+        string? productVersion = null,
+        string? fileVersion = null,
+        int states = 1)
+    {
+        var id = WriteExplorationRun(root, explorationId, policySha256, states, withConflict: false);
+        WriteJson(Path.Combine(root, "exploration", "runs", id, "build-identity.json"), new
+        {
+            buildIdentitySchemaVersion = 1,
+            processName = "DesktopAutomationExplorerFixture",
+            executablePath = (string?)null,
+            executableSha256,
+            productVersion,
+            fileVersion,
+            driverVersion = "1.0.0-test",
+            snapshotSchemaVersion = 1,
+            explorerVersion = "phase4b-1",
+            policySha256,
+            configIdentity = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["processName"] = "DesktopAutomationExplorerFixture"
+            }
+        });
+        return id;
     }
 
     private static KnowledgeService CreateKnowledgeService(IWorkspaceManager workspace) =>

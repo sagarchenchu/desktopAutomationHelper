@@ -56,9 +56,13 @@ public sealed class KnowledgeValidator
                 result.Errors.Add("approved knowledge requires an approval record.");
             else
             {
-                ValidateApproval(document.Approval, result);
+                ValidateApproval(document.Approval, document.KnowledgeId, result);
                 VerifyApprovedContentHash(document, result);
             }
+        }
+        else if (document.Approval is not null)
+        {
+            ValidateApproval(document.Approval, document.KnowledgeId, result);
         }
 
         if (document.Approval is not null && document.Approval.PromotesPageObjects)
@@ -84,9 +88,14 @@ public sealed class KnowledgeValidator
 
         var result = Validate(document);
 
-        // Cross-check optional content-hash.txt when present.
         var hashFile = Path.Combine(knowledgeDirectory, "content-hash.txt");
-        if (File.Exists(hashFile))
+        var isApproved = string.Equals(document.Status, "approved", StringComparison.Ordinal);
+        if (isApproved && !File.Exists(hashFile))
+        {
+            result.Errors.Add(
+                $"Approved knowledge directory missing required content-hash.txt under '{knowledgeDirectory}'.");
+        }
+        else if (File.Exists(hashFile))
         {
             var recorded = File.ReadAllText(hashFile).Trim().ToLowerInvariant();
             var actual = KnowledgeArtifactWriter.ComputeContentHash(document);
@@ -97,7 +106,65 @@ public sealed class KnowledgeValidator
             }
         }
 
+        if (isApproved)
+            CrossCheckApprovedSiblings(knowledgeDirectory, document, result);
+
         return result;
+    }
+
+    private static void CrossCheckApprovedSiblings(
+        string knowledgeDirectory,
+        ApplicationKnowledgeDocument document,
+        KnowledgeValidationResult result)
+    {
+        CrossCheckSibling(knowledgeDirectory, "state-graph.json", document.Graph, result);
+        CrossCheckSibling(knowledgeDirectory, "workflows.json", document.Workflows, result);
+        CrossCheckSibling(knowledgeDirectory, "coverage.json", document.Coverage, result);
+
+        if (document.Approval is null)
+        {
+            result.Errors.Add("Approved knowledge directory requires knowledge-approval.json.");
+            return;
+        }
+
+        CrossCheckSibling(knowledgeDirectory, "knowledge-approval.json", document.Approval, result);
+    }
+
+    private static void CrossCheckSibling<T>(
+        string knowledgeDirectory,
+        string fileName,
+        T expected,
+        KnowledgeValidationResult result)
+    {
+        var path = Path.Combine(knowledgeDirectory, fileName);
+        if (!File.Exists(path))
+        {
+            result.Errors.Add($"Approved knowledge directory missing required sibling '{fileName}'.");
+            return;
+        }
+
+        try
+        {
+            var raw = File.ReadAllText(path);
+            var actual = JsonSerializer.Deserialize<T>(raw, KnowledgeJson.Compact);
+            if (actual is null)
+            {
+                result.Errors.Add($"Sibling '{fileName}' could not be deserialized.");
+                return;
+            }
+
+            var expectedCanonical = KnowledgeJson.CanonicalSerialize(expected);
+            var actualCanonical = KnowledgeJson.CanonicalSerialize(actual);
+            if (!string.Equals(expectedCanonical, actualCanonical, StringComparison.Ordinal))
+            {
+                result.Errors.Add(
+                    $"Sibling '{fileName}' does not match application-knowledge.json (tamper or drift).");
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            result.Errors.Add($"Sibling '{fileName}' could not be verified: {ex.Message}");
+        }
     }
 
     private static void VerifyApprovedContentHash(
@@ -195,6 +262,13 @@ public sealed class KnowledgeValidator
             || string.IsNullOrWhiteSpace(fingerprint.ConfigIdentity["processName"]))
         {
             result.Errors.Add("fingerprint.configIdentity.processName is required.");
+        }
+
+        if (!fingerprint.HasImmutableBuildId())
+        {
+            result.Errors.Add(
+                "fingerprint requires at least one immutable build id "
+                + "(executableSha256, productVersion, or fileVersion).");
         }
 
         if (fingerprint.ExecutableSha256 is not null
@@ -357,7 +431,10 @@ public sealed class KnowledgeValidator
             result.Errors.Add("coverage counts must be non-negative.");
     }
 
-    private static void ValidateApproval(KnowledgeApproval approval, KnowledgeValidationResult result)
+    private static void ValidateApproval(
+        KnowledgeApproval approval,
+        string knowledgeId,
+        KnowledgeValidationResult result)
     {
         if (approval.ApprovalSchemaVersion != KnowledgeConstants.ApprovalSchemaVersion)
             result.Errors.Add($"Unsupported approvalSchemaVersion '{approval.ApprovalSchemaVersion}'.");
@@ -365,6 +442,15 @@ public sealed class KnowledgeValidator
             result.Errors.Add("approval.reviewer is required.");
         if (!Hex64.IsMatch(approval.SourceKnowledgeHash ?? string.Empty))
             result.Errors.Add("approval.sourceKnowledgeHash must be a 64-char lowercase hex digest.");
+        if (string.IsNullOrWhiteSpace(approval.SourceKnowledgeId))
+            result.Errors.Add("approval.sourceKnowledgeId is required.");
+        else if (!string.Equals(approval.SourceKnowledgeId, knowledgeId, StringComparison.Ordinal))
+        {
+            result.Errors.Add(
+                $"approval.sourceKnowledgeId '{approval.SourceKnowledgeId}' does not match "
+                + $"knowledgeId '{knowledgeId}'.");
+        }
+
         if (approval.Decision is not ("approve" or "reject"))
             result.Errors.Add("approval.decision must be approve or reject.");
         if (approval.PromotesPageObjects)
