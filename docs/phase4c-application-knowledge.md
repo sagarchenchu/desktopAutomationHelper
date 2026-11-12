@@ -59,14 +59,18 @@ Fingerprint fields:
 | Field | Notes |
 |---|---|
 | `applicationId` | Stable app slug |
-| `executablePath` | Sealed from exploration build identity |
-| `productVersion` / `fileVersion` | When available via sealed identity |
-| `executableSha256` | When configured/readable |
+| `executablePath` | Prefer live process path sealed at exploration |
+| `productVersion` / `fileVersion` | Captured from live `FileVersionInfo` when available |
+| `executableSha256` | Prefer live executable SHA-256 sealed at exploration |
 | `configIdentity` | Relevant config/env **without secrets**; always includes `processName` |
 | `driverVersion` | Required (from sealed identity) |
 | `snapshotSchemaVersion` | Semantic snapshot contract |
 | `explorerVersion` | Exploration artifact contract (`phase4b-1`) |
 | `explorationPolicyHash` | Policy SHA-256 |
+
+At least one **immutable build id** is required: `executableSha256`,
+`productVersion`, or `fileVersion`. Same policy hash with a different executable
+hash yields incompatible fingerprints (new `buildFingerprint` path).
 
 **Incompatible fingerprints are never silently merged.** A fingerprint change
 starts a new knowledge version under a new `buildFingerprint` path. Duplicate
@@ -101,10 +105,13 @@ Deterministic IDs are hashed from normalized semantic content:
 
 `--output` and approval `--source` must resolve under `knowledge/candidates`.
 Paths under `knowledge/approved` or `object-repository/pages` are rejected.
-Candidate builds emit `content-hash.txt` + `approval-template.json`. Approved
-validate recomputes the canonical content hash and cross-checks
-`approval.sourceKnowledgeHash` (tamper detection). Absolute machine paths are
-stripped from approved artifacts.
+Candidate builds emit `content-hash.txt` + `approval-template.json`. The
+canonical content hash binds `knowledgeId` (excludes status/approval/timestamps).
+Approved validate requires `content-hash.txt`, recomputes the hash, requires
+`approval.sourceKnowledgeId == knowledgeId`, and cross-checks sibling
+`knowledge-approval.json`, `state-graph.json`, `workflows.json`, and
+`coverage.json` against the document. Absolute machine paths are stripped from
+approved artifacts.
 
 ## CLI (offline — no driver / network)
 
