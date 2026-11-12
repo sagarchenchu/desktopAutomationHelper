@@ -432,6 +432,8 @@ public sealed class KnowledgeBuildResult
 
     public ApplicationKnowledgeDocument? Knowledge { get; set; }
 
+    public string? ContentHash { get; set; }
+
     public List<string> SuggestedPageObjectPaths { get; set; } = [];
 }
 
@@ -466,5 +468,5 @@ public sealed class LoadedExplorationRun
 
     public required IReadOnlyList<Exploration.ExplorationTransitionRecord> Transitions { get; init; }
 
-    public Exploration.ExplorationPolicyDocument? Policy { get; init; }
+    public required Exploration.ExplorationBuildIdentity BuildIdentity { get; init; }
 }

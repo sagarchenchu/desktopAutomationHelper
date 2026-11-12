@@ -28,6 +28,8 @@ public sealed class KnowledgeGraphBuilder
         if (runs.Count > KnowledgeConstants.MaxExplorationRuns)
             throw new InvalidOperationException($"At most {KnowledgeConstants.MaxExplorationRuns} exploration runs may be merged.");
 
+        RejectDuplicateRuns(runs);
+
         var ordered = runs
             .OrderBy(r => r.ExplorationId, StringComparer.Ordinal)
             .ThenBy(r => r.ArtifactHash, StringComparer.Ordinal)
@@ -259,7 +261,8 @@ public sealed class KnowledgeGraphBuilder
                 ExplorationId = r.ExplorationId,
                 ArtifactHash = r.ArtifactHash,
                 PolicySha256 = r.PolicySha256,
-                ManifestPath = Path.Combine(r.RunDirectory, "manifest.json")
+                // Workspace-relative only — never machine-specific absolute paths.
+                ManifestPath = ToWorkspaceRelativeManifest(r.RunDirectory)
             }).ToList(),
             Graph = graph,
             Workflows = workflows,
@@ -267,6 +270,28 @@ public sealed class KnowledgeGraphBuilder
             IdCollisions = ids.Collisions.ToList(),
             Warnings = warnings.Distinct(StringComparer.Ordinal).OrderBy(w => w, StringComparer.Ordinal).ToList()
         };
+    }
+
+    private static void RejectDuplicateRuns(IReadOnlyList<LoadedExplorationRun> runs)
+    {
+        var byId = new HashSet<string>(StringComparer.Ordinal);
+        var byHash = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var run in runs)
+        {
+            if (!byId.Add(run.ExplorationId))
+            {
+                throw new InvalidOperationException(
+                    $"Duplicate exploration run id '{run.ExplorationId}' cannot be merged "
+                    + "(would inflate observation counts).");
+            }
+
+            if (!byHash.Add(run.ArtifactHash))
+            {
+                throw new InvalidOperationException(
+                    $"Duplicate exploration artifact hash '{run.ArtifactHash}' "
+                    + $"(run '{run.ExplorationId}') cannot be merged.");
+            }
+        }
     }
 
     private void ValidateCompatibleFingerprints(
@@ -280,11 +305,7 @@ public sealed class KnowledgeGraphBuilder
 
         foreach (var run in ordered)
         {
-            var fp = _fingerprintBuilder.Build(
-                applicationId,
-                run.Policy,
-                run.PolicySha256,
-                driverVersion: null);
+            var fp = _fingerprintBuilder.BuildFromIdentity(applicationId, run.BuildIdentity);
 
             var build = _fingerprintBuilder.ComputeBuildFingerprint(fp);
             if (baseline is null)
@@ -306,6 +327,16 @@ public sealed class KnowledgeGraphBuilder
 
         fingerprint = baseline!;
         buildFingerprint = baselineBuild!;
+    }
+
+    private static string ToWorkspaceRelativeManifest(string runDirectory)
+    {
+        var normalized = runDirectory.Replace('\\', '/').TrimEnd('/');
+        var marker = "/exploration/runs/";
+        var idx = normalized.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0)
+            return "exploration/runs/" + normalized[(idx + marker.Length)..] + "/manifest.json";
+        return "exploration/runs/" + Path.GetFileName(normalized) + "/manifest.json";
     }
 
     private static void MergeWindow(
@@ -550,6 +581,7 @@ public sealed class KnowledgeGraphBuilder
         IReadOnlyList<LoadedExplorationRun> runs)
     {
         var workflows = new Dictionary<string, ApplicationWorkflow>(StringComparer.Ordinal);
+        var segmentIndex = 0;
 
         foreach (var run in runs)
         {
@@ -564,9 +596,10 @@ public sealed class KnowledgeGraphBuilder
             if (successEdges.Count == 0)
                 continue;
 
-            var steps = new List<KnowledgeWorkflowStep>();
-            string? entry = null;
-            string? terminal = null;
+            // Split into continuous segments: next.source must equal previous.target.
+            var segments = new List<List<KnowledgeWorkflowStep>>();
+            List<KnowledgeWorkflowStep>? current = null;
+            string? previousTarget = null;
 
             foreach (var edge in successEdges)
             {
@@ -579,9 +612,15 @@ public sealed class KnowledgeGraphBuilder
                 if (source is null)
                     continue;
 
-                entry ??= source.StateId;
-                terminal = target?.StateId ?? source.StateId;
+                if (current is not null
+                    && previousTarget is not null
+                    && !string.Equals(previousTarget, source.StateId, StringComparison.Ordinal))
+                {
+                    segments.Add(current);
+                    current = null;
+                }
 
+                current ??= [];
                 var normalizedAction = KnowledgeStableIdFactory.NormalizeActionKey(edge.ActionKey);
                 var outcome = CamelOutcome(edge.Outcome);
                 var transitionId = ids.TransitionId(
@@ -590,42 +629,53 @@ public sealed class KnowledgeGraphBuilder
                     target?.StateId,
                     outcome);
 
-                steps.Add(new KnowledgeWorkflowStep
+                current.Add(new KnowledgeWorkflowStep
                 {
-                    Ordinal = steps.Count,
+                    Ordinal = current.Count,
                     TransitionId = transitionId,
                     Action = normalizedAction,
                     SourceStateId = source.StateId,
                     TargetStateId = target?.StateId,
                     Outcome = outcome
                 });
+                previousTarget = target?.StateId ?? source.StateId;
             }
 
-            if (steps.Count == 0 || entry is null)
-                continue;
+            if (current is { Count: > 0 })
+                segments.Add(current);
 
-            var workflowId = ids.WorkflowId(entry, steps.Select(s => s.TransitionId).ToList());
-            if (workflows.TryGetValue(workflowId, out var existing))
+            foreach (var steps in segments)
             {
-                existing.ObservationCount++;
-                if (!existing.Provenance.Contains(run.ExplorationId, StringComparer.Ordinal))
-                    existing.Provenance.Add(run.ExplorationId);
-                existing.Provenance.Sort(StringComparer.Ordinal);
-                continue;
+                var entry = steps[0].SourceStateId;
+                var terminal = steps[^1].TargetStateId ?? steps[^1].SourceStateId;
+                // Re-number ordinals contiguously after any prior split.
+                for (var i = 0; i < steps.Count; i++)
+                    steps[i].Ordinal = i;
+
+                var workflowId = ids.WorkflowId(entry, steps.Select(s => s.TransitionId).ToList());
+                if (workflows.TryGetValue(workflowId, out var existing))
+                {
+                    existing.ObservationCount++;
+                    if (!existing.Provenance.Contains(run.ExplorationId, StringComparer.Ordinal))
+                        existing.Provenance.Add(run.ExplorationId);
+                    existing.Provenance.Sort(StringComparer.Ordinal);
+                    continue;
+                }
+
+                segmentIndex++;
+                workflows[workflowId] = new ApplicationWorkflow
+                {
+                    WorkflowSchemaVersion = KnowledgeConstants.WorkflowSchemaVersion,
+                    WorkflowId = workflowId,
+                    Name = $"run:{run.ExplorationId}:seg{segmentIndex}",
+                    EntryStateId = entry,
+                    TerminalStateId = terminal,
+                    Steps = steps,
+                    ObservationCount = 1,
+                    Confidence = 1.0,
+                    Provenance = [run.ExplorationId]
+                };
             }
-
-            workflows[workflowId] = new ApplicationWorkflow
-            {
-                WorkflowSchemaVersion = KnowledgeConstants.WorkflowSchemaVersion,
-                WorkflowId = workflowId,
-                Name = $"run:{run.ExplorationId}",
-                EntryStateId = entry,
-                TerminalStateId = terminal,
-                Steps = steps,
-                ObservationCount = 1,
-                Confidence = 1.0,
-                Provenance = [run.ExplorationId]
-            };
         }
 
         return workflows.Values

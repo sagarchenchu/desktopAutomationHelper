@@ -16,6 +16,25 @@ public sealed class KnowledgeArtifactWriter
 
         Directory.CreateDirectory(outputDirectory);
         WriteDocument(outputDirectory, knowledge, overwrite);
+
+        var contentHash = ComputeContentHash(knowledge);
+        WriteAtomicText(
+            Path.Combine(outputDirectory, "content-hash.txt"),
+            contentHash + "\n",
+            overwrite);
+
+        var template = new KnowledgeApproval
+        {
+            ApprovalSchemaVersion = KnowledgeConstants.ApprovalSchemaVersion,
+            Reviewer = "REPLACE_WITH_REVIEWER",
+            ReviewedAtUtc = DateTimeOffset.UnixEpoch,
+            SourceKnowledgeHash = contentHash,
+            SourceKnowledgeId = knowledge.KnowledgeId,
+            Decision = "approve",
+            Notes = "Replace reviewer and notes after human review.",
+            PromotesPageObjects = false
+        };
+        WriteAtomicJson(Path.Combine(outputDirectory, "approval-template.json"), template, overwrite);
     }
 
     public void WriteApproved(
@@ -31,29 +50,42 @@ public sealed class KnowledgeArtifactWriter
         if (knowledge.Approval is null)
             throw new InvalidOperationException("WriteApproved requires an approval record.");
 
+        // Strip machine-specific absolute paths before persisting approved knowledge.
+        SanitizeAbsolutePaths(knowledge);
+
         Directory.CreateDirectory(outputDirectory);
         WriteDocument(outputDirectory, knowledge, overwrite);
         WriteAtomicJson(Path.Combine(outputDirectory, "knowledge-approval.json"), knowledge.Approval, overwrite);
+        WriteAtomicText(
+            Path.Combine(outputDirectory, "content-hash.txt"),
+            ComputeContentHash(knowledge) + "\n",
+            overwrite);
     }
 
     public static string ComputeContentHash(ApplicationKnowledgeDocument knowledge)
     {
         ArgumentNullException.ThrowIfNull(knowledge);
-        // Exclude volatile timestamps from the deterministic content hash.
-        var projection = new
+        // Canonical projection: excludes status, approval, and volatile timestamps so
+        // candidate and approved documents share the same sourceKnowledgeHash.
+        var projection = BuildCanonicalProjection(knowledge);
+        return KnowledgeHash.Sha256Hex(KnowledgeJson.CanonicalSerialize(projection));
+    }
+
+    public static object BuildCanonicalProjection(ApplicationKnowledgeDocument knowledge) =>
+        new
         {
             knowledge.KnowledgeSchemaVersion,
             knowledge.ApplicationId,
             knowledge.BuildFingerprint,
             fingerprint = ApplicationFingerprintBuilder.ToHashable(knowledge.Fingerprint),
-            knowledge.Status,
             sourceExplorationRuns = knowledge.SourceExplorationRuns
                 .OrderBy(s => s.ExplorationId, StringComparer.Ordinal)
                 .Select(s => new
                 {
                     s.ExplorationId,
                     s.ArtifactHash,
-                    s.PolicySha256
+                    s.PolicySha256,
+                    manifestPath = SanitizeRelativePath(s.ManifestPath)
                 }),
             graph = ProjectGraph(knowledge.Graph),
             workflows = knowledge.Workflows
@@ -70,7 +102,35 @@ public sealed class KnowledgeArtifactWriter
             idCollisions = knowledge.IdCollisions
         };
 
-        return KnowledgeHash.Sha256Hex(KnowledgeJson.CanonicalSerialize(projection));
+    public static void SanitizeAbsolutePaths(ApplicationKnowledgeDocument knowledge)
+    {
+        ArgumentNullException.ThrowIfNull(knowledge);
+        foreach (var source in knowledge.SourceExplorationRuns)
+            source.ManifestPath = SanitizeRelativePath(source.ManifestPath);
+
+        if (knowledge.Approval is not null)
+            knowledge.Approval.ReviewedInputPath = SanitizeRelativePath(knowledge.Approval.ReviewedInputPath);
+    }
+
+    private static string? SanitizeRelativePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        var normalized = path.Replace('\\', '/');
+        if (Path.IsPathRooted(path)
+            || normalized.Contains(":/", StringComparison.Ordinal)
+            || normalized.StartsWith("//", StringComparison.Ordinal))
+        {
+            var marker = "/exploration/runs/";
+            var idx = normalized.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (idx >= 0)
+                return "exploration/runs/" + normalized[(idx + marker.Length)..];
+
+            return Path.GetFileName(normalized);
+        }
+
+        return normalized;
     }
 
     private static void WriteDocument(string outputDirectory, ApplicationKnowledgeDocument knowledge, bool overwrite)
@@ -146,11 +206,14 @@ public sealed class KnowledgeArtifactWriter
             throw new IOException($"Knowledge artifact already exists and must not be overwritten: {path}");
 
         var json = SecretRedactor.Redact(JsonSerializer.Serialize(value, KnowledgeJson.Indented));
-        WriteAtomicText(path, json.EndsWith('\n') ? json : json + "\n");
+        WriteAtomicText(path, json.EndsWith('\n') ? json : json + "\n", overwrite: true);
     }
 
-    private static void WriteAtomicText(string path, string content)
+    private static void WriteAtomicText(string path, string content, bool overwrite = false)
     {
+        if (File.Exists(path) && !overwrite)
+            throw new IOException($"Knowledge artifact already exists and must not be overwritten: {path}");
+
         var directory = Path.GetDirectoryName(path)
                         ?? throw new IOException($"Unable to resolve directory for '{path}'.");
         Directory.CreateDirectory(directory);

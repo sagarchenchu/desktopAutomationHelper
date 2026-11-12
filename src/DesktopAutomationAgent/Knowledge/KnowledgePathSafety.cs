@@ -65,6 +65,90 @@ internal static class KnowledgePathSafety
         return trimmed;
     }
 
+    public static string CandidatesRoot(string workspaceRoot) =>
+        Path.GetFullPath(Path.Combine(workspaceRoot, "knowledge", "candidates"));
+
+    public static string ApprovedRoot(string workspaceRoot) =>
+        Path.GetFullPath(Path.Combine(workspaceRoot, "knowledge", "approved"));
+
+    public static string ObjectRepositoryPagesRoot(string workspaceRoot) =>
+        Path.GetFullPath(Path.Combine(workspaceRoot, "object-repository", "pages"));
+
+    /// <summary>
+    /// Candidate outputs and approval sources must live under knowledge/candidates.
+    /// Rejects knowledge/approved and object-repository/pages.
+    /// </summary>
+    public static void EnsureUnderCandidates(string fullPath, string workspaceRoot)
+    {
+        var normalized = Path.GetFullPath(fullPath);
+        var candidates = CandidatesRoot(workspaceRoot);
+        try
+        {
+            EnsureWritablePathInside(normalized, candidates);
+        }
+        catch (KnowledgePathException ex)
+        {
+            throw new KnowledgePathException(
+                $"path '{fullPath}' must resolve under knowledge/candidates. {ex.Message}");
+        }
+
+        RejectForbiddenKnowledgeRoots(normalized, workspaceRoot);
+    }
+
+    public static void EnsureCandidateSource(string fullPath, string workspaceRoot)
+    {
+        var normalized = Path.GetFullPath(fullPath);
+        var candidates = CandidatesRoot(workspaceRoot);
+        try
+        {
+            EnsureReadablePathInside(normalized, candidates);
+        }
+        catch (KnowledgePathException ex)
+        {
+            throw new KnowledgePathException(
+                $"approval source '{fullPath}' must resolve under knowledge/candidates. {ex.Message}");
+        }
+
+        RejectForbiddenKnowledgeRoots(normalized, workspaceRoot);
+    }
+
+    private static void RejectForbiddenKnowledgeRoots(string fullPath, string workspaceRoot)
+    {
+        var approved = ApprovedRoot(workspaceRoot);
+        var pages = ObjectRepositoryPagesRoot(workspaceRoot);
+        var normalized = Path.GetFullPath(fullPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        if (IsInsideOrEqual(normalized, approved))
+        {
+            throw new KnowledgePathException(
+                $"path '{fullPath}' resolves under knowledge/approved and cannot be used as a candidate path.");
+        }
+
+        if (IsInsideOrEqual(normalized, pages))
+        {
+            throw new KnowledgePathException(
+                $"path '{fullPath}' resolves under object-repository/pages and is forbidden for knowledge operations.");
+        }
+    }
+
+    private static bool IsInsideOrEqual(string fullPath, string directoryRoot)
+    {
+        var root = Path.GetFullPath(directoryRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalized = Path.GetFullPath(fullPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        if (WorkspaceManager.PathsEqual(normalized, root))
+            return true;
+
+        var relative = Path.GetRelativePath(root, normalized);
+        return !Path.IsPathRooted(relative)
+               && relative != ".."
+               && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+               && !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal);
+    }
+
     private static string ResolveFinalPath(
         string fullPath,
         string containmentRoot,

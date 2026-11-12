@@ -49,22 +49,28 @@ flowchart LR
 
 A knowledge version is identified by `applicationId` + `buildFingerprint`.
 
+Exploration runs now seal a `build-identity.json` at crawl time. Knowledge merge
+**fails closed** when that file is missing or incomplete, and never re-reads a
+mutable policy file for identity (live policy files must still match the sealed
+`policySha256` when present).
+
 Fingerprint fields:
 
 | Field | Notes |
 |---|---|
 | `applicationId` | Stable app slug |
-| `executablePath` | From exploration policy when present |
-| `productVersion` / `fileVersion` | When available via config identity |
+| `executablePath` | Sealed from exploration build identity |
+| `productVersion` / `fileVersion` | When available via sealed identity |
 | `executableSha256` | When configured/readable |
-| `configIdentity` | Relevant config/env **without secrets** |
-| `driverVersion` | When known |
+| `configIdentity` | Relevant config/env **without secrets**; always includes `processName` |
+| `driverVersion` | Required (from sealed identity) |
 | `snapshotSchemaVersion` | Semantic snapshot contract |
 | `explorerVersion` | Exploration artifact contract (`phase4b-1`) |
 | `explorationPolicyHash` | Policy SHA-256 |
 
 **Incompatible fingerprints are never silently merged.** A fingerprint change
-starts a new knowledge version under a new `buildFingerprint` path.
+starts a new knowledge version under a new `buildFingerprint` path. Duplicate
+exploration run ids / artifact hashes are rejected (no inflated observation counts).
 
 ## Stable IDs
 
@@ -89,9 +95,16 @@ Deterministic IDs are hashed from normalized semantic content:
 
 | Action | Candidate | Approved | Page Objects |
 |---|---|---|---|
-| `build-knowledge` | writes | no | optional suggestions under `candidates/` only |
-| `approve-knowledge` | reads | writes | **never** promotes |
+| `build-knowledge` | writes under `knowledge/candidates` only | no | optional suggestions under `candidates/` only |
+| `approve-knowledge` | reads candidates only | writes | **never** promotes |
 | Active `pages/` / `repository.json` | untouched | untouched | untouched |
+
+`--output` and approval `--source` must resolve under `knowledge/candidates`.
+Paths under `knowledge/approved` or `object-repository/pages` are rejected.
+Candidate builds emit `content-hash.txt` + `approval-template.json`. Approved
+validate recomputes the canonical content hash and cross-checks
+`approval.sourceKnowledgeHash` (tamper detection). Absolute machine paths are
+stripped from approved artifacts.
 
 ## CLI (offline — no driver / network)
 
@@ -135,12 +148,19 @@ dotnet run --project src/DesktopAutomationAgent -- approve-knowledge --source <c
 - Never modifies `repository.json`
 - Approved object refs may be linked from knowledge only after separate human validation
 
+## Workflow continuity
+
+Successful transitions are chained only while `previous.target == next.source`.
+Discontinuities split into separate workflows. Validator enforces entry/terminal
+alignment, contiguous ordinals, and source→target continuity.
+
 ## Limitations
 
 - No AI / embeddings / vision
 - No automatic Page Object promotion
 - No silent rebuild across incompatible builds
 - WinForms window class names are normalized by stripping runtime `.app.*` suffixes
-- Product/file version enrichment depends on optional config identity keys
-- Workflow extraction covers successful navigation sequences only
+- Product/file version enrichment depends on sealed exploration identity
+- Workflow extraction covers continuous successful navigation segments only
 - Knowledge merge does not re-query the live UI
+- Exploration runs without `build-identity.json` cannot be merged

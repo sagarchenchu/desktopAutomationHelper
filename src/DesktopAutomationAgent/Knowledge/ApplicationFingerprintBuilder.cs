@@ -5,56 +5,47 @@ namespace DesktopAutomationAgent.Knowledge;
 
 public sealed class ApplicationFingerprintBuilder
 {
-    public ApplicationFingerprint Build(
-        string applicationId,
-        ExplorationPolicyDocument? policy,
-        string explorationPolicyHash,
-        string? driverVersion = null,
-        IReadOnlyDictionary<string, string>? configIdentity = null)
+    /// <summary>
+    /// Build fingerprint exclusively from sealed exploration build identity (fail closed).
+    /// </summary>
+    public ApplicationFingerprint BuildFromIdentity(string applicationId, ExplorationBuildIdentity identity)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(applicationId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(explorationPolicyHash);
+        ArgumentNullException.ThrowIfNull(identity);
+
+        if (string.IsNullOrWhiteSpace(identity.DriverVersion))
+            throw new InvalidOperationException("build identity is missing required driverVersion.");
+        if (string.IsNullOrWhiteSpace(identity.PolicySha256) || identity.PolicySha256.Length != 64)
+            throw new InvalidOperationException("build identity is missing required policySha256.");
+        if (string.IsNullOrWhiteSpace(identity.ExplorerVersion))
+            throw new InvalidOperationException("build identity is missing required explorerVersion.");
+        if (string.IsNullOrWhiteSpace(identity.ProcessName))
+            throw new InvalidOperationException("build identity is missing required processName.");
 
         var fingerprint = new ApplicationFingerprint
         {
             ApplicationId = applicationId.Trim().ToLowerInvariant(),
-            SnapshotSchemaVersion = SemanticSnapshot.SchemaVersion,
-            ExplorerVersion = KnowledgeConstants.ExplorerVersion,
-            ExplorationPolicyHash = explorationPolicyHash.Trim().ToLowerInvariant(),
-            DriverVersion = string.IsNullOrWhiteSpace(driverVersion) ? null : driverVersion.Trim()
+            ExecutablePath = NormalizePath(identity.ExecutablePath),
+            ExecutableSha256 = NormalizeSha(identity.ExecutableSha256),
+            ProductVersion = string.IsNullOrWhiteSpace(identity.ProductVersion) ? null : identity.ProductVersion.Trim(),
+            FileVersion = string.IsNullOrWhiteSpace(identity.FileVersion) ? null : identity.FileVersion.Trim(),
+            DriverVersion = identity.DriverVersion.Trim(),
+            SnapshotSchemaVersion = identity.SnapshotSchemaVersion > 0
+                ? identity.SnapshotSchemaVersion
+                : SemanticSnapshot.SchemaVersion,
+            ExplorerVersion = identity.ExplorerVersion.Trim(),
+            ExplorationPolicyHash = identity.PolicySha256.Trim().ToLowerInvariant()
         };
 
-        if (policy?.Application is not null)
+        foreach (var pair in identity.ConfigIdentity.OrderBy(p => p.Key, StringComparer.Ordinal))
         {
-            fingerprint.ExecutablePath = NormalizePath(policy.Application.ExecutablePath);
-            fingerprint.ExecutableSha256 = NormalizeSha(policy.Application.ExecutableSha256);
-
-            // Product/file version are optional enrichment; exploration policy does not yet
-            // carry them, so leave null unless supplied via configIdentity keys.
+            if (IsSecretLike(pair.Key) || IsSecretLike(pair.Value))
+                continue;
+            fingerprint.ConfigIdentity[pair.Key.Trim()] = pair.Value.Trim();
         }
 
-        if (configIdentity is not null)
-        {
-            foreach (var pair in configIdentity.OrderBy(p => p.Key, StringComparer.Ordinal))
-            {
-                if (IsSecretLike(pair.Key) || IsSecretLike(pair.Value))
-                    continue;
-
-                if (string.Equals(pair.Key, "productVersion", StringComparison.OrdinalIgnoreCase))
-                {
-                    fingerprint.ProductVersion = pair.Value.Trim();
-                    continue;
-                }
-
-                if (string.Equals(pair.Key, "fileVersion", StringComparison.OrdinalIgnoreCase))
-                {
-                    fingerprint.FileVersion = pair.Value.Trim();
-                    continue;
-                }
-
-                fingerprint.ConfigIdentity[pair.Key.Trim()] = pair.Value.Trim();
-            }
-        }
+        // Always include processName in config identity for stable fingerprinting.
+        fingerprint.ConfigIdentity["processName"] = identity.ProcessName.Trim();
 
         return fingerprint;
     }

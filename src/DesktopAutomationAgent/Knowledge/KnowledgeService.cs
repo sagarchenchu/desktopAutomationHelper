@@ -80,7 +80,8 @@ public sealed class KnowledgeService
                 ? Path.Combine(_workspace.RootPath, "knowledge", "candidates", appSeg, fpSeg, runId)
                 : Path.GetFullPath(outputDirectory);
 
-            KnowledgePathSafety.EnsureWritablePathInside(output, _workspace.RootPath);
+            // Candidate outputs must stay under knowledge/candidates (no approved/pages bypass).
+            KnowledgePathSafety.EnsureUnderCandidates(output, _workspace.RootPath);
             Directory.CreateDirectory(output);
             _writer.WriteCandidate(output, knowledge, overwrite: false);
 
@@ -94,7 +95,8 @@ public sealed class KnowledgeService
                 ExitCode = 0,
                 OutputDirectory = output,
                 Knowledge = knowledge,
-                SuggestedPageObjectPaths = suggested
+                SuggestedPageObjectPaths = suggested,
+                ContentHash = KnowledgeArtifactWriter.ComputeContentHash(knowledge)
             };
         }
         catch (KnowledgePathException ex)

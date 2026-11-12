@@ -36,7 +36,8 @@ public sealed class KnowledgeApprover
             _workspace.EnsureInitialized();
 
             var sourceDir = Path.GetFullPath(sourceDirectory);
-            KnowledgePathSafety.EnsureReadablePathInside(sourceDir, _workspace.RootPath);
+            // Approval sources must be under knowledge/candidates — never approved/ or pages/.
+            KnowledgePathSafety.EnsureCandidateSource(sourceDir, _workspace.RootPath);
 
             var knowledgePath = Path.Combine(sourceDir, "application-knowledge.json");
             if (!File.Exists(knowledgePath))
@@ -45,7 +46,7 @@ public sealed class KnowledgeApprover
             }
 
             EnsureFileSize(knowledgePath);
-            KnowledgePathSafety.EnsureNotSymlinkEscape(knowledgePath, _workspace.RootPath);
+            KnowledgePathSafety.EnsureNotSymlinkEscape(knowledgePath, KnowledgePathSafety.CandidatesRoot(_workspace.RootPath));
 
             var reviewedFull = Path.GetFullPath(reviewedInputPath);
             if (!File.Exists(reviewedFull))
@@ -108,13 +109,15 @@ public sealed class KnowledgeApprover
                 Decision = "approve",
                 Notes = reviewedInput.Notes,
                 PromotesPageObjects = false,
-                ReviewedInputPath = reviewedFull,
+                // Store basename only — never machine-specific absolute paths in approved knowledge.
+                ReviewedInputPath = Path.GetFileName(reviewedFull),
                 ReviewedInputHash = KnowledgeHash.Sha256Hex(reviewedJson)
             };
 
             knowledge.Status = "approved";
             knowledge.Approval = approval;
             knowledge.UpdatedAtUtc = approval.ReviewedAtUtc;
+            KnowledgeArtifactWriter.SanitizeAbsolutePaths(knowledge);
 
             var approvedRoot = Path.Combine(
                 _workspace.RootPath,

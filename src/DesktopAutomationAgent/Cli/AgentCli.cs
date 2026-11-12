@@ -836,6 +836,10 @@ public static class AgentCli
                 outputDirectory = result.OutputDirectory,
                 knowledgeId = result.Knowledge?.KnowledgeId,
                 buildFingerprint = result.Knowledge?.BuildFingerprint,
+                contentHash = result.ContentHash,
+                approvalTemplate = result.Success
+                    ? Path.Combine(result.OutputDirectory ?? string.Empty, "approval-template.json")
+                    : null,
                 coverage = result.Knowledge?.Coverage,
                 conflicts = result.Knowledge?.Coverage.Conflicts,
                 suggestedPageObjectPaths = result.SuggestedPageObjectPaths,
@@ -852,13 +856,18 @@ public static class AgentCli
             {
                 Console.WriteLine($"Knowledge id      : {result.Knowledge.KnowledgeId}");
                 Console.WriteLine($"Build fingerprint : {result.Knowledge.BuildFingerprint}");
+                Console.WriteLine($"Content hash      : {result.ContentHash}");
                 Console.WriteLine($"States            : {result.Knowledge.Coverage.UniqueStates}");
                 Console.WriteLine($"Transitions       : {result.Knowledge.Coverage.PermittedTransitionsAttempted}");
                 Console.WriteLine($"Conflicts         : {result.Knowledge.Coverage.Conflicts}");
             }
 
             if (!string.IsNullOrWhiteSpace(result.OutputDirectory))
+            {
                 Console.WriteLine($"Output            : {result.OutputDirectory}");
+                Console.WriteLine($"Approval template : {Path.Combine(result.OutputDirectory, "approval-template.json")}");
+            }
+
             foreach (var path in result.SuggestedPageObjectPaths)
                 Console.WriteLine($"Candidate PO      : {path}");
             if (!string.IsNullOrWhiteSpace(result.Error))

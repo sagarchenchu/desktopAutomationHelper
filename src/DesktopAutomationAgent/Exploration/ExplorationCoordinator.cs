@@ -234,7 +234,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     BuildManifest(explorationId, policy, policyResult, request, startedAt),
                     recorder.States,
                     recorder.Transitions,
-                    summary);
+                    summary,
+                    BuildBuildIdentity(policy, policyResult, initialSnapshot));
 
                 return new ExplorationResult
                 {
@@ -1257,7 +1258,8 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
                     BuildManifest(explorationId, policy, policyResult, request, startedAt),
                     recorder.States,
                     recorder.Transitions,
-                    summary);
+                    summary,
+                    BuildBuildIdentity(policy, policyResult, initialSnapshot));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -1939,6 +1941,35 @@ public sealed class ExplorationCoordinator : IExplorationCoordinator
             PolicyPath = policyResult.FilePath,
             PolicySha256 = policyResult.Sha256
         };
+
+    private static ExplorationBuildIdentity BuildBuildIdentity(
+        ExplorationPolicyDocument policy,
+        ExplorationPolicyValidationResult policyResult,
+        SemanticSnapshot? snapshot)
+    {
+        var config = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(policy.Application.ProcessName))
+            config["processName"] = policy.Application.ProcessName.Trim();
+
+        // Capture non-secret application identity at explore time — never re-read later.
+        return new ExplorationBuildIdentity
+        {
+            BuildIdentitySchemaVersion = ExplorationBuildIdentity.SchemaVersion,
+            ProcessName = policy.Application.ProcessName?.Trim() ?? string.Empty,
+            ExecutablePath = string.IsNullOrWhiteSpace(policy.Application.ExecutablePath)
+                ? null
+                : policy.Application.ExecutablePath.Trim(),
+            ExecutableSha256 = string.IsNullOrWhiteSpace(policy.Application.ExecutableSha256)
+                ? null
+                : policy.Application.ExecutableSha256.Trim().ToLowerInvariant(),
+            DriverVersion = snapshot?.DriverVersion?.Trim() ?? string.Empty,
+            SnapshotSchemaVersion = snapshot?.SnapshotSchemaVersion
+                                    ?? Observation.SemanticSnapshot.SchemaVersion,
+            ExplorerVersion = "phase4b-1",
+            PolicySha256 = policyResult.Sha256?.Trim().ToLowerInvariant() ?? string.Empty,
+            ConfigIdentity = config
+        };
+    }
 
     private static ExplorationSummary BuildSummary(
         string explorationId,

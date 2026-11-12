@@ -27,60 +27,101 @@ public sealed class ExplorationRunLoader
         var summaryPath = Path.Combine(runDirectory, "summary.json");
         var statesPath = Path.Combine(runDirectory, "states.jsonl");
         var transitionsPath = Path.Combine(runDirectory, "transitions.jsonl");
+        var identityPath = Path.Combine(runDirectory, "build-identity.json");
 
         EnsureFile(manifestPath);
         EnsureFile(summaryPath);
         EnsureFile(statesPath);
         EnsureFile(transitionsPath);
 
+        if (!File.Exists(identityPath))
+        {
+            throw new InvalidOperationException(
+                $"Exploration run '{runDirectory}' is missing build-identity.json. "
+                + "Knowledge merge fails closed without a captured build identity.");
+        }
+
+        EnsureFile(identityPath);
+
         var manifest = ReadJsonFile<ExplorationManifest>(manifestPath);
         var summary = ReadJsonFile<ExplorationSummary>(summaryPath);
         var states = ReadJsonlFile<ExplorationStateRecord>(statesPath);
         var transitions = ReadJsonlFile<ExplorationTransitionRecord>(transitionsPath);
+        var buildIdentity = ReadJsonFile<ExplorationBuildIdentity>(identityPath);
 
         if (string.IsNullOrWhiteSpace(manifest.ExplorationId))
             throw new InvalidOperationException($"Exploration manifest at '{manifestPath}' is missing explorationId.");
 
-        ExplorationPolicyDocument? policy = null;
+        ValidateBuildIdentity(buildIdentity, manifest, identityPath);
+
+        // Never trust a mutable on-disk policy for fingerprinting. Optionally verify that a
+        // still-present policy file matches the sealed hash; mismatches fail closed.
         if (!string.IsNullOrWhiteSpace(manifest.PolicyPath) && File.Exists(manifest.PolicyPath))
         {
-            // Policy may live outside the workspace (acceptance fixtures). Read for identity only;
-            // do not require containment when the path is absolute and the file exists.
-            try
+            EnsureFileSize(manifest.PolicyPath);
+            var liveHash = KnowledgeHash.Sha256File(manifest.PolicyPath);
+            if (!string.Equals(liveHash, buildIdentity.PolicySha256, StringComparison.OrdinalIgnoreCase))
             {
-                EnsureFileSize(manifest.PolicyPath);
-                policy = JsonSerializer.Deserialize<ExplorationPolicyDocument>(
-                    File.ReadAllText(manifest.PolicyPath),
-                    KnowledgeJson.Compact);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-            {
-                policy = null;
+                throw new InvalidOperationException(
+                    $"Exploration policy at '{manifest.PolicyPath}' no longer matches sealed policySha256 "
+                    + $"'{buildIdentity.PolicySha256}' (live '{liveHash}'). Refusing mutable policy re-read.");
             }
         }
-
-        var policySha = string.IsNullOrWhiteSpace(manifest.PolicySha256)
-            ? KnowledgeHash.Sha256Hex(string.Empty)
-            : manifest.PolicySha256.Trim().ToLowerInvariant();
 
         var artifactHash = KnowledgeHash.Sha256Hex(
             KnowledgeHash.Sha256File(manifestPath)
             + KnowledgeHash.Sha256File(statesPath)
             + KnowledgeHash.Sha256File(transitionsPath)
-            + KnowledgeHash.Sha256File(summaryPath));
+            + KnowledgeHash.Sha256File(summaryPath)
+            + KnowledgeHash.Sha256File(identityPath));
 
         return new LoadedExplorationRun
         {
             ExplorationId = manifest.ExplorationId,
             RunDirectory = runDirectory,
             ArtifactHash = artifactHash,
-            PolicySha256 = policySha,
+            PolicySha256 = buildIdentity.PolicySha256,
             Manifest = manifest,
             Summary = summary,
             States = states,
             Transitions = transitions,
-            Policy = policy
+            BuildIdentity = buildIdentity
         };
+    }
+
+    private static void ValidateBuildIdentity(
+        ExplorationBuildIdentity identity,
+        ExplorationManifest manifest,
+        string identityPath)
+    {
+        if (identity.BuildIdentitySchemaVersion != ExplorationBuildIdentity.SchemaVersion)
+        {
+            throw new InvalidOperationException(
+                $"Unsupported buildIdentitySchemaVersion '{identity.BuildIdentitySchemaVersion}' in '{identityPath}'.");
+        }
+
+        if (string.IsNullOrWhiteSpace(identity.ProcessName))
+            throw new InvalidOperationException($"build-identity.json missing required processName ({identityPath}).");
+
+        if (string.IsNullOrWhiteSpace(identity.DriverVersion))
+            throw new InvalidOperationException($"build-identity.json missing required driverVersion ({identityPath}).");
+
+        if (string.IsNullOrWhiteSpace(identity.ExplorerVersion))
+            throw new InvalidOperationException($"build-identity.json missing required explorerVersion ({identityPath}).");
+
+        if (string.IsNullOrWhiteSpace(identity.PolicySha256) || identity.PolicySha256.Length != 64)
+            throw new InvalidOperationException($"build-identity.json missing valid policySha256 ({identityPath}).");
+
+        if (!string.IsNullOrWhiteSpace(manifest.PolicySha256)
+            && !string.Equals(manifest.PolicySha256.Trim(), identity.PolicySha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"manifest.policySha256 '{manifest.PolicySha256}' does not match build-identity policySha256 "
+                + $"'{identity.PolicySha256}'.");
+        }
+
+        if (identity.SnapshotSchemaVersion <= 0)
+            throw new InvalidOperationException($"build-identity.json has invalid snapshotSchemaVersion ({identityPath}).");
     }
 
     private string ResolveRunDirectory(string explorationRun)

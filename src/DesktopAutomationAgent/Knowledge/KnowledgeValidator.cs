@@ -55,7 +55,10 @@ public sealed class KnowledgeValidator
             if (document.Approval is null)
                 result.Errors.Add("approved knowledge requires an approval record.");
             else
+            {
                 ValidateApproval(document.Approval, result);
+                VerifyApprovedContentHash(document, result);
+            }
         }
 
         if (document.Approval is not null && document.Approval.PromotesPageObjects)
@@ -78,7 +81,43 @@ public sealed class KnowledgeValidator
         var json = File.ReadAllText(path);
         var document = JsonSerializer.Deserialize<ApplicationKnowledgeDocument>(json, KnowledgeJson.Compact)
                        ?? throw new InvalidOperationException("Failed to deserialize application-knowledge.json.");
-        return Validate(document);
+
+        var result = Validate(document);
+
+        // Cross-check optional content-hash.txt when present.
+        var hashFile = Path.Combine(knowledgeDirectory, "content-hash.txt");
+        if (File.Exists(hashFile))
+        {
+            var recorded = File.ReadAllText(hashFile).Trim().ToLowerInvariant();
+            var actual = KnowledgeArtifactWriter.ComputeContentHash(document);
+            if (!string.Equals(recorded, actual, StringComparison.Ordinal))
+            {
+                result.Errors.Add(
+                    $"content-hash.txt mismatch: recorded '{recorded}', recomputed '{actual}'.");
+            }
+        }
+
+        return result;
+    }
+
+    private static void VerifyApprovedContentHash(
+        ApplicationKnowledgeDocument document,
+        KnowledgeValidationResult result)
+    {
+        if (document.Approval is null)
+            return;
+
+        var actual = KnowledgeArtifactWriter.ComputeContentHash(document);
+        if (!string.Equals(
+                actual,
+                document.Approval.SourceKnowledgeHash.Trim().ToLowerInvariant(),
+                StringComparison.Ordinal))
+        {
+            result.Errors.Add(
+                $"approved knowledge sourceKnowledgeHash mismatch: approval has "
+                + $"'{document.Approval.SourceKnowledgeHash}', recomputed canonical hash is '{actual}'. "
+                + "Document may have been tampered with after review.");
+        }
     }
 
     private void EvaluateSchemas(ApplicationKnowledgeDocument document, KnowledgeValidationResult result)
@@ -146,8 +185,17 @@ public sealed class KnowledgeValidator
         if (string.IsNullOrWhiteSpace(fingerprint.ExplorerVersion))
             result.Errors.Add("fingerprint.explorerVersion is required.");
 
+        if (string.IsNullOrWhiteSpace(fingerprint.DriverVersion))
+            result.Errors.Add("fingerprint.driverVersion is required.");
+
         if (!Hex64.IsMatch(fingerprint.ExplorationPolicyHash ?? string.Empty))
             result.Errors.Add("fingerprint.explorationPolicyHash must be a 64-char lowercase hex digest.");
+
+        if (!fingerprint.ConfigIdentity.ContainsKey("processName")
+            || string.IsNullOrWhiteSpace(fingerprint.ConfigIdentity["processName"]))
+        {
+            result.Errors.Add("fingerprint.configIdentity.processName is required.");
+        }
 
         if (fingerprint.ExecutableSha256 is not null
             && fingerprint.ExecutableSha256.Length > 0
@@ -246,12 +294,59 @@ public sealed class KnowledgeValidator
         {
             if (!seen.Add(workflow.WorkflowId))
                 result.Errors.Add($"duplicate workflowId '{workflow.WorkflowId}'.");
+            if (workflow.Steps.Count == 0)
+            {
+                result.Errors.Add($"workflow '{workflow.WorkflowId}' has no steps.");
+                continue;
+            }
+
             if (!stateIds.Contains(workflow.EntryStateId))
                 result.Errors.Add($"workflow '{workflow.WorkflowId}' has unknown entryStateId.");
-            foreach (var step in workflow.Steps)
+            if (workflow.TerminalStateId is not null && !stateIds.Contains(workflow.TerminalStateId))
+                result.Errors.Add($"workflow '{workflow.WorkflowId}' has unknown terminalStateId.");
+
+            if (!string.Equals(workflow.EntryStateId, workflow.Steps[0].SourceStateId, StringComparison.Ordinal))
             {
+                result.Errors.Add(
+                    $"workflow '{workflow.WorkflowId}' entryStateId does not match first step sourceStateId.");
+            }
+
+            var last = workflow.Steps[^1];
+            var expectedTerminal = last.TargetStateId ?? last.SourceStateId;
+            if (workflow.TerminalStateId is not null
+                && !string.Equals(workflow.TerminalStateId, expectedTerminal, StringComparison.Ordinal))
+            {
+                result.Errors.Add(
+                    $"workflow '{workflow.WorkflowId}' terminalStateId does not match final step target.");
+            }
+
+            string? previousTarget = null;
+            for (var i = 0; i < workflow.Steps.Count; i++)
+            {
+                var step = workflow.Steps[i];
+                if (step.Ordinal != i)
+                    result.Errors.Add($"workflow '{workflow.WorkflowId}' step ordinal {step.Ordinal} expected {i}.");
+
                 if (!transitionIds.Contains(step.TransitionId))
-                    result.Warnings.Add($"workflow '{workflow.WorkflowId}' step references transition '{step.TransitionId}' not present in graph (may be filtered).");
+                {
+                    result.Warnings.Add(
+                        $"workflow '{workflow.WorkflowId}' step references transition '{step.TransitionId}' not present in graph (may be filtered).");
+                }
+
+                if (!stateIds.Contains(step.SourceStateId))
+                    result.Errors.Add($"workflow '{workflow.WorkflowId}' step {i} has unknown sourceStateId.");
+                if (step.TargetStateId is not null && !stateIds.Contains(step.TargetStateId))
+                    result.Errors.Add($"workflow '{workflow.WorkflowId}' step {i} has unknown targetStateId.");
+
+                if (previousTarget is not null
+                    && !string.Equals(previousTarget, step.SourceStateId, StringComparison.Ordinal))
+                {
+                    result.Errors.Add(
+                        $"workflow '{workflow.WorkflowId}' is disconnected at step {i}: "
+                        + $"previous target '{previousTarget}' != source '{step.SourceStateId}'.");
+                }
+
+                previousTarget = step.TargetStateId ?? step.SourceStateId;
             }
         }
     }

@@ -473,12 +473,18 @@ public class Phase4cApplicationKnowledgeTests
         using var temp = TempWorkspace();
         var workspace = CreateWorkspace(temp.Path);
         workspace.Initialize();
+        var policyHash = new string('a', 64);
         var runDir = Path.Combine(temp.Path, "exploration", "runs", "huge-run");
         Directory.CreateDirectory(runDir);
-        File.WriteAllText(Path.Combine(runDir, "manifest.json"), """{"manifestSchemaVersion":1,"explorationId":"huge-run","mode":"navigate","dryRun":false,"startedAtUtc":"2026-01-01T00:00:00Z","policySha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}""");
+        File.WriteAllText(
+            Path.Combine(runDir, "manifest.json"),
+            "{\"manifestSchemaVersion\":1,\"explorationId\":\"huge-run\",\"mode\":\"navigate\",\"dryRun\":false,\"startedAtUtc\":\"2026-01-01T00:00:00Z\",\"policySha256\":\"" + policyHash + "\"}");
         File.WriteAllText(Path.Combine(runDir, "summary.json"), """{"summarySchemaVersion":1,"explorationId":"huge-run","status":"ok","exitCode":0,"mode":"navigate","dryRun":false,"startedAtUtc":"2026-01-01T00:00:00Z","completedAtUtc":"2026-01-01T00:00:01Z","statesVisited":0,"actionsAttempted":0,"transitionsRecorded":0,"maxDepthReached":0}""");
         File.WriteAllText(Path.Combine(runDir, "states.jsonl"), "");
         File.WriteAllText(Path.Combine(runDir, "transitions.jsonl"), new string('x', 2000));
+        File.WriteAllText(
+            Path.Combine(runDir, "build-identity.json"),
+            "{\"buildIdentitySchemaVersion\":1,\"processName\":\"Demo\",\"driverVersion\":\"1.0.0\",\"snapshotSchemaVersion\":1,\"explorerVersion\":\"phase4b-1\",\"policySha256\":\"" + policyHash + "\",\"configIdentity\":{\"processName\":\"Demo\"}}");
 
         var options = Options.Create(new AgentOptions
         {
@@ -491,6 +497,232 @@ public class Phase4cApplicationKnowledgeTests
         Assert.Contains("maximum size", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Build_FailsClosed_WhenBuildIdentityMissing()
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var run = WriteExplorationRun(temp.Path, "no-identity", new string('7', 64), 1, false);
+        File.Delete(Path.Combine(temp.Path, "exploration", "runs", run, "build-identity.json"));
+
+        var result = CreateKnowledgeService(workspace).Build("demo-app", [run], false);
+        Assert.False(result.Success);
+        Assert.Contains("build-identity.json", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Build_RejectsDuplicateExplorationRuns()
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var run = WriteExplorationRun(temp.Path, "dup-id", new string('8', 64), 1, false);
+
+        var result = CreateKnowledgeService(workspace).Build("demo-app", [run, run], false);
+        Assert.False(result.Success);
+        Assert.Contains("Duplicate exploration", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Build_RejectsOutputOutsideCandidates()
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var run = WriteExplorationRun(temp.Path, "out-path", new string('9', 64), 1, false);
+        var outside = Path.Combine(temp.Path, "knowledge", "approved", "demo-app", "fp");
+
+        var result = CreateKnowledgeService(workspace).Build(
+            "demo-app",
+            [run],
+            false,
+            outputDirectory: outside,
+            createdAtUtc: DateTimeOffset.UnixEpoch);
+        Assert.False(result.Success);
+        Assert.Contains("candidates", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Approve_RejectsSourceOutsideCandidates()
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var policyHash = new string('a', 64);
+        var run = WriteExplorationRun(temp.Path, "appr-src", policyHash, 1, false);
+        var service = CreateKnowledgeService(workspace);
+        var built = service.Build("demo-app", [run], false, createdAtUtc: DateTimeOffset.UnixEpoch);
+        Assert.True(built.Success, built.Error);
+
+        // Copy candidate into approved path and attempt to approve from there.
+        var rogue = Path.Combine(temp.Path, "knowledge", "approved", "demo-app", "rogue");
+        Directory.CreateDirectory(rogue);
+        foreach (var file in Directory.GetFiles(built.OutputDirectory!))
+            File.Copy(file, Path.Combine(rogue, Path.GetFileName(file)));
+
+        var reviewed = Path.Combine(temp.Path, "review.json");
+        File.WriteAllText(reviewed, JsonSerializer.Serialize(new KnowledgeApproval
+        {
+            ApprovalSchemaVersion = 1,
+            Reviewer = "alice",
+            ReviewedAtUtc = DateTimeOffset.UnixEpoch,
+            SourceKnowledgeHash = built.ContentHash!,
+            SourceKnowledgeId = built.Knowledge!.KnowledgeId,
+            Decision = "approve",
+            PromotesPageObjects = false
+        }, KnowledgeJsonOptions()));
+
+        var result = service.Approve(rogue, "alice", reviewed);
+        Assert.False(result.Success);
+        Assert.Contains("candidates", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateApproved_DetectsTampering()
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var run = WriteExplorationRun(temp.Path, "tamper-run", new string('b', 64), 2, false);
+        var service = CreateKnowledgeService(workspace);
+        var built = service.Build("demo-app", [run], false, createdAtUtc: DateTimeOffset.UnixEpoch);
+        Assert.True(built.Success, built.Error);
+
+        var reviewed = Path.Combine(temp.Path, "tamper-review.json");
+        File.WriteAllText(reviewed, JsonSerializer.Serialize(new KnowledgeApproval
+        {
+            ApprovalSchemaVersion = 1,
+            Reviewer = "alice",
+            ReviewedAtUtc = DateTimeOffset.UnixEpoch,
+            SourceKnowledgeHash = built.ContentHash!,
+            SourceKnowledgeId = built.Knowledge!.KnowledgeId,
+            Decision = "approve",
+            PromotesPageObjects = false
+        }, KnowledgeJsonOptions()));
+
+        var approved = service.Approve(built.OutputDirectory!, "alice", reviewed);
+        Assert.True(approved.Success, approved.Error);
+
+        var knowledgePath = Path.Combine(approved.OutputDirectory!, "application-knowledge.json");
+        var doc = JsonSerializer.Deserialize<ApplicationKnowledgeDocument>(
+            File.ReadAllText(knowledgePath),
+            KnowledgeJsonOptions())!;
+        doc.Graph.States.Add(new KnowledgeStateNode
+        {
+            StateId = "st_tampered",
+            SemanticFingerprint = new string('f', 64),
+            WindowId = doc.Graph.Windows[0].WindowId,
+            ObservationCount = 1
+        });
+        File.WriteAllText(knowledgePath, JsonSerializer.Serialize(doc, KnowledgeJsonOptions()) + "\n");
+
+        var validation = service.ValidatePath(approved.OutputDirectory!);
+        Assert.False(validation.IsValid);
+        Assert.Contains(validation.Errors, e => e.Contains("sourceKnowledgeHash mismatch", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Workflows_SplitOnDisconnectedTransitions()
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var policyHash = new string('c', 64);
+        var runDir = Path.Combine(temp.Path, "exploration", "runs", "disconnected");
+        Directory.CreateDirectory(runDir);
+
+        var fpA = Sha("disc-a");
+        var fpB = Sha("disc-b");
+        var fpC = Sha("disc-c");
+        var fpD = Sha("disc-d");
+
+        WriteJsonl(Path.Combine(runDir, "states.jsonl"),
+        [
+            new { stateId = "s1", fingerprint = fpA, windowTitle = "A", windowClassName = "W", isModal = false, depth = 0, capturedAtUtc = "2026-01-01T00:00:00Z", nodeCount = 1 },
+            new { stateId = "s2", fingerprint = fpB, windowTitle = "B", windowClassName = "W", isModal = false, depth = 1, capturedAtUtc = "2026-01-01T00:00:01Z", nodeCount = 1 },
+            new { stateId = "s3", fingerprint = fpC, windowTitle = "C", windowClassName = "W", isModal = false, depth = 1, capturedAtUtc = "2026-01-01T00:00:02Z", nodeCount = 1 },
+            new { stateId = "s4", fingerprint = fpD, windowTitle = "D", windowClassName = "W", isModal = false, depth = 1, capturedAtUtc = "2026-01-01T00:00:03Z", nodeCount = 1 }
+        ]);
+        // Continuous A->B, then disconnected C->D (no B->C link).
+        WriteJsonl(Path.Combine(runDir, "transitions.jsonl"),
+        [
+            new { transitionId = "t1", fromStateId = "s1", toStateId = "s2", fromFingerprint = fpA, toFingerprint = fpB, actionKey = "Invoke:Button|One|One|o0|d0", actionKind = "Invoke", category = "invoke", driverOperation = "clickuia", elementKey = "Button|One|One|o0|d0", automationId = "One", name = "One", outcome = "success", startedAtUtc = "2026-01-01T00:00:00Z", completedAtUtc = "2026-01-01T00:00:01Z", depth = 0 },
+            new { transitionId = "t2", fromStateId = "s3", toStateId = "s4", fromFingerprint = fpC, toFingerprint = fpD, actionKey = "Invoke:Button|Two|Two|o0|d0", actionKind = "Invoke", category = "invoke", driverOperation = "clickuia", elementKey = "Button|Two|Two|o0|d0", automationId = "Two", name = "Two", outcome = "success", startedAtUtc = "2026-01-01T00:00:02Z", completedAtUtc = "2026-01-01T00:00:03Z", depth = 0 }
+        ]);
+        WriteJson(Path.Combine(runDir, "manifest.json"), new { manifestSchemaVersion = 1, explorationId = "disconnected", mode = "navigate", dryRun = false, startedAtUtc = "2026-01-01T00:00:00Z", policySha256 = policyHash });
+        WriteJson(Path.Combine(runDir, "summary.json"), new { summarySchemaVersion = 1, explorationId = "disconnected", status = "completed", exitCode = 0, mode = "navigate", dryRun = false, startedAtUtc = "2026-01-01T00:00:00Z", completedAtUtc = "2026-01-01T00:00:03Z", statesVisited = 4, actionsAttempted = 2, transitionsRecorded = 2, maxDepthReached = 1, stopReason = "completed", deniedActionSamples = Array.Empty<string>(), warnings = Array.Empty<string>() });
+        WriteJson(Path.Combine(runDir, "build-identity.json"), new
+        {
+            buildIdentitySchemaVersion = 1,
+            processName = "Demo",
+            driverVersion = "1.0.0-test",
+            snapshotSchemaVersion = 1,
+            explorerVersion = "phase4b-1",
+            policySha256 = policyHash,
+            configIdentity = new Dictionary<string, string> { ["processName"] = "Demo" }
+        });
+
+        var result = CreateKnowledgeService(workspace).Build("demo-app", ["disconnected"], false, createdAtUtc: DateTimeOffset.UnixEpoch);
+        Assert.True(result.Success, result.Error);
+        Assert.True(result.Knowledge!.Workflows.Count >= 2, "Disconnected transitions must split into separate workflows.");
+        Assert.All(result.Knowledge.Workflows, wf =>
+        {
+            for (var i = 1; i < wf.Steps.Count; i++)
+            {
+                var prevTarget = wf.Steps[i - 1].TargetStateId ?? wf.Steps[i - 1].SourceStateId;
+                Assert.Equal(prevTarget, wf.Steps[i].SourceStateId);
+            }
+        });
+    }
+
+    [Fact]
+    public void ApprovedKnowledge_StripsAbsolutePaths()
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var run = WriteExplorationRun(temp.Path, "abs-path", new string('d', 64), 1, false);
+        var service = CreateKnowledgeService(workspace);
+        var built = service.Build("demo-app", [run], false, createdAtUtc: DateTimeOffset.UnixEpoch);
+        Assert.True(built.Success, built.Error);
+        Assert.All(built.Knowledge!.SourceExplorationRuns, s =>
+            Assert.False(Path.IsPathRooted(s.ManifestPath ?? string.Empty)));
+
+        var reviewed = Path.Combine(temp.Path, "abs-review.json");
+        File.WriteAllText(reviewed, JsonSerializer.Serialize(new KnowledgeApproval
+        {
+            ApprovalSchemaVersion = 1,
+            Reviewer = "alice",
+            ReviewedAtUtc = DateTimeOffset.UnixEpoch,
+            SourceKnowledgeHash = built.ContentHash!,
+            SourceKnowledgeId = built.Knowledge.KnowledgeId,
+            Decision = "approve",
+            PromotesPageObjects = false
+        }, KnowledgeJsonOptions()));
+
+        var approved = service.Approve(built.OutputDirectory!, "alice", reviewed);
+        Assert.True(approved.Success, approved.Error);
+        Assert.Equal("abs-review.json", approved.Knowledge!.Approval!.ReviewedInputPath);
+        Assert.All(approved.Knowledge.SourceExplorationRuns, s =>
+            Assert.StartsWith("exploration/runs/", s.ManifestPath, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Build_EmitsContentHashAndApprovalTemplate()
+    {
+        using var temp = TempWorkspace();
+        var workspace = CreateWorkspace(temp.Path);
+        workspace.Initialize();
+        var run = WriteExplorationRun(temp.Path, "hash-emit", new string('e', 64), 1, false);
+        var result = CreateKnowledgeService(workspace).Build("demo-app", [run], false, createdAtUtc: DateTimeOffset.UnixEpoch);
+        Assert.True(result.Success, result.Error);
+        Assert.False(string.IsNullOrWhiteSpace(result.ContentHash));
+        Assert.True(File.Exists(Path.Combine(result.OutputDirectory!, "content-hash.txt")));
+        Assert.True(File.Exists(Path.Combine(result.OutputDirectory!, "approval-template.json")));
+        Assert.Equal(result.ContentHash, File.ReadAllText(Path.Combine(result.OutputDirectory!, "content-hash.txt")).Trim());
+    }
+
     private static ApplicationKnowledgeDocument MinimalKnowledge()
     {
         var fp = new ApplicationFingerprint
@@ -498,7 +730,12 @@ public class Phase4cApplicationKnowledgeTests
             ApplicationId = "demo-app",
             SnapshotSchemaVersion = 1,
             ExplorerVersion = KnowledgeConstants.ExplorerVersion,
-            ExplorationPolicyHash = new string('a', 64)
+            ExplorationPolicyHash = new string('a', 64),
+            DriverVersion = "1.0.0-test",
+            ConfigIdentity = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["processName"] = "DemoApp"
+            }
         };
         return new ApplicationKnowledgeDocument
         {
@@ -515,7 +752,8 @@ public class Phase4cApplicationKnowledgeTests
                 {
                     ExplorationId = "run-1",
                     ArtifactHash = new string('c', 64),
-                    PolicySha256 = new string('a', 64)
+                    PolicySha256 = new string('a', 64),
+                    ManifestPath = "exploration/runs/run-1/manifest.json"
                 }
             ],
             Graph = MinimalGraph(),
@@ -728,6 +966,21 @@ public class Phase4cApplicationKnowledgeTests
             stopReason = "completed",
             deniedActionSamples = new[] { "invoke:Button|Delete:forbidden-vocabulary" },
             warnings = Array.Empty<string>()
+        });
+        WriteJson(Path.Combine(runDir, "build-identity.json"), new
+        {
+            buildIdentitySchemaVersion = 1,
+            processName = "DesktopAutomationExplorerFixture",
+            executablePath = (string?)null,
+            executableSha256 = (string?)null,
+            driverVersion = "1.0.0-test",
+            snapshotSchemaVersion = 1,
+            explorerVersion = "phase4b-1",
+            policySha256,
+            configIdentity = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["processName"] = "DesktopAutomationExplorerFixture"
+            }
         });
         WriteJsonl(Path.Combine(runDir, "states.jsonl"), stateRecords);
         WriteJsonl(Path.Combine(runDir, "transitions.jsonl"), transitions);
