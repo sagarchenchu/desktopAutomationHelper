@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace DesktopAutomationDriver.Services.Debug;
 
 /// <summary>Normalized identity fields captured for Debug Mode / vision revalidation.</summary>
@@ -6,7 +8,18 @@ public sealed record DebugWindowIdentity
     public string? ProcessName { get; init; }
     public int? ProcessId { get; init; }
     public string? WindowTitle { get; init; }
+
+    /// <summary>
+    /// Native HWND for runtime comparisons. Not STJ-serializable — use <see cref="WindowHandleHex"/>.
+    /// </summary>
+    [JsonIgnore]
     public IntPtr WindowHandle { get; init; }
+
+    /// <summary>Stable hex string for JSON/HTTP responses (avoids IntPtr STJ 500s on /debug/inspect).</summary>
+    [JsonPropertyName("windowHandle")]
+    public string WindowHandleHex =>
+        WindowHandle == IntPtr.Zero ? "0" : $"0x{WindowHandle.ToInt64():X}";
+
     public Rectangle Bounds { get; init; }
     public double DpiScaleX { get; init; } = 1.0;
     public double DpiScaleY { get; init; } = 1.0;

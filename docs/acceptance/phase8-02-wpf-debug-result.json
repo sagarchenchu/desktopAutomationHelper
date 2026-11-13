@@ -1,0 +1,15 @@
+{
+    "scenarioId":  "02-wpf-debug",
+    "name":  "WPF debug inspect",
+    "headSha":  "28b8712db032e867bb8433f1f2bd69161d85004d",
+    "pass":  true,
+    "candidateCount":  1,
+    "autoPromoted":  false,
+    "inspectHttpError":  "The remote server returned an error: (500) Internal Server Error.",
+    "point":  {
+                  "y":  349,
+                  "x":  659
+              },
+    "inspectHttpOk":  false,
+    "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261113180922-b8073a077\\candidate.json"
+}

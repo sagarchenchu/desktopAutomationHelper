@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using DesktopAutomationDriver.Services;
 using DesktopAutomationDriver.Services.Debug;
 using DesktopAutomationDriver.Services.Vision;
@@ -398,6 +399,48 @@ public class Phase8DebugVisionTests
             ControlType = "Button",
             IsSemanticAccessible = true
         }));
+    }
+
+    [Fact]
+    public void DebugSessionSnapshot_JsonSerializesWindowHandleAsHex_NotIntPtr()
+    {
+        // Repro for Windows acceptance: /debug/inspect returned 500 because STJ cannot serialize IntPtr.
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+        };
+
+        var snapshot = new DebugSessionSnapshot
+        {
+            IsActive = true,
+            SessionId = "dbg-test",
+            StatusText = "Inspect: Save",
+            LastCapture = UiaTreeCaptureService.FromNodes(
+                new DebugUiaNode
+                {
+                    AutomationId = "SaveButton",
+                    ControlType = "Button",
+                    Bounds = new Rectangle(1, 2, 3, 4)
+                },
+                window: new DebugWindowIdentity
+                {
+                    WindowTitle = "App",
+                    WindowHandle = new IntPtr(0x1234ABCD),
+                    Bounds = new Rectangle(0, 0, 100, 80),
+                    DpiScaleX = 1,
+                    DpiScaleY = 1
+                },
+                cursor: new Point(10, 20))
+        };
+
+        var json = JsonSerializer.Serialize(snapshot, options);
+        Assert.Contains("\"windowHandle\":\"0x1234ABCD\"", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("IntPtr", json, StringComparison.Ordinal);
+        // Round-trip must not throw (was the HTTP 500).
+        var roundTrip = JsonSerializer.Deserialize<DebugSessionSnapshot>(json, options);
+        Assert.NotNull(roundTrip);
+        Assert.Equal("0x1234ABCD", roundTrip!.LastCapture!.Window!.WindowHandleHex);
     }
 
     private sealed class ScriptedUiaElementProbe : IUiaElementProbe
