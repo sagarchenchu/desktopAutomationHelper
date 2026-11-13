@@ -2,7 +2,7 @@
 
 ## Required final report
 
-Phase 7 status: **READY FOR REVIEW** — Windows acceptance **6/6 PASS** on GitHub-resolvable tip `147cbb6`; CI green on evidence tip `a7adb6f`. PR #147 remains **draft — do not merge.**
+Phase 7 status: **READY FOR REVIEW** — Windows acceptance **6/6 PASS** on GitHub-resolvable tip `147cbb6`; CI green on evidence tip `a7adb6f`. PR #147 is **open / ready for review** (not draft). Do **not** merge unless explicitly instructed.
 
 Branch / base / head / PR:
 - Branch: `feature/agent-phase-7-bounded-recovery`
@@ -11,7 +11,7 @@ Branch / base / head / PR:
 - Evidence commit: `a7adb6fd9830c15b6a56fa10104bf4e18f2cda04` / `a7adb6f`
 - Typed-proof fix (e54a4b0 P1s): `147cbb6`
 - Prior unresolvable claim `13c0f8a`: superseded — do not use
-- PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/147 — **draft** (do not merge)
+- PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/147 — **open / ready for review** (do not merge unless instructed)
 
 ### Review tip `e54a4b0` — two P1s fixed in `147cbb6`
 
@@ -51,7 +51,7 @@ Publish results:
   - Publish Standalone Packages (Windows) ×2
 
 Exit gate:
-**Windows acceptance evidence: MET** (6/6 on GitHub-resolvable `147cbb6`, real S4 runner STOP). **CI green on `a7adb6f`.** **PR #147 stays draft — do not merge.**
+**Windows acceptance evidence: MET** (6/6 on GitHub-resolvable `147cbb6`, real S4 runner STOP). **CI green on `a7adb6f`.** **PR #147 is open for review — do not merge unless explicitly instructed.**
 
 ## Docs
 
