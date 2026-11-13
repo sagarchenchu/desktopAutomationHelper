@@ -1,0 +1,48 @@
+{
+    "scenarioId":  "approved-alternate",
+    "headSha":  "147cbb63c71711285165b959cdf218f3f078c8dc",
+    "reportStatus":  "passed",
+    "exitCode":  0,
+    "failureClassification":  null,
+    "failureMessage":  null,
+    "recovery":  {
+                     "runId":  "20261113T173245998Z-f7dbc99e",
+                     "originalPlanSha256":  "c7fe31082f5175cc56b28767bc8c1c4025eeff5bdbd23817f87bbcd04cb58981",
+                     "objectRepositorySha256":  "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
+                     "objectRepositorySha256After":  "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
+                     "planMutated":  false,
+                     "approvedRepositoryMutated":  false,
+                     "totalRecoveryAttempts":  1,
+                     "attempts":  [
+                                      {
+                                          "attemptNumber":  2,
+                                          "stepId":  "find-alt",
+                                          "classification":  "approvedAlternateLocator",
+                                          "tier":  "approvedAlternateLocator",
+                                          "outcome":  "recovered",
+                                          "detail":  "Approved alternate locator recovered the step.",
+                                          "snapshotBeforePath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173245998Z-f7dbc99e\\recovery\\before-find-alt-6995fcb4f3d04219bfd840507ee7c89a.json",
+                                          "snapshotAfterPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173245998Z-f7dbc99e\\recovery\\after-alternate-find-alt-02.json",
+                                          "startedAtUtc":  "2026-11-13T17:32:49.5111645+00:00",
+                                          "finishedAtUtc":  "2026-11-13T17:32:50.2508463+00:00",
+                                          "durationMilliseconds":  739.1052
+                                      }
+                                  ],
+                     "finalResult":  "passed"
+                 },
+    "recoverySummaryPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173245998Z-f7dbc99e\\recovery\\recovery-summary.json",
+    "runDirectory":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173245998Z-f7dbc99e",
+    "planPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\plans\\phase7-approved-alternate.plan.json",
+    "planHashBefore":  "c7fe31082f5175cc56b28767bc8c1c4025eeff5bdbd23817f87bbcd04cb58981",
+    "planHashAfter":  "c7fe31082f5175cc56b28767bc8c1c4025eeff5bdbd23817f87bbcd04cb58981",
+    "planHashUnchanged":  true,
+    "pagesHashBefore":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
+    "pagesHashAfter":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
+    "pagesUnchanged":  true,
+    "stdoutPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\out\\phase7-approved-alternate.json",
+    "recoveryOutsideBudget":  false,
+    "expected":  "recover",
+    "agentExitCode":  0,
+    "pass":  true,
+    "recovered":  true
+}

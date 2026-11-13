@@ -1,0 +1,124 @@
+{
+  "reportSchemaVersion": 1,
+  "runId": "20261113T173304635Z-6508d546",
+  "status": "failed",
+  "exitCode": 6,
+  "planPath": "plans/phase7-assertion.plan.json",
+  "planId": "phase7.assertion",
+  "planName": "Phase7 assertion STOP",
+  "planSha256": "270bc15f209f29be122dfb193813d50b007e4efdaa2faa8a840fc67e5c7d5412",
+  "dryRun": false,
+  "driverBaseUrl": "http://127.0.0.1:36276",
+  "discoveryMethod": "explicit",
+  "driverVersion": "0.0.0-local",
+  "catalogSchemaVersion": 2,
+  "startedAtUtc": "2026-11-13T17:33:04.6347899+00:00",
+  "finishedAtUtc": "2026-11-13T17:33:07.8250414+00:00",
+  "durationMilliseconds": 3190.2515,
+  "steps": [
+    {
+      "sequence": 1,
+      "id": "launch",
+      "operation": "launch",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T17:33:04.8484909+00:00",
+      "arguments": {
+        "value": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\src\\DesktopAutomationTestApp\\bin\\Release\\net8.0-windows\\DesktopAutomationTestApp.exe"
+      },
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:01.4199871"
+    },
+    {
+      "sequence": 2,
+      "id": "assert-title",
+      "operation": "gettext",
+      "phase": "steps",
+      "status": "failed",
+      "success": false,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T17:33:06.2870569+00:00",
+      "arguments": {
+        "locator": {
+          "automationId": "StatusLabel"
+        },
+        "timeoutMs": 5000
+      },
+      "error": "JSON pointer \u0027/value\u0027 did not resolve: property \u0027value\u0027 was not found.",
+      "driverReason": "",
+      "classification": "assertionFailure",
+      "assertions": [
+        {
+          "path": "/value",
+          "operator": "equals",
+          "passed": false,
+          "message": "JSON pointer \u0027/value\u0027 did not resolve: property \u0027value\u0027 was not found.",
+          "expected": "THIS_ASSERTION_MUST_FAIL"
+        }
+      ],
+      "duration": "00:00:00.7665462"
+    },
+    {
+      "sequence": 3,
+      "id": "quit",
+      "operation": "quit",
+      "phase": "steps",
+      "status": "skipped",
+      "success": false,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": true,
+      "skipReason": "previousStepFailed",
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00"
+    }
+  ],
+  "onFailureSteps": [
+    {
+      "sequence": 1,
+      "id": "cleanup-quit",
+      "operation": "quit",
+      "phase": "onFailureSteps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T17:33:07.0737837+00:00",
+      "arguments": {},
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00.7480489"
+    }
+  ],
+  "failure": {
+    "classification": "assertionFailure",
+    "message": "JSON pointer \u0027/value\u0027 did not resolve: property \u0027value\u0027 was not found.",
+    "stepId": "assert-title",
+    "driverReason": ""
+  },
+  "recovery": {
+    "runId": "20261113T173304635Z-6508d546",
+    "originalPlanSha256": "270bc15f209f29be122dfb193813d50b007e4efdaa2faa8a840fc67e5c7d5412",
+    "planMutated": false,
+    "approvedRepositoryMutated": false,
+    "totalRecoveryAttempts": 0,
+    "attempts": [],
+    "finalResult": "failed"
+  },
+  "artifactWriteStatus": "written"
+}

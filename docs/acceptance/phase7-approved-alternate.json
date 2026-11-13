@@ -1,0 +1,114 @@
+{
+  "reportSchemaVersion": 1,
+  "runId": "20261113T173245998Z-f7dbc99e",
+  "status": "passed",
+  "exitCode": 0,
+  "planPath": "plans/phase7-approved-alternate.plan.json",
+  "planId": "phase7.approved-alternate",
+  "planName": "Phase7 approved alternate recover",
+  "planSha256": "c7fe31082f5175cc56b28767bc8c1c4025eeff5bdbd23817f87bbcd04cb58981",
+  "objectRepositoryPath": "object-repository/repository.json",
+  "objectRepositoryId": "phase7-acceptance",
+  "objectRepositorySha256": "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
+  "resolvedObjectReferences": [
+    "harness.submit-primary-missing"
+  ],
+  "dryRun": false,
+  "driverBaseUrl": "http://127.0.0.1:36276",
+  "discoveryMethod": "explicit",
+  "driverVersion": "0.0.0-local",
+  "catalogSchemaVersion": 2,
+  "startedAtUtc": "2026-11-13T17:32:45.998402+00:00",
+  "finishedAtUtc": "2026-11-13T17:32:51.0711865+00:00",
+  "durationMilliseconds": 5072.7845,
+  "steps": [
+    {
+      "sequence": 1,
+      "id": "launch",
+      "operation": "launch",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T17:32:46.2638133+00:00",
+      "arguments": {
+        "value": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\src\\DesktopAutomationTestApp\\bin\\Release\\net8.0-windows\\DesktopAutomationTestApp.exe"
+      },
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:01.4038959"
+    },
+    {
+      "sequence": 2,
+      "id": "find-alt",
+      "operation": "finduia",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T17:32:49.5122063+00:00",
+      "arguments": {
+        "locator": {
+          "automationId": "ClickButton"
+        },
+        "timeoutMs": 1500
+      },
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00.7314061"
+    },
+    {
+      "sequence": 3,
+      "id": "quit",
+      "operation": "quit",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T17:32:50.278986+00:00",
+      "arguments": {},
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00.7812796"
+    }
+  ],
+  "onFailureSteps": [],
+  "recovery": {
+    "runId": "20261113T173245998Z-f7dbc99e",
+    "originalPlanSha256": "c7fe31082f5175cc56b28767bc8c1c4025eeff5bdbd23817f87bbcd04cb58981",
+    "objectRepositorySha256": "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
+    "objectRepositorySha256After": "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
+    "planMutated": false,
+    "approvedRepositoryMutated": false,
+    "totalRecoveryAttempts": 1,
+    "attempts": [
+      {
+        "attemptNumber": 2,
+        "stepId": "find-alt",
+        "classification": "approvedAlternateLocator",
+        "tier": "approvedAlternateLocator",
+        "outcome": "recovered",
+        "detail": "Approved alternate locator recovered the step.",
+        "snapshotBeforePath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173245998Z-f7dbc99e\\recovery\\before-find-alt-6995fcb4f3d04219bfd840507ee7c89a.json",
+        "snapshotAfterPath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173245998Z-f7dbc99e\\recovery\\after-alternate-find-alt-02.json",
+        "startedAtUtc": "2026-11-13T17:32:49.5111645+00:00",
+        "finishedAtUtc": "2026-11-13T17:32:50.2508463+00:00",
+        "durationMilliseconds": 739.1052
+      }
+    ],
+    "finalResult": "passed"
+  },
+  "artifactWriteStatus": "written"
+}

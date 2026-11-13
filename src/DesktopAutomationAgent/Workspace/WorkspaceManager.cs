@@ -991,6 +991,14 @@ public sealed class WorkspaceManager : IWorkspaceManager
                 "locator": {
                   "$ref": "#/$defs/locator"
                 },
+                "alternateLocators": {
+                  "type": "array",
+                  "maxItems": 8,
+                  "items": {
+                    "$ref": "#/$defs/locator"
+                  },
+                  "description": "Approved alternate locators for Phase 7 bounded recovery only."
+                },
                 "quality": {
                   "$ref": "#/$defs/quality"
                 },

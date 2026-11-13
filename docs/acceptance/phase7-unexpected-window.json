@@ -1,0 +1,140 @@
+{
+  "reportSchemaVersion": 1,
+  "runId": "20261113T173259611Z-d62acaf8",
+  "status": "failed",
+  "exitCode": 6,
+  "planPath": "plans/phase7-unexpected-window.plan.json",
+  "planId": "phase7.unexpected-window",
+  "planName": "Phase7 unexpected external STOP",
+  "planSha256": "f70b32edcc994dabaf21b2094ed1b3d0d22ddc76ff7b520365e85a9cd732ffcb",
+  "dryRun": false,
+  "driverBaseUrl": "http://127.0.0.1:36276",
+  "discoveryMethod": "explicit",
+  "driverVersion": "0.0.0-local",
+  "catalogSchemaVersion": 2,
+  "startedAtUtc": "2026-11-13T17:32:59.6111251+00:00",
+  "finishedAtUtc": "2026-11-13T17:33:02.6593977+00:00",
+  "durationMilliseconds": 3048.2726,
+  "steps": [
+    {
+      "sequence": 1,
+      "id": "launch",
+      "operation": "launch",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": true,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T17:32:59.8480149+00:00",
+      "arguments": {
+        "value": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\src\\DesktopAutomationTestApp\\bin\\Release\\net8.0-windows\\DesktopAutomationTestApp.exe"
+      },
+      "responseValue": {
+        "sessionId": "85e1356dcdff400eaf32e3c6c35891a9",
+        "app": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\src\\DesktopAutomationTestApp\\bin\\Release\\net8.0-windows\\DesktopAutomationTestApp.exe",
+        "launchedProcessId": 8816,
+        "trackedWindows": [
+          {
+            "hwnd": 3474688,
+            "hwndHex": "0x350500",
+            "processId": 8816,
+            "title": "DA Test Harness",
+            "className": "WindowsForms10.Window.8.app.0.1f550a4_r3_ad1",
+            "isMainWindow": true,
+            "firstSeenUtc": "2026-11-13T17:33:00.9362142Z",
+            "lastSeenUtc": "2026-11-13T17:33:01.3059104Z",
+            "exists": true,
+            "visible": true
+          }
+        ]
+      },
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:01.4664318"
+    },
+    {
+      "sequence": 2,
+      "id": "switch-external",
+      "operation": "switchwindow",
+      "phase": "steps",
+      "status": "failed",
+      "success": false,
+      "sensitive": false,
+      "captureResponse": true,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T17:33:01.3331717+00:00",
+      "arguments": {
+        "value": "Notepad",
+        "matchMode": "contains"
+      },
+      "responseValue": {
+        "title": "*crsr_248623ebea4e149fe741de528518b2 - Notepad",
+        "automationId": "",
+        "controlType": "Window",
+        "hwnd": 2556972,
+        "processId": 10700
+      },
+      "error": "Unexpected external window \u0027*crsr_248623ebea4e149fe741de528518b2 - Notepad\u0027 / process pid 10700 (outside approved launched process 8816).",
+      "driverReason": "",
+      "classification": "operationFailure",
+      "assertions": [],
+      "duration": "00:00:00.5304398"
+    },
+    {
+      "sequence": 3,
+      "id": "quit",
+      "operation": "quit",
+      "phase": "steps",
+      "status": "skipped",
+      "success": false,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": true,
+      "skipReason": "previousStepFailed",
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00"
+    }
+  ],
+  "onFailureSteps": [
+    {
+      "sequence": 1,
+      "id": "cleanup-quit",
+      "operation": "quit",
+      "phase": "onFailureSteps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T17:33:01.9033642+00:00",
+      "arguments": {},
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00.7532975"
+    }
+  ],
+  "failure": {
+    "classification": "operationFailure",
+    "message": "Unexpected external window \u0027*crsr_248623ebea4e149fe741de528518b2 - Notepad\u0027 / process pid 10700 (outside approved launched process 8816).",
+    "stepId": "switch-external",
+    "driverReason": ""
+  },
+  "recovery": {
+    "runId": "20261113T173259611Z-d62acaf8",
+    "originalPlanSha256": "f70b32edcc994dabaf21b2094ed1b3d0d22ddc76ff7b520365e85a9cd732ffcb",
+    "planMutated": false,
+    "approvedRepositoryMutated": false,
+    "totalRecoveryAttempts": 0,
+    "attempts": [],
+    "finalResult": "failed"
+  },
+  "artifactWriteStatus": "written"
+}

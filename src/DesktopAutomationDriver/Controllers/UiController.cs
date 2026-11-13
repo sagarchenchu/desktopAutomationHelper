@@ -81,25 +81,14 @@ public class UiController : ControllerBase
             _logger.LogWarning(ex, "UI resolution failed for operation '{Op}'",
                 SanitizeOp(request.Operation));
             var screenshot = _uiService.TakeFailureScreenshot(_failureScreenshotDirectory);
-            return NotFound(new UiResponse
-            {
-                Success = false,
-                Error = ex.Message,
-                ScreenshotPath = screenshot,
-                Reason = ex.Reason,
-                Locator = ex.Locator,
-                Candidates = ex.Candidates,
-                Suggestions = ex.Suggestions,
-                Value = new
-                {
-                    success = false,
-                    reason = ex.Reason,
-                    message = ex.Message,
-                    locator = ex.Locator,
-                    candidates = ex.Candidates,
-                    suggestions = ex.Suggestions
-                }
-            });
+            // Resolver miss is pre-invoke — emit typed non-execution proof (not free-text).
+            return NotFound(UiResponse.FailLocatorNotFoundBeforeInvoke(
+                ex.Message,
+                screenshot,
+                ex.Reason,
+                ex.Locator,
+                ex.Candidates,
+                ex.Suggestions));
         }
         catch (ArgumentException ex)
         {

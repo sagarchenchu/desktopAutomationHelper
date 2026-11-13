@@ -8,7 +8,8 @@ public enum OptionsValidationScope
     Runner,
     ObjectRepository,
     Knowledge,
-    Jira
+    Jira,
+    Recovery
 }
 
 public sealed class AgentConfigurationException : Exception
@@ -56,6 +57,12 @@ public static class AgentOptionsValidator
         if (scope is OptionsValidationScope.Runner or OptionsValidationScope.Driver or OptionsValidationScope.ObjectRepository)
         {
             ValidateRunnerOptions(options.Runner);
+            ValidateRecoveryOptions(options.Recovery);
+        }
+
+        if (scope is OptionsValidationScope.Recovery)
+        {
+            ValidateRecoveryOptions(options.Recovery);
         }
 
         if (scope is OptionsValidationScope.ObjectRepository)
@@ -208,6 +215,46 @@ public static class AgentOptionsValidator
         {
             throw new AgentConfigurationException(
                 "Runner:RegexTimeoutMilliseconds must be between 1 and 60000.");
+        }
+    }
+
+    public static void ValidateRecoveryOptions(RecoveryOptions recovery)
+    {
+        ArgumentNullException.ThrowIfNull(recovery);
+
+        if (recovery.MaxTotalRecoveriesPerRun < 0 || recovery.MaxTotalRecoveriesPerRun > 50)
+        {
+            throw new AgentConfigurationException(
+                "Recovery:MaxTotalRecoveriesPerRun must be between 0 and 50.");
+        }
+
+        if (recovery.MaxRecoveryAttemptsPerStep < 0 || recovery.MaxRecoveryAttemptsPerStep > 10)
+        {
+            throw new AgentConfigurationException(
+                "Recovery:MaxRecoveryAttemptsPerStep must be between 0 and 10.");
+        }
+
+        if (recovery.MaxAdditionalDurationSeconds < 0 || recovery.MaxAdditionalDurationSeconds > 3_600)
+        {
+            throw new AgentConfigurationException(
+                "Recovery:MaxAdditionalDurationSeconds must be between 0 and 3600.");
+        }
+
+        if (recovery.BoundedWaitMilliseconds < 0 || recovery.BoundedWaitMilliseconds > 60_000)
+        {
+            throw new AgentConfigurationException(
+                "Recovery:BoundedWaitMilliseconds must be between 0 and 60000.");
+        }
+
+        if (recovery.MaxCandidateArtifactBytes < 1_024 || recovery.MaxCandidateArtifactBytes > 1_048_576)
+        {
+            throw new AgentConfigurationException(
+                "Recovery:MaxCandidateArtifactBytes must be between 1024 and 1048576.");
+        }
+
+        if (string.IsNullOrWhiteSpace(recovery.Provider))
+        {
+            throw new AgentConfigurationException("Recovery:Provider is required (use 'fake' for CI).");
         }
     }
 

@@ -10,6 +10,7 @@ using DesktopAutomationAgent.Observation;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Planning;
 using DesktopAutomationAgent.Readiness;
+using DesktopAutomationAgent.Recovery;
 using DesktopAutomationAgent.Suites;
 using DesktopAutomationAgent.Workspace;
 using Microsoft.Extensions.Configuration;
@@ -54,7 +55,23 @@ public static class AgentServiceRegistrar
         builder.Services.AddSingleton<IDriverUiClient, DriverUiClient>();
         builder.Services.AddSingleton<AssertionEvaluator>();
         builder.Services.AddSingleton<RunArtifactWriter>();
-        builder.Services.AddSingleton<IDeterministicPlanRunner, DeterministicPlanRunner>();
+        builder.Services.AddSingleton<RecoveryFailureClassifier>();
+        builder.Services.AddSingleton<ApprovedAlternateLocatorResolver>();
+        builder.Services.AddSingleton<RecoveryArtifactWriter>();
+        builder.Services.AddSingleton<CandidateRepairWriter>();
+        builder.Services.AddSingleton<RecoveryManifestLoader>();
+        builder.Services.AddSingleton<IRecoveryModelClient>(sp =>
+        {
+            var recovery = sp.GetRequiredService<IOptions<AgentOptions>>().Value.Recovery;
+            if (string.IsNullOrWhiteSpace(recovery.Provider)
+                || string.Equals(recovery.Provider, "fake", StringComparison.OrdinalIgnoreCase))
+            {
+                return new FakeRecoveryModelClient();
+            }
+
+            throw new AgentConfigurationException(
+                $"Recovery:Provider '{recovery.Provider}' is not registered. Use 'fake' for CI or register a provider-neutral adapter.");
+        });
         builder.Services.AddSingleton<IAgentReadinessService, AgentReadinessService>();
         builder.Services.AddSingleton<ObjectRepositoryReader>();
         builder.Services.AddSingleton<ObjectReferenceResolver>();
@@ -66,6 +83,19 @@ public static class AgentServiceRegistrar
         builder.Services.AddSingleton<ObjectVerificationService>();
         builder.Services.AddSingleton<SemanticSnapshotNormalizer>();
         builder.Services.AddSingleton<ISemanticObservationService, SemanticObservationService>();
+        builder.Services.AddSingleton<RecoveryLadderService>(sp =>
+            new RecoveryLadderService(
+                sp.GetRequiredService<IOptions<AgentOptions>>(),
+                sp.GetRequiredService<RecoveryFailureClassifier>(),
+                sp.GetRequiredService<ApprovedAlternateLocatorResolver>(),
+                sp.GetRequiredService<RecoveryArtifactWriter>(),
+                sp.GetRequiredService<CandidateRepairWriter>(),
+                sp.GetRequiredService<IRecoveryModelClient>(),
+                sp.GetRequiredService<IDriverUiClient>(),
+                sp.GetRequiredService<ObjectReferenceResolver>(),
+                sp.GetRequiredService<ILogger<RecoveryLadderService>>(),
+                sp.GetRequiredService<ISemanticObservationService>()));
+        builder.Services.AddSingleton<IDeterministicPlanRunner, DeterministicPlanRunner>();
         builder.Services.AddSingleton<ExplorationPolicyReader>();
         builder.Services.AddSingleton<StateFingerprinter>();
         builder.Services.AddSingleton<CapabilityResolver>();

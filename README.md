@@ -1772,9 +1772,10 @@ It never references driver internals (no project reference, no FlaUI).
 | Phase 4D — deterministic BDD compiler | Complete (`docs/phase4d-deterministic-bdd-compiler.md`) — offline compile; no Jira/AI/`POST /ui` |
 | Phase 4E — Jira adapter + suite orchestration | Complete (`docs/phase4e-jira-suite-orchestration.md`) — read-only provider-neutral Jira source; sequential suites |
 | Phase 5 — MCP interface | Complete (`docs/phase5-mcp-interface.md`) — local stdio MCP adapter over existing services |
-| Phase 6 — Guarded AI planner | This work (`docs/phase6-guarded-ai-planner.md`) — NL goal to retrieve to typed proposal to Phase 2 candidate; model never calls driver |
+| Phase 6 — Guarded AI planner | Complete (`docs/phase6-guarded-ai-planner.md`) — NL goal to retrieve to typed proposal to Phase 2 candidate; model never calls driver |
+| Phase 7 — Bounded execution recovery | This work (`docs/phase7-bounded-recovery.md`) — classified recovery ladder with budgets; never silent plan/repo rewrite |
 
-The agent does **not** self-heal, schedule suites, or expose a public remote MCP. Live Jira remains read-only (Phase 4E). AI planning is proposal-only by default.
+The agent does **not** perform unrestricted self-healing, schedule suites, or expose a public remote MCP. Live Jira remains read-only (Phase 4E). AI planning is proposal-only by default. Bounded recovery (Phase 7) only applies explicit recoverable classifications within budget.
 
 ```cmd
 dotnet run --project src/DesktopAutomationAgent -- init
@@ -1812,7 +1813,8 @@ Configuration precedence: `appsettings.json` → `automation/config/agentsetting
 [`docs/phase4d-deterministic-bdd-compiler.md`](docs/phase4d-deterministic-bdd-compiler.md),
 [`docs/phase4e-jira-suite-orchestration.md`](docs/phase4e-jira-suite-orchestration.md), and
 [`docs/phase5-mcp-interface.md`](docs/phase5-mcp-interface.md),
-[`docs/phase6-guarded-ai-planner.md`](docs/phase6-guarded-ai-planner.md).
+[`docs/phase6-guarded-ai-planner.md`](docs/phase6-guarded-ai-planner.md),
+[`docs/phase7-bounded-recovery.md`](docs/phase7-bounded-recovery.md).
 
 ---
 
@@ -1899,7 +1901,7 @@ DesktopAutomationAgent (separate process; HTTP client only)
   Suite manifests — Jira-key lists for validation and sequential suite execution
   Schemas under automation/schemas/
   Run artifacts under automation/runs/
-  Live Jira is read-only (Phase 4E sync); AI planning is proposal-only by default; never self-heals or exposes public remote MCP
+  Live Jira is read-only (Phase 4E sync); AI planning is proposal-only by default; Phase 7 bounded recovery only — never unrestricted self-healing or public remote MCP
 
 Artifact distinctions
   Approved Page Objects     automation/object-repository (manual promotion)

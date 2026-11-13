@@ -1,0 +1,35 @@
+{
+    "scenarioId":  "assertion",
+    "headSha":  "147cbb63c71711285165b959cdf218f3f078c8dc",
+    "reportStatus":  "failed",
+    "exitCode":  6,
+    "failureClassification":  "assertionFailure",
+    "failureMessage":  "JSON pointer \u0027/value\u0027 did not resolve: property \u0027value\u0027 was not found.",
+    "recovery":  {
+                     "runId":  "20261113T173304635Z-6508d546",
+                     "originalPlanSha256":  "270bc15f209f29be122dfb193813d50b007e4efdaa2faa8a840fc67e5c7d5412",
+                     "planMutated":  false,
+                     "approvedRepositoryMutated":  false,
+                     "totalRecoveryAttempts":  0,
+                     "attempts":  [
+
+                                  ],
+                     "finalResult":  "failed"
+                 },
+    "recoverySummaryPath":  null,
+    "runDirectory":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173304635Z-6508d546",
+    "planPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\plans\\phase7-assertion.plan.json",
+    "planHashBefore":  "270bc15f209f29be122dfb193813d50b007e4efdaa2faa8a840fc67e5c7d5412",
+    "planHashAfter":  "270bc15f209f29be122dfb193813d50b007e4efdaa2faa8a840fc67e5c7d5412",
+    "planHashUnchanged":  true,
+    "pagesHashBefore":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
+    "pagesHashAfter":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
+    "pagesUnchanged":  true,
+    "stdoutPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\out\\phase7-assertion.json",
+    "recoveryOutsideBudget":  false,
+    "expected":  "stop",
+    "agentExitCode":  6,
+    "pass":  true,
+    "healed":  false,
+    "assertClass":  true
+}

@@ -4,8 +4,10 @@ using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
+using DesktopAutomationAgent.Exploration;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
+using DesktopAutomationAgent.Recovery;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DesktopAutomationAgent.Tests;
@@ -417,18 +419,38 @@ public class DeterministicPlanRunnerTests
         var workspace = TestSupport.CreateWorkspace(options);
         if (initialize)
             workspace.Initialize();
+        var uiClient = new DriverUiClient(
+            TestSupport.Wrap(options),
+            TestSupport.CreateFactory(handler),
+            NullLogger<DriverUiClient>.Instance);
+        var repositoryReader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
+        var recoveryLadder = new RecoveryLadderService(
+            TestSupport.Wrap(options),
+            RecoveryFailureClassifier.ForTests(options.Recovery),
+            new ApprovedAlternateLocatorResolver(),
+            new RecoveryArtifactWriter(workspace),
+            CandidateRepairWriter.ForTests(workspace, options.Recovery),
+            new FakeRecoveryModelClient(),
+            uiClient,
+            new ObjectReferenceResolver(),
+            NullLogger<RecoveryLadderService>.Instance);
         return new DeterministicPlanRunner(
             TestSupport.Wrap(options),
             TestSupport.CreatePlanReader(options, workspace),
             new PlanObjectRepositoryIntegrator(
-                new ObjectRepositoryReader(TestSupport.Wrap(options), workspace),
+                repositoryReader,
                 new PlanObjectReferenceExpander(new ObjectReferenceResolver())),
             workspace,
             new DriverConnectionResolver(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverConnectionResolver>.Instance),
             new DriverCatalogClient(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverCatalogClient>.Instance),
-            new DriverUiClient(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverUiClient>.Instance),
+            uiClient,
             new AssertionEvaluator(TestSupport.Wrap(options)),
             new RunArtifactWriter(),
+            recoveryLadder,
+            new RecoveryArtifactWriter(workspace),
+            new RecoveryManifestLoader(workspace),
+            repositoryReader,
+            new SystemProcessIdentityProbe(),
             NullLogger<DeterministicPlanRunner>.Instance);
     }
 

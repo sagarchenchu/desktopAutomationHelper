@@ -37,7 +37,7 @@ public sealed class PlanObjectRepositoryIntegrator
             if (!repositoryResult.IsValid || repositoryResult.Snapshot is null)
             {
                 errors.AddRange(repositoryResult.Errors);
-                return Rebuild(validation, errors, warnings, null, null, attachRepositoryAudit: false);
+                return Rebuild(validation, errors, warnings, null, null, null, attachRepositoryAudit: false);
             }
 
             snapshot = repositoryResult.Snapshot;
@@ -46,7 +46,7 @@ public sealed class PlanObjectRepositoryIntegrator
         if (snapshot is null)
         {
             errors.Add($"{validation.PlanPath}: object repository is required when the plan contains $objectRef markers.");
-            return Rebuild(validation, errors, warnings, null, null, attachRepositoryAudit: false);
+            return Rebuild(validation, errors, warnings, null, null, null, attachRepositoryAudit: false);
         }
 
         var expansion = _expander.Expand(plan, snapshot, validation.PlanPath);
@@ -54,7 +54,7 @@ public sealed class PlanObjectRepositoryIntegrator
         if (!expansion.Success)
         {
             errors.AddRange(expansion.Errors);
-            return Rebuild(validation, errors, warnings, expansion, null, attachRepositoryAudit: false);
+            return Rebuild(validation, errors, warnings, expansion, null, snapshot, attachRepositoryAudit: false);
         }
 
         return Rebuild(
@@ -63,6 +63,7 @@ public sealed class PlanObjectRepositoryIntegrator
             warnings,
             expansion,
             plan,
+            snapshot,
             attachRepositoryAudit: expansion.ResolvedObjectReferences.Count > 0);
     }
 
@@ -129,6 +130,7 @@ public sealed class PlanObjectRepositoryIntegrator
         List<string> warnings,
         PlanObjectReferenceExpansionResult? expansion,
         PlanManifest? plan,
+        ObjectRepositorySnapshot? snapshot,
         bool attachRepositoryAudit) =>
         new()
         {
@@ -146,6 +148,8 @@ public sealed class PlanObjectRepositoryIntegrator
             ObjectRepositoryPath = attachRepositoryAudit ? expansion?.RepositoryPath : null,
             ObjectRepositoryId = attachRepositoryAudit ? expansion?.RepositoryId : null,
             ObjectRepositorySha256 = attachRepositoryAudit ? expansion?.RepositorySha256 : null,
-            ResolvedObjectReferences = attachRepositoryAudit ? expansion?.ResolvedObjectReferences : null
+            ResolvedObjectReferences = attachRepositoryAudit ? expansion?.ResolvedObjectReferences : null,
+            StepObjectBindings = expansion?.StepObjectBindings,
+            ObjectRepositorySnapshot = errors.Count == 0 ? snapshot : null
         };
 }

@@ -9,6 +9,7 @@ using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
 using DesktopAutomationAgent.Jira;
 using DesktopAutomationAgent.ObjectRepository;
+using DesktopAutomationAgent.Recovery;
 using DesktopAutomationAgent.Suites;
 using DesktopAutomationAgent.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -409,19 +410,7 @@ public sealed class Phase4eJiraSuiteTests
         SeedWorkspace(temp.Path);
 
         var factory = TestSupport.CreateFactory(handler);
-        var runner = new DeterministicPlanRunner(
-            Options.Create(options),
-            new Plans.PlanManifestReader(Options.Create(options), workspace),
-            new PlanObjectRepositoryIntegrator(
-                new ObjectRepositoryReader(Options.Create(options), workspace),
-                new PlanObjectReferenceExpander(new ObjectReferenceResolver())),
-            workspace,
-            new DriverConnectionResolver(Options.Create(options), factory, NullLogger<DriverConnectionResolver>.Instance),
-            new DriverCatalogClient(Options.Create(options), factory, NullLogger<DriverCatalogClient>.Instance),
-            new DriverUiClient(Options.Create(options), factory, NullLogger<DriverUiClient>.Instance),
-            new AssertionEvaluator(Options.Create(options)),
-            new RunArtifactWriter(),
-            NullLogger<DeterministicPlanRunner>.Instance);
+        var runner = TestSupport.CreatePlanRunner(options, workspace, factory);
 
         var orch = new JiraSuiteOrchestrator(
             Options.Create(options),

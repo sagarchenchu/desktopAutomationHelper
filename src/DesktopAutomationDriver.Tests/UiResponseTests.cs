@@ -21,6 +21,155 @@ public class UiResponseTests
         Assert.Equal(payload, response.Value);
         Assert.Equal("element-not-found", response.Reason);
         Assert.Equal(payload.message, response.Error);
+        // Free-text alone must not manufacture typed proof.
+        Assert.Null(response.ExecutionState);
+        Assert.Null(response.FailureCode);
+    }
+
+    [Fact]
+    public void FromOperationResult_WhenFoundFalseAlone_DoesNotSetTypedNonExecutionProof()
+    {
+        var payload = new
+        {
+            success = false,
+            found = false,
+            message = "Element not found for clickuia."
+        };
+
+        var response = UiResponse.FromOperationResult(payload);
+
+        Assert.False(response.Success);
+        Assert.Null(response.ExecutionState);
+        Assert.Null(response.FailureCode);
+    }
+
+    [Fact]
+    public void FromOperationResult_WhenMatchCountZeroAlone_DoesNotSetTypedNonExecutionProof()
+    {
+        var payload = new
+        {
+            success = false,
+            matchCount = 0,
+            message = "No matches."
+        };
+
+        var response = UiResponse.FromOperationResult(payload);
+
+        Assert.Null(response.ExecutionState);
+        Assert.Null(response.FailureCode);
+    }
+
+    [Fact]
+    public void FromOperationResult_MutationFoundFalseReasonError_DoesNotAuthorizeNotStarted()
+    {
+        // Mirrors Native UIA hard-timeout wrapper: post-action exceptions return
+        // success=false, found=false, reason=error — must NEVER authorize mutation replay.
+        var payload = new
+        {
+            operation = "clickuia",
+            success = false,
+            found = false,
+            reason = "error",
+            timeoutMs = 5000,
+            elapsedMs = 12,
+            exceptionType = "COMException",
+            message = "Element became unavailable after InvokePattern."
+        };
+
+        var response = UiResponse.FromOperationResult(payload);
+
+        Assert.False(response.Success);
+        Assert.Equal("error", response.Reason);
+        Assert.Null(response.ExecutionState);
+        Assert.Null(response.FailureCode);
+    }
+
+    [Fact]
+    public void FromOperationResult_ExplicitTypedProofOnPayload_IsPropagated()
+    {
+        var payload = new
+        {
+            operation = "switchwindow",
+            success = false,
+            found = false,
+            matchCount = 0,
+            reason = "window-not-found",
+            message = "No window found.",
+            executionState = UiResponse.ExecutionStateNotStarted,
+            failureCode = UiResponse.FailureCodeLocatorNotFoundBeforeInvoke
+        };
+
+        var response = UiResponse.FromOperationResult(payload);
+
+        Assert.False(response.Success);
+        Assert.Equal(UiResponse.ExecutionStateNotStarted, response.ExecutionState);
+        Assert.Equal(UiResponse.FailureCodeLocatorNotFoundBeforeInvoke, response.FailureCode);
+    }
+
+    [Fact]
+    public void FromOperationResult_PostActionNotFound_DoesNotSetNotStarted()
+    {
+        // Post-action business/visibility miss — action may already have run.
+        var payload = new
+        {
+            success = false,
+            found = true,
+            message = "Target was found, but driver could not verify visibility after scrolling."
+        };
+
+        var response = UiResponse.FromOperationResult(payload);
+
+        Assert.False(response.Success);
+        Assert.Null(response.ExecutionState);
+        Assert.Null(response.FailureCode);
+    }
+
+    [Fact]
+    public void FromOperationResult_ReceiptNotFoundFreeText_DoesNotSetNotStarted()
+    {
+        var payload = new
+        {
+            success = false,
+            message = "Payment receipt not found after click."
+        };
+
+        var response = UiResponse.FromOperationResult(payload);
+
+        Assert.Null(response.ExecutionState);
+        Assert.Null(response.FailureCode);
+    }
+
+    [Fact]
+    public void Fail_FreeTextNotFound_DoesNotSetNotStarted()
+    {
+        var response = UiResponse.Fail("Element not found for clickuia.", "shot.png");
+
+        Assert.False(response.Success);
+        Assert.Equal("Element not found for clickuia.", response.Error);
+        Assert.Null(response.ExecutionState);
+        Assert.Null(response.FailureCode);
+    }
+
+    [Fact]
+    public void Fail_WasFoundButInvocationFailed_DoesNotSetNotStarted()
+    {
+        var response = UiResponse.Fail(
+            "Target was found but invocation failed: pattern not supported.");
+
+        Assert.Null(response.ExecutionState);
+        Assert.Null(response.FailureCode);
+    }
+
+    [Fact]
+    public void FailLocatorNotFoundBeforeInvoke_SetsTypedProof()
+    {
+        var response = UiResponse.FailLocatorNotFoundBeforeInvoke(
+            "No element matched locator.",
+            reason: "element-not-found");
+
+        Assert.False(response.Success);
+        Assert.Equal(UiResponse.ExecutionStateNotStarted, response.ExecutionState);
+        Assert.Equal(UiResponse.FailureCodeLocatorNotFoundBeforeInvoke, response.FailureCode);
     }
 
     [Fact]

@@ -8,6 +8,9 @@ using System.Reflection;
 /// </summary>
 public class UiResponse
 {
+    public const string ExecutionStateNotStarted = "notStarted";
+    public const string FailureCodeLocatorNotFoundBeforeInvoke = "locatorNotFoundBeforeInvoke";
+
     /// <summary>true when the operation completed without error.</summary>
     public bool Success { get; set; }
 
@@ -34,6 +37,12 @@ public class UiResponse
     public object? Candidates { get; set; }
     public object? Suggestions { get; set; }
 
+    /// <summary>Typed execution state for recovery (e.g. notStarted).</summary>
+    public string? ExecutionState { get; set; }
+
+    /// <summary>Typed failure code for recovery (e.g. locatorNotFoundBeforeInvoke).</summary>
+    public string? FailureCode { get; set; }
+
     public static UiResponse Fail(object value) =>
         new() { Success = false, Error = "UI resolution failed.", Value = value };
 
@@ -44,6 +53,11 @@ public class UiResponse
     /// <summary>
     /// Builds the HTTP envelope from an operation result. When the payload exposes
     /// <c>success: false</c>, the envelope <see cref="Success"/> matches it.
+    /// Typed non-execution proof (<c>notStarted</c> / <c>locatorNotFoundBeforeInvoke</c>)
+    /// is never invented here from <c>found=false</c>, <c>matchCount=0</c>, or free text —
+    /// those fields can appear after a mutating invoke (see Native UIA wrapper). Proof is
+    /// applied only when the payload already carries explicit typed fields, or via
+    /// <see cref="FailLocatorNotFoundBeforeInvoke"/>.
     /// </summary>
     public static UiResponse FromOperationResult(object? value)
     {
@@ -55,13 +69,23 @@ public class UiResponse
             var message = TryReadStringProperty(value, "message");
             var reason = TryReadStringProperty(value, "reason");
 
-            return new UiResponse
+            var response = new UiResponse
             {
                 Success = false,
                 Value = value,
                 Error = message ?? reason ?? "Operation failed.",
                 Reason = reason
             };
+
+            // Propagate only explicitly authored typed proof — never derive from found/matchCount.
+            var executionState = TryReadStringProperty(value, "executionState");
+            var failureCode = TryReadStringProperty(value, "failureCode");
+            if (!string.IsNullOrWhiteSpace(executionState))
+                response.ExecutionState = executionState.Trim();
+            if (!string.IsNullOrWhiteSpace(failureCode))
+                response.FailureCode = failureCode.Trim();
+
+            return response;
         }
 
         return Ok(value);
@@ -69,11 +93,62 @@ public class UiResponse
 
     /// <summary>Creates a failed response with an error message.</summary>
     public static UiResponse Fail(string error) =>
-        new() { Success = false, Error = error };
+        Fail(error, screenshotPath: null);
 
-    /// <summary>Creates a failed response with an error message and a screenshot path.</summary>
+    /// <summary>
+    /// Creates a failed response with an error message and a screenshot path.
+    /// Free-text errors never receive typed non-execution proof.
+    /// </summary>
     public static UiResponse Fail(string error, string? screenshotPath) =>
-        new() { Success = false, Error = error, ScreenshotPath = screenshotPath };
+        new()
+        {
+            Success = false,
+            Error = error,
+            ScreenshotPath = screenshotPath
+        };
+
+    /// <summary>
+    /// Locator-resolution failure before any mutation/invoke. Sets typed non-execution proof.
+    /// </summary>
+    public static UiResponse FailLocatorNotFoundBeforeInvoke(
+        string error,
+        string? screenshotPath = null,
+        string? reason = null,
+        object? locator = null,
+        object? candidates = null,
+        object? suggestions = null)
+    {
+        var response = new UiResponse
+        {
+            Success = false,
+            Error = error,
+            ScreenshotPath = screenshotPath,
+            Reason = reason,
+            Locator = locator,
+            Candidates = candidates,
+            Suggestions = suggestions,
+            Value = new
+            {
+                success = false,
+                found = false,
+                message = error,
+                reason,
+                locator,
+                candidates,
+                suggestions,
+                executionState = ExecutionStateNotStarted,
+                failureCode = FailureCodeLocatorNotFoundBeforeInvoke
+            }
+        };
+        ApplyLocatorNotFoundProof(response);
+        return response;
+    }
+
+    private static void ApplyLocatorNotFoundProof(UiResponse response)
+    {
+        response.ExecutionState = ExecutionStateNotStarted;
+        response.FailureCode = FailureCodeLocatorNotFoundBeforeInvoke;
+    }
 
     private static bool TryReadBoolProperty(object value, string propertyName, out bool result)
     {

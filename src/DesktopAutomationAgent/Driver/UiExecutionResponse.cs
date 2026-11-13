@@ -13,6 +13,12 @@ public sealed class UiExecutionResponse
 
     public string? Reason { get; set; }
 
+    /// <summary>Typed driver execution state (e.g. notStarted). Preferred over free-text errors.</summary>
+    public string? ExecutionState { get; set; }
+
+    /// <summary>Typed driver failure code (e.g. locatorNotFoundBeforeInvoke).</summary>
+    public string? FailureCode { get; set; }
+
     public string? ScreenshotPath { get; set; }
 
     public JsonElement? Locator { get; set; }

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DesktopAutomationAgent.Driver;
+using DesktopAutomationAgent.Recovery;
 
 namespace DesktopAutomationAgent.Execution;
 
@@ -51,6 +52,8 @@ public sealed class RunReport
 
     public RunFailure? Failure { get; init; }
 
+    public RecoveryRunSummary? Recovery { get; init; }
+
     public string ArtifactWriteStatus { get; set; } = "pending";
 }
 
@@ -88,6 +91,12 @@ public sealed class StepRunResult
     public string? Error { get; init; }
 
     public string? DriverReason { get; init; }
+
+    /// <summary>Typed driver execution state (e.g. notStarted).</summary>
+    public string? ExecutionState { get; init; }
+
+    /// <summary>Typed driver failure code (e.g. locatorNotFoundBeforeInvoke).</summary>
+    public string? FailureCode { get; init; }
 
     public string? ScreenshotPath { get; init; }
 
