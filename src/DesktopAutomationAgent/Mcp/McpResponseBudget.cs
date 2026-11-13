@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using DesktopAutomationAgent.Driver;
 
 namespace DesktopAutomationAgent.Mcp;
 
@@ -20,14 +21,11 @@ public static class McpResponseBudget
     public const int MaxTrimIterations = 10_000;
 
     /// <summary>
-    /// Serializes <paramref name="payload"/> to compact JSON that is always parseable and
-    /// never exceeds <paramref name="maxChars"/>. Throws <see cref="McpToolException"/> with
-    /// <see cref="McpErrorCode.Truncated"/> when a valid bounded envelope cannot be produced.
+    /// Serializes <paramref name="payload"/>, redacts secrets, then budgets.
+    /// Redaction runs before truncation so secrets cannot survive near the size limit.
     /// </summary>
-    public static string SerializeBounded(object payload, int maxChars = DefaultMaxChars)
+    public static string SerializeRedactedBounded(object payload, int maxChars = DefaultMaxChars)
     {
-        maxChars = Math.Clamp(maxChars, 256, AbsoluteMaxChars);
-
         string json;
         try
         {
@@ -40,6 +38,39 @@ public static class McpResponseBudget
                 "Response payload could not be serialized under the MCP budget.",
                 ex.Message);
         }
+
+        return BoundJson(SecretRedactor.Redact(json), maxChars);
+    }
+
+    /// <summary>
+    /// Serializes <paramref name="payload"/> to compact JSON that is always parseable and
+    /// never exceeds <paramref name="maxChars"/>. Prefer <see cref="SerializeRedactedBounded"/>
+    /// for wire responses.
+    /// </summary>
+    public static string SerializeBounded(object payload, int maxChars = DefaultMaxChars)
+    {
+        string json;
+        try
+        {
+            json = JsonSerializer.Serialize(payload, McpJson.Options);
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or ArgumentException)
+        {
+            throw new McpToolException(
+                McpErrorCode.Truncated,
+                "Response payload could not be serialized under the MCP budget.",
+                ex.Message);
+        }
+
+        return BoundJson(json, maxChars);
+    }
+
+    /// <summary>
+    /// Budgets an already-serialized (and preferably already-redacted) JSON document.
+    /// </summary>
+    public static string BoundJson(string json, int maxChars = DefaultMaxChars)
+    {
+        maxChars = Math.Clamp(maxChars, 256, AbsoluteMaxChars);
 
         if (json.Length <= maxChars)
         {
@@ -150,7 +181,7 @@ public static class McpResponseBudget
 
         foreach (var (key, value) in obj)
         {
-            if (key is "truncated" or "truncationReason" or "success" or "errorCode" or "message")
+            if (key is "truncated" or "truncationReason" or "success" or "errorCode")
                 continue;
 
             var len = value?.ToJsonString(McpJson.NodeOptions).Length ?? 0;

@@ -46,7 +46,7 @@ dotnet run --project src/DesktopAutomationAgent -- mcp-server
 |---|---|---|
 | `desktop_doctor` | observation | Readiness / discovery checks |
 | `desktop_observe` | observation | Bounded semantic snapshot + opaque refs |
-| `desktop_explore_dry_run` | observation | Policy candidates; no UI mutation (not ReadOnly — may write artifact stubs) |
+| `desktop_explore_dry_run` | observation | Policy candidates; no UI mutation (not ReadOnly / not Idempotent — may write artifact stubs) |
 | `desktop_explore` | navigation | Policy-bounded explorer |
 | `desktop_search_knowledge` | observation | Lexical knowledge search |
 | `desktop_validate_plan` | validation | Offline plan validation |

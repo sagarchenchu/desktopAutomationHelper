@@ -59,10 +59,10 @@ public class Phase5McpTests
         var attr = method!.GetCustomAttribute<McpServerToolAttribute>();
         Assert.NotNull(attr);
         Assert.Equal("desktop_explore_dry_run", attr!.Name);
-        // May write workspace artifact stubs — must not advertise ReadOnly.
+        // May write workspace artifact stubs — must not advertise ReadOnly or Idempotent.
         Assert.False(attr.ReadOnly);
         Assert.False(attr.Destructive);
-        Assert.True(attr.Idempotent);
+        Assert.False(attr.Idempotent);
         Assert.False(attr.OpenWorld);
         var description = method.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>()!.Description;
         Assert.StartsWith("Observation:", description, StringComparison.Ordinal);
@@ -344,6 +344,83 @@ public class Phase5McpTests
     }
 
     [Fact]
+    public void PathGuard_RejectsSymlinkCycle_FailClosed()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var a = Path.Combine(workspace.RootPath, "plans", "cycle-a.json");
+        var b = Path.Combine(workspace.RootPath, "plans", "cycle-b.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(a)!);
+
+        try
+        {
+            // Create a temporary real file so the first link has a target, then retarget into a cycle.
+            var temp = Path.Combine(workspace.RootPath, "plans", "cycle-temp.json");
+            File.WriteAllText(temp, "{}");
+            if (!TryCreateSymbolicLink(() => File.CreateSymbolicLink(a, temp), a))
+                return;
+            if (!TryCreateSymbolicLink(() => File.CreateSymbolicLink(b, a), b))
+                return;
+
+            File.Delete(a);
+            if (!TryCreateSymbolicLink(() => File.CreateSymbolicLink(a, b), a))
+                return;
+
+            var thrown = Assert.ThrowsAny<Exception>(() =>
+                McpPathGuard.EnsureNotSymlinkEscape(a, workspace.RootPath));
+            Assert.True(
+                thrown.Message.Contains("cycle", StringComparison.OrdinalIgnoreCase)
+                || thrown.Message.Contains("cannot be validated", StringComparison.OrdinalIgnoreCase)
+                || thrown.Message.Contains("outside", StringComparison.OrdinalIgnoreCase),
+                thrown.Message);
+        }
+        finally
+        {
+            TryDelete(a);
+            TryDelete(b);
+            TryDelete(Path.Combine(workspace.RootPath, "plans", "cycle-temp.json"));
+        }
+    }
+
+    [Fact]
+    public void PathGuard_RejectsUnresolvableReparsePoint_FailClosed()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        // Junction to a missing target: ResolveLinkTarget should fail closed.
+        var missingTarget = Path.Combine(Path.GetTempPath(), "da-mcp-missing-" + Guid.NewGuid().ToString("N"));
+        var junction = Path.Combine(workspace.RootPath, "broken-junc");
+
+        try
+        {
+            // Create target, make junction, then delete target so resolution fails / is dangling.
+            Directory.CreateDirectory(missingTarget);
+            RequireWindowsJunction(junction, missingTarget);
+            Directory.Delete(missingTarget, recursive: true);
+
+            var probe = Path.Combine(junction, "nope.json");
+            var thrown = Assert.ThrowsAny<Exception>(() =>
+                McpPathGuard.EnsureNotSymlinkEscape(probe, workspace.RootPath));
+            Assert.True(
+                thrown.Message.Contains("cannot be validated", StringComparison.OrdinalIgnoreCase)
+                || thrown.Message.Contains("outside", StringComparison.OrdinalIgnoreCase)
+                || thrown.Message.Contains("reparse", StringComparison.OrdinalIgnoreCase),
+                thrown.Message);
+        }
+        finally
+        {
+            TryDelete(junction);
+            TryDelete(missingTarget);
+        }
+    }
+
+    [Fact]
     public void Facade_ValidatePlan_DelegatesAndKeepsValidation()
     {
         var options = TestSupport.CreateOptions(bearerToken: SecretToken);
@@ -530,6 +607,50 @@ public class Phase5McpTests
     }
 
     [Fact]
+    public async Task Tools_RepeatedSecrets_RedactedThenBudgeted()
+    {
+        var repeats = Enumerable.Range(0, 200).Select(i => new
+        {
+            i,
+            token = SecretToken,
+            authorizationHeader = "Bearer " + SecretToken,
+            note = $"Authorization: Bearer {SecretToken}"
+        }).ToArray();
+
+        var mock = new Mock<IDesktopMcpFacade>(MockBehavior.Strict);
+        mock.Setup(f => f.DoctorAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new { success = true, repeats });
+
+        var tools = new DesktopMcpTools(mock.Object);
+        var ok = await tools.DesktopDoctor(CancellationToken.None);
+        Assert.True(ok.IsError != true, GetRawText(ok));
+        AssertRawWireHasNoSecret(ok);
+        AssertWireIsValidJsonUnderBudget(ok);
+        Assert.DoesNotContain(SecretToken, GetRawText(ok), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ResponseBudget_RedactThenBudget_RemovesSecretBeforeTruncation()
+    {
+        var payload = new
+        {
+            success = true,
+            token = SecretToken,
+            authorizationHeader = "Bearer " + SecretToken,
+            // Space-separated so each Bearer token is a complete redaction unit before budgeting.
+            blob = string.Join(
+                " ",
+                Enumerable.Repeat($"Authorization: Bearer {SecretToken}", 5_000))
+        };
+
+        var json = McpResponseBudget.SerializeRedactedBounded(payload, maxChars: 2_000);
+        Assert.True(json.Length <= 2_000);
+        Assert.DoesNotContain(SecretToken, json, StringComparison.Ordinal);
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
+    }
+
+    [Fact]
     public async Task Protocol_InitListsExpectedToolsAndSchemas()
     {
         var mock = new Mock<IDesktopMcpFacade>(MockBehavior.Strict);
@@ -677,80 +798,137 @@ public class Phase5McpTests
     }
 
     [Fact]
-    public async Task Protocol_InvalidInputMatrix_AllTools()
+    public async Task Tools_InvalidInputMatrix_Validation_NoFacadeCalls()
+    {
+        // Strict mock with zero setups: real tool-layer validation must reject before any facade call.
+        var mock = new Mock<IDesktopMcpFacade>(MockBehavior.Strict);
+        var tools = new DesktopMcpTools(mock.Object);
+
+        async Task AssertValidation(CallToolResult result)
+        {
+            Assert.True(result.IsError == true, GetRawText(result));
+            AssertRawWireHasNoSecret(result);
+            AssertWireIsValidJsonUnderBudget(result);
+            using var doc = JsonDocument.Parse(GetRawText(result));
+            Assert.Equal(McpErrorCode.Validation, doc.RootElement.GetProperty("errorCode").GetString());
+        }
+
+        await AssertValidation(await tools.DesktopObserve(
+            view: "not-a-view", root: null, maxDepth: null, maxChildren: null, maxNodes: null,
+            false, false, false, null, null, null, CancellationToken.None));
+        await AssertValidation(await tools.DesktopObserve(
+            view: null, root: null, maxDepth: 99, maxChildren: null, maxNodes: null,
+            false, false, false, null, null, null, CancellationToken.None));
+        await AssertValidation(await tools.DesktopExploreDryRun("  ", CancellationToken.None));
+        await AssertValidation(await tools.DesktopExplore("", CancellationToken.None));
+        await AssertValidation(await tools.DesktopSearchKnowledge("", "q", null, CancellationToken.None));
+        await AssertValidation(await tools.DesktopSearchKnowledge("k.json", "q", limit: 0, CancellationToken.None));
+        await AssertValidation(await tools.DesktopValidatePlan("", CancellationToken.None));
+        await AssertValidation(await tools.DesktopCompileKey("", file: null, fromJira: false, null, null, null, null, false, CancellationToken.None));
+        await AssertValidation(await tools.DesktopRunPlan("", dryRun: false, CancellationToken.None));
+        await AssertValidation(await tools.DesktopRunKey("", dryRun: false, fromJira: false, null, null, null, null, CancellationToken.None));
+        await AssertValidation(await tools.DesktopRunSuite("", dryRun: false, fromJira: false, false, null, null, null, null, null, CancellationToken.None));
+        await AssertValidation(await tools.DesktopGetRunSummary(" ", CancellationToken.None));
+
+        mock.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Protocol_InvalidInput_RequiredOmissions_NoFacadeCalls()
     {
         var mock = new Mock<IDesktopMcpFacade>(MockBehavior.Strict);
-        // No facade calls should succeed for these invalid invocations — allow optional throw if reached.
-        mock.Setup(f => f.ExploreAsync(It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("should not explore"));
-        mock.Setup(f => f.SearchKnowledge(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int?>()))
-            .Throws(new InvalidOperationException("should not search"));
-        mock.Setup(f => f.ValidatePlan(It.IsAny<string>()))
-            .Throws(new InvalidOperationException("should not validate"));
-        mock.Setup(f => f.CompileKey(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<string?>(),
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<bool>()))
-            .Throws(new InvalidOperationException("should not compile"));
-        mock.Setup(f => f.CompileKeyFromJiraAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("should not compile from jira"));
-        mock.Setup(f => f.RunPlanAsync(It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("should not run plan"));
-        mock.Setup(f => f.RunKeyAsync(
-                It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<string?>(),
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("should not run key"));
-        mock.Setup(f => f.RunSuiteAsync(
-                It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<int?>(),
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("should not run suite"));
-        mock.Setup(f => f.GetRunSummary(It.IsAny<string>()))
-            .Throws(new InvalidOperationException("should not get summary"));
-        mock.Setup(f => f.DoctorAsync(It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("doctor probe"));
-        mock.Setup(f => f.ObserveAsync(
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(),
-                It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<bool?>(), It.IsAny<bool?>(),
-                It.IsAny<string?>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("observe probe"));
-
         await using var session = await McpTestSession.CreateAsync(mock.Object);
         var tools = (await session.Client.ListToolsAsync()).ToDictionary(t => t.Name, StringComparer.Ordinal);
 
-        async Task AssertInvalid(string toolName, Dictionary<string, object?> args)
+        async Task AssertRejected(string toolName, Dictionary<string, object?> args)
         {
-            Assert.True(tools.ContainsKey(toolName), toolName);
             var result = await tools[toolName].CallAsync(args);
             Assert.True(result.IsError == true, $"{toolName}: {GetRawText(result)}");
             AssertRawWireHasNoSecret(result);
             var text = GetRawText(result).TrimStart();
-            // Protocol may reject before our handler (plain-text invoke error) or return structured JSON.
             if (text.StartsWith("{", StringComparison.Ordinal))
+            {
                 AssertWireIsValidJsonUnderBudget(result);
-            else
-                Assert.False(string.IsNullOrWhiteSpace(text), toolName);
+                using var doc = JsonDocument.Parse(text);
+                if (doc.RootElement.TryGetProperty("errorCode", out var code))
+                    Assert.Equal(McpErrorCode.Validation, code.GetString());
+            }
         }
 
-        // Required-argument omissions / invalid values for all 11 tools.
-        // doctor has no required args — empty call hits mock throw → structured error.
-        await AssertInvalid("desktop_doctor", new Dictionary<string, object?>());
-        await AssertInvalid("desktop_observe", new Dictionary<string, object?> { ["maxDepth"] = 99 });
-        await AssertInvalid("desktop_explore_dry_run", new Dictionary<string, object?>());
-        await AssertInvalid("desktop_explore", new Dictionary<string, object?>());
-        await AssertInvalid("desktop_search_knowledge", new Dictionary<string, object?> { ["query"] = "x" });
-        await AssertInvalid("desktop_validate_plan", new Dictionary<string, object?>());
-        await AssertInvalid("desktop_compile_key", new Dictionary<string, object?>());
-        await AssertInvalid("desktop_run_plan", new Dictionary<string, object?>());
-        await AssertInvalid("desktop_run_key", new Dictionary<string, object?>());
-        await AssertInvalid("desktop_run_suite", new Dictionary<string, object?>());
-        await AssertInvalid("desktop_get_run_summary", new Dictionary<string, object?>());
+        await AssertRejected("desktop_explore_dry_run", new Dictionary<string, object?>());
+        await AssertRejected("desktop_explore", new Dictionary<string, object?>());
+        await AssertRejected("desktop_search_knowledge", new Dictionary<string, object?> { ["query"] = "x" });
+        await AssertRejected("desktop_validate_plan", new Dictionary<string, object?>());
+        await AssertRejected("desktop_compile_key", new Dictionary<string, object?>());
+        await AssertRejected("desktop_run_plan", new Dictionary<string, object?>());
+        await AssertRejected("desktop_run_key", new Dictionary<string, object?>());
+        await AssertRejected("desktop_run_suite", new Dictionary<string, object?>());
+        await AssertRejected("desktop_get_run_summary", new Dictionary<string, object?>());
+        await AssertRejected("desktop_run_plan", new Dictionary<string, object?> { ["dryRun"] = false });
+        await AssertRejected("desktop_observe", new Dictionary<string, object?> { ["maxDepth"] = 99 });
 
-        // dryRun present without required path/key still errors (defaults alone must not live-run).
-        await AssertInvalid("desktop_run_plan", new Dictionary<string, object?> { ["dryRun"] = false });
-        await AssertInvalid("desktop_run_key", new Dictionary<string, object?> { ["dryRun"] = false });
-        await AssertInvalid("desktop_run_suite", new Dictionary<string, object?> { ["dryRun"] = false });
+        mock.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Protocol_OptionalArgs_MayBeOmitted_AndRequiredArraysMatch()
+    {
+        var mock = new Mock<IDesktopMcpFacade>(MockBehavior.Strict);
+        mock.Setup(f => f.SearchKnowledge("knowledge/app.json", "login", null))
+            .Returns(new { success = true, category = "observation", hits = Array.Empty<object>() });
+        mock.Setup(f => f.CompileKey("SAMPLE-1", null, false, null, null, null, null, false))
+            .Returns(new { success = true, category = "validation", key = "SAMPLE-1" });
+        mock.Setup(f => f.ObserveAsync(
+                null, null, null, null, null,
+                false, false, false, null, null, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new { success = true, category = "observation", nodeCount = 0 });
+
+        await using var session = await McpTestSession.CreateAsync(mock.Object);
+        var tools = (await session.Client.ListToolsAsync()).ToDictionary(t => t.Name, StringComparer.Ordinal);
+
+        static string[] RequiredOf(JsonElement schema)
+        {
+            if (!schema.TryGetProperty("required", out var required) || required.ValueKind != JsonValueKind.Array)
+                return [];
+            return required.EnumerateArray().Select(e => e.GetString()!).Where(s => s is not null).ToArray()!;
+        }
+
+        Assert.Equal(["policyPath"], RequiredOf(tools["desktop_explore_dry_run"].JsonSchema));
+        Assert.Equal(["policyPath"], RequiredOf(tools["desktop_explore"].JsonSchema));
+        Assert.Contains("knowledgePath", RequiredOf(tools["desktop_search_knowledge"].JsonSchema));
+        Assert.Contains("query", RequiredOf(tools["desktop_search_knowledge"].JsonSchema));
+        Assert.DoesNotContain("limit", RequiredOf(tools["desktop_search_knowledge"].JsonSchema));
+        Assert.Equal(["planPath"], RequiredOf(tools["desktop_validate_plan"].JsonSchema));
+        Assert.Contains("key", RequiredOf(tools["desktop_compile_key"].JsonSchema));
+        Assert.DoesNotContain("file", RequiredOf(tools["desktop_compile_key"].JsonSchema));
+        Assert.Equal(["planPath"], RequiredOf(tools["desktop_run_plan"].JsonSchema));
+        Assert.DoesNotContain("dryRun", RequiredOf(tools["desktop_run_plan"].JsonSchema));
+        Assert.Contains("key", RequiredOf(tools["desktop_run_key"].JsonSchema));
+        Assert.DoesNotContain("dryRun", RequiredOf(tools["desktop_run_key"].JsonSchema));
+        Assert.Equal(["suitePath"], RequiredOf(tools["desktop_run_suite"].JsonSchema));
+        Assert.Equal(["runId"], RequiredOf(tools["desktop_get_run_summary"].JsonSchema));
+        Assert.Empty(RequiredOf(tools["desktop_doctor"].JsonSchema));
+        Assert.Empty(RequiredOf(tools["desktop_observe"].JsonSchema));
+
+        // Minimal omit: only required args; optional file/limit/view omitted.
+        var search = await tools["desktop_search_knowledge"].CallAsync(new Dictionary<string, object?>
+        {
+            ["knowledgePath"] = "knowledge/app.json",
+            ["query"] = "login"
+        });
+        Assert.True(search.IsError != true, GetRawText(search));
+
+        var compile = await tools["desktop_compile_key"].CallAsync(new Dictionary<string, object?>
+        {
+            ["key"] = "SAMPLE-1"
+        });
+        Assert.True(compile.IsError != true, GetRawText(compile));
+
+        var observe = await tools["desktop_observe"].CallAsync(new Dictionary<string, object?>());
+        Assert.True(observe.IsError != true, GetRawText(observe));
+
+        mock.VerifyAll();
+        mock.VerifyNoOtherCalls();
     }
 
     [Fact]

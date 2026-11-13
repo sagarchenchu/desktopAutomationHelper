@@ -14,6 +14,12 @@ namespace DesktopAutomationAgent.Mcp;
 [McpServerToolType]
 public sealed class DesktopMcpTools
 {
+    private static readonly HashSet<string> AllowedViews =
+        new(StringComparer.OrdinalIgnoreCase) { "control", "content", "raw" };
+
+    private static readonly HashSet<string> AllowedRoots =
+        new(StringComparer.OrdinalIgnoreCase) { "activeWindow", "processWindows", "desktopChildren" };
+
     private readonly IDesktopMcpFacade _facade;
 
     public DesktopMcpTools(IDesktopMcpFacade facade)
@@ -41,57 +47,69 @@ public sealed class DesktopMcpTools
         bool? actionableOnly = null,
         [MaxLength(512)] string? outputPath = null,
         CancellationToken cancellationToken = default) =>
-        InvokeAsync(() => _facade.ObserveAsync(
-            view,
-            root,
-            maxDepth,
-            maxChildren,
-            maxNodes,
-            includeOffscreen,
-            includeBounds,
-            includeHelpText,
-            includeFocusState,
-            actionableOnly,
-            outputPath,
-            cancellationToken));
+        InvokeAsync(() =>
+        {
+            ValidateOptionalEnum(view, nameof(view), AllowedViews);
+            ValidateOptionalEnum(root, nameof(root), AllowedRoots);
+            ValidateOptionalRange(maxDepth, nameof(maxDepth), 0, 12);
+            ValidateOptionalRange(maxChildren, nameof(maxChildren), 1, 200);
+            ValidateOptionalRange(maxNodes, nameof(maxNodes), 1, 500);
+            return _facade.ObserveAsync(
+                view,
+                root,
+                maxDepth,
+                maxChildren,
+                maxNodes,
+                includeOffscreen,
+                includeBounds,
+                includeHelpText,
+                includeFocusState,
+                actionableOnly,
+                outputPath,
+                cancellationToken);
+        });
 
-    // Not ReadOnly: dry-run still may write exploration artifact stubs under the workspace.
-    [McpServerTool(Name = "desktop_explore_dry_run", Title = "Desktop explore dry-run", ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false)]
+    // Not ReadOnly: dry-run may write exploration artifact stubs. Not Idempotent: repeated calls can append artifacts.
+    [McpServerTool(Name = "desktop_explore_dry_run", Title = "Desktop explore dry-run", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]
     [Description("Observation: list policy-permitted exploration candidates without UI mutation. Deny-by-default exploration policy required.")]
     public Task<CallToolResult> DesktopExploreDryRun(
         [Required, MaxLength(512), Description("Workspace-contained exploration policy path")] string policyPath,
-        CancellationToken cancellationToken) =>
-        InvokeAsync(() => _facade.ExploreAsync(policyPath, dryRun: true, cancellationToken));
+        CancellationToken cancellationToken = default) =>
+        InvokeAsync(() => _facade.ExploreAsync(RequireArg(policyPath, nameof(policyPath)), dryRun: true, cancellationToken));
 
     [McpServerTool(Name = "desktop_explore", Title = "Desktop explore", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]
     [Description("Navigation: policy-bounded observe/navigate explorer. Deny-by-default; no typing or transactional actions. Not unrestricted execution.")]
     public Task<CallToolResult> DesktopExplore(
         [Required, MaxLength(512), Description("Workspace-contained exploration policy path")] string policyPath,
-        CancellationToken cancellationToken) =>
-        InvokeAsync(() => _facade.ExploreAsync(policyPath, dryRun: false, cancellationToken));
+        CancellationToken cancellationToken = default) =>
+        InvokeAsync(() => _facade.ExploreAsync(RequireArg(policyPath, nameof(policyPath)), dryRun: false, cancellationToken));
 
     [McpServerTool(Name = "desktop_search_knowledge", Title = "Desktop search knowledge", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("Observation: deterministic lexical search over approved application knowledge (no embeddings).")]
     public Task<CallToolResult> DesktopSearchKnowledge(
         [Required, MaxLength(512)] string knowledgePath,
         [Required, MaxLength(256)] string query,
-        [Range(1, 100)] int? limit,
-        CancellationToken cancellationToken) =>
+        [Range(1, 100)] int? limit = null,
+        CancellationToken cancellationToken = default) =>
         InvokeAsync(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(_facade.SearchKnowledge(knowledgePath, query, limit));
+            ValidateOptionalRange(limit, nameof(limit), 1, 100);
+            return Task.FromResult(_facade.SearchKnowledge(
+                RequireArg(knowledgePath, nameof(knowledgePath)),
+                RequireArg(query, nameof(query)),
+                limit));
         });
 
     [McpServerTool(Name = "desktop_validate_plan", Title = "Desktop validate plan", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("Validation: offline deterministic plan validation including optional object-repository expansion. No driver HTTP.")]
     public Task<CallToolResult> DesktopValidatePlan(
         [Required, MaxLength(512)] string planPath,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken = default) =>
         InvokeAsync(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(_facade.ValidatePlan(planPath));
+            return Task.FromResult(_facade.ValidatePlan(RequireArg(planPath, nameof(planPath))));
         });
 
     // Not ReadOnly: compile writes plan-cache artifacts. OpenWorld=true: fromJira may contact remote Jira.
@@ -99,7 +117,7 @@ public sealed class DesktopMcpTools
     [Description("Validation: compile a Jira BDD key into a deterministic plan cache entry. fromJira performs read-only remote sync then compile (open-world); never POST /ui.")]
     public Task<CallToolResult> DesktopCompileKey(
         [Required, MaxLength(64)] string key,
-        [MaxLength(512)] string? file,
+        [MaxLength(512)] string? file = null,
         bool fromJira = false,
         [MaxLength(512)] string? registry = null,
         [MaxLength(512)] string? objectRepository = null,
@@ -109,17 +127,18 @@ public sealed class DesktopMcpTools
         CancellationToken cancellationToken = default) =>
         InvokeAsync(async () =>
         {
+            var safeKey = RequireArg(key, nameof(key));
             if (fromJira)
             {
                 if (!string.IsNullOrWhiteSpace(file))
                     throw new McpToolException(McpErrorCode.Validation, "fromJira cannot be combined with file.");
                 return await _facade.CompileKeyFromJiraAsync(
-                        key, registry, objectRepository, knowledge, catalog, explain, cancellationToken)
+                        safeKey, registry, objectRepository, knowledge, catalog, explain, cancellationToken)
                     .ConfigureAwait(false);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            return _facade.CompileKey(key, file, fromJira: false, registry, objectRepository, knowledge, catalog, explain);
+            return _facade.CompileKey(safeKey, file, fromJira: false, registry, objectRepository, knowledge, catalog, explain);
         });
 
     [McpServerTool(Name = "desktop_run_plan", Title = "Desktop run plan", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]
@@ -128,7 +147,7 @@ public sealed class DesktopMcpTools
         [Required, MaxLength(512)] string planPath,
         bool dryRun = true,
         CancellationToken cancellationToken = default) =>
-        InvokeAsync(() => _facade.RunPlanAsync(planPath, dryRun, cancellationToken));
+        InvokeAsync(() => _facade.RunPlanAsync(RequireArg(planPath, nameof(planPath)), dryRun, cancellationToken));
 
     // OpenWorld=true when fromJira syncs from remote Jira before execution.
     [McpServerTool(Name = "desktop_run_key", Title = "Desktop run key", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]
@@ -143,7 +162,7 @@ public sealed class DesktopMcpTools
         [MaxLength(512)] string? catalog = null,
         CancellationToken cancellationToken = default) =>
         InvokeAsync(() => _facade.RunKeyAsync(
-            key, dryRun, fromJira, registry, objectRepository, knowledge, catalog, cancellationToken));
+            RequireArg(key, nameof(key)), dryRun, fromJira, registry, objectRepository, knowledge, catalog, cancellationToken));
 
     [McpServerTool(Name = "desktop_run_suite", Title = "Desktop run suite", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]
     [Description("Execution: sequential suite orchestration. Fail-fast by default. fromJira may contact remote Jira; dryRun defaults to true (omission never live-runs / never POST /ui).")]
@@ -158,28 +177,63 @@ public sealed class DesktopMcpTools
         [MaxLength(512)] string? knowledge = null,
         [MaxLength(512)] string? catalog = null,
         CancellationToken cancellationToken = default) =>
-        InvokeAsync(() => _facade.RunSuiteAsync(
-            suitePath,
-            dryRun,
-            fromJira,
-            continueOnFailure,
-            maxFailures,
-            registry,
-            objectRepository,
-            knowledge,
-            catalog,
-            cancellationToken));
+        InvokeAsync(() =>
+        {
+            ValidateOptionalRange(maxFailures, nameof(maxFailures), 1, 10_000);
+            return _facade.RunSuiteAsync(
+                RequireArg(suitePath, nameof(suitePath)),
+                dryRun,
+                fromJira,
+                continueOnFailure,
+                maxFailures,
+                registry,
+                objectRepository,
+                knowledge,
+                catalog,
+                cancellationToken);
+        });
 
     [McpServerTool(Name = "desktop_get_run_summary", Title = "Desktop get run summary", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("Observation: load a compact sanitized run or suite-run summary by runId. Secrets are redacted; unrestricted raw artifacts are not returned.")]
     public Task<CallToolResult> DesktopGetRunSummary(
         [Required, MaxLength(128)] string runId,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken = default) =>
         InvokeAsync(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(_facade.GetRunSummary(runId));
+            return Task.FromResult(_facade.GetRunSummary(RequireArg(runId, nameof(runId))));
         });
+
+    private static string RequireArg(string? value, string name)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new McpToolException(McpErrorCode.Validation, $"{name} is required.");
+        return value;
+    }
+
+    private static void ValidateOptionalEnum(string? value, string name, HashSet<string> allowed)
+    {
+        if (value is null)
+            return;
+        if (string.IsNullOrWhiteSpace(value) || !allowed.Contains(value))
+        {
+            throw new McpToolException(
+                McpErrorCode.Validation,
+                $"{name} must be one of: {string.Join(", ", allowed.OrderBy(x => x, StringComparer.Ordinal))}.");
+        }
+    }
+
+    private static void ValidateOptionalRange(int? value, string name, int min, int max)
+    {
+        if (value is null)
+            return;
+        if (value < min || value > max)
+        {
+            throw new McpToolException(
+                McpErrorCode.Validation,
+                $"{name} must be between {min} and {max}.");
+        }
+    }
 
     private static async Task<CallToolResult> InvokeAsync(Func<Task<object>> action)
     {
@@ -198,15 +252,14 @@ public sealed class DesktopMcpTools
         }
         catch (Exception ex)
         {
-            // Redact before placing on the wire — never leak bearer/Authorization via MCP errors.
             return ErrorResult(McpErrorCode.Internal, Driver.SecretRedactor.Redact(ex.Message));
         }
     }
 
     private static CallToolResult SuccessResult(object payload)
     {
-        // Budget first (shortens), then redact — response stays under budget and secret-free.
-        var json = Driver.SecretRedactor.Redact(McpResponseBudget.SerializeBounded(payload));
+        // Redact first, then budget (or re-budget) so secrets cannot survive truncation.
+        var json = McpResponseBudget.SerializeRedactedBounded(payload);
         EnsureWireJson(json);
         return new CallToolResult
         {
@@ -228,8 +281,7 @@ public sealed class DesktopMcpTools
         string json;
         try
         {
-            // Errors also go through budget + redaction (large exception text must not blow the wire).
-            json = Driver.SecretRedactor.Redact(McpResponseBudget.SerializeBounded(payload));
+            json = McpResponseBudget.SerializeRedactedBounded(payload);
             EnsureWireJson(json);
         }
         catch (McpToolException)

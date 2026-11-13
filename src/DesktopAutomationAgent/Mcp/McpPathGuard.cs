@@ -4,6 +4,7 @@ namespace DesktopAutomationAgent.Mcp;
 
 /// <summary>
 /// Workspace containment for MCP file arguments, including symlink / junction / chained-link escape rejection.
+/// Link resolution is fail-closed: unresolvable or cyclic reparse points are rejected.
 /// </summary>
 internal static class McpPathGuard
 {
@@ -130,10 +131,7 @@ internal static class McpPathGuard
             if (!IsReparsePoint(directoryInfo))
                 return normalized;
 
-            var dirFinal = ResolveLinkTargetPath(directoryInfo, returnFinalTarget: true)
-                           ?? throw new McpPathException(
-                               $"path '{fullPath}' is a directory reparse point that cannot be validated safely.");
-
+            var dirFinal = RequireResolvedLinkTarget(directoryInfo, fullPath);
             if (!IsInsideDirectory(dirFinal, containmentRoot))
             {
                 throw new McpPathException(
@@ -150,10 +148,7 @@ internal static class McpPathGuard
         if (!IsReparsePoint(fileInfo))
             return normalized;
 
-        var fileFinal = ResolveLinkTargetPath(fileInfo, returnFinalTarget: true)
-                        ?? throw new McpPathException(
-                            $"path '{fullPath}' is a reparse point that cannot be validated safely.");
-
+        var fileFinal = RequireResolvedLinkTarget(fileInfo, fullPath);
         if (!IsInsideDirectory(fileFinal, containmentRoot))
         {
             throw new McpPathException(
@@ -173,21 +168,14 @@ internal static class McpPathGuard
         {
             if (current.Exists && IsReparsePoint(current))
             {
-                // Fully resolve each ancestor link (including chained dir symlink/junction), then recheck.
-                var resolved = ResolveLinkTargetPath(current, returnFinalTarget: true);
-                if (string.IsNullOrWhiteSpace(resolved))
-                {
-                    throw new McpPathException(
-                        $"path '{fullPath}' traverses a directory reparse point '{current.FullName}' that cannot be validated safely.");
-                }
-
+                // Fully resolve each ancestor link (fail-closed); then recheck containment.
+                var resolved = RequireResolvedLinkTarget(current, fullPath);
                 if (!IsInsideDirectory(resolved, containmentRoot))
                 {
                     throw new McpPathException(
                         $"path '{fullPath}' traverses directory link '{current.FullName}' that resolves outside the allowed directory.");
                 }
 
-                // Recheck the fully resolved ancestor path itself for further link escape.
                 EnsureResolvedDirectoryInside(resolved, containmentRoot, fullPath);
             }
 
@@ -216,13 +204,7 @@ internal static class McpPathGuard
         if (!IsReparsePoint(info))
             return;
 
-        var final = ResolveLinkTargetPath(info, returnFinalTarget: true);
-        if (string.IsNullOrWhiteSpace(final))
-        {
-            throw new McpPathException(
-                $"path '{originalPath}' resolves through reparse point '{resolvedDirectory}' that cannot be validated safely.");
-        }
-
+        var final = RequireResolvedLinkTarget(info, originalPath);
         if (!IsInsideDirectory(final, containmentRoot))
         {
             throw new McpPathException(
@@ -230,37 +212,32 @@ internal static class McpPathGuard
         }
     }
 
-    private static string? ResolveLinkTargetPath(FileSystemInfo info, bool returnFinalTarget)
+    /// <summary>
+    /// Fail-closed link resolution: any inability to fully resolve a reparse point rejects the path.
+    /// </summary>
+    private static string RequireResolvedLinkTarget(FileSystemInfo info, string originalPath)
     {
         try
         {
-            var target = info.ResolveLinkTarget(returnFinalTarget);
-            if (target is not null)
-                return Path.GetFullPath(target.FullName);
+            var target = info.ResolveLinkTarget(returnFinalTarget: true);
+            if (target is null)
+            {
+                throw new McpPathException(
+                    $"path '{originalPath}' is a reparse point that cannot be validated safely.");
+            }
+
+            return Path.GetFullPath(target.FullName);
+        }
+        catch (McpPathException)
+        {
+            throw;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
-            // Fall through to LinkTarget / relative resolution.
-        }
-
-        try
-        {
-            var linkTarget = info.LinkTarget;
-            if (string.IsNullOrWhiteSpace(linkTarget))
-                return null;
-
-            return Path.GetFullPath(
-                Path.IsPathRooted(linkTarget)
-                    ? linkTarget
-                    : Path.Combine(
-                        info is DirectoryInfo dir
-                            ? dir.Parent?.FullName ?? info.FullName
-                            : ((FileInfo)info).Directory!.FullName,
-                        linkTarget));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
-        {
-            return null;
+            // Fail closed — do not fall back to best-effort LinkTarget parsing.
+            throw new McpPathException(
+                $"path '{originalPath}' is a reparse point that cannot be validated safely.",
+                ex);
         }
     }
 
@@ -278,7 +255,9 @@ internal static class McpPathGuard
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or IOException)
         {
-            return false;
+            // Fail closed for attribute/link inspection failures on existing paths.
+            throw new McpPathException(
+                $"path '{info.FullName}' could not be inspected for reparse points safely.");
         }
     }
 
@@ -306,6 +285,10 @@ internal static class McpPathGuard
 internal sealed class McpPathException : Exception
 {
     public McpPathException(string message) : base(message)
+    {
+    }
+
+    public McpPathException(string message, Exception inner) : base(message, inner)
     {
     }
 }
