@@ -833,6 +833,9 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         UiFailureClassification? classification)
     {
         var captureValue = step.ShouldCaptureResponse && !step.Sensitive;
+        var executionState = ExtractTypedField(response, "executionState", response?.ExecutionState);
+        var failureCode = ExtractTypedField(response, "failureCode", response?.FailureCode);
+        DeriveLocatorNotFoundProof(response, ref executionState, ref failureCode, ref error);
         return new StepRunResult
         {
             Sequence = sequence,
@@ -851,8 +854,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             ResponseValue = captureValue ? response?.Value : null,
             Error = error,
             DriverReason = response?.Reason,
-            ExecutionState = ExtractTypedField(response, "executionState", response?.ExecutionState),
-            FailureCode = ExtractTypedField(response, "failureCode", response?.FailureCode),
+            ExecutionState = executionState,
+            FailureCode = failureCode,
             ScreenshotPath = response?.ScreenshotPath,
             Classification = classification,
             Assertions = assertions.Select(a => new AssertionRunResult
@@ -866,6 +869,52 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             }).ToArray(),
             Duration = duration
         };
+    }
+
+    /// <summary>
+    /// When the driver reports a locator miss via value.found=false / matchCount=0 but omits
+    /// typed non-execution proof fields, derive them so bounded recovery can still classify
+    /// recoverable locator-not-found failures (Phase 7 Windows acceptance).
+    /// </summary>
+    private static void DeriveLocatorNotFoundProof(
+        UiExecutionResponse? response,
+        ref string? executionState,
+        ref string? failureCode,
+        ref string? error)
+    {
+        if (!string.IsNullOrWhiteSpace(executionState) && !string.IsNullOrWhiteSpace(failureCode))
+            return;
+
+        if (response?.Value is not { ValueKind: JsonValueKind.Object } value)
+            return;
+
+        var foundFalse = false;
+        var matchCountZero = false;
+        foreach (var prop in value.EnumerateObject())
+        {
+            if (string.Equals(prop.Name, "found", StringComparison.OrdinalIgnoreCase)
+                && prop.Value.ValueKind is JsonValueKind.False)
+            {
+                foundFalse = true;
+            }
+
+            if (string.Equals(prop.Name, "matchCount", StringComparison.OrdinalIgnoreCase)
+                && prop.Value.ValueKind == JsonValueKind.Number
+                && prop.Value.TryGetInt32(out var count)
+                && count == 0)
+            {
+                matchCountZero = true;
+            }
+        }
+
+        if (!foundFalse && !matchCountZero)
+            return;
+
+        executionState ??= Recovery.RecoveryOperationSafety.ExecutionStateNotStarted;
+        failureCode ??= Recovery.RecoveryOperationSafety.FailureCodeLocatorNotFoundBeforeInvoke;
+        // Replace timeout-ish free text: found=false / matchCount=0 means the invoke never started.
+        // Keeping "timeout" in the message would incorrectly mark the outcome uncertain for mutations.
+        error = "Element not found before invoke (locator miss; driver reported found=false or matchCount=0).";
     }
 
     private static string? ExtractTypedField(UiExecutionResponse? response, string extensionKey, string? direct)
