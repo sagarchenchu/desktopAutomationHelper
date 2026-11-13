@@ -1,0 +1,104 @@
+{
+  "reportSchemaVersion": 1,
+  "runId": "20261113T160855135Z-a88f6820",
+  "status": "passed",
+  "exitCode": 0,
+  "planPath": "plans/phase7-delayed-dialog.plan.json",
+  "planId": "phase7.delayed-dialog",
+  "planName": "Phase7 delayed child recover",
+  "planSha256": "38a7e06b56509ddb10260f29bf932d608d82f9e5b5f1ebcb4b21234a790e0da6",
+  "dryRun": false,
+  "driverBaseUrl": "http://127.0.0.1:36276",
+  "discoveryMethod": "explicit",
+  "driverVersion": "0.0.0-local",
+  "catalogSchemaVersion": 2,
+  "startedAtUtc": "2026-11-13T16:08:55.1347629+00:00",
+  "finishedAtUtc": "2026-11-13T16:09:08.1021071+00:00",
+  "durationMilliseconds": 12967.3442,
+  "steps": [
+    {
+      "sequence": 1,
+      "id": "launch",
+      "operation": "launch",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T16:08:55.4298921+00:00",
+      "arguments": {
+        "value": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\src\\DesktopAutomationTestApp\\bin\\Release\\net8.0-windows\\DesktopAutomationTestApp.exe"
+      },
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:01.3936940"
+    },
+    {
+      "sequence": 2,
+      "id": "switch-child",
+      "operation": "switchwindow",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T16:09:07.1522503+00:00",
+      "arguments": {
+        "value": "DA Child Window",
+        "matchMode": "contains"
+      },
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00.1368266"
+    },
+    {
+      "sequence": 3,
+      "id": "quit",
+      "operation": "quit",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T16:09:07.3206079+00:00",
+      "arguments": {},
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00.7754954"
+    }
+  ],
+  "onFailureSteps": [],
+  "recovery": {
+    "runId": "20261113T160855135Z-a88f6820",
+    "originalPlanSha256": "38a7e06b56509ddb10260f29bf932d608d82f9e5b5f1ebcb4b21234a790e0da6",
+    "planMutated": false,
+    "approvedRepositoryMutated": false,
+    "totalRecoveryAttempts": 1,
+    "attempts": [
+      {
+        "attemptNumber": 1,
+        "stepId": "switch-child",
+        "classification": "expectedChildWindowNotActive",
+        "tier": "freshObservationAndBoundedWait",
+        "outcome": "recovered",
+        "detail": "Fresh observation \u002B bounded wait then re-execute succeeded.",
+        "snapshotBeforePath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T160855135Z-a88f6820\\recovery\\before-switch-child-a0fdf21666dc4bb6a2d40cb2895a.json",
+        "snapshotAfterPath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T160855135Z-a88f6820\\recovery\\after-wait-switch-child-01.json",
+        "startedAtUtc": "2026-11-13T16:09:02.5164473+00:00",
+        "finishedAtUtc": "2026-11-13T16:09:07.2970689+00:00",
+        "durationMilliseconds": 4780.0332
+      }
+    ],
+    "finalResult": "passed"
+  },
+  "artifactWriteStatus": "written"
+}

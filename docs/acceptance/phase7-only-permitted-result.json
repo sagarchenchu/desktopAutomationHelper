@@ -1,0 +1,59 @@
+{
+    "scenarioId":  "only-permitted",
+    "headSha":  "19e826905078514aae9e75fc197b15bec990a62f",
+    "pass":  true,
+    "onlyPermittedRecoveries":  true,
+    "pagesHashBefore":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
+    "pagesHashAfter":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
+    "pagesUnchanged":  true,
+    "repoHashBefore":  "1f6c2bcb531dfb32d541ca67e3145c6cede893edbcfb2116d4bfb97d0e674e11",
+    "repoHashAfter":  "1f6c2bcb531dfb32d541ca67e3145c6cede893edbcfb2116d4bfb97d0e674e11",
+    "repoUnchanged":  true,
+    "perScenario":  [
+                        {
+                            "id":  "delayed-dialog",
+                            "outsideBudget":  false,
+                            "pass":  true,
+                            "recovered":  true,
+                            "planHash":  "38a7e06b56509ddb10260f29bf932d608d82f9e5b5f1ebcb4b21234a790e0da6",
+                            "expected":  "recover",
+                            "status":  "passed"
+                        },
+                        {
+                            "id":  "approved-alternate",
+                            "outsideBudget":  false,
+                            "pass":  true,
+                            "recovered":  true,
+                            "planHash":  "c7fe31082f5175cc56b28767bc8c1c4025eeff5bdbd23817f87bbcd04cb58981",
+                            "expected":  "recover",
+                            "status":  "passed"
+                        },
+                        {
+                            "id":  "ambiguous",
+                            "outsideBudget":  false,
+                            "healed":  false,
+                            "pass":  true,
+                            "planHash":  "a29b3f87d8ab57bfc1fa89d2efcc7ec2cf47bd60d748221bf8d8bf1693dd76ca",
+                            "expected":  "stop",
+                            "status":  "failed"
+                        },
+                        {
+                            "id":  "unexpected-window",
+                            "outsideBudget":  false,
+                            "healed":  false,
+                            "pass":  true,
+                            "planHash":  "dcadaf3751a966e970f9555300f76cf6c03baca03d5d20a48325ea67c10bf8f1",
+                            "expected":  "stop",
+                            "status":  "passed"
+                        },
+                        {
+                            "id":  "assertion",
+                            "outsideBudget":  false,
+                            "healed":  false,
+                            "pass":  true,
+                            "planHash":  "270bc15f209f29be122dfb193813d50b007e4efdaa2faa8a840fc67e5c7d5412",
+                            "expected":  "stop",
+                            "status":  "failed"
+                        }
+                    ]
+}

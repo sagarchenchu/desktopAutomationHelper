@@ -1,0 +1,90 @@
+{
+  "reportSchemaVersion": 1,
+  "runId": "20261113T160923889Z-e081d91d",
+  "status": "passed",
+  "exitCode": 0,
+  "planPath": "plans/phase7-unexpected-window.plan.json",
+  "planId": "phase7.unexpected-window",
+  "planName": "Phase7 unexpected external STOP",
+  "planSha256": "dcadaf3751a966e970f9555300f76cf6c03baca03d5d20a48325ea67c10bf8f1",
+  "dryRun": false,
+  "driverBaseUrl": "http://127.0.0.1:36276",
+  "discoveryMethod": "explicit",
+  "driverVersion": "0.0.0-local",
+  "catalogSchemaVersion": 2,
+  "startedAtUtc": "2026-11-13T16:09:23.8890804+00:00",
+  "finishedAtUtc": "2026-11-13T16:09:26.561376+00:00",
+  "durationMilliseconds": 2672.2956,
+  "steps": [
+    {
+      "sequence": 1,
+      "id": "launch",
+      "operation": "launch",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T16:09:24.1792026+00:00",
+      "arguments": {
+        "value": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\src\\DesktopAutomationTestApp\\bin\\Release\\net8.0-windows\\DesktopAutomationTestApp.exe"
+      },
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:01.4776510"
+    },
+    {
+      "sequence": 2,
+      "id": "switch-external",
+      "operation": "switchwindow",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T16:09:25.6584886+00:00",
+      "arguments": {
+        "value": "Notepad",
+        "matchMode": "contains"
+      },
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00.1625557"
+    },
+    {
+      "sequence": 3,
+      "id": "quit",
+      "operation": "quit",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T16:09:25.8213832+00:00",
+      "arguments": {},
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00.7387083"
+    }
+  ],
+  "onFailureSteps": [],
+  "recovery": {
+    "runId": "20261113T160923889Z-e081d91d",
+    "originalPlanSha256": "dcadaf3751a966e970f9555300f76cf6c03baca03d5d20a48325ea67c10bf8f1",
+    "planMutated": false,
+    "approvedRepositoryMutated": false,
+    "totalRecoveryAttempts": 0,
+    "attempts": [],
+    "finalResult": "passed"
+  },
+  "artifactWriteStatus": "written"
+}

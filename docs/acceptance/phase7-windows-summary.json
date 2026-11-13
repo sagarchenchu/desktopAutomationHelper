@@ -1,0 +1,80 @@
+{
+    "headSha":  "19e826905078514aae9e75fc197b15bec990a62f",
+    "branch":  "feature/agent-phase-7-bounded-recovery",
+    "pr":  147,
+    "executedAtUtc":  "2026-11-13T16:09:33.9140411+00:00",
+    "machine":  "DESKTOP-5JD30DR",
+    "overallPass":  true,
+    "pagesHashBefore":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
+    "pagesHashAfter":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
+    "pagesUnchanged":  true,
+    "recoveryOutsideBudgetAny":  false,
+    "commands":  [
+                     "dotnet publish Driver/Agent -r win-x64 --self-contained true",
+                     "DesktopAutomationDriver.exe (GET /verify)",
+                     "DesktopAutomationAgent.exe run-plan --file \u003cplan\u003e --json",
+                     "RecoveryFailureClassifier.ForTests against Unexpected external window message"
+                 ],
+    "scenarios":  [
+                      {
+                          "expected":  "recover",
+                          "id":  1,
+                          "planHash":  "38a7e06b56509ddb10260f29bf932d608d82f9e5b5f1ebcb4b21234a790e0da6",
+                          "recoveryOutsideBudget":  false,
+                          "pass":  true,
+                          "name":  "delayed-dialog",
+                          "status":  "passed",
+                          "evidence":  "phase7-delayed-dialog-result.json"
+                      },
+                      {
+                          "expected":  "recover",
+                          "id":  2,
+                          "planHash":  "c7fe31082f5175cc56b28767bc8c1c4025eeff5bdbd23817f87bbcd04cb58981",
+                          "recoveryOutsideBudget":  false,
+                          "pass":  true,
+                          "name":  "approved-alternate",
+                          "status":  "passed",
+                          "evidence":  "phase7-approved-alternate-result.json"
+                      },
+                      {
+                          "expected":  "stop",
+                          "id":  3,
+                          "planHash":  "a29b3f87d8ab57bfc1fa89d2efcc7ec2cf47bd60d748221bf8d8bf1693dd76ca",
+                          "recoveryOutsideBudget":  false,
+                          "pass":  true,
+                          "name":  "ambiguous",
+                          "status":  "failed",
+                          "evidence":  "phase7-ambiguous-result.json"
+                      },
+                      {
+                          "expected":  "stop",
+                          "id":  4,
+                          "planHash":  "dcadaf3751a966e970f9555300f76cf6c03baca03d5d20a48325ea67c10bf8f1",
+                          "recoveryOutsideBudget":  false,
+                          "pass":  true,
+                          "name":  "unexpected-window",
+                          "status":  "passed",
+                          "evidence":  "phase7-unexpected-window-result.json"
+                      },
+                      {
+                          "expected":  "stop",
+                          "id":  5,
+                          "planHash":  "270bc15f209f29be122dfb193813d50b007e4efdaa2faa8a840fc67e5c7d5412",
+                          "recoveryOutsideBudget":  false,
+                          "pass":  true,
+                          "name":  "assertion",
+                          "status":  "failed",
+                          "evidence":  "phase7-assertion-result.json"
+                      },
+                      {
+                          "expected":  "meta",
+                          "id":  6,
+                          "planHash":  "n/a",
+                          "recoveryOutsideBudget":  false,
+                          "pass":  true,
+                          "name":  "only-permitted",
+                          "status":  "passed",
+                          "evidence":  "phase7-only-permitted-result.json"
+                      }
+                  ]
+}

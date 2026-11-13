@@ -1,0 +1,9 @@
+{
+    "message":  "Unexpected external window \u0027Untitled - Notepad\u0027 / process \u0027notepad\u0027 (pid 12996).",
+    "operation":  "switchwindow",
+    "classification":  "UnexpectedExternalWindow",
+    "display":  "unexpected-external-window",
+    "mayAttemptRecovery":  false,
+    "evidence":  "Unexpected external window \u0027Untitled - Notepad\u0027 / process \u0027notepad\u0027 (pid 12996).",
+    "notepadPid":  12996
+}

@@ -1,0 +1,137 @@
+{
+  "reportSchemaVersion": 1,
+  "runId": "20261113T160917369Z-1931fc1a",
+  "status": "failed",
+  "exitCode": 6,
+  "planPath": "plans/phase7-ambiguous.plan.json",
+  "planId": "phase7.ambiguous",
+  "planName": "Phase7 ambiguous STOP",
+  "planSha256": "a29b3f87d8ab57bfc1fa89d2efcc7ec2cf47bd60d748221bf8d8bf1693dd76ca",
+  "objectRepositoryPath": "object-repository/repository.json",
+  "objectRepositoryId": "phase7-acceptance",
+  "objectRepositorySha256": "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
+  "resolvedObjectReferences": [
+    "harness.ambiguous-target"
+  ],
+  "dryRun": false,
+  "driverBaseUrl": "http://127.0.0.1:36276",
+  "discoveryMethod": "explicit",
+  "driverVersion": "0.0.0-local",
+  "catalogSchemaVersion": 2,
+  "startedAtUtc": "2026-11-13T16:09:17.3695312+00:00",
+  "finishedAtUtc": "2026-11-13T16:09:21.1492949+00:00",
+  "durationMilliseconds": 3779.7637,
+  "steps": [
+    {
+      "sequence": 1,
+      "id": "launch",
+      "operation": "launch",
+      "phase": "steps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T16:09:17.66893+00:00",
+      "arguments": {
+        "value": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\src\\DesktopAutomationTestApp\\bin\\Release\\net8.0-windows\\DesktopAutomationTestApp.exe"
+      },
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:01.3906768"
+    },
+    {
+      "sequence": 2,
+      "id": "find-amb",
+      "operation": "finduia",
+      "phase": "steps",
+      "status": "failed",
+      "success": false,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T16:09:19.0613154+00:00",
+      "arguments": {
+        "locator": {
+          "automationId": "does-not-exist-ambiguous-primary"
+        },
+        "timeoutMs": 800
+      },
+      "error": "Step \u0027find-amb\u0027 failed: timeout",
+      "driverReason": "timeout",
+      "classification": "operationFailure",
+      "assertions": [],
+      "duration": "00:00:00.7550837"
+    },
+    {
+      "sequence": 3,
+      "id": "quit",
+      "operation": "quit",
+      "phase": "steps",
+      "status": "skipped",
+      "success": false,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": true,
+      "skipReason": "previousStepFailed",
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00"
+    }
+  ],
+  "onFailureSteps": [
+    {
+      "sequence": 1,
+      "id": "cleanup-quit",
+      "operation": "quit",
+      "phase": "onFailureSteps",
+      "status": "passed",
+      "success": true,
+      "sensitive": false,
+      "captureResponse": false,
+      "skipped": false,
+      "httpStatusCode": 200,
+      "startedAtUtc": "2026-11-13T16:09:20.3763401+00:00",
+      "arguments": {},
+      "error": "",
+      "driverReason": "",
+      "assertions": [],
+      "duration": "00:00:00.7700378"
+    }
+  ],
+  "failure": {
+    "classification": "operationFailure",
+    "message": "Step \u0027find-amb\u0027 failed: timeout",
+    "stepId": "find-amb",
+    "driverReason": "timeout"
+  },
+  "recovery": {
+    "runId": "20261113T160917369Z-1931fc1a",
+    "originalPlanSha256": "a29b3f87d8ab57bfc1fa89d2efcc7ec2cf47bd60d748221bf8d8bf1693dd76ca",
+    "objectRepositorySha256": "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
+    "objectRepositorySha256After": "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
+    "planMutated": false,
+    "approvedRepositoryMutated": false,
+    "totalRecoveryAttempts": 1,
+    "attempts": [
+      {
+        "attemptNumber": 1,
+        "stepId": "find-amb",
+        "classification": "ambiguousLocator",
+        "tier": "approvedAlternateLocator",
+        "outcome": "failed",
+        "detail": "Approved alternate resolved ambiguously.",
+        "snapshotBeforePath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T160917369Z-1931fc1a\\recovery\\before-find-amb-a11ab623918b4e4bb987151eb56eae40.json",
+        "startedAtUtc": "2026-11-13T16:09:20.3335222+00:00",
+        "finishedAtUtc": "2026-11-13T16:09:20.3338165+00:00",
+        "durationMilliseconds": 0
+      }
+    ],
+    "finalResult": "failed"
+  },
+  "artifactWriteStatus": "written"
+}

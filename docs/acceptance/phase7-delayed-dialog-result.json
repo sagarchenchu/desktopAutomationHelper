@@ -1,0 +1,46 @@
+{
+    "scenarioId":  "delayed-dialog",
+    "headSha":  "19e826905078514aae9e75fc197b15bec990a62f",
+    "reportStatus":  "passed",
+    "exitCode":  0,
+    "failureClassification":  null,
+    "failureMessage":  null,
+    "recovery":  {
+                     "runId":  "20261113T160855135Z-a88f6820",
+                     "originalPlanSha256":  "38a7e06b56509ddb10260f29bf932d608d82f9e5b5f1ebcb4b21234a790e0da6",
+                     "planMutated":  false,
+                     "approvedRepositoryMutated":  false,
+                     "totalRecoveryAttempts":  1,
+                     "attempts":  [
+                                      {
+                                          "attemptNumber":  1,
+                                          "stepId":  "switch-child",
+                                          "classification":  "expectedChildWindowNotActive",
+                                          "tier":  "freshObservationAndBoundedWait",
+                                          "outcome":  "recovered",
+                                          "detail":  "Fresh observation + bounded wait then re-execute succeeded.",
+                                          "snapshotBeforePath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T160855135Z-a88f6820\\recovery\\before-switch-child-a0fdf21666dc4bb6a2d40cb2895a.json",
+                                          "snapshotAfterPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T160855135Z-a88f6820\\recovery\\after-wait-switch-child-01.json",
+                                          "startedAtUtc":  "2026-11-13T16:09:02.5164473+00:00",
+                                          "finishedAtUtc":  "2026-11-13T16:09:07.2970689+00:00",
+                                          "durationMilliseconds":  4780.0332
+                                      }
+                                  ],
+                     "finalResult":  "passed"
+                 },
+    "recoverySummaryPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T160855135Z-a88f6820\\recovery\\recovery-summary.json",
+    "runDirectory":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T160855135Z-a88f6820",
+    "planPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\plans\\phase7-delayed-dialog.plan.json",
+    "planHashBefore":  "38a7e06b56509ddb10260f29bf932d608d82f9e5b5f1ebcb4b21234a790e0da6",
+    "planHashAfter":  "38a7e06b56509ddb10260f29bf932d608d82f9e5b5f1ebcb4b21234a790e0da6",
+    "planHashUnchanged":  true,
+    "pagesHashBefore":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
+    "pagesHashAfter":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
+    "pagesUnchanged":  true,
+    "stdoutPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\out\\phase7-delayed-dialog.json",
+    "recoveryOutsideBudget":  false,
+    "expected":  "recover",
+    "agentExitCode":  0,
+    "pass":  true,
+    "recovered":  true
+}
