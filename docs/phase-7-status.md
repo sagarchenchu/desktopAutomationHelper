@@ -2,15 +2,17 @@
 
 ## Required final report
 
-Phase 7 status: **NOT READY** — five review findings at `bace213` addressed on a new tip; PR #147 remains draft. **Do not merge.** Windows acceptance evidence for the new tip is **pending** (do not claim 6/6 PASS).
+Phase 7 status: **COMPLETE (exit gate met)** — Windows acceptance **6/6 PASS**; evidence PR-visible; CI green on `70067f3`. PR #147 remains **draft — do not merge.**
 
 Branch / base / head / PR:
 - Branch: `feature/agent-phase-7-bounded-recovery`
 - Base SHA: `cc93d333f95ba18b00c667121cba4dcb16822bba` (`origin/main` after Phase 6 #146 merge)
-- Head: `a59ed43f23c1ef23c90886cd9bfe18b96c41e438` / `a59ed43` (code fix `b67308a`)
+- Acceptance tip tested: `19e826905078514aae9e75fc197b15bec990a62f` / `19e8269`
+- Evidence + CI-green tip: `70067f353d7483974cd2ea4deefed8f891fed7a3` / `70067f3` (subsequent status-doc sync may advance HEAD)
+- Code fix (five review findings vs `bace213`): `b67308a`; typed proof emission: `19e8269`
 - PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/147 — title `Phase 7: add bounded execution recovery`; **draft** (do not merge)
 
-### Review tip `bace213` — five findings fixed
+### Review tip `bace213` — five findings fixed (`b67308a`)
 
 | # | Severity | Finding | Fix summary |
 |---|---|---|---|
@@ -19,6 +21,8 @@ Branch / base / head / PR:
 | 3 | P1 | Fingerprint used driver version | Live target process executable SHA via `IProcessIdentityProbe` / observe — never `driverStatus.Build` / `catalog.DriverVersion` |
 | 4 | P2 | Deadline → Cancelled step missed BudgetExhausted | Ladder maps linked-token `Cancelled`/`ExecutionTimeout` step results to `BudgetExhausted`; test mirrors DriverUiClient conversion |
 | 5 | P2 | Plan immutability fail-open | Missing / unreadable / null baseline plan ⇒ `PlanMutated=true` (fail-closed) |
+
+Enabling follow-up (`19e8269`): driver/agent emit typed locator-not-found proof so delayed-dialog mutation recovery works under the typed-proof rules.
 
 Recoverable classifications:
 - state not yet stable / bounded timing drift (**typed** non-execution proof for mutations; free-text timing phrases only for read/query)
@@ -55,7 +59,7 @@ Recovery ladder / budgets:
 Plan immutability:
 - Original plan bytes/SHA-256 recorded; recovery never rewrites the plan file
 - Missing / unreadable plan after run start ⇒ `PlanMutated=true` (fail-closed)
-- Repository before/after hashing unchanged by recovery
+- Windows matrix: all scenario plan hashes unchanged; approved pages hash before/after identical: `2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8`
 
 Candidate protection:
 - Writes only under `object-repository/candidates/recovery/` with link-aware containment before/after create
@@ -63,37 +67,51 @@ Candidate protection:
 - Oversized / duplicate / unsafe-junction writes become recovery failures (cleanup still runs)
 
 Agent tests:
-- `Phase7BoundedRecoveryTests` exercised locally after the five fixes (includes typed-proof, artifact-failure, cancelled-step deadline, plan fail-closed)
-- Full Agent suite expected green on CI **Build and Test (Windows)** for the new tip
+- `Phase7BoundedRecoveryTests` covers typed-proof, artifact-failure, cancelled-step deadline, plan fail-closed
+- Full Agent suite green on CI **Build and Test (Windows)** for tip `70067f3`
 
 Driver tests:
-- Covered by CI **Build and Test (Windows)** on the new tip
+- Covered by CI **Build and Test (Windows)** on tip `70067f3` — success
 
 Windows scenarios:
-- **PENDING** Windows acceptance re-run on the new tip after this push
-- Prior store evidence (if any) applied to older tips and is **not** PR-visible proof for this tip
-- `docs/acceptance/phase7-*` will be committed into the PR only after a successful re-run on the new tip — **do not claim 6/6 PASS** until then
+- **OVERALL PASS (6/6)** on acceptance tip `19e8269`
+- When: `2026-11-13T16:09:33.9140411+00:00` UTC
+- Machine: `DESKTOP-5JD30DR`
+- Recovery outside budget (any): `false`
+- Approved pages unchanged: `true`
+- Evidence PR-visible at branch tip `70067f3`: `docs/acceptance/phase7-*`
+  - Summary: `docs/acceptance/phase7-windows-acceptance.md`, `docs/acceptance/phase7-windows-summary.json`
+
+| # | Scenario | Expected | Result | Plan hash (unchanged) | Evidence |
+|---|---|---|---|---|---|
+| 1 | delayed dialog | recover | PASS `passed` | `38a7e06b…0da6` | `phase7-delayed-dialog-result.json` |
+| 2 | approved → alternate | recover | PASS `passed` | `c7fe3108…8981` | `phase7-approved-alternate-result.json` |
+| 3 | ambiguous | STOP | PASS `failed` | `a29b3f87…76ca` | `phase7-ambiguous-result.json` |
+| 4 | unexpected window | STOP | PASS | `dcadaf37…bf8f1` | `phase7-unexpected-window-result.json` / classifier JSON |
+| 5 | assertion | STOP | PASS `failed` | `270bc15f…5412` | `phase7-assertion-result.json` |
+| 6 | only permitted + immutability | meta | PASS | n/a | `phase7-only-permitted-result.json` |
 
 Publish results:
-- CI status: see latest push checks on PR #147 / branch tip
+- **CI green** on tip `70067f3` — all **4** checks success:
+  - Build and Test (Windows) ×2
+  - Publish Standalone Packages (Windows) ×2
 
 git diff --check:
-- Clean on the tip that lands this fix
+- Clean on tip `70067f3`
 
 Known limitations:
 - Equivalent transitions / fingerprints / approved candidates activate only when manifests/markers are present
 - Candidate tier always stops for approval (never auto-executes model locators)
 - Mutations never replay without typed driver non-execution proof (`AllowMutationReplay=false`)
 - Not unrestricted self-healing
-- Windows acceptance evidence for this tip is not yet in the PR
 
 Exit gate:
 Only explicitly recoverable controlled failures may recover, within budget, while the original plan and approved repositories remain unchanged.
 
-**Exit gate: NOT MET** until CI is green on the new tip **and** Windows acceptance evidence is PR-visible. **PR #147 stays draft — do not merge.**
+**Exit gate: MET** on tip `70067f3` (CI green + Windows 6/6 PASS on `19e8269` with PR-visible evidence). **PR #147 stays draft — do not merge** until user re-review.
 
 ## Docs
 
 - Repo: `docs/phase7-bounded-recovery.md`, `docs/phase-7-status.md`
 - Store status: `/cursor/stores/bc-0b0638d3-f933-46b9-ac33-b6fb6b745c96/docs/phase-7-status.md`
-- Acceptance: pending Windows re-run → then `docs/acceptance/phase7-*` in PR
+- Acceptance: `docs/acceptance/phase7-*` (PR-visible at `70067f3`)
