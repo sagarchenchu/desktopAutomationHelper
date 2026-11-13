@@ -25,14 +25,15 @@ public sealed class PlanningArtifactWriter
         var safeId = SanitizePlanningId(planningId);
         // Resolve through workspace so path traversal is rejected.
         var dir = _workspace.ResolveSafePath(Path.Combine("planning", safeId));
-        var planningRoot = PlanningPathSafety.PlanningRoot(_workspace.RootPath);
-        Directory.CreateDirectory(planningRoot);
-        PlanningPathSafety.EnsureWritablePathInside(dir, planningRoot);
+        var planningRoot = EnsurePlanningRootInsideWorkspace();
+        EnsureWritableUnderPlanning(dir, planningRoot);
         if (Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any())
             throw new IOException($"Planning artifact directory '{dir}' already exists and must not be overwritten.");
 
         Directory.CreateDirectory(dir);
-        PlanningPathSafety.EnsureWritablePathInside(dir, planningRoot);
+        // Re-validate after create — planning/ or the id directory may be a junction.
+        planningRoot = EnsurePlanningRootInsideWorkspace();
+        EnsureWritableUnderPlanning(dir, planningRoot);
         return dir;
     }
 
@@ -91,12 +92,13 @@ public sealed class PlanningArtifactWriter
         if (File.Exists(targetPath))
             throw new IOException($"Planning artifact '{targetPath}' already exists and must not be overwritten.");
 
-        var planningRoot = PlanningPathSafety.PlanningRoot(_workspace.RootPath);
-        PlanningPathSafety.EnsureWritablePathInside(targetPath, planningRoot);
+        var planningRoot = EnsurePlanningRootInsideWorkspace();
+        EnsureWritableUnderPlanning(targetPath, planningRoot);
 
         var dir = Path.GetDirectoryName(targetPath)!;
         Directory.CreateDirectory(dir);
-        PlanningPathSafety.EnsureWritablePathInside(dir, planningRoot);
+        planningRoot = EnsurePlanningRootInsideWorkspace();
+        EnsureWritableUnderPlanning(dir, planningRoot);
         var tempPath = Path.Combine(dir, $".{Path.GetFileName(targetPath)}.{Guid.NewGuid():N}.tmp");
         try
         {
@@ -113,7 +115,7 @@ public sealed class PlanningArtifactWriter
                 stream.Flush(true);
             }
 
-            PlanningPathSafety.EnsureWritablePathInside(tempPath, planningRoot);
+            EnsureWritableUnderPlanning(tempPath, planningRoot);
             File.Move(tempPath, targetPath);
         }
         catch
@@ -130,5 +132,33 @@ public sealed class PlanningArtifactWriter
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// Ensures <c>planning/</c> exists and is not a junction/symlink escape outside the workspace.
+    /// Workspace root is the outer containment boundary.
+    /// </summary>
+    private string EnsurePlanningRootInsideWorkspace()
+    {
+        var workspaceRoot = Path.GetFullPath(_workspace.RootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var planningRoot = PlanningPathSafety.PlanningRoot(_workspace.RootPath);
+
+        // Before create: reject an existing planning/ reparse that escapes the workspace.
+        PlanningPathSafety.EnsureWritablePathInside(planningRoot, workspaceRoot);
+        Directory.CreateDirectory(planningRoot);
+        // After create: re-check in case create followed or replaced a link.
+        PlanningPathSafety.EnsureWritablePathInside(planningRoot, workspaceRoot);
+
+        return planningRoot;
+    }
+
+    private void EnsureWritableUnderPlanning(string fullPath, string planningRoot)
+    {
+        var workspaceRoot = Path.GetFullPath(_workspace.RootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        // Inner: must stay under planning/. Outer: planning/ itself must stay under workspace.
+        PlanningPathSafety.EnsureWritablePathInside(fullPath, planningRoot);
+        PlanningPathSafety.EnsureWritablePathInside(fullPath, workspaceRoot);
     }
 }

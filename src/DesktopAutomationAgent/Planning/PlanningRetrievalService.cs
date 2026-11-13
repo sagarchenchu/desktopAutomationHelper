@@ -139,8 +139,9 @@ public sealed class PlanningRetrievalService
             var repoResult = _objectRepositoryReader.Read(repoPath);
             if (!repoResult.IsValid || repoResult.Snapshot is null)
                 throw new InvalidOperationException("Object repository invalid: " + string.Join("; ", repoResult.Errors));
-            manifest.ObjectRepositoryHash = repoResult.ManifestSha256
-                ?? repoResult.AggregateSha256
+            // Prefer aggregate so page-object file changes affect the retrieval fingerprint.
+            manifest.ObjectRepositoryHash = repoResult.AggregateSha256
+                ?? repoResult.ManifestSha256
                 ?? throw new InvalidOperationException("Object repository hash missing after validation.");
             var snapshot = repoResult.Snapshot;
             var terms = Tokenize(canonicalGoal);

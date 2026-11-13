@@ -91,8 +91,10 @@ automation/planning/<planningId>/
   candidate.plan.json
 ```
 
-Redacted, bounded, non-overwriting (atomic temp + move). Writes are confined under
-`planning/` with junction/symlink escape rejection. Full provider payloads are
+Redacted, bounded, non-overwriting (atomic temp + move). Writes are confined under `planning/` with junction/symlink escape rejection;
+`planning/` itself is validated against the workspace root before and after create
+so a planning-root junction cannot redirect artifacts outside the workspace.
+Object-repository retrieval fingerprints prefer AggregateSha256 so page-file changes are visible. Full provider payloads are
 not persisted unless a sanitized fixture. `automation/planning/.gitignore` is
 UTF-8/LF and ignores generated run artifacts while keeping `evals/` and README.
 

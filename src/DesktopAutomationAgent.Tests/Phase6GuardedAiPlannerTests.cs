@@ -960,6 +960,91 @@ public class Phase6GuardedAiPlannerTests
         }
     }
 
+    [Fact]
+    public void PlanningArtifactWriter_RejectsPlanningRootJunctionEscape()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var outside = Path.Combine(Path.GetTempPath(), "da-plan-root-out-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        var planningPath = Path.Combine(workspace.RootPath, "planning");
+
+        try
+        {
+            if (Directory.Exists(planningPath))
+                Directory.Delete(planningPath, recursive: true);
+
+            if (!TryCreateWindowsJunction(planningPath, outside))
+                return;
+
+            var writer = new PlanningArtifactWriter(workspace);
+            var thrown = Assert.ThrowsAny<Exception>(() => writer.CreatePlanningDirectory("escaped_root_1"));
+            Assert.True(
+                thrown is PlanningPathException
+                || thrown.Message.Contains("outside", StringComparison.OrdinalIgnoreCase)
+                || thrown.Message.Contains("reparse", StringComparison.OrdinalIgnoreCase)
+                || thrown.Message.Contains("directory link", StringComparison.OrdinalIgnoreCase),
+                thrown.ToString());
+
+            // Artifacts must not land in the escaped outside directory.
+            Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(planningPath))
+                    Directory.Delete(planningPath);
+            }
+            catch { /* ignore */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void PlanningRetrieval_ObjectRepositoryHash_ChangesWhenPageFileChanges()
+    {
+        var options = TestSupport.CreateOptions();
+        options.Planning = new PlanningOptions { Provider = "fake" };
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        SeedActiveObjectRepository(workspace);
+
+        var retrieval = new PlanningRetrievalService(
+            workspace,
+            new ObjectRepositoryReader(TestSupport.Wrap(options), workspace),
+            TestSupport.Wrap(options));
+
+        var first = retrieval.Retrieve(new PlanningRequest
+        {
+            Goal = "List visible windows on the desktop",
+            ObjectRepositoryPath = "object-repository/repository.json"
+        });
+        Assert.False(string.IsNullOrWhiteSpace(first.ObjectRepositoryHash));
+
+        var pagePath = Path.Combine(workspace.RootPath, "object-repository", "pages", "desktop.page.json");
+        var pageJson = File.ReadAllText(pagePath);
+        File.WriteAllText(
+            pagePath,
+            pageJson.Replace(
+                "List visible windows control",
+                "List visible windows control (modified)",
+                StringComparison.Ordinal));
+
+        var second = retrieval.Retrieve(new PlanningRequest
+        {
+            Goal = "List visible windows on the desktop",
+            ObjectRepositoryPath = "object-repository/repository.json"
+        });
+        Assert.False(string.IsNullOrWhiteSpace(second.ObjectRepositoryHash));
+        Assert.NotEqual(first.ObjectRepositoryHash, second.ObjectRepositoryHash);
+    }
+
     private sealed class CountingModelClient : IPlanningModelClient
     {
         private readonly Action _onCall;
