@@ -511,33 +511,67 @@ public sealed class Phase7BoundedRecoveryTests
     public async Task RecoveryDeadlineCancel_MapsToBudgetExhausted_NotUnhandled()
     {
         var options = ReadyOptions();
-        options.Recovery.BoundedWaitMilliseconds = 5_000;
+        options.Recovery.BoundedWaitMilliseconds = 0;
         options.Recovery.MaxAdditionalDurationSeconds = 1;
         options.Recovery.MaxRecoveryAttemptsPerStep = 8;
         options.Recovery.MaxTotalRecoveriesPerRun = 8;
 
-        var handler = ReadyHandler((req, _) =>
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var ladder = TestSupport.CreateRecoveryLadder(
+            options,
+            workspace,
+            new DriverUiClient(
+                TestSupport.Wrap(options),
+                TestSupport.CreateFactory(ReadyHandler((_, _) =>
+                    Task.FromResult(FakeHttpMessageHandler.Json(new { success = true })))),
+                NullLogger<DriverUiClient>.Instance));
+
+        using var budget = new RecoveryBudgetTracker(options.Recovery);
+        var runDirectory = Path.Combine(workspace.RootPath, "runs", "budget-deadline-run");
+        Directory.CreateDirectory(runDirectory);
+        var failed = new StepRunResult
         {
-            if (req.Method != HttpMethod.Post)
-                return Task.FromResult(DefaultGet(req));
+            Sequence = 1,
+            Id = "q",
+            Operation = "listwindows",
+            Phase = "steps",
+            Status = "failed",
+            Success = false,
+            Error = "Element not found for listwindows",
+            Classification = UiFailureClassification.OperationFailure
+        };
 
-            return Task.FromResult(FakeHttpMessageHandler.Json(new
+        var outcome = await ladder.TryRecoverAsync(
+            new DriverConnection
             {
-                success = false,
-                error = "Element not found for listwindows"
-            }));
-        });
+                BaseUri = new Uri("http://127.0.0.1:33211/"),
+                BearerToken = "tok",
+                DiscoveryMethod = "explicit"
+            },
+            new PlanStep { Id = "q", Operation = "listwindows", Arguments = new Dictionary<string, JsonElement>() },
+            failed,
+            new RecoveryContext
+            {
+                RunId = "r",
+                RunDirectory = runDirectory,
+                PlanPath = "p",
+                OriginalPlanSha256 = "abc",
+                Catalog = CatalogFixtures.Phase2Catalog()
+            },
+            budget,
+            async (_, ct) =>
+            {
+                // Hang until the linked recovery deadline cancels — must map to BudgetExhausted.
+                await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                return failed;
+            },
+            CancellationToken.None);
 
-        var plan = TestSupport.MinimalPlanJson(stepsOverride: """
-            [ { "id": "q", "operation": "listwindows", "arguments": {} } ]
-            """);
-        var path = TestSupport.WritePlan(options, "budget-deadline.plan.json", plan);
-        var report = await CreateRunner(options, handler).RunAsync(path, dryRun: false);
-
-        Assert.Equal("failed", report.Status);
-        Assert.NotNull(report.Recovery);
+        Assert.Equal(RecoveryClassification.BudgetExhausted, outcome.Classification);
+        Assert.False(outcome.Recovered);
         Assert.Contains(
-            report.Recovery!.Attempts,
+            outcome.Attempts,
             a => a.Classification == RecoveryClassification.BudgetExhausted
                  || string.Equals(a.Outcome, "budget-exhausted", StringComparison.OrdinalIgnoreCase));
     }
