@@ -8,6 +8,7 @@ using DesktopAutomationAgent.Exploration;
 using DesktopAutomationAgent.Compilation;
 using DesktopAutomationAgent.Jira;
 using DesktopAutomationAgent.Knowledge;
+using DesktopAutomationAgent.Mcp;
 using DesktopAutomationAgent.Observation;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Readiness;
@@ -90,6 +91,14 @@ public static class AgentCli
         {
             await Console.Out.WriteLineAsync(CommandLine.HelpText).ConfigureAwait(false);
             return ExitCodes.Success;
+        }
+
+        // MCP owns its own stdio host; do not construct the CLI Generic Host first
+        // (that would risk polluting stdout before JSON-RPC begins).
+        if (parsed.Kind == AgentCommandKind.McpServer)
+        {
+            return await McpServerHost.RunAsync(parsed.ConfigurationArgs, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         using var host = hostBuilder(parsed.ConfigurationArgs, jsonStdoutMode);
@@ -208,77 +217,9 @@ public static class AgentCli
             ContentRootPath = Directory.GetCurrentDirectory()
         });
 
-        builder.Configuration.Sources.Clear();
-        builder.Configuration
-            .AddJsonFile(
-                Path.Combine(AppContext.BaseDirectory, "appsettings.json"),
-                optional: true,
-                reloadOnChange: false)
-            .AddJsonFile(
-                Path.Combine(Directory.GetCurrentDirectory(), "automation", "config", "agentsettings.local.json"),
-                optional: true,
-                reloadOnChange: false)
-            .AddEnvironmentVariables(prefix: "DA_AGENT__")
-            .AddCommandLine(configurationArgs);
-
-        builder.Logging.ClearProviders();
-        // Keep machine-readable stdout clean: all log records go to stderr.
-        builder.Logging.AddSimpleConsole(options =>
-        {
-            options.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ ";
-            options.SingleLine = true;
-            options.UseUtcTimestamp = true;
-        });
-        builder.Services.Configure<Microsoft.Extensions.Logging.Console.ConsoleLoggerOptions>(options =>
-        {
-            options.LogToStandardErrorThreshold = LogLevel.Trace;
-        });
-        builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Warning);
-
-        if (jsonStdoutMode)
-        {
-            builder.Logging.AddFilter("DesktopAutomationAgent", LogLevel.Warning);
-        }
-
-        builder.Services.Configure<AgentOptions>(builder.Configuration);
-
-        builder.Services.AddHttpClient("driver-unauthenticated");
-        builder.Services.AddHttpClient("driver-authenticated");
-        builder.Services.AddHttpClient(JiraHttpClientNames.Default);
-
-        builder.Services.AddSingleton<IWorkspaceManager, WorkspaceManager>();
-        builder.Services.AddSingleton<ISuiteManifestReader, SuiteManifestReader>();
-        builder.Services.AddSingleton<PlanManifestReader>();
-        builder.Services.AddSingleton<IDriverConnectionResolver, DriverConnectionResolver>();
-        builder.Services.AddSingleton<IDriverCatalogClient, DriverCatalogClient>();
-        builder.Services.AddSingleton<IDriverUiClient, DriverUiClient>();
-        builder.Services.AddSingleton<AssertionEvaluator>();
-        builder.Services.AddSingleton<RunArtifactWriter>();
-        builder.Services.AddSingleton<IDeterministicPlanRunner, DeterministicPlanRunner>();
-        builder.Services.AddSingleton<IAgentReadinessService, AgentReadinessService>();
-        builder.Services.AddSingleton<ObjectRepositoryReader>();
-        builder.Services.AddSingleton<ObjectReferenceResolver>();
-        builder.Services.AddSingleton<PlanObjectReferenceExpander>();
-        builder.Services.AddSingleton<PlanObjectRepositoryIntegrator>();
-        builder.Services.AddSingleton<ObjectArtifactWriter>();
-        builder.Services.AddSingleton<ObjectCandidateGenerator>();
-        builder.Services.AddSingleton<ObjectCaptureService>();
-        builder.Services.AddSingleton<ObjectVerificationService>();
-        builder.Services.AddSingleton<SemanticSnapshotNormalizer>();
-        builder.Services.AddSingleton<ISemanticObservationService, SemanticObservationService>();
-        builder.Services.AddSingleton<ExplorationPolicyReader>();
-        builder.Services.AddSingleton<StateFingerprinter>();
-        builder.Services.AddSingleton<CapabilityResolver>();
+        AgentServiceRegistrar.ConfigureAgentConfiguration(builder, configurationArgs);
         // ProcessIdentityValidator is crawl-scoped (created per ExploreAsync), not a singleton.
-        builder.Services.AddSingleton<IProcessIdentityProbe, SystemProcessIdentityProbe>();
-        builder.Services.AddSingleton<UiStabilizationService>();
-        builder.Services.AddSingleton<WindowTransitionDetector>();
-        builder.Services.AddSingleton<ExplorationArtifactWriter>();
-        builder.Services.AddSingleton<IExplorationCoordinator, ExplorationCoordinator>();
-        builder.Services.AddSingleton<KnowledgeService>();
-        builder.Services.AddSingleton<BddCompilationService>();
-        builder.Services.AddSingleton<IJiraTestCaseSource, JiraRestTestCaseSource>();
-        builder.Services.AddSingleton<JiraSuiteOrchestrator>();
+        AgentServiceRegistrar.AddAgentCoreServices(builder, quietAgentLogs: jsonStdoutMode);
 
         return builder.Build();
     }
