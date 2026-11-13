@@ -45,7 +45,7 @@ public sealed class PlanningProposalCompiler
                 ["planningId"] = JsonSerializer.SerializeToElement(planningId),
                 ["risk"] = JsonSerializer.SerializeToElement(proposal.Risk)
             },
-            Steps = proposal.Steps.Select(step => new PlanStep
+            Steps = (proposal.Steps ?? []).Select(step => new PlanStep
             {
                 Id = step.Id,
                 Operation = step.Operation,

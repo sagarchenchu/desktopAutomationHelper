@@ -65,10 +65,12 @@ public sealed class PlanningRetrievalService
         {
             var knowledgeDir = _workspace.ResolveSafePath(request.KnowledgePath);
             KnowledgePathSafety.EnsureUnderApproved(knowledgeDir, _workspace.RootPath);
+            PlanningPathSafety.EnsureReadablePathInside(knowledgeDir, _workspace.RootPath);
             var knowledgeFile = Path.Combine(knowledgeDir, "application-knowledge.json");
             if (!File.Exists(knowledgeFile))
                 throw new InvalidOperationException($"Approved knowledge file missing at '{knowledgeFile}'.");
 
+            PlanningPathSafety.EnsureReadablePathInside(knowledgeFile, _workspace.RootPath);
             var knowledgeJson = File.ReadAllText(knowledgeFile);
             var knowledge = JsonSerializer.Deserialize<ApplicationKnowledgeDocument>(knowledgeJson, KnowledgeJson.Compact)
                 ?? throw new InvalidOperationException("Failed to deserialize approved knowledge.");
@@ -172,6 +174,7 @@ public sealed class PlanningRetrievalService
         var registryFull = _workspace.ResolveSafePath(registryPath);
         if (File.Exists(registryFull))
         {
+            PlanningPathSafety.EnsureReadablePathInside(registryFull, _workspace.RootPath);
             var registryJson = File.ReadAllText(registryFull);
             manifest.StepRegistryHash = Sha256Hex(registryJson);
             var validation = _registryValidator.ValidateFile(registryFull, registryPath);
@@ -205,6 +208,7 @@ public sealed class PlanningRetrievalService
         if (!string.IsNullOrWhiteSpace(request.CatalogPath))
         {
             var catalogFull = _workspace.ResolveSafePath(request.CatalogPath);
+            PlanningPathSafety.EnsureReadablePathInside(catalogFull, _workspace.RootPath);
             var catalogJson = File.ReadAllText(catalogFull);
             catalog = JsonSerializer.Deserialize<OperationsCatalogDto>(catalogJson, PlanningJson.Compact)
                 ?? throw new InvalidOperationException("Failed to deserialize operations catalog.");

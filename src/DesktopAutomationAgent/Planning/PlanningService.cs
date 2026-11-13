@@ -79,7 +79,7 @@ public sealed class PlanningService
             {
                 retrieval = _retrieval.Retrieve(request);
             }
-            catch (Exception ex) when (ex is InvalidOperationException or Knowledge.KnowledgePathException or WorkspaceException)
+            catch (Exception ex) when (ex is InvalidOperationException or Knowledge.KnowledgePathException or WorkspaceException or PlanningPathException)
             {
                 return WriteDeniedEarly(
                     planningId,
@@ -161,7 +161,9 @@ public sealed class PlanningService
             OperationsCatalogDto catalog;
             if (!string.IsNullOrWhiteSpace(request.CatalogPath))
             {
-                var catalogJson = File.ReadAllText(_workspace.ResolveSafePath(request.CatalogPath));
+                var catalogFull = _workspace.ResolveSafePath(request.CatalogPath);
+                PlanningPathSafety.EnsureReadablePathInside(catalogFull, _workspace.RootPath);
+                var catalogJson = File.ReadAllText(catalogFull);
                 catalog = JsonSerializer.Deserialize<OperationsCatalogDto>(catalogJson, PlanningJson.Compact)
                     ?? PlanningRetrievalService.MinimalSafeCatalog();
             }
@@ -186,7 +188,12 @@ public sealed class PlanningService
             }
 
             var refErrors = _validator.ValidateApprovedRefs(proposal, retrieval, objectRepository, catalog);
-            var riskMode = PlanningRiskPolicy.Decide(proposal, request.RequestedApprovalMode, out var riskReasons);
+            var riskMode = PlanningRiskPolicy.Decide(
+                proposal,
+                request.RequestedApprovalMode,
+                catalog,
+                retrieval,
+                out var riskReasons);
             var validation = new PlanningValidationReport
             {
                 SchemaValid = true,
@@ -419,14 +426,8 @@ public sealed class PlanningService
             Proposal = proposal
         };
 
-    private string BuildRetrievalContext(RetrievalManifest retrieval)
-    {
-        var json = JsonSerializer.Serialize(retrieval, PlanningJson.Compact);
-        var maxChars = Math.Max(512, _options.MaxPromptTokens * 4);
-        if (json.Length > maxChars)
-            json = json[..maxChars];
-        return json;
-    }
+    private string BuildRetrievalContext(RetrievalManifest retrieval) =>
+        PlanningRetrievalBudget.Build(retrieval, Math.Max(512, _options.MaxPromptTokens * 4));
 
     private string? TruncateUntrusted(string? text)
     {

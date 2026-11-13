@@ -193,7 +193,7 @@ public class Phase6GuardedAiPlannerTests
         var validator = new PlanningProposalValidator();
         var result = validator.ParseAndValidateSchema("""{"schemaVersion":1,"extra":true}""", 65_536);
         Assert.False(result.IsValid);
-        Assert.Contains(result.Errors, e => e.Contains("unknown", StringComparison.OrdinalIgnoreCase) || e.Contains("required", StringComparison.OrdinalIgnoreCase) || e.Contains("proposalId", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result.Errors, e => e.Contains("schema", StringComparison.OrdinalIgnoreCase) || e.Contains("required", StringComparison.OrdinalIgnoreCase) || e.Contains("additional", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -284,7 +284,8 @@ public class Phase6GuardedAiPlannerTests
     private static async Task<(int Exit, string Stdout)> RunCliAsync(
         AgentOptions options,
         string[] args,
-        Func<bool>? onUiPost = null)
+        Func<bool>? onUiPost = null,
+        IPlanningModelClient? modelClient = null)
     {
         var handler = new FakeHttpMessageHandler((request, _) =>
         {
@@ -337,6 +338,8 @@ public class Phase6GuardedAiPlannerTests
             });
             AgentServiceRegistrar.AddAgentCoreServices(builder, quietAgentLogs: true);
             builder.Services.AddSingleton<IHttpClientFactory>(factory);
+            if (modelClient is not null)
+                builder.Services.AddSingleton<IPlanningModelClient>(modelClient);
             return builder.Build();
         }
 
@@ -475,6 +478,252 @@ public class Phase6GuardedAiPlannerTests
         File.Copy(source, dest, overwrite: true);
     }
 
+
+    [Fact]
+    public void SchemaValidation_RejectsMissingRisk_NullArrays_AndOversizedStrings()
+    {
+        var validator = new PlanningProposalValidator();
+
+        var missingRisk = """
+            {"schemaVersion":1,"proposalId":"p1","goal":"x","assumptions":[],"unresolvedQuestions":[],"steps":[{"id":"s1","operation":"listwindows"}],"objectRefs":[],"knowledgeRefs":[]}
+            """;
+        var missingRiskResult = validator.ParseAndValidateSchema(missingRisk, 65_536);
+        Assert.False(missingRiskResult.IsValid);
+        Assert.Contains(missingRiskResult.Errors, e => e.Contains("risk", StringComparison.OrdinalIgnoreCase));
+
+        var nullArrays = """
+            {"schemaVersion":1,"proposalId":"p1","goal":"x","assumptions":null,"unresolvedQuestions":[],"steps":[{"id":"s1","operation":"listwindows"}],"objectRefs":[],"knowledgeRefs":[],"risk":"low"}
+            """;
+        var nullArrayResult = validator.ParseAndValidateSchema(nullArrays, 65_536);
+        Assert.False(nullArrayResult.IsValid);
+        Assert.DoesNotContain(nullArrayResult.Errors, e => e.Contains("NullReference", StringComparison.OrdinalIgnoreCase));
+
+        var missingArrays = """
+            {"schemaVersion":1,"proposalId":"p1","goal":"x","steps":[{"id":"s1","operation":"listwindows"}],"risk":"low"}
+            """;
+        var missingArraysResult = validator.ParseAndValidateSchema(missingArrays, 65_536);
+        Assert.False(missingArraysResult.IsValid);
+
+        var oversized = """
+            {"schemaVersion":1,"proposalId":"p1","goal":"GOAL_PLACEHOLDER","assumptions":[],"unresolvedQuestions":[],"steps":[{"id":"s1","operation":"listwindows"}],"objectRefs":[],"knowledgeRefs":[],"risk":"low"}
+            """.Replace("GOAL_PLACEHOLDER", new string('g', 4001));
+        var oversizedResult = validator.ParseAndValidateSchema(oversized, 65_536);
+        Assert.False(oversizedResult.IsValid);
+    }
+
+    [Fact]
+    public async Task AutoRunKnownSafe_MutationWithRawLocator_CannotPostUi()
+    {
+        var options = TestSupport.CreateOptions();
+        options.Planning = new PlanningOptions { Provider = "fake" };
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        SeedApprovedKnowledge(workspace, buildFingerprint: new string('b', 32));
+        CopyEvalCatalog(workspace);
+        CopyStepRegistry(workspace);
+
+        // Mutation + raw locator must not auto-run / POST /ui. Step id avoids destructive
+        // vocabulary so the gate under test is catalog mutation + raw-locator policy (approval-required).
+        var mutationJson = """
+            {"schemaVersion":1,"proposalId":"prop_mut","goal":"List visible windows on the desktop","assumptions":[],"unresolvedQuestions":[],"steps":[{"id":"click_target","operation":"clickuia","arguments":{"locator":{"automationId":"PrimaryButton"}},"mappingId":"list-visible-windows"}],"objectRefs":[],"knowledgeRefs":[],"risk":"low","confidence":0.9}
+            """;
+
+        var uiPosts = 0;
+        var (exit, stdout) = await RunCliAsync(
+            options,
+            [
+                "propose-plan",
+                "--goal", "List visible windows on the desktop",
+                "--knowledge", $"knowledge/approved/demo-app/{new string('b', 32)}",
+                "--catalog", "planning/evals/catalog.json",
+                "--approval-mode", "auto-run-known-safe",
+                "--execute",
+                "--planning-id", "autorun_mutation_1",
+                "--json"
+            ],
+            () => { uiPosts++; return true; },
+            modelClient: new FixedJsonModelClient(mutationJson));
+
+        using var payload = JsonDocument.Parse(stdout);
+        Assert.Equal("approval-required", payload.RootElement.GetProperty("effectiveApprovalMode").GetString());
+        Assert.False(payload.RootElement.GetProperty("executed").GetBoolean());
+        Assert.Contains(
+            payload.RootElement.GetProperty("warnings").EnumerateArray().Select(e => e.GetString() ?? string.Empty),
+            w => w.Contains("not executing", StringComparison.OrdinalIgnoreCase)
+                 || w.Contains("requires approval", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(0, uiPosts);
+        // Proposal may succeed (exit 0) while execute is withheld; the gate is no /ui.
+    }
+
+    [Fact]
+    public async Task AutoRunKnownSafe_ReadQueryWithRetrievedMapping_CanAuthorizeWithoutPostWhenNotExecute()
+    {
+        var options = TestSupport.CreateOptions();
+        options.Planning = new PlanningOptions { Provider = "fake" };
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        SeedApprovedKnowledge(workspace, buildFingerprint: new string('b', 32));
+        CopyEvalCatalog(workspace);
+        CopyStepRegistry(workspace);
+
+        var (exit, stdout) = await RunCliAsync(
+            options,
+            [
+                "propose-plan",
+                "--goal", "List visible windows on the desktop",
+                "--knowledge", $"knowledge/approved/demo-app/{new string('b', 32)}",
+                "--catalog", "planning/evals/catalog.json",
+                "--approval-mode", "auto-run-known-safe",
+                "--planning-id", "autorun_safe_1",
+                "--json"
+            ]);
+
+        Assert.Equal(0, exit);
+        using var payload = JsonDocument.Parse(stdout);
+        Assert.Equal("auto-run-known-safe", payload.RootElement.GetProperty("effectiveApprovalMode").GetString());
+        Assert.True(payload.RootElement.GetProperty("success").GetBoolean());
+        Assert.False(payload.RootElement.GetProperty("executed").GetBoolean());
+    }
+
+    [Fact]
+    public void RetrievalBudget_RemainsValidJson_UnderTightLimit()
+    {
+        var hits = Enumerable.Range(0, 80)
+            .Select(i => new RetrievalHitRecord
+            {
+                Corpus = "knowledge",
+                Kind = "state",
+                Id = $"st_{i}",
+                Score = 80 - i,
+                ContentHash = new string('a', 64),
+                Snippet = new string('s', 180) + i
+            })
+            .ToList();
+
+        var manifest = new RetrievalManifest
+        {
+            CanonicalGoal = "List visible windows with a long goal text " + new string('x', 200),
+            GoalHash = new string('b', 64),
+            ApplicationId = "demo-app",
+            BuildFingerprint = new string('c', 32),
+            KnowledgeContentHash = new string('d', 64),
+            ObjectRepositoryHash = new string('e', 64),
+            StepRegistryHash = new string('f', 64),
+            CatalogFingerprint = new string('1', 64),
+            Hits = hits,
+            Exclusions = ["raw-uia-trees", "secrets", "editable-values"]
+        };
+
+        var json = PlanningRetrievalBudget.Build(manifest, maxChars: 900);
+        using var doc = JsonDocument.Parse(json);
+        Assert.True(json.Length <= 900);
+        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
+        Assert.True(doc.RootElement.TryGetProperty("hits", out _));
+    }
+
+    [Fact]
+    public void PlanningGitIgnore_IsUtf8AndIgnoresCandidateArtifacts()
+    {
+        var ignorePath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+            "automation", "planning", ".gitignore"));
+        Assert.True(File.Exists(ignorePath), ignorePath);
+        var bytes = File.ReadAllBytes(ignorePath);
+        Assert.DoesNotContain((byte)0, bytes);
+        var text = File.ReadAllText(ignorePath);
+        Assert.Contains("*/", text, StringComparison.Ordinal);
+        Assert.Contains("!evals/", text, StringComparison.Ordinal);
+
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var probeDir = Path.Combine(repoRoot, "automation", "planning", "_ignore_probe_test");
+        Directory.CreateDirectory(probeDir);
+        var probe = Path.Combine(probeDir, "candidate.plan.json");
+        try
+        {
+            File.WriteAllText(probe, "{\"probe\":true}");
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = "check-ignore -v automation/planning/_ignore_probe_test/candidate.plan.json",
+                WorkingDirectory = repoRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            using var proc = System.Diagnostics.Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit(10_000);
+            Assert.Equal(0, proc.ExitCode);
+            Assert.Contains(".gitignore", stdout, StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { Directory.Delete(probeDir, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void PlanningPathSafety_RejectsDirectoryJunctionEscape()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var root = Path.Combine(Path.GetTempPath(), "da-plan-symlink-" + Guid.NewGuid().ToString("N"));
+        var outside = Path.Combine(Path.GetTempPath(), "da-plan-outside-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "secret.json"), "{}");
+        var linkPath = Path.Combine(root, "esc");
+
+        try
+        {
+            if (!TryCreateWindowsJunction(linkPath, outside))
+                return;
+            var target = Path.Combine(linkPath, "secret.json");
+            var thrown = Assert.Throws<PlanningPathException>(() =>
+                PlanningPathSafety.EnsureNotSymlinkEscape(target, root));
+            Assert.True(
+                thrown.Message.Contains("reparse point", StringComparison.OrdinalIgnoreCase)
+                || thrown.Message.Contains("outside", StringComparison.OrdinalIgnoreCase)
+                || thrown.Message.Contains("directory link", StringComparison.OrdinalIgnoreCase),
+                thrown.Message);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void PlanningPathSafety_RejectsChainedFileSymlinkEscape()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "da-plan-chain-" + Guid.NewGuid().ToString("N"));
+        var outside = Path.Combine(Path.GetTempPath(), "da-plan-chain-out-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        var outsideFile = Path.Combine(outside, "secret.json");
+        File.WriteAllText(outsideFile, "{}");
+        var mid = Path.Combine(root, "mid.json");
+        var entry = Path.Combine(root, "catalog.json");
+
+        try
+        {
+            if (!TryCreateSymbolicLink(() => File.CreateSymbolicLink(mid, outsideFile), mid))
+                return;
+            if (!TryCreateSymbolicLink(() => File.CreateSymbolicLink(entry, mid), entry))
+                return;
+            var thrown = Assert.Throws<PlanningPathException>(() =>
+                PlanningPathSafety.EnsureNotSymlinkEscape(entry, root));
+            Assert.Contains("outside", thrown.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
     private sealed class CountingModelClient : IPlanningModelClient
     {
         private readonly Action _onCall;
@@ -487,4 +736,57 @@ public class Phase6GuardedAiPlannerTests
         }
     }
 
+    private sealed class FixedJsonModelClient : IPlanningModelClient
+    {
+        private readonly string _json;
+        public FixedJsonModelClient(string json) => _json = json;
+        public string ProviderName => "fixed-json";
+        public Task<PlanningModelResponse> ProposeAsync(PlanningModelRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PlanningModelResponse
+            {
+                RawJson = _json,
+                Provider = ProviderName,
+                ModelId = "fixed",
+                Truncated = false
+            });
+    }
+
+    private static bool TryCreateSymbolicLink(Action create, string path)
+    {
+        try
+        {
+            create();
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        return File.Exists(path) || Directory.Exists(path);
+    }
+
+    private static bool TryCreateWindowsJunction(string junctionPath, string targetPath)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/c mklink /J \"{junctionPath}\" \"{targetPath}\"",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using var process = System.Diagnostics.Process.Start(psi);
+            if (process is null)
+                return false;
+            process.WaitForExit(5000);
+            return process.ExitCode == 0 && Directory.Exists(junctionPath);
+        }
+        catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
 }

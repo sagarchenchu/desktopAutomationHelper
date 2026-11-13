@@ -226,16 +226,21 @@ public sealed class FakePlanningModelClient : IPlanningModelClient
         bool capture = false)
     {
         using var argsDoc = JsonDocument.Parse(argumentsJson);
-        return new Dictionary<string, object?>
+        var step = new Dictionary<string, object?>
         {
             ["id"] = id,
             ["operation"] = operation,
-            ["arguments"] = argsDoc.RootElement.Clone(),
-            ["mappingId"] = mappingId,
-            ["rationale"] = rationale,
-            ["sensitive"] = sensitive,
-            ["captureResponse"] = capture ? true : null
+            ["arguments"] = argsDoc.RootElement.Clone()
         };
+        if (!string.IsNullOrWhiteSpace(mappingId))
+            step["mappingId"] = mappingId;
+        if (!string.IsNullOrWhiteSpace(rationale))
+            step["rationale"] = rationale;
+        if (sensitive)
+            step["sensitive"] = true;
+        if (capture)
+            step["captureResponse"] = true;
+        return step;
     }
 
     private static string BuildProposalJson(
@@ -260,11 +265,13 @@ public sealed class FakePlanningModelClient : IPlanningModelClient
             ["steps"] = steps.ToArray(),
             ["objectRefs"] = objectRefs.ToArray(),
             ["knowledgeRefs"] = knowledgeRefs.ToArray(),
-            ["expectedState"] = expectedState,
-            ["postcondition"] = postcondition,
             ["risk"] = risk,
             ["confidence"] = 0.5
         };
+        if (!string.IsNullOrWhiteSpace(expectedState))
+            payload["expectedState"] = expectedState;
+        if (!string.IsNullOrWhiteSpace(postcondition))
+            payload["postcondition"] = postcondition;
 
         var json = JsonSerializer.Serialize(payload, PlanningJson.Compact);
         if (!string.IsNullOrWhiteSpace(extraProperty))

@@ -25,10 +25,14 @@ public sealed class PlanningArtifactWriter
         var safeId = SanitizePlanningId(planningId);
         // Resolve through workspace so path traversal is rejected.
         var dir = _workspace.ResolveSafePath(Path.Combine("planning", safeId));
+        var planningRoot = PlanningPathSafety.PlanningRoot(_workspace.RootPath);
+        Directory.CreateDirectory(planningRoot);
+        PlanningPathSafety.EnsureWritablePathInside(dir, planningRoot);
         if (Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any())
             throw new IOException($"Planning artifact directory '{dir}' already exists and must not be overwritten.");
 
         Directory.CreateDirectory(dir);
+        PlanningPathSafety.EnsureWritablePathInside(dir, planningRoot);
         return dir;
     }
 
@@ -87,8 +91,12 @@ public sealed class PlanningArtifactWriter
         if (File.Exists(targetPath))
             throw new IOException($"Planning artifact '{targetPath}' already exists and must not be overwritten.");
 
+        var planningRoot = PlanningPathSafety.PlanningRoot(_workspace.RootPath);
+        PlanningPathSafety.EnsureWritablePathInside(targetPath, planningRoot);
+
         var dir = Path.GetDirectoryName(targetPath)!;
         Directory.CreateDirectory(dir);
+        PlanningPathSafety.EnsureWritablePathInside(dir, planningRoot);
         var tempPath = Path.Combine(dir, $".{Path.GetFileName(targetPath)}.{Guid.NewGuid():N}.tmp");
         try
         {
@@ -105,6 +113,7 @@ public sealed class PlanningArtifactWriter
                 stream.Flush(true);
             }
 
+            PlanningPathSafety.EnsureWritablePathInside(tempPath, planningRoot);
             File.Move(tempPath, targetPath);
         }
         catch

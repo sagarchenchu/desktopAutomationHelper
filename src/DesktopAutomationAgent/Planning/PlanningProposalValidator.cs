@@ -1,19 +1,24 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Driver.Models;
 using DesktopAutomationAgent.ObjectRepository;
+using Json.Schema;
 
 namespace DesktopAutomationAgent.Planning;
 
 /// <summary>
 /// Strict proposal schema + approved-ref + ambiguity checks. Rejects malformed,
 /// extra, unknown, prohibited, ambiguous, and unsupported proposals.
+/// JSON Schema is evaluated before deserialization.
 /// </summary>
 public sealed class PlanningProposalValidator
 {
+    private static readonly Lazy<JsonSchema> Schema = new(LoadSchema);
+
     private static readonly Regex IdPattern = new(
         @"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -40,6 +45,45 @@ public sealed class PlanningProposalValidator
             return Fail(errors);
         }
 
+        JsonNode? node;
+        try
+        {
+            node = JsonNode.Parse(redacted);
+        }
+        catch (JsonException ex)
+        {
+            errors.Add($"malformed JSON: {ex.Message}");
+            return Fail(errors);
+        }
+
+        if (node is null)
+        {
+            errors.Add("model output is empty JSON.");
+            return Fail(errors);
+        }
+
+        var evaluation = Schema.Value.Evaluate(node, new EvaluationOptions
+        {
+            OutputFormat = OutputFormat.List,
+            RequireFormatValidation = true
+        });
+
+        if (!evaluation.IsValid)
+        {
+            foreach (var detail in evaluation.Details.Where(d => d.HasErrors))
+            {
+                if (detail.Errors is null)
+                    continue;
+                foreach (var error in detail.Errors)
+                    errors.Add($"schema {detail.InstanceLocation}: {error.Value}");
+            }
+
+            if (errors.Count == 0)
+                errors.Add("failed JSON Schema validation against plan-proposal.schema.json.");
+
+            return Fail(errors);
+        }
+
         PlanProposalDocument? proposal;
         try
         {
@@ -47,7 +91,7 @@ public sealed class PlanningProposalValidator
         }
         catch (JsonException ex)
         {
-            errors.Add($"malformed JSON: {ex.Message}");
+            errors.Add($"malformed JSON after schema: {ex.Message}");
             return Fail(errors);
         }
 
@@ -56,6 +100,13 @@ public sealed class PlanningProposalValidator
             errors.Add("model output deserialized to null.");
             return Fail(errors);
         }
+
+        // Fail closed on null collections (schema should already reject, but do not NRE).
+        proposal.Assumptions ??= [];
+        proposal.UnresolvedQuestions ??= [];
+        proposal.Steps ??= [];
+        proposal.ObjectRefs ??= [];
+        proposal.KnowledgeRefs ??= [];
 
         if (proposal.ExtensionData is { Count: > 0 })
         {
@@ -78,7 +129,7 @@ public sealed class PlanningProposalValidator
         if (proposal.UnresolvedQuestions.Count > PlanningVersions.MaxUnresolvedQuestions)
             errors.Add($"unresolvedQuestions exceed maximum {PlanningVersions.MaxUnresolvedQuestions}.");
 
-        if (proposal.Steps is null || proposal.Steps.Count == 0)
+        if (proposal.Steps.Count == 0)
             errors.Add("steps must contain at least one step.");
         else if (proposal.Steps.Count > PlanningVersions.MaxProposalSteps)
             errors.Add($"steps exceed maximum {PlanningVersions.MaxProposalSteps}.");
@@ -89,35 +140,32 @@ public sealed class PlanningProposalValidator
         if (proposal.KnowledgeRefs.Count > PlanningVersions.MaxRefs)
             errors.Add($"knowledgeRefs exceed maximum {PlanningVersions.MaxRefs}.");
 
-        if (!AllowedRisk.Contains(proposal.Risk ?? string.Empty))
+        if (string.IsNullOrWhiteSpace(proposal.Risk) || !AllowedRisk.Contains(proposal.Risk))
             errors.Add($"risk '{proposal.Risk}' is not allowed.");
 
         if (proposal.Confidence is < 0 or > 1)
             errors.Add("confidence must be between 0 and 1 when present (metadata only).");
 
         var seenStepIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (proposal.Steps is not null)
+        for (var i = 0; i < proposal.Steps.Count; i++)
         {
-            for (var i = 0; i < proposal.Steps.Count; i++)
+            var step = proposal.Steps[i];
+            var loc = $"steps[{i}]";
+            if (step.ExtensionData is { Count: > 0 })
             {
-                var step = proposal.Steps[i];
-                var loc = $"steps[{i}]";
-                if (step.ExtensionData is { Count: > 0 })
-                {
-                    foreach (var key in step.ExtensionData.Keys)
-                        errors.Add($"{loc}: unknown property '{key}'.");
-                }
-
-                if (string.IsNullOrWhiteSpace(step.Id) || !IdPattern.IsMatch(step.Id))
-                    errors.Add($"{loc}: id is invalid.");
-                else if (!seenStepIds.Add(step.Id))
-                    errors.Add($"{loc}: duplicate step id '{step.Id}'.");
-
-                if (string.IsNullOrWhiteSpace(step.Operation))
-                    errors.Add($"{loc}: operation is required.");
-                else if (PlanningPromptGuard.RequestsProhibitedCapability(step.Operation))
-                    errors.Add($"{loc}: prohibited operation '{step.Operation}'.");
+                foreach (var key in step.ExtensionData.Keys)
+                    errors.Add($"{loc}: unknown property '{key}'.");
             }
+
+            if (string.IsNullOrWhiteSpace(step.Id) || !IdPattern.IsMatch(step.Id))
+                errors.Add($"{loc}: id is invalid.");
+            else if (!seenStepIds.Add(step.Id))
+                errors.Add($"{loc}: duplicate step id '{step.Id}'.");
+
+            if (string.IsNullOrWhiteSpace(step.Operation))
+                errors.Add($"{loc}: operation is required.");
+            else if (PlanningPromptGuard.RequestsProhibitedCapability(step.Operation))
+                errors.Add($"{loc}: prohibited operation '{step.Operation}'.");
         }
 
         foreach (var objectRef in proposal.ObjectRefs)
@@ -187,7 +235,7 @@ public sealed class PlanningProposalValidator
             }
         }
 
-        foreach (var knowledgeRef in proposal.KnowledgeRefs)
+        foreach (var knowledgeRef in proposal.KnowledgeRefs ?? [])
         {
             if (!approvedKnowledge.Contains((knowledgeRef.Kind, knowledgeRef.Id))
                 && !retrieval.Hits.Any(h =>
@@ -198,14 +246,13 @@ public sealed class PlanningProposalValidator
             }
         }
 
-        foreach (var objectRef in proposal.ObjectRefs)
+        foreach (var objectRef in proposal.ObjectRefs ?? [])
         {
             if (!approvedObjects.Contains(objectRef.Ref))
                 errors.Add($"hallucinated object ref '{objectRef.Ref}' is not approved.");
         }
 
-        // Embedded $objectRef in arguments
-        foreach (var step in proposal.Steps)
+        foreach (var step in proposal.Steps ?? [])
         {
             CollectObjectRefs(step.Arguments, out var embedded);
             foreach (var embeddedRef in embedded)
@@ -224,7 +271,7 @@ public sealed class PlanningProposalValidator
                 errors.Add($"step '{step.Id}': unsupported or unknown operation '{step.Operation}'.");
         }
 
-        if (proposal.UnresolvedQuestions.Count > 0)
+        if ((proposal.UnresolvedQuestions?.Count ?? 0) > 0)
             errors.Add("proposal has unresolved questions and cannot compile.");
 
         return errors;
@@ -270,6 +317,15 @@ public sealed class PlanningProposalValidator
 
                 break;
         }
+    }
+
+    private static JsonSchema LoadSchema()
+    {
+        var resource = "DesktopAutomationAgent.Planning.plan-proposal.schema.json";
+        using var stream = typeof(PlanningProposalValidator).Assembly.GetManifestResourceStream(resource)
+            ?? throw new InvalidOperationException($"Missing embedded schema '{resource}'.");
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return JsonSchema.FromText(reader.ReadToEnd());
     }
 
     private static PlanningProposalParseResult Fail(List<string> errors) =>

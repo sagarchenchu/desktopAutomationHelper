@@ -59,27 +59,29 @@ public sealed class PlanProposalDocument
     [JsonPropertyName("$schema")]
     public string? Schema { get; set; }
 
-    public int SchemaVersion { get; set; } = PlanningVersions.ProposalSchemaVersion;
+    /// <summary>No default — schema must supply schemaVersion explicitly.</summary>
+    public int SchemaVersion { get; set; }
 
     public string ProposalId { get; set; } = string.Empty;
 
     public string Goal { get; set; } = string.Empty;
 
-    public List<string> Assumptions { get; set; } = [];
+    public List<string>? Assumptions { get; set; }
 
-    public List<string> UnresolvedQuestions { get; set; } = [];
+    public List<string>? UnresolvedQuestions { get; set; }
 
-    public List<PlanProposalStep> Steps { get; set; } = [];
+    public List<PlanProposalStep>? Steps { get; set; }
 
-    public List<PlanProposalObjectRef> ObjectRefs { get; set; } = [];
+    public List<PlanProposalObjectRef>? ObjectRefs { get; set; }
 
-    public List<PlanProposalKnowledgeRef> KnowledgeRefs { get; set; } = [];
+    public List<PlanProposalKnowledgeRef>? KnowledgeRefs { get; set; }
 
     public string? ExpectedState { get; set; }
 
     public string? Postcondition { get; set; }
 
-    public string Risk { get; set; } = "low";
+    /// <summary>No default — omitting risk must not silently become low.</summary>
+    public string Risk { get; set; } = string.Empty;
 
     /// <summary>Metadata only — never authorizes execution.</summary>
     public double? Confidence { get; set; }
