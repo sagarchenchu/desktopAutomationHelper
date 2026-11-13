@@ -1,12 +1,12 @@
 {
     "scenarioId":  "ambiguous",
-    "headSha":  "13c0f8af46e4e71f10194f3cae20801e970ca31c",
+    "headSha":  "147cbb63c71711285165b959cdf218f3f078c8dc",
     "reportStatus":  "failed",
     "exitCode":  6,
     "failureClassification":  "operationFailure",
     "failureMessage":  "Step \u0027find-amb\u0027 failed: timeout",
     "recovery":  {
-                     "runId":  "20261113T170018307Z-3dbd633c",
+                     "runId":  "20261113T173253094Z-135cd529",
                      "originalPlanSha256":  "a29b3f87d8ab57bfc1fa89d2efcc7ec2cf47bd60d748221bf8d8bf1693dd76ca",
                      "objectRepositorySha256":  "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
                      "objectRepositorySha256After":  "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
@@ -21,16 +21,16 @@
                                           "tier":  "approvedAlternateLocator",
                                           "outcome":  "failed",
                                           "detail":  "Approved alternate resolved ambiguously.",
-                                          "snapshotBeforePath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T170018307Z-3dbd633c\\recovery\\before-find-amb-b811853447f9450ba0346fe6e574cf79.json",
-                                          "startedAtUtc":  "2026-11-13T17:00:21.3090433+00:00",
-                                          "finishedAtUtc":  "2026-11-13T17:00:21.3093575+00:00",
+                                          "snapshotBeforePath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173253094Z-135cd529\\recovery\\before-find-amb-7929205166914df089f84ed86b614e1b.json",
+                                          "startedAtUtc":  "2026-11-13T17:32:56.0613235+00:00",
+                                          "finishedAtUtc":  "2026-11-13T17:32:56.0616433+00:00",
                                           "durationMilliseconds":  0
                                       }
                                   ],
                      "finalResult":  "failed"
                  },
-    "recoverySummaryPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T170018307Z-3dbd633c\\recovery\\recovery-summary.json",
-    "runDirectory":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T170018307Z-3dbd633c",
+    "recoverySummaryPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173253094Z-135cd529\\recovery\\recovery-summary.json",
+    "runDirectory":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173253094Z-135cd529",
     "planPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\plans\\phase7-ambiguous.plan.json",
     "planHashBefore":  "a29b3f87d8ab57bfc1fa89d2efcc7ec2cf47bd60d748221bf8d8bf1693dd76ca",
     "planHashAfter":  "a29b3f87d8ab57bfc1fa89d2efcc7ec2cf47bd60d748221bf8d8bf1693dd76ca",

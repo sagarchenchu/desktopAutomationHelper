@@ -1,6 +1,6 @@
 {
   "reportSchemaVersion": 1,
-  "runId": "20261113T170011226Z-f7e5805f",
+  "runId": "20261113T173245998Z-f7dbc99e",
   "status": "passed",
   "exitCode": 0,
   "planPath": "plans/phase7-approved-alternate.plan.json",
@@ -18,9 +18,9 @@
   "discoveryMethod": "explicit",
   "driverVersion": "0.0.0-local",
   "catalogSchemaVersion": 2,
-  "startedAtUtc": "2026-11-13T17:00:11.2263945+00:00",
-  "finishedAtUtc": "2026-11-13T17:00:16.2996234+00:00",
-  "durationMilliseconds": 5073.2289,
+  "startedAtUtc": "2026-11-13T17:32:45.998402+00:00",
+  "finishedAtUtc": "2026-11-13T17:32:51.0711865+00:00",
+  "durationMilliseconds": 5072.7845,
   "steps": [
     {
       "sequence": 1,
@@ -33,14 +33,14 @@
       "captureResponse": false,
       "skipped": false,
       "httpStatusCode": 200,
-      "startedAtUtc": "2026-11-13T17:00:11.4756496+00:00",
+      "startedAtUtc": "2026-11-13T17:32:46.2638133+00:00",
       "arguments": {
         "value": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\src\\DesktopAutomationTestApp\\bin\\Release\\net8.0-windows\\DesktopAutomationTestApp.exe"
       },
       "error": "",
       "driverReason": "",
       "assertions": [],
-      "duration": "00:00:01.4366526"
+      "duration": "00:00:01.4038959"
     },
     {
       "sequence": 2,
@@ -53,7 +53,7 @@
       "captureResponse": false,
       "skipped": false,
       "httpStatusCode": 200,
-      "startedAtUtc": "2026-11-13T17:00:14.7463545+00:00",
+      "startedAtUtc": "2026-11-13T17:32:49.5122063+00:00",
       "arguments": {
         "locator": {
           "automationId": "ClickButton"
@@ -63,7 +63,7 @@
       "error": "",
       "driverReason": "",
       "assertions": [],
-      "duration": "00:00:00.7266892"
+      "duration": "00:00:00.7314061"
     },
     {
       "sequence": 3,
@@ -76,17 +76,17 @@
       "captureResponse": false,
       "skipped": false,
       "httpStatusCode": 200,
-      "startedAtUtc": "2026-11-13T17:00:15.510153+00:00",
+      "startedAtUtc": "2026-11-13T17:32:50.278986+00:00",
       "arguments": {},
       "error": "",
       "driverReason": "",
       "assertions": [],
-      "duration": "00:00:00.7771978"
+      "duration": "00:00:00.7812796"
     }
   ],
   "onFailureSteps": [],
   "recovery": {
-    "runId": "20261113T170011226Z-f7e5805f",
+    "runId": "20261113T173245998Z-f7dbc99e",
     "originalPlanSha256": "c7fe31082f5175cc56b28767bc8c1c4025eeff5bdbd23817f87bbcd04cb58981",
     "objectRepositorySha256": "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
     "objectRepositorySha256After": "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
@@ -101,11 +101,11 @@
         "tier": "approvedAlternateLocator",
         "outcome": "recovered",
         "detail": "Approved alternate locator recovered the step.",
-        "snapshotBeforePath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T170011226Z-f7e5805f\\recovery\\before-find-alt-5f9d1260c56341048770a99009288700.json",
-        "snapshotAfterPath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T170011226Z-f7e5805f\\recovery\\after-alternate-find-alt-02.json",
-        "startedAtUtc": "2026-11-13T17:00:14.7452587+00:00",
-        "finishedAtUtc": "2026-11-13T17:00:15.4802098+00:00",
-        "durationMilliseconds": 734.4299
+        "snapshotBeforePath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173245998Z-f7dbc99e\\recovery\\before-find-alt-6995fcb4f3d04219bfd840507ee7c89a.json",
+        "snapshotAfterPath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173245998Z-f7dbc99e\\recovery\\after-alternate-find-alt-02.json",
+        "startedAtUtc": "2026-11-13T17:32:49.5111645+00:00",
+        "finishedAtUtc": "2026-11-13T17:32:50.2508463+00:00",
+        "durationMilliseconds": 739.1052
       }
     ],
     "finalResult": "passed"

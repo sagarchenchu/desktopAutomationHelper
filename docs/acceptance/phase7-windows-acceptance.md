@@ -1,20 +1,19 @@
 # Phase 7 Windows acceptance
 
-- Tip tested: `13c0f8af46e4e71f10194f3cae20801e970ca31c` (`13c0f8a`)
-- Requested tip: `b37a1e9c207ba7fbfcc9b7e760d829aa80fcd6b7` (+ structured `found=false` on switchwindow window miss)
+- Tip tested (GitHub-resolvable): [`147cbb63c71711285165b959cdf218f3f078c8dc`](https://github.com/sagarchenchu/desktopAutomationHelper/commit/147cbb63c71711285165b959cdf218f3f078c8dc) (`147cbb6`)
 - Branch: `feature/agent-phase-7-bounded-recovery`
 - PR: #147 (draft - not merged)
-- When: 2026-11-13T17:00:34.6454003+00:00
+- When: 2026-11-13T17:33:09.4783263+00:00
 - Overall: **PASS**
 - Approved pages unchanged: `True`
 - Recovery outside budget: `False`
 
 ## Scenario 4 (unexpected-window) - runner STOP (not a classifier probe)
 
-- reportStatus: `failed` exitCode: `6` (plan failed; agent exit non-zero)
-- runnerUnexpectedExternal: `True` — DeterministicPlanRunner PID/scope enforcement on `switchwindow` to foreign Notepad
-- recoveryClassification: `UnexpectedExternalWindow` (recovery denied; `totalRecoveryAttempts: 0`)
-- No separate classifier probe was used for PASS.
+- reportStatus: `failed` exitCode: `6`
+- runnerUnexpectedExternal: `True`
+- recoveryClassification: `UnexpectedExternalWindow`
+- DeterministicPlanRunner PID/scope enforcement on `switchwindow` to foreign Notepad; `totalRecoveryAttempts: 0`
 
 | # | Scenario | Expected | Result | Plan hash | Evidence |
 |---|---|---|---|---|---|

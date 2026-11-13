@@ -1,6 +1,6 @@
 {
   "reportSchemaVersion": 1,
-  "runId": "20261113T170029824Z-838f207a",
+  "runId": "20261113T173304635Z-6508d546",
   "status": "failed",
   "exitCode": 6,
   "planPath": "plans/phase7-assertion.plan.json",
@@ -12,9 +12,9 @@
   "discoveryMethod": "explicit",
   "driverVersion": "0.0.0-local",
   "catalogSchemaVersion": 2,
-  "startedAtUtc": "2026-11-13T17:00:29.8239549+00:00",
-  "finishedAtUtc": "2026-11-13T17:00:32.9826886+00:00",
-  "durationMilliseconds": 3158.7337,
+  "startedAtUtc": "2026-11-13T17:33:04.6347899+00:00",
+  "finishedAtUtc": "2026-11-13T17:33:07.8250414+00:00",
+  "durationMilliseconds": 3190.2515,
   "steps": [
     {
       "sequence": 1,
@@ -27,14 +27,14 @@
       "captureResponse": false,
       "skipped": false,
       "httpStatusCode": 200,
-      "startedAtUtc": "2026-11-13T17:00:30.041668+00:00",
+      "startedAtUtc": "2026-11-13T17:33:04.8484909+00:00",
       "arguments": {
         "value": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\src\\DesktopAutomationTestApp\\bin\\Release\\net8.0-windows\\DesktopAutomationTestApp.exe"
       },
       "error": "",
       "driverReason": "",
       "assertions": [],
-      "duration": "00:00:01.4143570"
+      "duration": "00:00:01.4199871"
     },
     {
       "sequence": 2,
@@ -47,7 +47,7 @@
       "captureResponse": false,
       "skipped": false,
       "httpStatusCode": 200,
-      "startedAtUtc": "2026-11-13T17:00:31.4745177+00:00",
+      "startedAtUtc": "2026-11-13T17:33:06.2870569+00:00",
       "arguments": {
         "locator": {
           "automationId": "StatusLabel"
@@ -66,7 +66,7 @@
           "expected": "THIS_ASSERTION_MUST_FAIL"
         }
       ],
-      "duration": "00:00:00.7377586"
+      "duration": "00:00:00.7665462"
     },
     {
       "sequence": 3,
@@ -97,12 +97,12 @@
       "captureResponse": false,
       "skipped": false,
       "httpStatusCode": 200,
-      "startedAtUtc": "2026-11-13T17:00:32.2330792+00:00",
+      "startedAtUtc": "2026-11-13T17:33:07.0737837+00:00",
       "arguments": {},
       "error": "",
       "driverReason": "",
       "assertions": [],
-      "duration": "00:00:00.7478604"
+      "duration": "00:00:00.7480489"
     }
   ],
   "failure": {
@@ -112,7 +112,7 @@
     "driverReason": ""
   },
   "recovery": {
-    "runId": "20261113T170029824Z-838f207a",
+    "runId": "20261113T173304635Z-6508d546",
     "originalPlanSha256": "270bc15f209f29be122dfb193813d50b007e4efdaa2faa8a840fc67e5c7d5412",
     "planMutated": false,
     "approvedRepositoryMutated": false,

@@ -1,6 +1,6 @@
 {
   "reportSchemaVersion": 1,
-  "runId": "20261113T170018307Z-3dbd633c",
+  "runId": "20261113T173253094Z-135cd529",
   "status": "failed",
   "exitCode": 6,
   "planPath": "plans/phase7-ambiguous.plan.json",
@@ -18,9 +18,9 @@
   "discoveryMethod": "explicit",
   "driverVersion": "0.0.0-local",
   "catalogSchemaVersion": 2,
-  "startedAtUtc": "2026-11-13T17:00:18.3067001+00:00",
-  "finishedAtUtc": "2026-11-13T17:00:22.135394+00:00",
-  "durationMilliseconds": 3828.6939,
+  "startedAtUtc": "2026-11-13T17:32:53.0943096+00:00",
+  "finishedAtUtc": "2026-11-13T17:32:56.9059922+00:00",
+  "durationMilliseconds": 3811.6826,
   "steps": [
     {
       "sequence": 1,
@@ -33,14 +33,14 @@
       "captureResponse": false,
       "skipped": false,
       "httpStatusCode": 200,
-      "startedAtUtc": "2026-11-13T17:00:18.564953+00:00",
+      "startedAtUtc": "2026-11-13T17:32:53.3421478+00:00",
       "arguments": {
         "value": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\src\\DesktopAutomationTestApp\\bin\\Release\\net8.0-windows\\DesktopAutomationTestApp.exe"
       },
       "error": "",
       "driverReason": "",
       "assertions": [],
-      "duration": "00:00:01.4194249"
+      "duration": "00:00:01.3896346"
     },
     {
       "sequence": 2,
@@ -53,7 +53,7 @@
       "captureResponse": false,
       "skipped": false,
       "httpStatusCode": 200,
-      "startedAtUtc": "2026-11-13T17:00:20.0029994+00:00",
+      "startedAtUtc": "2026-11-13T17:32:54.7504091+00:00",
       "arguments": {
         "locator": {
           "automationId": "does-not-exist-ambiguous-primary"
@@ -64,7 +64,7 @@
       "driverReason": "timeout",
       "classification": "operationFailure",
       "assertions": [],
-      "duration": "00:00:00.7726575"
+      "duration": "00:00:00.7752722"
     },
     {
       "sequence": 3,
@@ -95,12 +95,12 @@
       "captureResponse": false,
       "skipped": false,
       "httpStatusCode": 200,
-      "startedAtUtc": "2026-11-13T17:00:21.3585164+00:00",
+      "startedAtUtc": "2026-11-13T17:32:56.1301855+00:00",
       "arguments": {},
       "error": "",
       "driverReason": "",
       "assertions": [],
-      "duration": "00:00:00.7754146"
+      "duration": "00:00:00.7732746"
     }
   ],
   "failure": {
@@ -110,7 +110,7 @@
     "driverReason": "timeout"
   },
   "recovery": {
-    "runId": "20261113T170018307Z-3dbd633c",
+    "runId": "20261113T173253094Z-135cd529",
     "originalPlanSha256": "a29b3f87d8ab57bfc1fa89d2efcc7ec2cf47bd60d748221bf8d8bf1693dd76ca",
     "objectRepositorySha256": "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
     "objectRepositorySha256After": "ea8741295fe1814efba205ebf03b0b700bc0f428f9cc7cd27f248804fd9c2869",
@@ -125,9 +125,9 @@
         "tier": "approvedAlternateLocator",
         "outcome": "failed",
         "detail": "Approved alternate resolved ambiguously.",
-        "snapshotBeforePath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T170018307Z-3dbd633c\\recovery\\before-find-amb-b811853447f9450ba0346fe6e574cf79.json",
-        "startedAtUtc": "2026-11-13T17:00:21.3090433+00:00",
-        "finishedAtUtc": "2026-11-13T17:00:21.3093575+00:00",
+        "snapshotBeforePath": "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T173253094Z-135cd529\\recovery\\before-find-amb-7929205166914df089f84ed86b614e1b.json",
+        "startedAtUtc": "2026-11-13T17:32:56.0613235+00:00",
+        "finishedAtUtc": "2026-11-13T17:32:56.0616433+00:00",
         "durationMilliseconds": 0
       }
     ],
