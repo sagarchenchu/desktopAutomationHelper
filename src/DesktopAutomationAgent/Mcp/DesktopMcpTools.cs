@@ -55,7 +55,8 @@ public sealed class DesktopMcpTools
             outputPath,
             cancellationToken));
 
-    [McpServerTool(Name = "desktop_explore_dry_run", Title = "Desktop explore dry-run", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+    // Not ReadOnly: dry-run still may write exploration artifact stubs under the workspace.
+    [McpServerTool(Name = "desktop_explore_dry_run", Title = "Desktop explore dry-run", ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("Observation: list policy-permitted exploration candidates without UI mutation. Deny-by-default exploration policy required.")]
     public Task<CallToolResult> DesktopExploreDryRun(
         [Required, MaxLength(512), Description("Workspace-contained exploration policy path")] string policyPath,
@@ -93,19 +94,19 @@ public sealed class DesktopMcpTools
             return Task.FromResult(_facade.ValidatePlan(planPath));
         });
 
-    // OpenWorld=true: fromJira may contact an external Jira host (read-only). Offline compiles stay local.
-    [McpServerTool(Name = "desktop_compile_key", Title = "Desktop compile key", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = true)]
+    // Not ReadOnly: compile writes plan-cache artifacts. OpenWorld=true: fromJira may contact remote Jira.
+    [McpServerTool(Name = "desktop_compile_key", Title = "Desktop compile key", ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = true)]
     [Description("Validation: compile a Jira BDD key into a deterministic plan cache entry. fromJira performs read-only remote sync then compile (open-world); never POST /ui.")]
     public Task<CallToolResult> DesktopCompileKey(
         [Required, MaxLength(64)] string key,
         [MaxLength(512)] string? file,
-        bool fromJira,
-        [MaxLength(512)] string? registry,
-        [MaxLength(512)] string? objectRepository,
-        [MaxLength(512)] string? knowledge,
-        [MaxLength(512)] string? catalog,
-        bool explain,
-        CancellationToken cancellationToken) =>
+        bool fromJira = false,
+        [MaxLength(512)] string? registry = null,
+        [MaxLength(512)] string? objectRepository = null,
+        [MaxLength(512)] string? knowledge = null,
+        [MaxLength(512)] string? catalog = null,
+        bool explain = false,
+        CancellationToken cancellationToken = default) =>
         InvokeAsync(async () =>
         {
             if (fromJira)
@@ -122,41 +123,41 @@ public sealed class DesktopMcpTools
         });
 
     [McpServerTool(Name = "desktop_run_plan", Title = "Desktop run plan", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]
-    [Description("Execution: run a validated deterministic plan through the Phase 2 runner. dryRun=true validates against the live catalog without POST /ui.")]
+    [Description("Execution: run a validated deterministic plan through the Phase 2 runner. dryRun defaults to true (omission never live-runs); dryRun=false executes against the live catalog/driver.")]
     public Task<CallToolResult> DesktopRunPlan(
         [Required, MaxLength(512)] string planPath,
-        bool dryRun = false,
+        bool dryRun = true,
         CancellationToken cancellationToken = default) =>
         InvokeAsync(() => _facade.RunPlanAsync(planPath, dryRun, cancellationToken));
 
     // OpenWorld=true when fromJira syncs from remote Jira before execution.
     [McpServerTool(Name = "desktop_run_key", Title = "Desktop run key", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]
-    [Description("Execution: compile (or reuse cache) then execute a Jira key via the Phase 2 runner. fromJira may contact remote Jira; dryRun never calls POST /ui.")]
+    [Description("Execution: compile (or reuse cache) then execute a Jira key via the Phase 2 runner. fromJira may contact remote Jira; dryRun defaults to true (omission never live-runs / never POST /ui).")]
     public Task<CallToolResult> DesktopRunKey(
         [Required, MaxLength(64)] string key,
-        bool dryRun,
-        bool fromJira,
-        [MaxLength(512)] string? registry,
-        [MaxLength(512)] string? objectRepository,
-        [MaxLength(512)] string? knowledge,
-        [MaxLength(512)] string? catalog,
-        CancellationToken cancellationToken) =>
+        bool dryRun = true,
+        bool fromJira = false,
+        [MaxLength(512)] string? registry = null,
+        [MaxLength(512)] string? objectRepository = null,
+        [MaxLength(512)] string? knowledge = null,
+        [MaxLength(512)] string? catalog = null,
+        CancellationToken cancellationToken = default) =>
         InvokeAsync(() => _facade.RunKeyAsync(
             key, dryRun, fromJira, registry, objectRepository, knowledge, catalog, cancellationToken));
 
     [McpServerTool(Name = "desktop_run_suite", Title = "Desktop run suite", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]
-    [Description("Execution: sequential suite orchestration. Fail-fast by default. fromJira may contact remote Jira; dryRun never calls POST /ui.")]
+    [Description("Execution: sequential suite orchestration. Fail-fast by default. fromJira may contact remote Jira; dryRun defaults to true (omission never live-runs / never POST /ui).")]
     public Task<CallToolResult> DesktopRunSuite(
         [Required, MaxLength(512)] string suitePath,
-        bool dryRun,
-        bool fromJira,
-        bool continueOnFailure,
-        [Range(1, 10_000)] int? maxFailures,
-        [MaxLength(512)] string? registry,
-        [MaxLength(512)] string? objectRepository,
-        [MaxLength(512)] string? knowledge,
-        [MaxLength(512)] string? catalog,
-        CancellationToken cancellationToken) =>
+        bool dryRun = true,
+        bool fromJira = false,
+        bool continueOnFailure = false,
+        [Range(1, 10_000)] int? maxFailures = null,
+        [MaxLength(512)] string? registry = null,
+        [MaxLength(512)] string? objectRepository = null,
+        [MaxLength(512)] string? knowledge = null,
+        [MaxLength(512)] string? catalog = null,
+        CancellationToken cancellationToken = default) =>
         InvokeAsync(() => _facade.RunSuiteAsync(
             suitePath,
             dryRun,
@@ -185,14 +186,7 @@ public sealed class DesktopMcpTools
         try
         {
             var payload = await action().ConfigureAwait(false);
-            var json = McpResponseBudget.SerializeBounded(payload);
-            // Final redaction pass — never return bearer/Authorization material via MCP.
-            json = Driver.SecretRedactor.Redact(json);
-            return new CallToolResult
-            {
-                Content = [new TextContentBlock { Text = json }],
-                StructuredContent = JsonSerializer.Deserialize<JsonElement>(json)
-            };
+            return SuccessResult(payload);
         }
         catch (OperationCanceledException)
         {
@@ -209,6 +203,18 @@ public sealed class DesktopMcpTools
         }
     }
 
+    private static CallToolResult SuccessResult(object payload)
+    {
+        // Budget first (shortens), then redact — response stays under budget and secret-free.
+        var json = Driver.SecretRedactor.Redact(McpResponseBudget.SerializeBounded(payload));
+        EnsureWireJson(json);
+        return new CallToolResult
+        {
+            Content = [new TextContentBlock { Text = json }],
+            StructuredContent = JsonSerializer.Deserialize<JsonElement>(json)
+        };
+    }
+
     private static CallToolResult ErrorResult(string code, string message, string? detail = null)
     {
         var payload = new McpErrorPayload
@@ -218,12 +224,48 @@ public sealed class DesktopMcpTools
             Message = message,
             Detail = string.IsNullOrWhiteSpace(detail) ? null : detail
         };
-        var json = Driver.SecretRedactor.Redact(JsonSerializer.Serialize(payload, McpJson.Options));
+
+        string json;
+        try
+        {
+            // Errors also go through budget + redaction (large exception text must not blow the wire).
+            json = Driver.SecretRedactor.Redact(McpResponseBudget.SerializeBounded(payload));
+            EnsureWireJson(json);
+        }
+        catch (McpToolException)
+        {
+            json = Driver.SecretRedactor.Redact(
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        success = false,
+                        errorCode = McpErrorCode.Truncated,
+                        message = "Error payload exceeded MCP response budget.",
+                        truncated = true
+                    },
+                    McpJson.Options));
+        }
+
         return new CallToolResult
         {
             IsError = true,
             Content = [new TextContentBlock { Text = json }],
             StructuredContent = JsonSerializer.Deserialize<JsonElement>(json)
         };
+    }
+
+    private static void EnsureWireJson(string json)
+    {
+        try
+        {
+            using var _ = JsonDocument.Parse(json);
+        }
+        catch (JsonException ex)
+        {
+            throw new McpToolException(
+                McpErrorCode.Truncated,
+                "Wire payload was not valid JSON after budgeting/redaction.",
+                ex.Message);
+        }
     }
 }

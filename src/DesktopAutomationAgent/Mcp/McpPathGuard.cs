@@ -99,6 +99,7 @@ internal static class McpPathGuard
                 $"path '{fullPath}' resolves outside the allowed directory via a link chain.");
         }
 
+        // Recheck ancestors of the fully resolved target (chained dir links may land elsewhere).
         EnsureAncestorDirectoriesSafe(resolved, normalizedRoot);
     }
 
@@ -129,25 +130,17 @@ internal static class McpPathGuard
             if (!IsReparsePoint(directoryInfo))
                 return normalized;
 
-            var dirTarget = TryGetLinkTarget(directoryInfo);
-            if (string.IsNullOrWhiteSpace(dirTarget))
-            {
-                throw new McpPathException(
-                    $"path '{fullPath}' is a directory reparse point that cannot be validated safely.");
-            }
+            var dirFinal = ResolveLinkTargetPath(directoryInfo, returnFinalTarget: true)
+                           ?? throw new McpPathException(
+                               $"path '{fullPath}' is a directory reparse point that cannot be validated safely.");
 
-            var dirNext = Path.GetFullPath(
-                Path.IsPathRooted(dirTarget)
-                    ? dirTarget
-                    : Path.Combine(directoryInfo.Parent?.FullName ?? normalized, dirTarget));
-
-            if (!IsInsideDirectory(dirNext, containmentRoot))
+            if (!IsInsideDirectory(dirFinal, containmentRoot))
             {
                 throw new McpPathException(
                     $"directory link '{fullPath}' resolves outside the allowed directory.");
             }
 
-            return ResolveFinalPath(dirNext, containmentRoot, visited, depth + 1);
+            return ResolveFinalPath(dirFinal, containmentRoot, visited, depth + 1);
         }
 
         var fileInfo = new FileInfo(normalized);
@@ -157,25 +150,17 @@ internal static class McpPathGuard
         if (!IsReparsePoint(fileInfo))
             return normalized;
 
-        var linkTarget = TryGetLinkTarget(fileInfo);
-        if (string.IsNullOrWhiteSpace(linkTarget))
-        {
-            throw new McpPathException(
-                $"path '{fullPath}' is a reparse point that cannot be validated safely.");
-        }
+        var fileFinal = ResolveLinkTargetPath(fileInfo, returnFinalTarget: true)
+                        ?? throw new McpPathException(
+                            $"path '{fullPath}' is a reparse point that cannot be validated safely.");
 
-        var next = Path.GetFullPath(
-            Path.IsPathRooted(linkTarget)
-                ? linkTarget
-                : Path.Combine(fileInfo.Directory!.FullName, linkTarget));
-
-        if (!IsInsideDirectory(next, containmentRoot))
+        if (!IsInsideDirectory(fileFinal, containmentRoot))
         {
             throw new McpPathException(
                 $"symbolic link '{fullPath}' resolves outside the allowed directory.");
         }
 
-        return ResolveFinalPath(next, containmentRoot, visited, depth + 1);
+        return ResolveFinalPath(fileFinal, containmentRoot, visited, depth + 1);
     }
 
     private static void EnsureAncestorDirectoriesSafe(string fullPath, string containmentRoot)
@@ -188,23 +173,22 @@ internal static class McpPathGuard
         {
             if (current.Exists && IsReparsePoint(current))
             {
-                var linkTarget = TryGetLinkTarget(current);
-                if (string.IsNullOrWhiteSpace(linkTarget))
+                // Fully resolve each ancestor link (including chained dir symlink/junction), then recheck.
+                var resolved = ResolveLinkTargetPath(current, returnFinalTarget: true);
+                if (string.IsNullOrWhiteSpace(resolved))
                 {
                     throw new McpPathException(
                         $"path '{fullPath}' traverses a directory reparse point '{current.FullName}' that cannot be validated safely.");
                 }
-
-                var resolved = Path.GetFullPath(
-                    Path.IsPathRooted(linkTarget)
-                        ? linkTarget
-                        : Path.Combine(current.Parent?.FullName ?? normalizedRoot, linkTarget));
 
                 if (!IsInsideDirectory(resolved, containmentRoot))
                 {
                     throw new McpPathException(
                         $"path '{fullPath}' traverses directory link '{current.FullName}' that resolves outside the allowed directory.");
                 }
+
+                // Recheck the fully resolved ancestor path itself for further link escape.
+                EnsureResolvedDirectoryInside(resolved, containmentRoot, fullPath);
             }
 
             if (WorkspaceManager.PathsEqual(current.FullName, normalizedRoot))
@@ -214,6 +198,69 @@ internal static class McpPathGuard
                 break;
 
             current = current.Parent;
+        }
+    }
+
+    private static void EnsureResolvedDirectoryInside(string resolvedDirectory, string containmentRoot, string originalPath)
+    {
+        var info = new DirectoryInfo(resolvedDirectory);
+        if (!info.Exists)
+            return;
+
+        if (!IsInsideDirectory(info.FullName, containmentRoot))
+        {
+            throw new McpPathException(
+                $"path '{originalPath}' resolves through '{resolvedDirectory}' outside the allowed directory.");
+        }
+
+        if (!IsReparsePoint(info))
+            return;
+
+        var final = ResolveLinkTargetPath(info, returnFinalTarget: true);
+        if (string.IsNullOrWhiteSpace(final))
+        {
+            throw new McpPathException(
+                $"path '{originalPath}' resolves through reparse point '{resolvedDirectory}' that cannot be validated safely.");
+        }
+
+        if (!IsInsideDirectory(final, containmentRoot))
+        {
+            throw new McpPathException(
+                $"path '{originalPath}' resolves through '{resolvedDirectory}' outside the allowed directory via a link chain.");
+        }
+    }
+
+    private static string? ResolveLinkTargetPath(FileSystemInfo info, bool returnFinalTarget)
+    {
+        try
+        {
+            var target = info.ResolveLinkTarget(returnFinalTarget);
+            if (target is not null)
+                return Path.GetFullPath(target.FullName);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            // Fall through to LinkTarget / relative resolution.
+        }
+
+        try
+        {
+            var linkTarget = info.LinkTarget;
+            if (string.IsNullOrWhiteSpace(linkTarget))
+                return null;
+
+            return Path.GetFullPath(
+                Path.IsPathRooted(linkTarget)
+                    ? linkTarget
+                    : Path.Combine(
+                        info is DirectoryInfo dir
+                            ? dir.Parent?.FullName ?? info.FullName
+                            : ((FileInfo)info).Directory!.FullName,
+                        linkTarget));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return null;
         }
     }
 
@@ -232,18 +279,6 @@ internal static class McpPathGuard
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or IOException)
         {
             return false;
-        }
-    }
-
-    private static string? TryGetLinkTarget(FileSystemInfo info)
-    {
-        try
-        {
-            return info.LinkTarget;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return null;
         }
     }
 

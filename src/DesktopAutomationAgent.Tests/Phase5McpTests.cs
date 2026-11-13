@@ -52,14 +52,15 @@ public class Phase5McpTests
     }
 
     [Fact]
-    public void ToolAnnotations_ExploreDryRun_IsObservationOnly()
+    public void ToolAnnotations_ExploreDryRun_IsObservationCategory_NotReadOnly()
     {
         var method = typeof(DesktopMcpTools).GetMethod(nameof(DesktopMcpTools.DesktopExploreDryRun));
         Assert.NotNull(method);
         var attr = method!.GetCustomAttribute<McpServerToolAttribute>();
         Assert.NotNull(attr);
         Assert.Equal("desktop_explore_dry_run", attr!.Name);
-        Assert.True(attr.ReadOnly);
+        // May write workspace artifact stubs — must not advertise ReadOnly.
+        Assert.False(attr.ReadOnly);
         Assert.False(attr.Destructive);
         Assert.True(attr.Idempotent);
         Assert.False(attr.OpenWorld);
@@ -69,11 +70,30 @@ public class Phase5McpTests
     }
 
     [Fact]
+    public void ToolAnnotations_CompileKey_NotReadOnly_AndOpenWorld()
+    {
+        var attr = GetToolAttr(nameof(DesktopMcpTools.DesktopCompileKey));
+        // Compile writes plan-cache artifacts — must not advertise ReadOnly.
+        Assert.False(attr.ReadOnly);
+        Assert.False(attr.Destructive);
+        Assert.True(attr.Idempotent);
+        Assert.True(attr.OpenWorld);
+    }
+
+    [Fact]
     public void ToolAnnotations_CompileAndFromJiraTools_AreOpenWorld()
     {
         Assert.True(GetToolAttr(nameof(DesktopMcpTools.DesktopCompileKey)).OpenWorld);
         Assert.True(GetToolAttr(nameof(DesktopMcpTools.DesktopRunKey)).OpenWorld);
         Assert.True(GetToolAttr(nameof(DesktopMcpTools.DesktopRunSuite)).OpenWorld);
+    }
+
+    [Fact]
+    public void ToolAnnotations_RunTools_DefaultDryRunTrue()
+    {
+        Assert.True(GetParameterDefaultBool(nameof(DesktopMcpTools.DesktopRunPlan), "dryRun"));
+        Assert.True(GetParameterDefaultBool(nameof(DesktopMcpTools.DesktopRunKey), "dryRun"));
+        Assert.True(GetParameterDefaultBool(nameof(DesktopMcpTools.DesktopRunSuite), "dryRun"));
     }
 
     [Fact]
@@ -256,6 +276,74 @@ public class Phase5McpTests
     }
 
     [Fact]
+    public void PathGuard_RejectsChainedDirectoryJunctionEscape()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var outside = Path.Combine(Path.GetTempPath(), "da-mcp-chain-dir-out-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "secret.json"), $"{{\"token\":\"{SecretToken}\"}}");
+
+        var inner = Path.Combine(workspace.RootPath, "inner-link");
+        var mid = Path.Combine(workspace.RootPath, "mid-link");
+
+        try
+        {
+            // mid -> inner (inside) -> outside (escape). Immediate mid target looks safe;
+            // ResolveLinkTarget(true) must still reject the chain.
+            RequireWindowsJunction(inner, outside);
+            RequireWindowsJunction(mid, inner);
+            var target = Path.Combine(mid, "secret.json");
+            var thrown = Assert.ThrowsAny<Exception>(() =>
+                McpPathGuard.EnsureNotSymlinkEscape(target, workspace.RootPath));
+            Assert.Contains("outside", thrown.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            TryDelete(mid);
+            TryDelete(inner);
+            TryDelete(outside);
+        }
+    }
+
+    [Fact]
+    public void PathGuard_RejectsChainedDirectorySymlinkEscape()
+    {
+        var options = TestSupport.CreateOptions();
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var outside = Path.Combine(Path.GetTempPath(), "da-mcp-chain-sl-out-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "secret.json"), $"{{\"token\":\"{SecretToken}\"}}");
+
+        var inner = Path.Combine(workspace.RootPath, "inner-sl");
+        var mid = Path.Combine(workspace.RootPath, "mid-sl");
+
+        try
+        {
+            if (!TryCreateSymbolicLink(() => Directory.CreateSymbolicLink(inner, outside), inner))
+                return;
+            if (!TryCreateSymbolicLink(() => Directory.CreateSymbolicLink(mid, inner), mid))
+                return;
+
+            var target = Path.Combine(mid, "secret.json");
+            var thrown = Assert.ThrowsAny<Exception>(() =>
+                McpPathGuard.EnsureNotSymlinkEscape(target, workspace.RootPath));
+            Assert.Contains("outside", thrown.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            TryDelete(mid);
+            TryDelete(inner);
+            TryDelete(outside);
+        }
+    }
+
+    [Fact]
     public void Facade_ValidatePlan_DelegatesAndKeepsValidation()
     {
         var options = TestSupport.CreateOptions(bearerToken: SecretToken);
@@ -394,10 +482,51 @@ public class Phase5McpTests
         var tools = new DesktopMcpTools(mock.Object);
         var ok = await tools.DesktopDoctor(CancellationToken.None);
         AssertRawWireHasNoSecret(ok);
+        AssertWireIsValidJsonUnderBudget(ok);
 
         var err = await tools.DesktopDoctor(CancellationToken.None);
         Assert.True(err.IsError == true);
         AssertRawWireHasNoSecret(err);
+        AssertWireIsValidJsonUnderBudget(err);
+    }
+
+    [Fact]
+    public async Task Tools_LargeException_IsBudgetedAndRedacted()
+    {
+        var huge = new string('X', 60_000) + " Authorization: Bearer " + SecretToken;
+        var mock = new Mock<IDesktopMcpFacade>(MockBehavior.Strict);
+        mock.Setup(f => f.DoctorAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException(huge));
+
+        var tools = new DesktopMcpTools(mock.Object);
+        var err = await tools.DesktopDoctor(CancellationToken.None);
+        Assert.True(err.IsError == true);
+        AssertRawWireHasNoSecret(err);
+        AssertWireIsValidJsonUnderBudget(err);
+        Assert.True(GetRawText(err).Length <= McpResponseBudget.DefaultMaxChars);
+    }
+
+    [Fact]
+    public async Task Tools_NearLimitSecretPayload_RedactedUnderBudget()
+    {
+        // Build a success payload that sits near the default budget with an embedded secret.
+        var pad = new string('p', McpResponseBudget.DefaultMaxChars - 400);
+        var mock = new Mock<IDesktopMcpFacade>(MockBehavior.Strict);
+        mock.Setup(f => f.DoctorAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new
+            {
+                success = true,
+                pad,
+                token = SecretToken,
+                authorizationHeader = "Bearer " + SecretToken
+            });
+
+        var tools = new DesktopMcpTools(mock.Object);
+        var ok = await tools.DesktopDoctor(CancellationToken.None);
+        Assert.True(ok.IsError != true, GetRawText(ok));
+        AssertRawWireHasNoSecret(ok);
+        AssertWireIsValidJsonUnderBudget(ok);
+        Assert.True(GetRawText(ok).Length <= McpResponseBudget.DefaultMaxChars);
     }
 
     [Fact]
@@ -464,6 +593,9 @@ public class Phase5McpTests
         Assert.True(observeResult.IsError != true, GetRawText(observeResult));
 
         var run = tools.First(t => t.Name == "desktop_run_plan");
+        Assert.True(run.JsonSchema.TryGetProperty("properties", out var runProps));
+        Assert.True(runProps.TryGetProperty("dryRun", out _));
+
         var runResult = await run.CallAsync(new Dictionary<string, object?>
         {
             ["planPath"] = "plans/example.plan.json",
@@ -477,6 +609,148 @@ public class Phase5McpTests
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(),
             It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<bool?>(), It.IsAny<bool?>(),
             It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Protocol_RunPlan_OmittingDryRun_DefaultsToDryRunTrue()
+    {
+        var mock = new Mock<IDesktopMcpFacade>(MockBehavior.Strict);
+        mock.Setup(f => f.RunPlanAsync(It.IsAny<string>(), true, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new { success = true, category = "validation", dryRun = true, runId = "dry-default" })
+            .Verifiable();
+
+        await using var session = await McpTestSession.CreateAsync(mock.Object);
+        var tools = await session.Client.ListToolsAsync();
+        var run = tools.First(t => t.Name == "desktop_run_plan");
+
+        // Omission must not live-run.
+        var result = await run.CallAsync(new Dictionary<string, object?>
+        {
+            ["planPath"] = "plans/example.plan.json"
+        });
+        Assert.True(result.IsError != true, GetRawText(result));
+        Assert.Contains("dry-default", GetRawText(result), StringComparison.Ordinal);
+        mock.Verify(f => f.RunPlanAsync(It.IsAny<string>(), true, It.IsAny<CancellationToken>()), Times.Once);
+        mock.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Protocol_ChainedDirectoryJunction_ReturnsPathTraversal()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var options = TestSupport.CreateOptions(bearerToken: SecretToken);
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var outside = Path.Combine(Path.GetTempPath(), "da-mcp-proto-chain-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "secret.json"), $"{{\"token\":\"{SecretToken}\"}}");
+        var inner = Path.Combine(workspace.RootPath, "proto-inner");
+        var mid = Path.Combine(workspace.RootPath, "proto-mid");
+
+        try
+        {
+            RequireWindowsJunction(inner, outside);
+            RequireWindowsJunction(mid, inner);
+            // Place a "plan" path that walks through the chained junctions.
+            File.WriteAllText(Path.Combine(outside, "evil.plan.json"), TestSupport.MinimalPlanJson());
+
+            var facade = BuildFacade(options, workspace, ReadyHandler());
+            await using var session = await McpTestSession.CreateAsync(facade);
+            var tools = await session.Client.ListToolsAsync();
+            var validate = tools.First(t => t.Name == "desktop_validate_plan");
+            var result = await validate.CallAsync(new Dictionary<string, object?>
+            {
+                ["planPath"] = "proto-mid/evil.plan.json"
+            });
+            Assert.True(result.IsError == true, GetRawText(result));
+            Assert.Contains("path_traversal", GetRawText(result), StringComparison.OrdinalIgnoreCase);
+            AssertRawWireHasNoSecret(result);
+        }
+        finally
+        {
+            TryDelete(mid);
+            TryDelete(inner);
+            TryDelete(outside);
+        }
+    }
+
+    [Fact]
+    public async Task Protocol_InvalidInputMatrix_AllTools()
+    {
+        var mock = new Mock<IDesktopMcpFacade>(MockBehavior.Strict);
+        // No facade calls should succeed for these invalid invocations — allow optional throw if reached.
+        mock.Setup(f => f.ExploreAsync(It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("should not explore"));
+        mock.Setup(f => f.SearchKnowledge(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int?>()))
+            .Throws(new InvalidOperationException("should not search"));
+        mock.Setup(f => f.ValidatePlan(It.IsAny<string>()))
+            .Throws(new InvalidOperationException("should not validate"));
+        mock.Setup(f => f.CompileKey(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<string?>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<bool>()))
+            .Throws(new InvalidOperationException("should not compile"));
+        mock.Setup(f => f.CompileKeyFromJiraAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("should not compile from jira"));
+        mock.Setup(f => f.RunPlanAsync(It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("should not run plan"));
+        mock.Setup(f => f.RunKeyAsync(
+                It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<string?>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("should not run key"));
+        mock.Setup(f => f.RunSuiteAsync(
+                It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<int?>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("should not run suite"));
+        mock.Setup(f => f.GetRunSummary(It.IsAny<string>()))
+            .Throws(new InvalidOperationException("should not get summary"));
+        mock.Setup(f => f.DoctorAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("doctor probe"));
+        mock.Setup(f => f.ObserveAsync(
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(),
+                It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<bool?>(), It.IsAny<bool?>(),
+                It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("observe probe"));
+
+        await using var session = await McpTestSession.CreateAsync(mock.Object);
+        var tools = (await session.Client.ListToolsAsync()).ToDictionary(t => t.Name, StringComparer.Ordinal);
+
+        async Task AssertInvalid(string toolName, Dictionary<string, object?> args)
+        {
+            Assert.True(tools.ContainsKey(toolName), toolName);
+            var result = await tools[toolName].CallAsync(args);
+            Assert.True(result.IsError == true, $"{toolName}: {GetRawText(result)}");
+            AssertRawWireHasNoSecret(result);
+            var text = GetRawText(result).TrimStart();
+            // Protocol may reject before our handler (plain-text invoke error) or return structured JSON.
+            if (text.StartsWith("{", StringComparison.Ordinal))
+                AssertWireIsValidJsonUnderBudget(result);
+            else
+                Assert.False(string.IsNullOrWhiteSpace(text), toolName);
+        }
+
+        // Required-argument omissions / invalid values for all 11 tools.
+        // doctor has no required args — empty call hits mock throw → structured error.
+        await AssertInvalid("desktop_doctor", new Dictionary<string, object?>());
+        await AssertInvalid("desktop_observe", new Dictionary<string, object?> { ["maxDepth"] = 99 });
+        await AssertInvalid("desktop_explore_dry_run", new Dictionary<string, object?>());
+        await AssertInvalid("desktop_explore", new Dictionary<string, object?>());
+        await AssertInvalid("desktop_search_knowledge", new Dictionary<string, object?> { ["query"] = "x" });
+        await AssertInvalid("desktop_validate_plan", new Dictionary<string, object?>());
+        await AssertInvalid("desktop_compile_key", new Dictionary<string, object?>());
+        await AssertInvalid("desktop_run_plan", new Dictionary<string, object?>());
+        await AssertInvalid("desktop_run_key", new Dictionary<string, object?>());
+        await AssertInvalid("desktop_run_suite", new Dictionary<string, object?>());
+        await AssertInvalid("desktop_get_run_summary", new Dictionary<string, object?>());
+
+        // dryRun present without required path/key still errors (defaults alone must not live-run).
+        await AssertInvalid("desktop_run_plan", new Dictionary<string, object?> { ["dryRun"] = false });
+        await AssertInvalid("desktop_run_key", new Dictionary<string, object?> { ["dryRun"] = false });
+        await AssertInvalid("desktop_run_suite", new Dictionary<string, object?> { ["dryRun"] = false });
     }
 
     [Fact]
@@ -598,6 +872,16 @@ public class Phase5McpTests
         return attr!;
     }
 
+    private static bool GetParameterDefaultBool(string methodName, string parameterName)
+    {
+        var method = typeof(DesktopMcpTools).GetMethod(methodName);
+        Assert.NotNull(method);
+        var parameter = method!.GetParameters().First(p => p.Name == parameterName);
+        Assert.True(parameter.HasDefaultValue, $"{methodName}.{parameterName} must have a default");
+        Assert.IsType<bool>(parameter.DefaultValue);
+        return (bool)parameter.DefaultValue!;
+    }
+
     private static string GetRawText(CallToolResult result) =>
         string.Join("", result.Content.OfType<TextContentBlock>().Select(c => c.Text));
 
@@ -613,6 +897,21 @@ public class Phase5McpTests
             var structuredJson = structured.GetRawText();
             Assert.DoesNotContain(SecretToken, structuredJson, StringComparison.Ordinal);
             Assert.DoesNotContain("Bearer " + SecretToken, structuredJson, StringComparison.Ordinal);
+        }
+    }
+
+    private static void AssertWireIsValidJsonUnderBudget(CallToolResult result)
+    {
+        var text = GetRawText(result);
+        Assert.True(text.Length <= McpResponseBudget.DefaultMaxChars, $"wire length {text.Length}");
+        using var doc = JsonDocument.Parse(text);
+        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
+
+        if (result.StructuredContent is { } structured
+            && structured.ValueKind is not JsonValueKind.Undefined and not JsonValueKind.Null)
+        {
+            Assert.Equal(JsonValueKind.Object, structured.ValueKind);
+            Assert.True(structured.GetRawText().Length <= McpResponseBudget.DefaultMaxChars);
         }
     }
 

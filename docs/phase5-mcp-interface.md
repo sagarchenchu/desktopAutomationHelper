@@ -46,14 +46,14 @@ dotnet run --project src/DesktopAutomationAgent -- mcp-server
 |---|---|---|
 | `desktop_doctor` | observation | Readiness / discovery checks |
 | `desktop_observe` | observation | Bounded semantic snapshot + opaque refs |
-| `desktop_explore_dry_run` | observation | Policy candidates; no UI mutation |
+| `desktop_explore_dry_run` | observation | Policy candidates; no UI mutation (not ReadOnly — may write artifact stubs) |
 | `desktop_explore` | navigation | Policy-bounded explorer |
 | `desktop_search_knowledge` | observation | Lexical knowledge search |
 | `desktop_validate_plan` | validation | Offline plan validation |
-| `desktop_compile_key` | validation | BDD compile; `fromJira` is OpenWorld (read-only remote sync) |
-| `desktop_run_plan` | execution | Phase 2 runner (`dryRun` skips POST /ui) |
-| `desktop_run_key` | execution | Compile + run key; OpenWorld when `fromJira` |
-| `desktop_run_suite` | execution | Sequential suite orchestration; OpenWorld when `fromJira` |
+| `desktop_compile_key` | validation | BDD compile (not ReadOnly — writes plan cache); `fromJira` is OpenWorld |
+| `desktop_run_plan` | execution | Phase 2 runner; `dryRun` defaults to **true** (omission never live-runs) |
+| `desktop_run_key` | execution | Compile + run key; OpenWorld; `dryRun` defaults to **true** |
+| `desktop_run_suite` | execution | Sequential suite orchestration; OpenWorld; `dryRun` defaults to **true** |
 | `desktop_get_run_summary` | observation | Compact sanitized run / suite-run summary |
 
 ### Errors
