@@ -1004,8 +1004,8 @@ public partial class UiService : IUiService
                 if (DateTime.UtcNow >= deadline)
                 {
                     LogWindowSearchFailure(session.Automation, req.Value);
-                    throw new InvalidOperationException(
-                        $"No window with title containing '{SanitizeValue(req.Value)}' was found within {DefaultRetry.TotalSeconds}s.");
+                    // Structured locator/window miss (pre-invoke) — typed proof via found=false.
+                    return WindowNotFoundBeforeSwitch(req.Value, DefaultRetry.TotalSeconds);
                 }
                 Thread.Sleep(RetryInterval);
             }
@@ -1016,20 +1016,50 @@ public partial class UiService : IUiService
         {
             // No active session: search all desktop windows using a temporary automation,
             // then attach to the found window's process to establish a session.
-            int processId = FindWindowProcessId(req.Value, deadline);
-            session = _ctx.Attach(processId);
+            try
+            {
+                int processId = FindWindowProcessId(req.Value, deadline);
+                session = _ctx.Attach(processId);
+            }
+            catch (InvalidOperationException ex) when (
+                ex.Message.Contains("No window", StringComparison.OrdinalIgnoreCase))
+            {
+                return WindowNotFoundBeforeSwitch(req.Value, DefaultRetry.TotalSeconds);
+            }
 
             // Re-find the window using the freshly created session's automation.
             var match = FindWindowByTitle(session, req.Value);
             if (match == null)
             {
                 LogWindowSearchFailure(session.Automation, req.Value);
-                throw new InvalidOperationException(
-                    $"No window with title containing '{SanitizeValue(req.Value)}' was found.");
+                return WindowNotFoundBeforeSwitch(req.Value);
             }
 
             return SwitchToWindow(session, match);
         }
+    }
+
+    /// <summary>
+    /// Pre-invoke window resolution miss for switchwindow. Structured <c>found=false</c>
+    /// so <see cref="Models.Response.UiResponse.FromOperationResult"/> can emit typed
+    /// non-execution proof without free-text manufacturing.
+    /// </summary>
+    private static object WindowNotFoundBeforeSwitch(string? titleFragment, double? withinSeconds = null)
+    {
+        var sanitized = SanitizeValue(titleFragment);
+        var message = withinSeconds is null
+            ? $"No window with title containing '{sanitized}' was found."
+            : $"No window with title containing '{sanitized}' was found within {withinSeconds}s.";
+
+        return new
+        {
+            operation = "switchwindow",
+            success = false,
+            found = false,
+            matchCount = 0,
+            reason = "window-not-found",
+            message
+        };
     }
 
     /// <summary>
