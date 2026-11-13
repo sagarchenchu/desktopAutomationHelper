@@ -1,0 +1,99 @@
+{
+"$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://desktopautomationhelper.local/schemas/plan-proposal.schema.json",
+  "title": "Guarded AI plan proposal (Phase 6)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "proposalId",
+    "goal",
+    "assumptions",
+    "unresolvedQuestions",
+    "steps",
+    "objectRefs",
+    "knowledgeRefs",
+    "risk"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "proposalId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "goal": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "assumptions": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "maxLength": 500 }
+    },
+    "unresolvedQuestions": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "maxLength": 500 }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "operation"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "operation": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "arguments": { "type": "object" },
+          "assertions": { "type": "array" },
+          "sensitive": { "type": "boolean" },
+          "captureResponse": { "type": "boolean" },
+          "mappingId": { "type": "string" },
+          "rationale": { "type": "string", "maxLength": 500 }
+        }
+      }
+    },
+    "objectRefs": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref"],
+        "properties": {
+          "ref": { "type": "string", "minLength": 1 },
+          "role": { "type": "string" }
+        }
+      }
+    },
+    "knowledgeRefs": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "id"],
+        "properties": {
+          "kind": { "type": "string" },
+          "id": { "type": "string" },
+          "role": { "type": "string" }
+        }
+      }
+    },
+    "expectedState": { "type": ["string", "null"] },
+    "postcondition": { "type": ["string", "null"] },
+    "risk": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "prohibited"]
+    },
+    "confidence": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "$comment": "Metadata only — never authorizes execution."
+    }
+  }
+}

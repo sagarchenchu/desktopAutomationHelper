@@ -54,6 +54,11 @@ internal static class TestSupport
                 MaxElementsPerPage = 5000,
                 MaxTotalElements = 50_000,
                 DiagnosticTimeoutMilliseconds = 15_000
+            },
+            Planning = new PlanningOptions
+            {
+                Provider = "fake",
+                DefaultApprovalMode = "proposal-only"
             }
         };
     }

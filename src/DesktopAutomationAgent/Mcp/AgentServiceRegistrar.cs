@@ -8,6 +8,7 @@ using DesktopAutomationAgent.Knowledge;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Observation;
 using DesktopAutomationAgent.Plans;
+using DesktopAutomationAgent.Planning;
 using DesktopAutomationAgent.Readiness;
 using DesktopAutomationAgent.Suites;
 using DesktopAutomationAgent.Workspace;
@@ -15,6 +16,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace DesktopAutomationAgent.Mcp;
 
@@ -78,6 +80,23 @@ public static class AgentServiceRegistrar
         builder.Services.AddSingleton<JiraSuiteOrchestrator>();
         builder.Services.AddSingleton<McpOpaqueRefStore>();
         builder.Services.AddSingleton<IDesktopMcpFacade, DesktopMcpFacade>();
+        builder.Services.AddSingleton<IPlanningModelClient>(sp =>
+        {
+            var planning = sp.GetRequiredService<IOptions<AgentOptions>>().Value.Planning;
+            // CI and default: fake deterministic model. Real providers are adapter-only and
+            // must not be referenced from DesktopAutomationDriver.
+            if (string.IsNullOrWhiteSpace(planning.Provider)
+                || string.Equals(planning.Provider, "fake", StringComparison.OrdinalIgnoreCase))
+            {
+                return new FakePlanningModelClient();
+            }
+
+            throw new AgentConfigurationException(
+                $"Planning:Provider '{planning.Provider}' is not registered. Use 'fake' for CI or register a provider-neutral adapter.");
+        });
+        builder.Services.AddSingleton<PlanningRetrievalService>();
+        builder.Services.AddSingleton<PlanningArtifactWriter>();
+        builder.Services.AddSingleton<PlanningService>();
     }
 
     public static void ConfigureAgentConfiguration(HostApplicationBuilder builder, string[] configurationArgs)

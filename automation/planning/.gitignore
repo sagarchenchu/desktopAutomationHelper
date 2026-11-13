@@ -1,0 +1,6 @@
+# Planning run artifacts are local (may contain goal text). Keep evals/.
+*/
+!evals/
+!evals/**
+!README.md
+!.gitignore

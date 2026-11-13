@@ -1,0 +1,61 @@
+{
+"schemaVersion": 2,
+  "driverVersion": "phase6-eval",
+  "operations": [
+    {
+      "name": "listwindows",
+      "aliases": [],
+      "deprecatedAliases": [],
+      "category": "query",
+      "operationType": "read",
+      "requiresSession": false,
+      "requiredInputs": [],
+      "requiredInputAlternatives": [],
+      "deprecated": false
+    },
+    {
+      "name": "clickuia",
+      "aliases": ["click"],
+      "deprecatedAliases": [],
+      "category": "action",
+      "operationType": "invoke",
+      "requiresSession": false,
+      "requiredInputs": ["locator"],
+      "requiredInputAlternatives": [],
+      "deprecated": false
+    },
+    {
+      "name": "typeuia",
+      "aliases": [],
+      "deprecatedAliases": [],
+      "category": "action",
+      "operationType": "input",
+      "requiresSession": false,
+      "requiredInputs": ["locator", "value"],
+      "requiredInputAlternatives": [],
+      "deprecated": false
+    },
+    {
+      "name": "finduia",
+      "aliases": [],
+      "deprecatedAliases": [],
+      "category": "query",
+      "operationType": "read",
+      "requiresSession": false,
+      "requiredInputs": ["locator"],
+      "requiredInputAlternatives": [],
+      "deprecated": false
+    },
+    {
+      "name": "dumpuia",
+      "aliases": [],
+      "deprecatedAliases": [],
+      "category": "query",
+      "operationType": "read",
+      "requiresSession": false,
+      "requiredInputs": [],
+      "requiredInputAlternatives": [],
+      "deprecated": false
+    }
+  ]
+}

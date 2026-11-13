@@ -11,6 +11,7 @@ using DesktopAutomationAgent.Knowledge;
 using DesktopAutomationAgent.Mcp;
 using DesktopAutomationAgent.Observation;
 using DesktopAutomationAgent.Plans;
+using DesktopAutomationAgent.Planning;
 using DesktopAutomationAgent.Readiness;
 using DesktopAutomationAgent.Suites;
 using DesktopAutomationAgent.Workspace;
@@ -70,7 +71,8 @@ public static class AgentCli
                 or AgentCommandKind.ValidateCompiledKey
                 or AgentCommandKind.SyncKey
                 or AgentCommandKind.RunKey
-                or AgentCommandKind.RunSuite;
+                or AgentCommandKind.RunSuite
+                or AgentCommandKind.ProposePlan;
 
         if (parsed.Error is not null)
         {
@@ -166,6 +168,8 @@ public static class AgentCli
                 AgentCommandKind.RunKey => await RunRunKeyAsync(host.Services, parsed, cancellationToken)
                     .ConfigureAwait(false),
                 AgentCommandKind.RunSuite => await RunRunSuiteAsync(host.Services, parsed, cancellationToken)
+                    .ConfigureAwait(false),
+                AgentCommandKind.ProposePlan => await RunProposePlanAsync(host.Services, parsed, cancellationToken)
                     .ConfigureAwait(false),
                 _ => ExitCodes.UsageOrConfiguration
             };
@@ -1401,6 +1405,111 @@ public static class AgentCli
         }
 
         return result.IsValid ? ExitCodes.Success : ExitCodes.SuiteOrWorkspace;
+    }
+
+    private static async Task<int> RunProposePlanAsync(
+        IServiceProvider services,
+        ParsedCommand parsed,
+        CancellationToken cancellationToken)
+    {
+        AgentOptionsValidator.Validate(
+            services.GetRequiredService<IOptions<AgentOptions>>().Value,
+            OptionsValidationScope.Workspace);
+
+        if (!PlanningRiskPolicy.TryParseMode(
+                parsed.ApprovalMode
+                ?? services.GetRequiredService<IOptions<AgentOptions>>().Value.Planning.DefaultApprovalMode,
+                out var mode))
+        {
+            if (parsed.Json)
+                WriteJsonError(ExitCodes.UsageOrConfiguration, $"Unknown approval mode '{parsed.ApprovalMode}'.");
+            else
+                await Console.Error.WriteLineAsync($"Unknown approval mode '{parsed.ApprovalMode}'.").ConfigureAwait(false);
+            return ExitCodes.UsageOrConfiguration;
+        }
+
+        var planning = services.GetRequiredService<PlanningService>();
+        var result = await planning.ProposeAsync(new PlanningRequest
+        {
+            Goal = parsed.Goal ?? string.Empty,
+            UntrustedContext = parsed.UntrustedContext,
+            ApplicationId = parsed.ApplicationId,
+            ExpectedBuildFingerprint = parsed.ExpectedBuildFingerprint,
+            KnowledgePath = parsed.KnowledgePath,
+            ObjectRepositoryPath = parsed.RepositoryFile,
+            StepRegistryPath = parsed.StepRegistryFile,
+            CatalogPath = parsed.CatalogFile,
+            RequestedApprovalMode = mode,
+            ExecuteIfAuthorized = parsed.ExecuteIfAuthorized,
+            DryRun = parsed.DryRun,
+            PlanningId = parsed.PlanningId,
+            CancellationToken = cancellationToken
+        }).ConfigureAwait(false);
+
+        // Explicit execute only when policy authorized auto-run-known-safe and a candidate exists.
+        // Proposal-only / approval-required / denied never POST /ui from this command.
+        var executed = false;
+        string? runId = null;
+        int? runExit = null;
+        if (parsed.ExecuteIfAuthorized
+            && result.EffectiveApprovalMode == PlanningApprovalMode.AutoRunKnownSafe
+            && result.Success
+            && !string.IsNullOrWhiteSpace(result.ArtifactDirectory))
+        {
+            var candidatePath = Path.Combine(result.ArtifactDirectory, "candidate.plan.json");
+            if (File.Exists(candidatePath))
+            {
+                var runner = services.GetRequiredService<IDeterministicPlanRunner>();
+                var report = await runner.RunAsync(candidatePath, dryRun: parsed.DryRun, cancellationToken)
+                    .ConfigureAwait(false);
+                executed = true;
+                runId = report.RunId;
+                runExit = report.ExitCode;
+            }
+        }
+        else if (parsed.ExecuteIfAuthorized
+                 && result.EffectiveApprovalMode != PlanningApprovalMode.AutoRunKnownSafe)
+        {
+            // Hard gate: never execute outside auto-run-known-safe.
+        }
+
+        if (parsed.Json)
+        {
+            var payload = new
+            {
+                success = result.Success && (runExit is null or 0),
+                exitCode = runExit ?? result.ExitCode,
+                planningId = result.PlanningId,
+                artifactDirectory = result.ArtifactDirectory,
+                effectiveApprovalMode = PlanningRiskPolicy.ToWire(result.EffectiveApprovalMode),
+                candidatePlanHash = result.Validation.CandidatePlanHash,
+                proposalHash = result.Validation.ProposalHash,
+                retrievalManifestHash = result.Validation.RetrievalManifestHash,
+                errors = result.Validation.Errors,
+                warnings = result.Validation.Warnings,
+                error = result.Error,
+                executed,
+                runId,
+                dryRun = parsed.DryRun
+            };
+            Console.WriteLine(SecretRedactor.Redact(JsonSerializer.Serialize(payload, JsonOutputOptions)));
+        }
+        else
+        {
+            Console.WriteLine("Desktop Automation Agent — propose-plan");
+            Console.WriteLine($"Planning id      : {result.PlanningId}");
+            Console.WriteLine($"Approval mode    : {PlanningRiskPolicy.ToWire(result.EffectiveApprovalMode)}");
+            Console.WriteLine($"Artifacts        : {result.ArtifactDirectory}");
+            Console.WriteLine($"Success          : {result.Success}");
+            if (!string.IsNullOrWhiteSpace(result.Error))
+                Console.WriteLine($"Error            : {SecretRedactor.Redact(result.Error)}");
+            foreach (var err in result.Validation.Errors)
+                Console.WriteLine($"  - {SecretRedactor.Redact(err)}");
+            if (executed)
+                Console.WriteLine($"Executed run     : {runId} (dryRun={parsed.DryRun})");
+        }
+
+        return runExit ?? result.ExitCode;
     }
 
     private static async Task<int> RunDoctorAsync(

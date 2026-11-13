@@ -1,0 +1,19 @@
+# Guarded AI planning (Phase 6)
+
+Natural-language goals retrieve a small approved knowledge/PO/step/op subset,
+ask a bounded model for a typed plan proposal, then deterministically validate
+and compile to a Phase 2 plan. The model never calls the driver.
+
+Runtime artifacts:
+
+```
+planning/<planningId>/
+  request-summary.json
+  retrieval-manifest.json
+  proposal.json
+  validation.json
+  candidate.plan.json
+```
+
+Default approval mode is `proposal-only` (never executes). Checked-in eval
+fixtures live under `evals/`. See `docs/phase6-guarded-ai-planner.md`.
