@@ -3,8 +3,10 @@ using System.Text.Json;
 using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
+using DesktopAutomationAgent.Driver.Models;
 using DesktopAutomationAgent.Knowledge;
 using DesktopAutomationAgent.Mcp;
+using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Planning;
 using DesktopAutomationAgent.Workspace;
 using Microsoft.Extensions.Configuration;
@@ -478,6 +480,73 @@ public class Phase6GuardedAiPlannerTests
         File.Copy(source, dest, overwrite: true);
     }
 
+    private static void WritePoisonedCatalog(IWorkspaceManager workspace)
+    {
+        var destDir = Path.Combine(workspace.RootPath, "planning", "evals");
+        Directory.CreateDirectory(destDir);
+        // Contradictory metadata: read-like category + mutation operationType.
+        File.WriteAllText(Path.Combine(destDir, "poisoned-catalog.json"), """
+            {
+              "schemaVersion": 2,
+              "driverVersion": "phase6-eval-poisoned",
+              "operations": [
+                {
+                  "name": "listwindows",
+                  "aliases": [],
+                  "deprecatedAliases": [],
+                  "category": "query",
+                  "operationType": "read",
+                  "requiresSession": false,
+                  "requiredInputs": [],
+                  "requiredInputAlternatives": [],
+                  "deprecated": false
+                },
+                {
+                  "name": "clickuia",
+                  "aliases": ["click"],
+                  "deprecatedAliases": [],
+                  "category": "query",
+                  "operationType": "invoke",
+                  "requiresSession": false,
+                  "requiredInputs": ["locator"],
+                  "requiredInputAlternatives": [],
+                  "deprecated": false
+                }
+              ]
+            }
+            """);
+    }
+
+    private static void SeedActiveObjectRepository(IWorkspaceManager workspace)
+    {
+        var pages = Path.Combine(workspace.RootPath, "object-repository", "pages");
+        Directory.CreateDirectory(pages);
+        File.WriteAllText(Path.Combine(workspace.RootPath, "object-repository", "repository.json"), """
+            {
+              "schemaVersion": 1,
+              "repositoryId": "default",
+              "name": "Phase6 test repository",
+              "pages": [
+                { "pageId": "desktop", "file": "pages/desktop.page.json" }
+              ]
+            }
+            """);
+        File.WriteAllText(Path.Combine(pages, "desktop.page.json"), """
+            {
+              "schemaVersion": 1,
+              "pageId": "desktop",
+              "name": "Visible windows desktop",
+              "state": "active",
+              "elements": {
+                "windows-button": {
+                  "description": "List visible windows control",
+                  "locator": { "automationId": "WindowsList", "controlType": "Button" }
+                }
+              }
+            }
+            """);
+    }
+
 
     [Fact]
     public void SchemaValidation_RejectsMissingRisk_NullArrays_AndOversizedStrings()
@@ -553,6 +622,74 @@ public class Phase6GuardedAiPlannerTests
                  || w.Contains("requires approval", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(0, uiPosts);
         // Proposal may succeed (exit 0) while execute is withheld; the gate is no /ui.
+    }
+
+    [Fact]
+    public void IsSafeReadOrQuery_MutationClassificationWinsOverReadLabel()
+    {
+        var contradictory = new OperationDescriptorDto
+        {
+            Name = "clickuia",
+            Category = "query",
+            OperationType = "invoke"
+        };
+        Assert.False(PlanningRiskPolicy.IsSafeReadOrQuery(contradictory));
+
+        var actionRead = new OperationDescriptorDto
+        {
+            Name = "clickuia",
+            Category = "action",
+            OperationType = "read"
+        };
+        Assert.False(PlanningRiskPolicy.IsSafeReadOrQuery(actionRead));
+
+        var consistentRead = new OperationDescriptorDto
+        {
+            Name = "listwindows",
+            Category = "query",
+            OperationType = "read"
+        };
+        Assert.True(PlanningRiskPolicy.IsSafeReadOrQuery(consistentRead));
+    }
+
+    [Fact]
+    public async Task AutoRunKnownSafe_ContradictoryCatalogMutation_CannotPostUi()
+    {
+        var options = TestSupport.CreateOptions();
+        options.Planning = new PlanningOptions { Provider = "fake" };
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        SeedApprovedKnowledge(workspace, buildFingerprint: new string('b', 32));
+        CopyStepRegistry(workspace);
+        SeedActiveObjectRepository(workspace);
+        WritePoisonedCatalog(workspace);
+
+        // Retrieved mapping + $objectRef, but clickuia is still mutation via operationType=invoke
+        // even when category is falsely labeled "query".
+        var mutationJson = """
+            {"schemaVersion":1,"proposalId":"prop_adv","goal":"List visible windows on the desktop","assumptions":[],"unresolvedQuestions":[],"steps":[{"id":"click_target","operation":"clickuia","arguments":{"locator":{"$objectRef":"desktop.windows-button"}},"mappingId":"list-visible-windows"}],"objectRefs":[{"ref":"desktop.windows-button","role":"target"}],"knowledgeRefs":[],"risk":"low","confidence":0.95}
+            """;
+
+        var uiPosts = 0;
+        var (_, stdout) = await RunCliAsync(
+            options,
+            [
+                "propose-plan",
+                "--goal", "List visible windows on the desktop",
+                "--knowledge", $"knowledge/approved/demo-app/{new string('b', 32)}",
+                "--catalog", "planning/evals/poisoned-catalog.json",
+                "--approval-mode", "auto-run-known-safe",
+                "--execute",
+                "--planning-id", "autorun_contradictory_1",
+                "--json"
+            ],
+            () => { uiPosts++; return true; },
+            modelClient: new FixedJsonModelClient(mutationJson));
+
+        using var payload = JsonDocument.Parse(stdout);
+        Assert.Equal("approval-required", payload.RootElement.GetProperty("effectiveApprovalMode").GetString());
+        Assert.False(payload.RootElement.GetProperty("executed").GetBoolean());
+        Assert.Equal(0, uiPosts);
     }
 
     [Fact]
@@ -720,6 +857,105 @@ public class Phase6GuardedAiPlannerTests
         finally
         {
             try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void PlanningPathSafety_RejectsChainedDirectoryLink_ReadAndWrite()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var root = Path.Combine(Path.GetTempPath(), "da-plan-chdir-" + Guid.NewGuid().ToString("N"));
+        var outside = Path.Combine(Path.GetTempPath(), "da-plan-chdir-out-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "secret.json"), """{"secret":true}""");
+        var inner = Path.Combine(root, "inner");
+        var outer = Path.Combine(root, "outer");
+
+        try
+        {
+            // root/outer → root/inner → /outside  (immediate target of outer is still inside root)
+            if (!TryCreateWindowsJunction(inner, outside))
+                return;
+            if (!TryCreateWindowsJunction(outer, inner))
+                return;
+
+            var readTarget = Path.Combine(outer, "secret.json");
+            var readThrown = Assert.Throws<PlanningPathException>(() =>
+                PlanningPathSafety.EnsureReadablePathInside(readTarget, root));
+            Assert.True(
+                readThrown.Message.Contains("outside", StringComparison.OrdinalIgnoreCase)
+                || readThrown.Message.Contains("reparse", StringComparison.OrdinalIgnoreCase)
+                || readThrown.Message.Contains("directory link", StringComparison.OrdinalIgnoreCase),
+                readThrown.Message);
+
+            var writeTarget = Path.Combine(outer, "artifact.json");
+            var writeThrown = Assert.Throws<PlanningPathException>(() =>
+                PlanningPathSafety.EnsureWritablePathInside(writeTarget, root));
+            Assert.True(
+                writeThrown.Message.Contains("outside", StringComparison.OrdinalIgnoreCase)
+                || writeThrown.Message.Contains("reparse", StringComparison.OrdinalIgnoreCase)
+                || writeThrown.Message.Contains("directory link", StringComparison.OrdinalIgnoreCase),
+                writeThrown.Message);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void PlanningRetrieval_ObjectRepository_ContainmentBeforeRead()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var options = TestSupport.CreateOptions();
+        options.Planning = new PlanningOptions { Provider = "fake" };
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+
+        var outside = Path.Combine(Path.GetTempPath(), "da-plan-or-out-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        var outsideManifest = Path.Combine(outside, "repository.json");
+        File.WriteAllText(outsideManifest, """{"schemaVersion":1,"repositoryId":"escaped","name":"x","pages":[]}""");
+
+        var repoDir = Path.Combine(workspace.RootPath, "object-repository");
+        Directory.CreateDirectory(repoDir);
+        var linkPath = Path.Combine(repoDir, "repository.json");
+
+        try
+        {
+            if (!TryCreateSymbolicLink(() => File.CreateSymbolicLink(linkPath, outsideManifest), linkPath))
+                return;
+
+            var retrieval = new PlanningRetrievalService(
+                workspace,
+                new ObjectRepositoryReader(TestSupport.Wrap(options), workspace),
+                TestSupport.Wrap(options));
+
+            var thrown = Assert.ThrowsAny<Exception>(() =>
+                retrieval.Retrieve(new PlanningRequest
+                {
+                    Goal = "List visible windows on the desktop",
+                    ObjectRepositoryPath = "object-repository/repository.json"
+                }));
+            Assert.True(
+                thrown is PlanningPathException
+                || thrown.Message.Contains("outside", StringComparison.OrdinalIgnoreCase)
+                || thrown.Message.Contains("reparse", StringComparison.OrdinalIgnoreCase)
+                || thrown.Message.Contains("symbolic", StringComparison.OrdinalIgnoreCase),
+                thrown.ToString());
+            // Outside bytes must not have been trusted as a successful hash-only read.
+            Assert.False(File.Exists(Path.Combine(workspace.RootPath, "planning", "should-not-exist")));
+        }
+        finally
+        {
+            try { if (File.Exists(linkPath)) File.Delete(linkPath); } catch { /* ignore */ }
             try { Directory.Delete(outside, recursive: true); } catch { /* ignore */ }
         }
     }

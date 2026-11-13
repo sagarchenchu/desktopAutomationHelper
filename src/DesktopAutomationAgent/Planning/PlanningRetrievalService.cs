@@ -131,13 +131,17 @@ public sealed class PlanningRetrievalService
             ? "object-repository/repository.json"
             : request.ObjectRepositoryPath;
         var repoFull = _workspace.ResolveSafePath(repoPath);
+        // Containment / link guards before Exists or any byte read. Hash comes from the
+        // reader's single bounded read — do not reread the manifest here.
+        PlanningPathSafety.EnsureReadablePathInside(repoFull, _workspace.RootPath);
         if (File.Exists(repoFull))
         {
-            var repoBytes = File.ReadAllBytes(repoFull);
-            manifest.ObjectRepositoryHash = Sha256Hex(repoBytes);
             var repoResult = _objectRepositoryReader.Read(repoPath);
             if (!repoResult.IsValid || repoResult.Snapshot is null)
                 throw new InvalidOperationException("Object repository invalid: " + string.Join("; ", repoResult.Errors));
+            manifest.ObjectRepositoryHash = repoResult.ManifestSha256
+                ?? repoResult.AggregateSha256
+                ?? throw new InvalidOperationException("Object repository hash missing after validation.");
             var snapshot = repoResult.Snapshot;
             var terms = Tokenize(canonicalGoal);
             foreach (var (pageId, page) in snapshot.Pages.OrderBy(p => p.Key, StringComparer.Ordinal))
@@ -172,9 +176,9 @@ public sealed class PlanningRetrievalService
             ? "step-registry/registry.json"
             : request.StepRegistryPath;
         var registryFull = _workspace.ResolveSafePath(registryPath);
+        PlanningPathSafety.EnsureReadablePathInside(registryFull, _workspace.RootPath);
         if (File.Exists(registryFull))
         {
-            PlanningPathSafety.EnsureReadablePathInside(registryFull, _workspace.RootPath);
             var registryJson = File.ReadAllText(registryFull);
             manifest.StepRegistryHash = Sha256Hex(registryJson);
             var validation = _registryValidator.ValidateFile(registryFull, registryPath);

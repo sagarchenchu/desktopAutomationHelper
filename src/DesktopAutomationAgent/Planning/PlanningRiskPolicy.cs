@@ -215,14 +215,26 @@ public static class PlanningRiskPolicy
     public static bool IsSafeReadOrQuery(OperationDescriptorDto descriptor)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
-        if (!string.IsNullOrWhiteSpace(descriptor.Name) && ExplicitSafeReadOperations.Contains(descriptor.Name))
-            return true;
 
         var category = (descriptor.Category ?? string.Empty).Trim().ToLowerInvariant();
         var operationType = (descriptor.OperationType ?? string.Empty).Trim().ToLowerInvariant();
-        return category is "query" or "read" or "observation"
-            || operationType is "query" or "read" or "observation";
+
+        // Mutation/action/invoke/input/write always wins over any read-like label.
+        if (IsMutationClassification(category) || IsMutationClassification(operationType))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(descriptor.Name) && ExplicitSafeReadOperations.Contains(descriptor.Name))
+            return true;
+
+        // Consistently read-only: both fields must be present and read-like.
+        return IsReadClassification(category) && IsReadClassification(operationType);
     }
+
+    private static bool IsMutationClassification(string value) =>
+        value is "mutation" or "action" or "invoke" or "input" or "write" or "command";
+
+    private static bool IsReadClassification(string value) =>
+        value is "query" or "read" or "observation";
 
     public static string ToWire(PlanningApprovalMode mode) =>
         mode switch

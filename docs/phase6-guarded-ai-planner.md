@@ -47,7 +47,7 @@ Deterministic lexical search + filters first (embeddings optional, never source 
 Retrieval records IDs + content hashes in `retrieval-manifest.json`.
 Prompt context is budgeted structurally (drop lowest-ranked hits / shorten snippets)
 so the serialized retrieval JSON remains parseable — never mid-string truncated.
-Registry/catalog/knowledge reads use link-aware containment (`PlanningPathSafety`).
+Registry/catalog/knowledge reads use link-aware containment (`PlanningPathSafety`) with recursive path-component resolution for chained directory links. Object-repository hashing applies containment before Exists/read and reuses the reader hash (no unbounded reread).
 
 ## Proposal schema
 
@@ -67,7 +67,7 @@ unsupported proposals are rejected.
 | Mode | Behavior |
 |---|---|
 | `proposal-only` (default) | Never executes / never `POST /ui` |
-| `auto-run-known-safe` | Only catalog **read/query** (or explicit safe allowlist) with **retrieved** mapping/object refs and **no raw locators**; still needs `--execute` |
+| `auto-run-known-safe` | Only catalog **read/query** (or explicit safe allowlist) with **retrieved** mapping/object refs and **no raw locators**; still needs `--execute`. Mutation/action/invoke/input/write classification always wins over a contradictory read label. |
 | `approval-required` | Mutations / invoke / input / data entry / transactional / uncertain — candidate may exist, no auto-run |
 | `denied` | Destructive / prohibited / unresolved / injection / hallucinated / stale |
 
