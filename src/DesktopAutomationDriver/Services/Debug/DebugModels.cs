@@ -10,15 +10,16 @@ public sealed record DebugWindowIdentity
     public string? WindowTitle { get; init; }
 
     /// <summary>
-    /// Native HWND for runtime comparisons. Not STJ-serializable — use <see cref="WindowHandleHex"/>.
+    /// Native HWND. Serialized as a hex string via <see cref="IntPtrHexJsonConverter"/>
+    /// (raw IntPtr is not supported by System.Text.Json and caused /debug/inspect HTTP 500s).
     /// </summary>
-    [JsonIgnore]
+    [JsonConverter(typeof(IntPtrHexJsonConverter))]
+    [JsonPropertyName("windowHandle")]
     public IntPtr WindowHandle { get; init; }
 
-    /// <summary>Stable hex string for JSON/HTTP responses (avoids IntPtr STJ 500s on /debug/inspect).</summary>
-    [JsonPropertyName("windowHandle")]
-    public string WindowHandleHex =>
-        WindowHandle == IntPtr.Zero ? "0" : $"0x{WindowHandle.ToInt64():X}";
+    /// <summary>Convenience hex form for logs/tests (same encoding as JSON).</summary>
+    [JsonIgnore]
+    public string WindowHandleHex => IntPtrHexJsonConverter.ToHex(WindowHandle);
 
     public Rectangle Bounds { get; init; }
     public double DpiScaleX { get; init; } = 1.0;

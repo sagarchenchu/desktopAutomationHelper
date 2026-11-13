@@ -411,6 +411,10 @@ public class Phase8DebugVisionTests
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
         };
 
+        // Use long ctor so the handle is unambiguous across runtimes (not a truncated int cast).
+        var handle = new IntPtr(0x1234ABCDL);
+        Assert.Equal("0x1234ABCD", IntPtrHexJsonConverter.ToHex(handle));
+
         var snapshot = new DebugSessionSnapshot
         {
             IsActive = true,
@@ -426,7 +430,7 @@ public class Phase8DebugVisionTests
                 window: new DebugWindowIdentity
                 {
                     WindowTitle = "App",
-                    WindowHandle = new IntPtr(0x1234ABCD),
+                    WindowHandle = handle,
                     Bounds = new Rectangle(0, 0, 100, 80),
                     DpiScaleX = 1,
                     DpiScaleY = 1
@@ -437,10 +441,12 @@ public class Phase8DebugVisionTests
         var json = JsonSerializer.Serialize(snapshot, options);
         Assert.Contains("\"windowHandle\":\"0x1234ABCD\"", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("IntPtr", json, StringComparison.Ordinal);
-        // Round-trip must not throw (was the HTTP 500).
+
+        // Round-trip must not throw and must restore the handle (JsonConverter, not JsonIgnore).
         var roundTrip = JsonSerializer.Deserialize<DebugSessionSnapshot>(json, options);
         Assert.NotNull(roundTrip);
-        Assert.Equal("0x1234ABCD", roundTrip!.LastCapture!.Window!.WindowHandleHex);
+        Assert.Equal(handle, roundTrip!.LastCapture!.Window!.WindowHandle);
+        Assert.Equal("0x1234ABCD", roundTrip.LastCapture.Window.WindowHandleHex);
     }
 
     private sealed class ScriptedUiaElementProbe : IUiaElementProbe
