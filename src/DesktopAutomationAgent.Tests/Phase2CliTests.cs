@@ -122,10 +122,11 @@ public class Phase2CliTests
     }
 
     [Fact]
-    public void HelpText_IsPhase5()
+    public void HelpText_IsPhase6()
     {
-        Assert.Contains("Phase 5", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("Phase 6", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("mcp-server", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("propose-plan", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("validate-object-repository", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("capture-page", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("observe-app", CommandLine.HelpText, StringComparison.Ordinal);
@@ -135,7 +136,7 @@ public class Phase2CliTests
         Assert.Contains("sync-key", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("run-key", CommandLine.HelpText, StringComparison.Ordinal);
         Assert.Contains("run-suite", CommandLine.HelpText, StringComparison.Ordinal);
-        Assert.Contains("AI is not implemented", CommandLine.HelpText, StringComparison.Ordinal);
+        Assert.Contains("model never calls the driver", CommandLine.HelpText, StringComparison.Ordinal);
     }
 
     private static FakeHttpMessageHandler ReadyHandler() =>

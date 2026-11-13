@@ -29,6 +29,7 @@
     <EmbeddedResource Include="..\..\automation\schemas\knowledge-approval.schema.json" LogicalName="DesktopAutomationAgent.Knowledge.knowledge-approval.schema.json" />
     <EmbeddedResource Include="..\..\automation\schemas\jira-test-case.schema.json" LogicalName="DesktopAutomationAgent.Compilation.jira-test-case.schema.json" />
     <EmbeddedResource Include="..\..\automation\schemas\step-registry.schema.json" LogicalName="DesktopAutomationAgent.Compilation.step-registry.schema.json" />
+    <EmbeddedResource Include="..\..\automation\schemas\plan-proposal.schema.json" LogicalName="DesktopAutomationAgent.Planning.plan-proposal.schema.json" />
   </ItemGroup>
 
   <ItemGroup>

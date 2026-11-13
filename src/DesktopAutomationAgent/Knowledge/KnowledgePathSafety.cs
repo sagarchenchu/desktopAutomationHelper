@@ -112,6 +112,24 @@ internal static class KnowledgePathSafety
         RejectForbiddenKnowledgeRoots(normalized, workspaceRoot);
     }
 
+    /// <summary>
+    /// Planning retrieval may read only approved knowledge trees.
+    /// </summary>
+    public static void EnsureUnderApproved(string fullPath, string workspaceRoot)
+    {
+        var normalized = Path.GetFullPath(fullPath);
+        var approved = ApprovedRoot(workspaceRoot);
+        try
+        {
+            EnsureReadablePathInside(normalized, approved);
+        }
+        catch (KnowledgePathException ex)
+        {
+            throw new KnowledgePathException(
+                $"path '{fullPath}' must resolve under knowledge/approved. {ex.Message}");
+        }
+    }
+
     private static void RejectForbiddenKnowledgeRoots(string fullPath, string workspaceRoot)
     {
         var approved = ApprovedRoot(workspaceRoot);

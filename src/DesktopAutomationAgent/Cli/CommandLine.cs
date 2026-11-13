@@ -27,7 +27,8 @@ public enum AgentCommandKind
     SyncKey,
     RunKey,
     RunSuite,
-    McpServer
+    McpServer,
+    ProposePlan
 }
 
 public sealed class ParsedCommand
@@ -114,6 +115,18 @@ public sealed class ParsedCommand
 
     public int? MaxFailures { get; init; }
 
+    public string? Goal { get; init; }
+
+    public string? UntrustedContext { get; init; }
+
+    public string? ApprovalMode { get; init; }
+
+    public string? ExpectedBuildFingerprint { get; init; }
+
+    public string? PlanningId { get; init; }
+
+    public bool ExecuteIfAuthorized { get; init; }
+
     public string? Error { get; init; }
 
     public string[] ConfigurationArgs { get; init; } = Array.Empty<string>();
@@ -158,12 +171,147 @@ public static class CommandLine
             "run-key" => ParseRunKey(rest),
             "run-suite" => ParseRunSuite(rest),
             "mcp-server" => ParseMcpServer(rest),
+            "propose-plan" => ParseProposePlan(rest),
             _ => new ParsedCommand
             {
                 Kind = AgentCommandKind.Help,
                 Json = HasFlag(rest, "--json") || HasFlag(args, "--json"),
                 Error = $"Unknown command '{args[0]}'."
             }
+        };
+    }
+
+    private static ParsedCommand ParseProposePlan(string[] rest)
+    {
+        var (config, unknown) = SplitConfigArgs(rest);
+        string? goal = null;
+        string? untrusted = null;
+        string? approvalMode = null;
+        string? knowledge = null;
+        string? repository = null;
+        string? registry = null;
+        string? catalog = null;
+        string? applicationId = null;
+        string? expectedFingerprint = null;
+        string? planningId = null;
+        var json = false;
+        var dryRun = true;
+        var execute = false;
+        var sawDryRun = false;
+
+        for (var i = 0; i < unknown.Count; i++)
+        {
+            var arg = unknown[i];
+            switch (arg)
+            {
+                case "--goal":
+                    if (i + 1 >= unknown.Count)
+                        return Error(AgentCommandKind.ProposePlan, json, "--goal requires a value.", config.ToList());
+                    if (goal is not null)
+                        return Error(AgentCommandKind.ProposePlan, json, "--goal may not be repeated.", config.ToList());
+                    goal = unknown[++i];
+                    break;
+                case "--untrusted-context":
+                    if (i + 1 >= unknown.Count)
+                        return Error(AgentCommandKind.ProposePlan, json, "--untrusted-context requires a value.", config.ToList());
+                    if (untrusted is not null)
+                        return Error(AgentCommandKind.ProposePlan, json, "--untrusted-context may not be repeated.", config.ToList());
+                    untrusted = unknown[++i];
+                    break;
+                case "--approval-mode":
+                    if (i + 1 >= unknown.Count)
+                        return Error(AgentCommandKind.ProposePlan, json, "--approval-mode requires a value.", config.ToList());
+                    if (approvalMode is not null)
+                        return Error(AgentCommandKind.ProposePlan, json, "--approval-mode may not be repeated.", config.ToList());
+                    approvalMode = unknown[++i];
+                    break;
+                case "--knowledge":
+                    if (i + 1 >= unknown.Count)
+                        return Error(AgentCommandKind.ProposePlan, json, "--knowledge requires a value.", config.ToList());
+                    if (knowledge is not null)
+                        return Error(AgentCommandKind.ProposePlan, json, "--knowledge may not be repeated.", config.ToList());
+                    knowledge = unknown[++i];
+                    break;
+                case "--object-repository":
+                case "--file":
+                    if (i + 1 >= unknown.Count)
+                        return Error(AgentCommandKind.ProposePlan, json, $"{arg} requires a value.", config.ToList());
+                    if (repository is not null)
+                        return Error(AgentCommandKind.ProposePlan, json, $"{arg} may not be repeated.", config.ToList());
+                    repository = unknown[++i];
+                    break;
+                case "--registry":
+                    if (i + 1 >= unknown.Count)
+                        return Error(AgentCommandKind.ProposePlan, json, "--registry requires a value.", config.ToList());
+                    if (registry is not null)
+                        return Error(AgentCommandKind.ProposePlan, json, "--registry may not be repeated.", config.ToList());
+                    registry = unknown[++i];
+                    break;
+                case "--catalog":
+                    if (i + 1 >= unknown.Count)
+                        return Error(AgentCommandKind.ProposePlan, json, "--catalog requires a value.", config.ToList());
+                    if (catalog is not null)
+                        return Error(AgentCommandKind.ProposePlan, json, "--catalog may not be repeated.", config.ToList());
+                    catalog = unknown[++i];
+                    break;
+                case "--application-id":
+                    if (i + 1 >= unknown.Count)
+                        return Error(AgentCommandKind.ProposePlan, json, "--application-id requires a value.", config.ToList());
+                    if (applicationId is not null)
+                        return Error(AgentCommandKind.ProposePlan, json, "--application-id may not be repeated.", config.ToList());
+                    applicationId = unknown[++i];
+                    break;
+                case "--expected-build-fingerprint":
+                    if (i + 1 >= unknown.Count)
+                        return Error(AgentCommandKind.ProposePlan, json, "--expected-build-fingerprint requires a value.", config.ToList());
+                    if (expectedFingerprint is not null)
+                        return Error(AgentCommandKind.ProposePlan, json, "--expected-build-fingerprint may not be repeated.", config.ToList());
+                    expectedFingerprint = unknown[++i];
+                    break;
+                case "--planning-id":
+                    if (i + 1 >= unknown.Count)
+                        return Error(AgentCommandKind.ProposePlan, json, "--planning-id requires a value.", config.ToList());
+                    if (planningId is not null)
+                        return Error(AgentCommandKind.ProposePlan, json, "--planning-id may not be repeated.", config.ToList());
+                    planningId = unknown[++i];
+                    break;
+                case "--json":
+                    json = true;
+                    break;
+                case "--dry-run":
+                    dryRun = true;
+                    sawDryRun = true;
+                    break;
+                case "--execute":
+                    execute = true;
+                    if (!sawDryRun)
+                        dryRun = false;
+                    break;
+                default:
+                    return Error(AgentCommandKind.ProposePlan, json, $"Unknown propose-plan argument '{arg}'.", config.ToList());
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(goal))
+            return Error(AgentCommandKind.ProposePlan, json, "propose-plan requires --goal.", config.ToList());
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.ProposePlan,
+            Goal = goal,
+            UntrustedContext = untrusted,
+            ApprovalMode = approvalMode,
+            KnowledgePath = knowledge,
+            RepositoryFile = repository,
+            StepRegistryFile = registry,
+            CatalogFile = catalog,
+            ApplicationId = applicationId,
+            ExpectedBuildFingerprint = expectedFingerprint,
+            PlanningId = planningId,
+            ExecuteIfAuthorized = execute,
+            DryRun = dryRun,
+            Json = json,
+            ConfigurationArgs = config.ToArray()
         };
     }
 
@@ -549,75 +697,75 @@ public static class CommandLine
             {
                 case "--view":
                     if (!TryReadFlagValue(rest, ref i, out var viewValue))
-                        return Error(AgentCommandKind.ObserveApp, json, "--view requires a value.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--view requires a value.", config.ToList());
                     if (!seen.Add("view"))
-                        return Error(AgentCommandKind.ObserveApp, json, "--view may not be repeated.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--view may not be repeated.", config.ToList());
                     view = viewValue;
                     continue;
                 case "--root":
                     if (!TryReadFlagValue(rest, ref i, out var rootValue))
-                        return Error(AgentCommandKind.ObserveApp, json, "--root requires a value.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--root requires a value.", config.ToList());
                     if (!seen.Add("root"))
-                        return Error(AgentCommandKind.ObserveApp, json, "--root may not be repeated.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--root may not be repeated.", config.ToList());
                     root = rootValue;
                     continue;
                 case "--max-depth":
                     if (!TryReadFlagValue(rest, ref i, out var depthRaw))
-                        return Error(AgentCommandKind.ObserveApp, json, "--max-depth requires a value.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-depth requires a value.", config.ToList());
                     if (!seen.Add("max-depth"))
-                        return Error(AgentCommandKind.ObserveApp, json, "--max-depth may not be repeated.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-depth may not be repeated.", config.ToList());
                     if (!int.TryParse(depthRaw, out var depth))
-                        return Error(AgentCommandKind.ObserveApp, json, "--max-depth requires an integer.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-depth requires an integer.", config.ToList());
                     maxDepth = depth;
                     continue;
                 case "--max-children":
                     if (!TryReadFlagValue(rest, ref i, out var childrenRaw))
-                        return Error(AgentCommandKind.ObserveApp, json, "--max-children requires a value.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-children requires a value.", config.ToList());
                     if (!seen.Add("max-children"))
-                        return Error(AgentCommandKind.ObserveApp, json, "--max-children may not be repeated.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-children may not be repeated.", config.ToList());
                     if (!int.TryParse(childrenRaw, out var children))
-                        return Error(AgentCommandKind.ObserveApp, json, "--max-children requires an integer.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-children requires an integer.", config.ToList());
                     maxChildren = children;
                     continue;
                 case "--max-nodes":
                     if (!TryReadFlagValue(rest, ref i, out var nodesRaw))
-                        return Error(AgentCommandKind.ObserveApp, json, "--max-nodes requires a value.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-nodes requires a value.", config.ToList());
                     if (!seen.Add("max-nodes"))
-                        return Error(AgentCommandKind.ObserveApp, json, "--max-nodes may not be repeated.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-nodes may not be repeated.", config.ToList());
                     if (!int.TryParse(nodesRaw, out var nodes))
-                        return Error(AgentCommandKind.ObserveApp, json, "--max-nodes requires an integer.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--max-nodes requires an integer.", config.ToList());
                     maxNodes = nodes;
                     continue;
                 case "--include-offscreen":
                     if (!seen.Add("include-offscreen"))
-                        return Error(AgentCommandKind.ObserveApp, json, "--include-offscreen may not be repeated.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--include-offscreen may not be repeated.", config.ToList());
                     includeOffscreen = true;
                     continue;
                 case "--include-bounds":
                     if (!seen.Add("include-bounds"))
-                        return Error(AgentCommandKind.ObserveApp, json, "--include-bounds may not be repeated.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--include-bounds may not be repeated.", config.ToList());
                     includeBounds = true;
                     continue;
                 case "--include-help-text":
                     if (!seen.Add("include-help-text"))
-                        return Error(AgentCommandKind.ObserveApp, json, "--include-help-text may not be repeated.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--include-help-text may not be repeated.", config.ToList());
                     includeHelpText = true;
                     continue;
                 case "--no-focus-state":
                     if (!seen.Add("focus-state"))
-                        return Error(AgentCommandKind.ObserveApp, json, "focus-state flags may not be repeated.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "focus-state flags may not be repeated.", config.ToList());
                     includeFocusState = false;
                     continue;
                 case "--include-structural":
                     if (!seen.Add("actionable-only"))
-                        return Error(AgentCommandKind.ObserveApp, json, "actionable-only flags may not be repeated.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "actionable-only flags may not be repeated.", config.ToList());
                     actionableOnly = false;
                     continue;
                 case "--output":
                     if (!TryReadFlagValue(rest, ref i, out var outputValue))
-                        return Error(AgentCommandKind.ObserveApp, json, "--output requires a path.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--output requires a path.", config.ToList());
                     if (!seen.Add("output"))
-                        return Error(AgentCommandKind.ObserveApp, json, "--output may not be repeated.", config);
+                        return Error(AgentCommandKind.ObserveApp, json, "--output may not be repeated.", config.ToList());
                     outputPath = outputValue;
                     continue;
                 case "--json":
@@ -642,7 +790,7 @@ public static class CommandLine
         }
 
         if (!string.IsNullOrWhiteSpace(view) && view is not ("control" or "content" or "raw"))
-            return Error(AgentCommandKind.ObserveApp, json, "--view must be one of: control, content, raw.", config);
+            return Error(AgentCommandKind.ObserveApp, json, "--view must be one of: control, content, raw.", config.ToList());
 
         if (!string.IsNullOrWhiteSpace(root)
             && root is not ("activeWindow" or "processWindows" or "desktopChildren"))
@@ -650,18 +798,17 @@ public static class CommandLine
             return Error(
                 AgentCommandKind.ObserveApp,
                 json,
-                "--root must be one of: activeWindow, processWindows, desktopChildren.",
-                config);
+                "--root must be one of: activeWindow, processWindows, desktopChildren.", config.ToList());
         }
 
         if (maxDepth is < 0 or > 20)
-            return Error(AgentCommandKind.ObserveApp, json, "--max-depth must be between 0 and 20.", config);
+            return Error(AgentCommandKind.ObserveApp, json, "--max-depth must be between 0 and 20.", config.ToList());
 
         if (maxChildren is < 1 or > 1000)
-            return Error(AgentCommandKind.ObserveApp, json, "--max-children must be between 1 and 1000.", config);
+            return Error(AgentCommandKind.ObserveApp, json, "--max-children must be between 1 and 1000.", config.ToList());
 
         if (maxNodes is < 1 or > 2000)
-            return Error(AgentCommandKind.ObserveApp, json, "--max-nodes must be between 1 and 2000.", config);
+            return Error(AgentCommandKind.ObserveApp, json, "--max-nodes must be between 1 and 2000.", config.ToList());
 
         return new ParsedCommand
         {
@@ -695,9 +842,9 @@ public static class CommandLine
             if (arg is "--path" or "--file")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.ValidateKnowledge, json, "--path requires a path.", config);
+                    return Error(AgentCommandKind.ValidateKnowledge, json, "--path requires a path.", config.ToList());
                 if (path is not null)
-                    return Error(AgentCommandKind.ValidateKnowledge, json, "--path may not be repeated.", config);
+                    return Error(AgentCommandKind.ValidateKnowledge, json, "--path may not be repeated.", config.ToList());
                 path = value;
                 continue;
             }
@@ -726,7 +873,7 @@ public static class CommandLine
         }
 
         if (string.IsNullOrWhiteSpace(path))
-            return Error(AgentCommandKind.ValidateKnowledge, json, "validate-knowledge requires --path <knowledge-dir>.", config);
+            return Error(AgentCommandKind.ValidateKnowledge, json, "validate-knowledge requires --path <knowledge-dir>.", config.ToList());
 
         return new ParsedCommand
         {
@@ -753,9 +900,9 @@ public static class CommandLine
             if (arg == "--application-id")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.BuildKnowledge, json, "--application-id requires a value.", config);
+                    return Error(AgentCommandKind.BuildKnowledge, json, "--application-id requires a value.", config.ToList());
                 if (applicationId is not null)
-                    return Error(AgentCommandKind.BuildKnowledge, json, "--application-id may not be repeated.", config);
+                    return Error(AgentCommandKind.BuildKnowledge, json, "--application-id may not be repeated.", config.ToList());
                 applicationId = value;
                 continue;
             }
@@ -763,7 +910,7 @@ public static class CommandLine
             if (arg == "--exploration-run")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.BuildKnowledge, json, "--exploration-run requires a value.", config);
+                    return Error(AgentCommandKind.BuildKnowledge, json, "--exploration-run requires a value.", config.ToList());
                 runs.Add(value);
                 continue;
             }
@@ -771,9 +918,9 @@ public static class CommandLine
             if (arg == "--output")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.BuildKnowledge, json, "--output requires a path.", config);
+                    return Error(AgentCommandKind.BuildKnowledge, json, "--output requires a path.", config.ToList());
                 if (output is not null)
-                    return Error(AgentCommandKind.BuildKnowledge, json, "--output may not be repeated.", config);
+                    return Error(AgentCommandKind.BuildKnowledge, json, "--output may not be repeated.", config.ToList());
                 output = value;
                 continue;
             }
@@ -808,9 +955,9 @@ public static class CommandLine
         }
 
         if (string.IsNullOrWhiteSpace(applicationId))
-            return Error(AgentCommandKind.BuildKnowledge, json, "build-knowledge requires --application-id <id>.", config);
+            return Error(AgentCommandKind.BuildKnowledge, json, "build-knowledge requires --application-id <id>.", config.ToList());
         if (runs.Count == 0)
-            return Error(AgentCommandKind.BuildKnowledge, json, "build-knowledge requires at least one --exploration-run.", config);
+            return Error(AgentCommandKind.BuildKnowledge, json, "build-knowledge requires at least one --exploration-run.", config.ToList());
 
         return new ParsedCommand
         {
@@ -838,9 +985,9 @@ public static class CommandLine
             if (arg == "--left")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.CompareKnowledge, json, "--left requires a path.", config);
+                    return Error(AgentCommandKind.CompareKnowledge, json, "--left requires a path.", config.ToList());
                 if (left is not null)
-                    return Error(AgentCommandKind.CompareKnowledge, json, "--left may not be repeated.", config);
+                    return Error(AgentCommandKind.CompareKnowledge, json, "--left may not be repeated.", config.ToList());
                 left = value;
                 continue;
             }
@@ -848,9 +995,9 @@ public static class CommandLine
             if (arg == "--right")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.CompareKnowledge, json, "--right requires a path.", config);
+                    return Error(AgentCommandKind.CompareKnowledge, json, "--right requires a path.", config.ToList());
                 if (right is not null)
-                    return Error(AgentCommandKind.CompareKnowledge, json, "--right may not be repeated.", config);
+                    return Error(AgentCommandKind.CompareKnowledge, json, "--right may not be repeated.", config.ToList());
                 right = value;
                 continue;
             }
@@ -879,7 +1026,7 @@ public static class CommandLine
         }
 
         if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
-            return Error(AgentCommandKind.CompareKnowledge, json, "compare-knowledge requires --left and --right.", config);
+            return Error(AgentCommandKind.CompareKnowledge, json, "compare-knowledge requires --left and --right.", config.ToList());
 
         return new ParsedCommand
         {
@@ -905,9 +1052,9 @@ public static class CommandLine
             if (arg is "--path" or "--file")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.SearchKnowledge, json, "--path requires a path.", config);
+                    return Error(AgentCommandKind.SearchKnowledge, json, "--path requires a path.", config.ToList());
                 if (path is not null)
-                    return Error(AgentCommandKind.SearchKnowledge, json, "--path may not be repeated.", config);
+                    return Error(AgentCommandKind.SearchKnowledge, json, "--path may not be repeated.", config.ToList());
                 path = value;
                 continue;
             }
@@ -915,9 +1062,9 @@ public static class CommandLine
             if (arg is "--query" or "-q")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.SearchKnowledge, json, "--query requires a value.", config);
+                    return Error(AgentCommandKind.SearchKnowledge, json, "--query requires a value.", config.ToList());
                 if (query is not null)
-                    return Error(AgentCommandKind.SearchKnowledge, json, "--query may not be repeated.", config);
+                    return Error(AgentCommandKind.SearchKnowledge, json, "--query may not be repeated.", config.ToList());
                 query = value;
                 continue;
             }
@@ -946,9 +1093,9 @@ public static class CommandLine
         }
 
         if (string.IsNullOrWhiteSpace(path))
-            return Error(AgentCommandKind.SearchKnowledge, json, "search-knowledge requires --path <knowledge-dir>.", config);
+            return Error(AgentCommandKind.SearchKnowledge, json, "search-knowledge requires --path <knowledge-dir>.", config.ToList());
         if (string.IsNullOrWhiteSpace(query))
-            return Error(AgentCommandKind.SearchKnowledge, json, "search-knowledge requires --query <text>.", config);
+            return Error(AgentCommandKind.SearchKnowledge, json, "search-knowledge requires --query <text>.", config.ToList());
 
         return new ParsedCommand
         {
@@ -975,9 +1122,9 @@ public static class CommandLine
             if (arg == "--source")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.ApproveKnowledge, json, "--source requires a path.", config);
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--source requires a path.", config.ToList());
                 if (source is not null)
-                    return Error(AgentCommandKind.ApproveKnowledge, json, "--source may not be repeated.", config);
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--source may not be repeated.", config.ToList());
                 source = value;
                 continue;
             }
@@ -985,9 +1132,9 @@ public static class CommandLine
             if (arg == "--reviewer")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewer requires a value.", config);
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewer requires a value.", config.ToList());
                 if (reviewer is not null)
-                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewer may not be repeated.", config);
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewer may not be repeated.", config.ToList());
                 reviewer = value;
                 continue;
             }
@@ -995,9 +1142,9 @@ public static class CommandLine
             if (arg == "--reviewed-input")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewed-input requires a path.", config);
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewed-input requires a path.", config.ToList());
                 if (reviewedInput is not null)
-                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewed-input may not be repeated.", config);
+                    return Error(AgentCommandKind.ApproveKnowledge, json, "--reviewed-input may not be repeated.", config.ToList());
                 reviewedInput = value;
                 continue;
             }
@@ -1026,11 +1173,11 @@ public static class CommandLine
         }
 
         if (string.IsNullOrWhiteSpace(source))
-            return Error(AgentCommandKind.ApproveKnowledge, json, "approve-knowledge requires --source <candidate-dir>.", config);
+            return Error(AgentCommandKind.ApproveKnowledge, json, "approve-knowledge requires --source <candidate-dir>.", config.ToList());
         if (string.IsNullOrWhiteSpace(reviewer))
-            return Error(AgentCommandKind.ApproveKnowledge, json, "approve-knowledge requires --reviewer <name>.", config);
+            return Error(AgentCommandKind.ApproveKnowledge, json, "approve-knowledge requires --reviewer <name>.", config.ToList());
         if (string.IsNullOrWhiteSpace(reviewedInput))
-            return Error(AgentCommandKind.ApproveKnowledge, json, "approve-knowledge requires --reviewed-input <file>.", config);
+            return Error(AgentCommandKind.ApproveKnowledge, json, "approve-knowledge requires --reviewed-input <file>.", config.ToList());
 
         return new ParsedCommand
         {
@@ -1056,9 +1203,9 @@ public static class CommandLine
             if (arg is "--file" or "-f")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.ValidateTestCase, json, "--file requires a path.", config);
+                    return Error(AgentCommandKind.ValidateTestCase, json, "--file requires a path.", config.ToList());
                 if (file is not null)
-                    return Error(AgentCommandKind.ValidateTestCase, json, "--file may not be repeated.", config);
+                    return Error(AgentCommandKind.ValidateTestCase, json, "--file may not be repeated.", config.ToList());
                 file = value;
                 continue;
             }
@@ -1087,7 +1234,7 @@ public static class CommandLine
         }
 
         if (string.IsNullOrWhiteSpace(file))
-            return Error(AgentCommandKind.ValidateTestCase, json, "validate-test-case requires --file <path>.", config);
+            return Error(AgentCommandKind.ValidateTestCase, json, "validate-test-case requires --file <path>.", config.ToList());
 
         return new ParsedCommand
         {
@@ -1111,9 +1258,9 @@ public static class CommandLine
             if (arg is "--file" or "-f")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.ValidateStepRegistry, json, "--file requires a path.", config);
+                    return Error(AgentCommandKind.ValidateStepRegistry, json, "--file requires a path.", config.ToList());
                 if (file is not null)
-                    return Error(AgentCommandKind.ValidateStepRegistry, json, "--file may not be repeated.", config);
+                    return Error(AgentCommandKind.ValidateStepRegistry, json, "--file may not be repeated.", config.ToList());
                 file = value;
                 continue;
             }
@@ -1170,9 +1317,9 @@ public static class CommandLine
             if (arg is "--key" or "-k")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.CompileKey, json, "--key requires a Jira key.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--key requires a Jira key.", config.ToList());
                 if (key is not null)
-                    return Error(AgentCommandKind.CompileKey, json, "--key may not be repeated.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--key may not be repeated.", config.ToList());
                 key = value;
                 continue;
             }
@@ -1180,9 +1327,9 @@ public static class CommandLine
             if (arg is "--file" or "-f")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.CompileKey, json, "--file requires a path.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--file requires a path.", config.ToList());
                 if (file is not null)
-                    return Error(AgentCommandKind.CompileKey, json, "--file may not be repeated.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--file may not be repeated.", config.ToList());
                 file = value;
                 continue;
             }
@@ -1190,9 +1337,9 @@ public static class CommandLine
             if (arg == "--registry")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.CompileKey, json, "--registry requires a path.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--registry requires a path.", config.ToList());
                 if (registry is not null)
-                    return Error(AgentCommandKind.CompileKey, json, "--registry may not be repeated.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--registry may not be repeated.", config.ToList());
                 registry = value;
                 continue;
             }
@@ -1200,9 +1347,9 @@ public static class CommandLine
             if (arg is "--object-repository" or "--repository")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.CompileKey, json, "--object-repository requires a path.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--object-repository requires a path.", config.ToList());
                 if (objectRepo is not null)
-                    return Error(AgentCommandKind.CompileKey, json, "--object-repository may not be repeated.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--object-repository may not be repeated.", config.ToList());
                 objectRepo = value;
                 continue;
             }
@@ -1210,9 +1357,9 @@ public static class CommandLine
             if (arg == "--knowledge")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.CompileKey, json, "--knowledge requires a path.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--knowledge requires a path.", config.ToList());
                 if (knowledge is not null)
-                    return Error(AgentCommandKind.CompileKey, json, "--knowledge may not be repeated.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--knowledge may not be repeated.", config.ToList());
                 knowledge = value;
                 continue;
             }
@@ -1220,9 +1367,9 @@ public static class CommandLine
             if (arg == "--catalog")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.CompileKey, json, "--catalog requires a path.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--catalog requires a path.", config.ToList());
                 if (catalog is not null)
-                    return Error(AgentCommandKind.CompileKey, json, "--catalog may not be repeated.", config);
+                    return Error(AgentCommandKind.CompileKey, json, "--catalog may not be repeated.", config.ToList());
                 catalog = value;
                 continue;
             }
@@ -1263,10 +1410,10 @@ public static class CommandLine
         }
 
         if (string.IsNullOrWhiteSpace(key))
-            return Error(AgentCommandKind.CompileKey, json, "compile-key requires --key <JIRA-KEY>.", config);
+            return Error(AgentCommandKind.CompileKey, json, "compile-key requires --key <JIRA-KEY>.", config.ToList());
 
         if (fromJira && !string.IsNullOrWhiteSpace(file))
-            return Error(AgentCommandKind.CompileKey, json, "compile-key --from-jira cannot be combined with --file.", config);
+            return Error(AgentCommandKind.CompileKey, json, "compile-key --from-jira cannot be combined with --file.", config.ToList());
 
         return new ParsedCommand
         {
@@ -1298,9 +1445,9 @@ public static class CommandLine
             if (arg is "--key" or "-k")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--key requires a Jira key.", config);
+                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--key requires a Jira key.", config.ToList());
                 if (key is not null)
-                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--key may not be repeated.", config);
+                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--key may not be repeated.", config.ToList());
                 key = value;
                 continue;
             }
@@ -1308,9 +1455,9 @@ public static class CommandLine
             if (arg == "--fingerprint")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--fingerprint requires a value.", config);
+                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--fingerprint requires a value.", config.ToList());
                 if (fingerprint is not null)
-                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--fingerprint may not be repeated.", config);
+                    return Error(AgentCommandKind.ValidateCompiledKey, json, "--fingerprint may not be repeated.", config.ToList());
                 fingerprint = value;
                 continue;
             }
@@ -1339,7 +1486,7 @@ public static class CommandLine
         }
 
         if (string.IsNullOrWhiteSpace(key))
-            return Error(AgentCommandKind.ValidateCompiledKey, json, "validate-compiled-key requires --key <JIRA-KEY>.", config);
+            return Error(AgentCommandKind.ValidateCompiledKey, json, "validate-compiled-key requires --key <JIRA-KEY>.", config.ToList());
 
         return new ParsedCommand
         {
@@ -1364,9 +1511,9 @@ public static class CommandLine
             if (arg is "--key" or "-k")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.SyncKey, json, "--key requires a Jira key.", config);
+                    return Error(AgentCommandKind.SyncKey, json, "--key requires a Jira key.", config.ToList());
                 if (key is not null)
-                    return Error(AgentCommandKind.SyncKey, json, "--key may not be repeated.", config);
+                    return Error(AgentCommandKind.SyncKey, json, "--key may not be repeated.", config.ToList());
                 key = value;
                 continue;
             }
@@ -1395,7 +1542,7 @@ public static class CommandLine
         }
 
         if (string.IsNullOrWhiteSpace(key))
-            return Error(AgentCommandKind.SyncKey, json, "sync-key requires --key <JIRA-KEY>.", config);
+            return Error(AgentCommandKind.SyncKey, json, "sync-key requires --key <JIRA-KEY>.", config.ToList());
 
         return new ParsedCommand
         {
@@ -1425,9 +1572,9 @@ public static class CommandLine
             if (arg is "--key" or "-k")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.RunKey, json, "--key requires a Jira key.", config);
+                    return Error(AgentCommandKind.RunKey, json, "--key requires a Jira key.", config.ToList());
                 if (key is not null)
-                    return Error(AgentCommandKind.RunKey, json, "--key may not be repeated.", config);
+                    return Error(AgentCommandKind.RunKey, json, "--key may not be repeated.", config.ToList());
                 key = value;
                 continue;
             }
@@ -1435,9 +1582,9 @@ public static class CommandLine
             if (arg == "--registry")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.RunKey, json, "--registry requires a path.", config);
+                    return Error(AgentCommandKind.RunKey, json, "--registry requires a path.", config.ToList());
                 if (registry is not null)
-                    return Error(AgentCommandKind.RunKey, json, "--registry may not be repeated.", config);
+                    return Error(AgentCommandKind.RunKey, json, "--registry may not be repeated.", config.ToList());
                 registry = value;
                 continue;
             }
@@ -1445,9 +1592,9 @@ public static class CommandLine
             if (arg is "--object-repository" or "--repository")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.RunKey, json, "--object-repository requires a path.", config);
+                    return Error(AgentCommandKind.RunKey, json, "--object-repository requires a path.", config.ToList());
                 if (objectRepo is not null)
-                    return Error(AgentCommandKind.RunKey, json, "--object-repository may not be repeated.", config);
+                    return Error(AgentCommandKind.RunKey, json, "--object-repository may not be repeated.", config.ToList());
                 objectRepo = value;
                 continue;
             }
@@ -1455,9 +1602,9 @@ public static class CommandLine
             if (arg == "--knowledge")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.RunKey, json, "--knowledge requires a path.", config);
+                    return Error(AgentCommandKind.RunKey, json, "--knowledge requires a path.", config.ToList());
                 if (knowledge is not null)
-                    return Error(AgentCommandKind.RunKey, json, "--knowledge may not be repeated.", config);
+                    return Error(AgentCommandKind.RunKey, json, "--knowledge may not be repeated.", config.ToList());
                 knowledge = value;
                 continue;
             }
@@ -1465,9 +1612,9 @@ public static class CommandLine
             if (arg == "--catalog")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.RunKey, json, "--catalog requires a path.", config);
+                    return Error(AgentCommandKind.RunKey, json, "--catalog requires a path.", config.ToList());
                 if (catalog is not null)
-                    return Error(AgentCommandKind.RunKey, json, "--catalog may not be repeated.", config);
+                    return Error(AgentCommandKind.RunKey, json, "--catalog may not be repeated.", config.ToList());
                 catalog = value;
                 continue;
             }
@@ -1508,7 +1655,7 @@ public static class CommandLine
         }
 
         if (string.IsNullOrWhiteSpace(key))
-            return Error(AgentCommandKind.RunKey, json, "run-key requires --key <JIRA-KEY>.", config);
+            return Error(AgentCommandKind.RunKey, json, "run-key requires --key <JIRA-KEY>.", config.ToList());
 
         return new ParsedCommand
         {
@@ -1546,9 +1693,9 @@ public static class CommandLine
             if (arg is "--file" or "-f")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.RunSuite, json, "--file requires a path.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--file requires a path.", config.ToList());
                 if (file is not null)
-                    return Error(AgentCommandKind.RunSuite, json, "--file may not be repeated.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--file may not be repeated.", config.ToList());
                 file = value;
                 continue;
             }
@@ -1556,9 +1703,9 @@ public static class CommandLine
             if (arg == "--registry")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.RunSuite, json, "--registry requires a path.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--registry requires a path.", config.ToList());
                 if (registry is not null)
-                    return Error(AgentCommandKind.RunSuite, json, "--registry may not be repeated.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--registry may not be repeated.", config.ToList());
                 registry = value;
                 continue;
             }
@@ -1566,9 +1713,9 @@ public static class CommandLine
             if (arg is "--object-repository" or "--repository")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.RunSuite, json, "--object-repository requires a path.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--object-repository requires a path.", config.ToList());
                 if (objectRepo is not null)
-                    return Error(AgentCommandKind.RunSuite, json, "--object-repository may not be repeated.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--object-repository may not be repeated.", config.ToList());
                 objectRepo = value;
                 continue;
             }
@@ -1576,9 +1723,9 @@ public static class CommandLine
             if (arg == "--knowledge")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.RunSuite, json, "--knowledge requires a path.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--knowledge requires a path.", config.ToList());
                 if (knowledge is not null)
-                    return Error(AgentCommandKind.RunSuite, json, "--knowledge may not be repeated.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--knowledge may not be repeated.", config.ToList());
                 knowledge = value;
                 continue;
             }
@@ -1586,9 +1733,9 @@ public static class CommandLine
             if (arg == "--catalog")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.RunSuite, json, "--catalog requires a path.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--catalog requires a path.", config.ToList());
                 if (catalog is not null)
-                    return Error(AgentCommandKind.RunSuite, json, "--catalog may not be repeated.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--catalog may not be repeated.", config.ToList());
                 catalog = value;
                 continue;
             }
@@ -1608,11 +1755,11 @@ public static class CommandLine
             if (arg == "--max-failures")
             {
                 if (!TryReadFlagValue(rest, ref i, out var value))
-                    return Error(AgentCommandKind.RunSuite, json, "--max-failures requires an integer.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--max-failures requires an integer.", config.ToList());
                 if (maxFailures is not null)
-                    return Error(AgentCommandKind.RunSuite, json, "--max-failures may not be repeated.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--max-failures may not be repeated.", config.ToList());
                 if (!int.TryParse(value, out var n) || n <= 0)
-                    return Error(AgentCommandKind.RunSuite, json, "--max-failures must be a positive integer.", config);
+                    return Error(AgentCommandKind.RunSuite, json, "--max-failures must be a positive integer.", config.ToList());
                 maxFailures = n;
                 continue;
             }
@@ -1647,10 +1794,10 @@ public static class CommandLine
         }
 
         if (string.IsNullOrWhiteSpace(file))
-            return Error(AgentCommandKind.RunSuite, json, "run-suite requires --file <suite.json>.", config);
+            return Error(AgentCommandKind.RunSuite, json, "run-suite requires --file <suite.json>.", config.ToList());
 
         if (maxFailures is not null && !continueOnFailure)
-            return Error(AgentCommandKind.RunSuite, json, "--max-failures requires --continue-on-failure.", config);
+            return Error(AgentCommandKind.RunSuite, json, "--max-failures requires --continue-on-failure.", config.ToList());
 
         return new ParsedCommand
         {
@@ -1685,9 +1832,9 @@ public static class CommandLine
             {
                 case "--policy":
                     if (!TryReadFlagValue(rest, ref i, out var policyValue))
-                        return Error(AgentCommandKind.ExploreApp, json, "--policy requires a path.", config);
+                        return Error(AgentCommandKind.ExploreApp, json, "--policy requires a path.", config.ToList());
                     if (!seen.Add("policy"))
-                        return Error(AgentCommandKind.ExploreApp, json, "--policy may not be repeated.", config);
+                        return Error(AgentCommandKind.ExploreApp, json, "--policy may not be repeated.", config.ToList());
                     policy = policyValue;
                     continue;
                 case "--json":
@@ -1715,7 +1862,7 @@ public static class CommandLine
 
         if (string.IsNullOrWhiteSpace(policy))
         {
-            return Error(AgentCommandKind.ExploreApp, json, "explore-app requires --policy <file>.", config);
+            return Error(AgentCommandKind.ExploreApp, json, "explore-app requires --policy <file>.", config.ToList());
         }
 
         return new ParsedCommand
@@ -1756,67 +1903,67 @@ public static class CommandLine
             {
                 case "--file" or "-f":
                     if (!TryReadFlagValue(rest, ref i, out var fileValue))
-                        return Error(kind, json, "--file requires a path.", config);
+                        return Error(kind, json, "--file requires a path.", config.ToList());
                     if (!seen.Add("file"))
-                        return Error(kind, json, "--file may not be repeated.", config);
+                        return Error(kind, json, "--file may not be repeated.", config.ToList());
                     file = fileValue;
                     continue;
                 case "--ref":
                     if (!TryReadFlagValue(rest, ref i, out var refValue))
-                        return Error(kind, json, "--ref requires a page.element reference.", config);
+                        return Error(kind, json, "--ref requires a page.element reference.", config.ToList());
                     if (!seen.Add("ref"))
-                        return Error(kind, json, "--ref may not be repeated.", config);
+                        return Error(kind, json, "--ref may not be repeated.", config.ToList());
                     objectRef = refValue;
                     continue;
                 case "--page":
                     if (!TryReadFlagValue(rest, ref i, out var pageValue))
-                        return Error(kind, json, "--page requires a page id.", config);
+                        return Error(kind, json, "--page requires a page id.", config.ToList());
                     if (!seen.Add("page"))
-                        return Error(kind, json, "--page may not be repeated.", config);
+                        return Error(kind, json, "--page may not be repeated.", config.ToList());
                     pageId = pageValue;
                     continue;
                 case "--name":
                     if (!TryReadFlagValue(rest, ref i, out var nameValue))
-                        return Error(kind, json, "--name requires a page name.", config);
+                        return Error(kind, json, "--name requires a page name.", config.ToList());
                     if (!seen.Add("name"))
-                        return Error(kind, json, "--name may not be repeated.", config);
+                        return Error(kind, json, "--name may not be repeated.", config.ToList());
                     pageName = nameValue;
                     continue;
                 case "--view":
                     if (!TryReadFlagValue(rest, ref i, out var viewValue))
-                        return Error(kind, json, "--view requires a value.", config);
+                        return Error(kind, json, "--view requires a value.", config.ToList());
                     if (!seen.Add("view"))
-                        return Error(kind, json, "--view may not be repeated.", config);
+                        return Error(kind, json, "--view may not be repeated.", config.ToList());
                     view = viewValue;
                     continue;
                 case "--root":
                     if (!TryReadFlagValue(rest, ref i, out var rootValue))
-                        return Error(kind, json, "--root requires a value.", config);
+                        return Error(kind, json, "--root requires a value.", config.ToList());
                     if (!seen.Add("root"))
-                        return Error(kind, json, "--root may not be repeated.", config);
+                        return Error(kind, json, "--root may not be repeated.", config.ToList());
                     root = rootValue;
                     continue;
                 case "--max-depth":
                     if (!TryReadFlagValue(rest, ref i, out var depthRaw))
-                        return Error(kind, json, "--max-depth requires a value.", config);
+                        return Error(kind, json, "--max-depth requires a value.", config.ToList());
                     if (!seen.Add("max-depth"))
-                        return Error(kind, json, "--max-depth may not be repeated.", config);
+                        return Error(kind, json, "--max-depth may not be repeated.", config.ToList());
                     if (!int.TryParse(depthRaw, out var depth))
-                        return Error(kind, json, "--max-depth requires an integer.", config);
+                        return Error(kind, json, "--max-depth requires an integer.", config.ToList());
                     maxDepth = depth;
                     continue;
                 case "--max-children":
                     if (!TryReadFlagValue(rest, ref i, out var childrenRaw))
-                        return Error(kind, json, "--max-children requires a value.", config);
+                        return Error(kind, json, "--max-children requires a value.", config.ToList());
                     if (!seen.Add("max-children"))
-                        return Error(kind, json, "--max-children may not be repeated.", config);
+                        return Error(kind, json, "--max-children may not be repeated.", config.ToList());
                     if (!int.TryParse(childrenRaw, out var children))
-                        return Error(kind, json, "--max-children requires an integer.", config);
+                        return Error(kind, json, "--max-children requires an integer.", config.ToList());
                     maxChildren = children;
                     continue;
                 case "--include-offscreen":
                     if (!seen.Add("include-offscreen"))
-                        return Error(kind, json, "--include-offscreen may not be repeated.", config);
+                        return Error(kind, json, "--include-offscreen may not be repeated.", config.ToList());
                     includeOffscreen = true;
                     continue;
                 case "--json":
@@ -1842,29 +1989,29 @@ public static class CommandLine
 
         if (string.IsNullOrWhiteSpace(file))
         {
-            return Error(kind, json, $"{CommandName(kind)} requires --file <path>.", config);
+            return Error(kind, json, $"{CommandName(kind)} requires --file <path>.", config.ToList());
         }
 
         if (requireRef && string.IsNullOrWhiteSpace(objectRef))
         {
-            return Error(kind, json, $"{CommandName(kind)} requires --ref <page.element>.", config);
+            return Error(kind, json, $"{CommandName(kind)} requires --ref <page.element>.", config.ToList());
         }
 
         if (requirePage && string.IsNullOrWhiteSpace(pageId))
         {
-            return Error(kind, json, $"{CommandName(kind)} requires --page <page-id>.", config);
+            return Error(kind, json, $"{CommandName(kind)} requires --page <page-id>.", config.ToList());
         }
 
         if (requireName && string.IsNullOrWhiteSpace(pageName))
         {
-            return Error(kind, json, $"{CommandName(kind)} requires --name <page-name>.", config);
+            return Error(kind, json, $"{CommandName(kind)} requires --name <page-name>.", config.ToList());
         }
 
         if (kind == AgentCommandKind.VerifyObjectRepository
             && !string.IsNullOrWhiteSpace(pageId)
             && !string.IsNullOrWhiteSpace(objectRef))
         {
-            return Error(kind, json, "--page and --ref are mutually exclusive.", config);
+            return Error(kind, json, "--page and --ref are mutually exclusive.", config.ToList());
         }
 
         var disallowedFlags = new List<string>();
@@ -1906,8 +2053,7 @@ public static class CommandLine
             return Error(
                 kind,
                 json,
-                $"Unexpected argument(s) for {CommandName(kind)}: {string.Join(' ', disallowedFlags.Distinct())}.",
-                config);
+                $"Unexpected argument(s) for {CommandName(kind)}: {string.Join(' ', disallowedFlags.Distinct())}.", config.ToList());
         }
 
         if (kind is AgentCommandKind.CapturePage or AgentCommandKind.VerifyObjectRepository)
@@ -1915,7 +2061,7 @@ public static class CommandLine
             if (!string.IsNullOrWhiteSpace(view)
                 && view is not ("control" or "content" or "raw"))
             {
-                return Error(kind, json, "--view must be one of: control, content, raw.", config);
+                return Error(kind, json, "--view must be one of: control, content, raw.", config.ToList());
             }
 
             if (!string.IsNullOrWhiteSpace(root)
@@ -1924,15 +2070,14 @@ public static class CommandLine
                 return Error(
                     kind,
                     json,
-                    "--root must be one of: activeWindow, processWindows, desktopChildren.",
-                    config);
+                    "--root must be one of: activeWindow, processWindows, desktopChildren.", config.ToList());
             }
 
             if (maxDepth is < 0 or > 20)
-                return Error(kind, json, "--max-depth must be between 0 and 20.", config);
+                return Error(kind, json, "--max-depth must be between 0 and 20.", config.ToList());
 
             if (maxChildren is < 1 or > 1000)
-                return Error(kind, json, "--max-children must be between 1 and 1000.", config);
+                return Error(kind, json, "--max-children must be between 1 and 1000.", config.ToList());
         }
 
         return new ParsedCommand
@@ -2032,12 +2177,16 @@ public static class CommandLine
             || arg.StartsWith("--Runner:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("--ObjectRepository:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("--Knowledge:", StringComparison.OrdinalIgnoreCase)
+            || arg.StartsWith("--Jira:", StringComparison.OrdinalIgnoreCase)
+            || arg.StartsWith("--Planning:", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Driver__", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Workspace__", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Suites__", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("Runner__", StringComparison.OrdinalIgnoreCase)
             || arg.StartsWith("ObjectRepository__", StringComparison.OrdinalIgnoreCase)
-            || arg.StartsWith("Knowledge__", StringComparison.OrdinalIgnoreCase))
+            || arg.StartsWith("Knowledge__", StringComparison.OrdinalIgnoreCase)
+            || arg.StartsWith("Jira__", StringComparison.OrdinalIgnoreCase)
+            || arg.StartsWith("Planning__", StringComparison.OrdinalIgnoreCase))
         {
             config.Add(arg);
             if (!arg.Contains('=', StringComparison.Ordinal) && index + 1 < args.Length)
@@ -2056,7 +2205,7 @@ public static class CommandLine
 
     public static string HelpText =>
         """
-        Desktop Automation Agent (Phase 5)
+        Desktop Automation Agent (Phase 6)
 
         Commands:
           init
@@ -2065,6 +2214,17 @@ public static class CommandLine
           mcp-server
               Start the local stdio MCP sidecar (protocol adapter over existing services).
               stdout is JSON-RPC only; logs go to stderr. No network listener.
+
+          propose-plan --goal <text> [--untrusted-context <text>]
+              [--approval-mode proposal-only|auto-run-known-safe|approval-required|denied]
+              [--knowledge <approved-dir>] [--object-repository <path>] [--registry <path>]
+              [--catalog <path>] [--application-id <id>] [--expected-build-fingerprint <fp>]
+              [--planning-id <id>] [--execute] [--dry-run] [--json]
+              Guarded AI plan proposal: retrieve approved subset → model typed proposal →
+              deterministic validate/compile to a Phase 2 candidate plan.
+              Default approval mode is proposal-only (never POST /ui).
+              --execute only runs when effective mode is auto-run-known-safe after validators.
+              Fake deterministic model is used in CI (Planning:Provider=fake).
 
           validate-suite --file <path>
               Validate one suite manifest. Does not require the driver.
@@ -2171,7 +2331,7 @@ public static class CommandLine
           6 UI operation, timeout, capture/verify/observe or assertion failure
           7 execution cancelled
 
-        Phase 5 exposes already-tested application services through a local stdio MCP interface.
-        AI is not implemented. Autonomous planning, self-healing, and public remote MCP are not implemented.
+        Phase 6 adds guarded AI plan proposals over approved retrieval. The model never calls the driver.
+        Self-healing, unrestricted exploration, vision/OCR, and public remote MCP are not implemented.
         """;
 }

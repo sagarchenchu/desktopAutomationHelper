@@ -204,6 +204,7 @@ public sealed class WorkspaceManager : IWorkspaceManager
         "test-cases/examples",
         "compiled",
         "jira-cache",
+        "planning",
         "runs"
     ];
 
@@ -240,6 +241,9 @@ public sealed class WorkspaceManager : IWorkspaceManager
             ["jira-cache/.gitignore"] = JiraCacheGitIgnore,
             ["jira-cache/README.md"] = JiraCacheReadme,
             ["test-cases/README.md"] = TestCasesReadme,
+            ["planning/.gitignore"] = PlanningGitIgnore,
+            ["planning/README.md"] = PlanningReadme,
+            ["schemas/plan-proposal.schema.json"] = ReadEmbeddedPlanningSchema("plan-proposal.schema.json"),
             ["runs/.gitignore"] = RunsGitIgnore
         };
 
@@ -262,6 +266,48 @@ public sealed class WorkspaceManager : IWorkspaceManager
         var text = reader.ReadToEnd();
         return text.EndsWith('\n') ? text : text + "\n";
     }
+
+    private static string ReadEmbeddedPlanningSchema(string fileName)
+    {
+        var resourceName = "DesktopAutomationAgent.Planning." + fileName;
+        using var stream = typeof(WorkspaceManager).Assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Missing embedded planning schema resource '{resourceName}'.");
+        using var reader = new StreamReader(stream);
+        var text = reader.ReadToEnd();
+        return text.EndsWith('\n') ? text : text + "\n";
+    }
+
+    private const string PlanningGitIgnore =
+        """
+        # Planning run artifacts are local (may contain goal text). Keep evals/.
+        */
+        !evals/
+        !evals/**
+        !README.md
+        !.gitignore
+
+        """;
+
+    private const string PlanningReadme =
+        """
+        # Guarded AI planning (Phase 6)
+
+        Natural-language goals retrieve a small approved knowledge/PO/step/op subset,
+        ask a bounded model for a typed plan proposal, then deterministically validate
+        and compile to a Phase 2 plan. The model never calls the driver.
+
+        Runtime artifacts:
+          planning/<planningId>/
+            request-summary.json
+            retrieval-manifest.json
+            proposal.json
+            validation.json
+            candidate.plan.json
+
+        Default approval mode is proposal-only (never executes). See
+        `docs/phase6-guarded-ai-planner.md`.
+
+        """;
 
     private const string StepRegistryReadme =
         """

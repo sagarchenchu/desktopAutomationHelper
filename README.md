@@ -1771,9 +1771,10 @@ It never references driver internals (no project reference, no FlaUI).
 | Phase 4C — application knowledge | Complete (`docs/phase4c-application-knowledge.md`) |
 | Phase 4D — deterministic BDD compiler | Complete (`docs/phase4d-deterministic-bdd-compiler.md`) — offline compile; no Jira/AI/`POST /ui` |
 | Phase 4E — Jira adapter + suite orchestration | Complete (`docs/phase4e-jira-suite-orchestration.md`) — read-only provider-neutral Jira source; sequential suites |
-| Phase 5 — MCP interface | This work (`docs/phase5-mcp-interface.md`) — local stdio MCP adapter over existing services |
+| Phase 5 — MCP interface | Complete (`docs/phase5-mcp-interface.md`) — local stdio MCP adapter over existing services |
+| Phase 6 — Guarded AI planner | This work (`docs/phase6-guarded-ai-planner.md`) — NL goal to retrieve to typed proposal to Phase 2 candidate; model never calls driver |
 
-The agent does **not** invent steps with AI, self-heal, schedule suites, or expose a public remote MCP. Live Jira remains read-only (Phase 4E).
+The agent does **not** self-heal, schedule suites, or expose a public remote MCP. Live Jira remains read-only (Phase 4E). AI planning is proposal-only by default.
 
 ```cmd
 dotnet run --project src/DesktopAutomationAgent -- init
@@ -1794,6 +1795,7 @@ dotnet run --project src/DesktopAutomationAgent -- validate-compiled-key --key D
 dotnet run --project src/DesktopAutomationAgent -- doctor
 dotnet run --project src/DesktopAutomationAgent -- doctor --json
 dotnet run --project src/DesktopAutomationAgent -- mcp-server
+dotnet run --project src/DesktopAutomationAgent -- propose-plan --goal "List visible windows" --json
 ```
 
 MCP client example (placeholders only): [`automation/config/mcp-client.example.json`](automation/config/mcp-client.example.json).
@@ -1809,7 +1811,8 @@ Configuration precedence: `appsettings.json` → `automation/config/agentsetting
 [`docs/phase4c-application-knowledge.md`](docs/phase4c-application-knowledge.md),
 [`docs/phase4d-deterministic-bdd-compiler.md`](docs/phase4d-deterministic-bdd-compiler.md),
 [`docs/phase4e-jira-suite-orchestration.md`](docs/phase4e-jira-suite-orchestration.md), and
-[`docs/phase5-mcp-interface.md`](docs/phase5-mcp-interface.md).
+[`docs/phase5-mcp-interface.md`](docs/phase5-mcp-interface.md),
+[`docs/phase6-guarded-ai-planner.md`](docs/phase6-guarded-ai-planner.md).
 
 ---
 
@@ -1892,10 +1895,11 @@ DesktopAutomationAgent (separate process; HTTP client only)
   Deterministic BDD compiler (Phase 4D) — offline Jira export → compiled plan cache
   Jira adapter + suite orchestration (Phase 4E) — read-only sync, compile-key --from-jira, run-key, run-suite
   MCP interface (Phase 5) — local stdio sidecar (`mcp-server`); protocol adapter only
+  Guarded AI planner (Phase 6) — propose-plan; fake model in CI; proposal-only default
   Suite manifests — Jira-key lists for validation and sequential suite execution
   Schemas under automation/schemas/
   Run artifacts under automation/runs/
-  Live Jira is read-only (Phase 4E sync); never invents steps with AI, schedules suites, self-heals, or exposes public remote MCP
+  Live Jira is read-only (Phase 4E sync); AI planning is proposal-only by default; never self-heals or exposes public remote MCP
 
 Artifact distinctions
   Approved Page Objects     automation/object-repository (manual promotion)
@@ -1906,6 +1910,7 @@ Artifact distinctions
   Compiled BDD plans        automation/compiled/<jiraKey>/<fingerprint>/ (Phase 4D cache)
   Jira cache (redacted)     automation/jira-cache/<jiraKey>/<revision>/ (Phase 4E)
   Suite run summaries       automation/runs/<suiteRunId>/suite-run.json (Phase 4E)
+  Planning candidates       automation/planning/<planningId>/ (Phase 6)
 ```
 
 Shared-host discovery limits: [`docs/shared-host-driver-discovery-security.md`](docs/shared-host-driver-discovery-security.md).
