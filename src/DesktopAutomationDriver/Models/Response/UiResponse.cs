@@ -53,8 +53,11 @@ public class UiResponse
     /// <summary>
     /// Builds the HTTP envelope from an operation result. When the payload exposes
     /// <c>success: false</c>, the envelope <see cref="Success"/> matches it.
-    /// Typed non-execution proof is applied only from structured locator-resolution
-    /// signals (<c>found=false</c> / <c>matchCount=0</c>) — never from free-text errors.
+    /// Typed non-execution proof (<c>notStarted</c> / <c>locatorNotFoundBeforeInvoke</c>)
+    /// is never invented here from <c>found=false</c>, <c>matchCount=0</c>, or free text —
+    /// those fields can appear after a mutating invoke (see Native UIA wrapper). Proof is
+    /// applied only when the payload already carries explicit typed fields, or via
+    /// <see cref="FailLocatorNotFoundBeforeInvoke"/>.
     /// </summary>
     public static UiResponse FromOperationResult(object? value)
     {
@@ -65,8 +68,6 @@ public class UiResponse
 
             var message = TryReadStringProperty(value, "message");
             var reason = TryReadStringProperty(value, "reason");
-            var foundFalse = TryReadBoolProperty(value, "found", out var found) && !found;
-            var matchCountZero = TryReadIntProperty(value, "matchCount", out var matchCount) && matchCount == 0;
 
             var response = new UiResponse
             {
@@ -76,9 +77,13 @@ public class UiResponse
                 Reason = reason
             };
 
-            // Structured locator-resolution miss only — never free-text phrase matching.
-            if (foundFalse || matchCountZero)
-                ApplyLocatorNotFoundProof(response);
+            // Propagate only explicitly authored typed proof — never derive from found/matchCount.
+            var executionState = TryReadStringProperty(value, "executionState");
+            var failureCode = TryReadStringProperty(value, "failureCode");
+            if (!string.IsNullOrWhiteSpace(executionState))
+                response.ExecutionState = executionState.Trim();
+            if (!string.IsNullOrWhiteSpace(failureCode))
+                response.FailureCode = failureCode.Trim();
 
             return response;
         }
@@ -174,53 +179,6 @@ public class UiResponse
         }
 
         return false;
-    }
-
-    private static bool TryReadIntProperty(object value, string propertyName, out int result)
-    {
-        result = default;
-
-        if (value is IDictionary dictionary)
-        {
-            foreach (DictionaryEntry entry in dictionary)
-            {
-                if (entry.Key is string key
-                    && string.Equals(key, propertyName, StringComparison.OrdinalIgnoreCase)
-                    && entry.Value is IConvertible convertible)
-                {
-                    try
-                    {
-                        result = convertible.ToInt32(null);
-                        return true;
-                    }
-                    catch
-                    {
-                        return false;
-                    }
-                }
-            }
-        }
-
-        var property = value.GetType().GetProperty(
-            propertyName,
-            BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-
-        if (property is null)
-            return false;
-
-        var raw = property.GetValue(value);
-        if (raw is null)
-            return false;
-
-        try
-        {
-            result = Convert.ToInt32(raw);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     private static string? TryReadStringProperty(object value, string propertyName)

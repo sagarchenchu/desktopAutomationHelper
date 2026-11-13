@@ -930,6 +930,47 @@ public sealed class Phase7BoundedRecoveryTests
     }
 
     [Fact]
+    public async Task DriverResponse_FoundFalseWithoutTypedFields_DoesNotManufactureNotStarted()
+    {
+        // Native UIA wrapper can return found=false/reason=error after a mutating invoke.
+        // Agent must not invent locatorNotFoundBeforeInvoke from those fields alone.
+        var options = ReadyOptions();
+        options.Recovery.Enabled = false;
+        var handler = ReadyHandler((req, _) =>
+        {
+            if (req.Method != HttpMethod.Post)
+                return Task.FromResult(DefaultGet(req));
+
+            return Task.FromResult(FakeHttpMessageHandler.Json(new
+            {
+                success = false,
+                error = "Element became unavailable after InvokePattern.",
+                reason = "error",
+                value = new
+                {
+                    operation = "clickuia",
+                    success = false,
+                    found = false,
+                    reason = "error",
+                    message = "Element became unavailable after InvokePattern."
+                }
+            }, HttpStatusCode.OK));
+        });
+
+        var plan = TestSupport.MinimalPlanJson(planId: "no.typed.proof", operation: "listwindows");
+        var path = TestSupport.WritePlan(options, "no-typed-proof.plan.json", plan);
+        var report = await CreateRunner(options, handler).RunAsync(path, dryRun: false);
+
+        Assert.True(
+            report.Steps.Count > 0,
+            $"Expected steps; status={report.Status} failure={report.Failure?.Message}");
+        Assert.Equal("failed", report.Status);
+        var step = Assert.Single(report.Steps);
+        Assert.Null(step.ExecutionState);
+        Assert.Null(step.FailureCode);
+    }
+
+    [Fact]
     public async Task SwitchWindow_ToForeignProcess_FailsWithUnexpectedExternalWindow()
     {
         var options = ReadyOptions();

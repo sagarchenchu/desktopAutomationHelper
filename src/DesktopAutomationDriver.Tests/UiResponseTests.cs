@@ -27,7 +27,7 @@ public class UiResponseTests
     }
 
     [Fact]
-    public void FromOperationResult_WhenFoundFalse_SetsTypedNonExecutionProof()
+    public void FromOperationResult_WhenFoundFalseAlone_DoesNotSetTypedNonExecutionProof()
     {
         var payload = new
         {
@@ -39,12 +39,12 @@ public class UiResponseTests
         var response = UiResponse.FromOperationResult(payload);
 
         Assert.False(response.Success);
-        Assert.Equal(UiResponse.ExecutionStateNotStarted, response.ExecutionState);
-        Assert.Equal(UiResponse.FailureCodeLocatorNotFoundBeforeInvoke, response.FailureCode);
+        Assert.Null(response.ExecutionState);
+        Assert.Null(response.FailureCode);
     }
 
     [Fact]
-    public void FromOperationResult_WhenMatchCountZero_SetsTypedNonExecutionProof()
+    public void FromOperationResult_WhenMatchCountZeroAlone_DoesNotSetTypedNonExecutionProof()
     {
         var payload = new
         {
@@ -55,6 +55,53 @@ public class UiResponseTests
 
         var response = UiResponse.FromOperationResult(payload);
 
+        Assert.Null(response.ExecutionState);
+        Assert.Null(response.FailureCode);
+    }
+
+    [Fact]
+    public void FromOperationResult_MutationFoundFalseReasonError_DoesNotAuthorizeNotStarted()
+    {
+        // Mirrors Native UIA hard-timeout wrapper: post-action exceptions return
+        // success=false, found=false, reason=error — must NEVER authorize mutation replay.
+        var payload = new
+        {
+            operation = "clickuia",
+            success = false,
+            found = false,
+            reason = "error",
+            timeoutMs = 5000,
+            elapsedMs = 12,
+            exceptionType = "COMException",
+            message = "Element became unavailable after InvokePattern."
+        };
+
+        var response = UiResponse.FromOperationResult(payload);
+
+        Assert.False(response.Success);
+        Assert.Equal("error", response.Reason);
+        Assert.Null(response.ExecutionState);
+        Assert.Null(response.FailureCode);
+    }
+
+    [Fact]
+    public void FromOperationResult_ExplicitTypedProofOnPayload_IsPropagated()
+    {
+        var payload = new
+        {
+            operation = "switchwindow",
+            success = false,
+            found = false,
+            matchCount = 0,
+            reason = "window-not-found",
+            message = "No window found.",
+            executionState = UiResponse.ExecutionStateNotStarted,
+            failureCode = UiResponse.FailureCodeLocatorNotFoundBeforeInvoke
+        };
+
+        var response = UiResponse.FromOperationResult(payload);
+
+        Assert.False(response.Success);
         Assert.Equal(UiResponse.ExecutionStateNotStarted, response.ExecutionState);
         Assert.Equal(UiResponse.FailureCodeLocatorNotFoundBeforeInvoke, response.FailureCode);
     }

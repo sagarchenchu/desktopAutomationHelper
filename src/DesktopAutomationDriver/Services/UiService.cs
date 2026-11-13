@@ -1004,7 +1004,7 @@ public partial class UiService : IUiService
                 if (DateTime.UtcNow >= deadline)
                 {
                     LogWindowSearchFailure(session.Automation, req.Value);
-                    // Structured locator/window miss (pre-invoke) — typed proof via found=false.
+                    // Verified pre-invoke window miss — explicit typed proof on the payload.
                     return WindowNotFoundBeforeSwitch(req.Value, DefaultRetry.TotalSeconds);
                 }
                 Thread.Sleep(RetryInterval);
@@ -1040,9 +1040,9 @@ public partial class UiService : IUiService
     }
 
     /// <summary>
-    /// Pre-invoke window resolution miss for switchwindow. Structured <c>found=false</c>
-    /// so <see cref="Models.Response.UiResponse.FromOperationResult"/> can emit typed
-    /// non-execution proof without free-text manufacturing.
+    /// Pre-invoke window resolution miss for switchwindow. Explicit typed non-execution
+    /// proof is authored here (verified before any window switch); generic
+    /// <c>found=false</c> alone must not authorize proof elsewhere.
     /// </summary>
     private static object WindowNotFoundBeforeSwitch(string? titleFragment, double? withinSeconds = null)
     {
@@ -1058,7 +1058,9 @@ public partial class UiService : IUiService
             found = false,
             matchCount = 0,
             reason = "window-not-found",
-            message
+            message,
+            executionState = Models.Response.UiResponse.ExecutionStateNotStarted,
+            failureCode = Models.Response.UiResponse.FailureCodeLocatorNotFoundBeforeInvoke
         };
     }
 
