@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using DesktopAutomationDriver.Models.Recording;
 using DesktopAutomationDriver.Services.Assistive;
+using DesktopAutomationDriver.Services.Debug;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
@@ -43,6 +44,7 @@ public sealed class RecordingOverlayWindow : Form
     private const byte VK_A = 0x41;
     private const byte VK_S = 0x53;
     private const byte VK_W = 0x57;
+    private const byte VK_D = 0x44;
     private const string SelectAllSendKeys = "^a";
 
     [StructLayout(LayoutKind.Sequential)]
@@ -377,6 +379,8 @@ public sealed class RecordingOverlayWindow : Form
     // ── fields ──────────────────────────────────────────────────────────────
     private readonly IRecordingService _service;
     private readonly ILogger _logger;
+    /// <summary>Optional Debug Mode coordinator. Overlay only toggles/status — no feature logic here.</summary>
+    private readonly IDebugSessionCoordinator? _debugCoordinator;
 
     private IntPtr _keyboardHook = IntPtr.Zero;
     private IntPtr _mouseHook = IntPtr.Zero;
@@ -524,10 +528,14 @@ public sealed class RecordingOverlayWindow : Form
     }
 
     // ── constructor ─────────────────────────────────────────────────────────
-    public RecordingOverlayWindow(IRecordingService service, ILogger logger)
+    public RecordingOverlayWindow(
+        IRecordingService service,
+        ILogger logger,
+        IDebugSessionCoordinator? debugCoordinator = null)
     {
         _service = service;
         _logger = logger;
+        _debugCoordinator = debugCoordinator;
         BuildUi();
     }
 
@@ -561,7 +569,7 @@ public sealed class RecordingOverlayWindow : Form
             BackColor = Color.Transparent,
             TextAlign = ContentAlignment.MiddleCenter,
             Font = new Font("Segoe UI", 9.5f, FontStyle.Regular),
-            Text = "● REC  P=Passive  A=Assistive  S=Stop"
+            Text = "● REC  P=Passive  A=Assistive  D=Debug  S=Stop"
         };
 
         Controls.Add(_statusLabel);
@@ -637,6 +645,23 @@ public sealed class RecordingOverlayWindow : Form
     // ── Cursor timer (Assistive mode status update) ──────────────────────────
     private void OnCursorTimerTick(object? sender, EventArgs e)
     {
+        // Debug Mode: overlay only forwards cursor position; inspection logic is in DebugSessionCoordinator.
+        if (_debugCoordinator is { IsActive: true })
+        {
+            try
+            {
+                var snap = _debugCoordinator.InspectUnderCursor(Cursor.Position);
+                if (!string.IsNullOrWhiteSpace(snap.StatusText) && _statusLabel.Text != snap.StatusText)
+                    _statusLabel.Text = snap.StatusText;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Debug Mode inspect-under-cursor failed");
+            }
+
+            return;
+        }
+
         if (_service.CurrentMode != RecordingMode.Assistive)
             return;
 
@@ -746,6 +771,16 @@ public sealed class RecordingOverlayWindow : Form
                             _statusLabel.Text = "CTRL+W popup menu failed: " + ex.Message;
                             _logger.LogError(ex, "CTRL+W popup menu failed");
                         }
+                    }));
+                    return (IntPtr)1; // suppress
+                }
+                if (kbStruct.vkCode == VK_D && _debugCoordinator is not null)
+                {
+                    // Thin UI hook only — Debug Mode feature logic lives in DebugSessionCoordinator.
+                    BeginInvoke(new Action(() =>
+                    {
+                        var snap = _debugCoordinator.Toggle();
+                        _statusLabel.Text = snap.StatusText;
                     }));
                     return (IntPtr)1; // suppress
                 }

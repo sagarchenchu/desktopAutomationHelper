@@ -93,16 +93,17 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 5
+            RowCount = 6
         };
-        for (var i = 0; i < 5; i++)
+        for (var i = 0; i < 6; i++)
             left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         left.Controls.Add(BuildButtonsGroup(), 0, 0);
         left.Controls.Add(BuildTextGroup(), 0, 1);
         left.Controls.Add(BuildComboGroup(), 0, 2);
         left.Controls.Add(BuildSelectionGroup(), 0, 3);
-        left.Controls.Add(BuildWindowGroup(), 0, 4);
+        left.Controls.Add(BuildCustomDrawnGroup(), 0, 4);
+        left.Controls.Add(BuildWindowGroup(), 0, 5);
 
         var right = BuildGridGroup();
         right.Dock = DockStyle.Fill;
@@ -373,6 +374,28 @@ public sealed class MainForm : Form
         flow.Controls.Add(guest);
         flow.Controls.Add(agree);
         flow.Controls.Add(_selectedRoleLabel);
+        box.Controls.Add(flow);
+        return box;
+    }
+
+    private Control BuildCustomDrawnGroup()
+    {
+        var box = Group("Custom-drawn (Phase 8 vision fixture)");
+        box.Name = UiIds.CustomDrawnGroup;
+        box.AccessibleName = "Custom Drawn Group";
+
+        var canvas = new CustomDrawnCanvas
+        {
+            DrawnLabel = "Custom Drawn Target"
+        };
+        canvas.Click += (_, _) =>
+        {
+            SetStatus($"CustomDrawnCanvas clicked ({canvas.ClickCount})");
+            Log($"CustomDrawnCanvas: click count={canvas.ClickCount}");
+        };
+
+        var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+        flow.Controls.Add(canvas);
         box.Controls.Add(flow);
         return box;
     }

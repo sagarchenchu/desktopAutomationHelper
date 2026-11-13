@@ -12,6 +12,7 @@ using DesktopAutomationAgent.Planning;
 using DesktopAutomationAgent.Readiness;
 using DesktopAutomationAgent.Recovery;
 using DesktopAutomationAgent.Suites;
+using DesktopAutomationAgent.Vision;
 using DesktopAutomationAgent.Workspace;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -127,6 +128,8 @@ public static class AgentServiceRegistrar
         builder.Services.AddSingleton<PlanningRetrievalService>();
         builder.Services.AddSingleton<PlanningArtifactWriter>();
         builder.Services.AddSingleton<PlanningService>();
+        builder.Services.AddSingleton(sp =>
+            VisionPolicyEvaluator.FromAgentOptions(sp.GetRequiredService<IOptions<AgentOptions>>().Value));
     }
 
     public static void ConfigureAgentConfiguration(HostApplicationBuilder builder, string[] configurationArgs)

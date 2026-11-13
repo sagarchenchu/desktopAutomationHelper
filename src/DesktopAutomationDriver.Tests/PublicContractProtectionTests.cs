@@ -37,6 +37,7 @@ public class PublicContractProtectionTests
     [InlineData("/status")]
     [InlineData("/ui")]
     [InlineData("/ui/operations")]
+    [InlineData("/debug/status")]
     public async Task ProtectedRoutes_RequireAuthentication(string path)
     {
         var middleware = new BearerTokenMiddleware(
@@ -54,6 +55,7 @@ public class PublicContractProtectionTests
     [InlineData("/status")]
     [InlineData("/ui")]
     [InlineData("/ui/operations")]
+    [InlineData("/debug/status")]
     public async Task ProtectedRoutes_AcceptValidBearerToken(string path)
     {
         var nextCalled = false;

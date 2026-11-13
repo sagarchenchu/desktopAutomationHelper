@@ -1,26 +1,51 @@
 # Debug Mode design boundaries
 
-Debug Mode (including future Ctrl+D) is **not implemented** in Phase 3.5.
+Debug Mode is implemented in Phase 8 as isolated services. Vision fallback is a
+related but independently gated deliverable.
 
 ## Do not grow the overlay or UiService for Debug Mode
 
-Future Ctrl+D work must **not** be placed directly into the large
+Ctrl+D / Debug Mode feature logic must **not** be placed directly into the large
 `RecordingOverlayWindow` or `UiService` classes.
 
-The overlay should remain a **UI/menu coordinator only**.
+The overlay remains a **UI/menu coordinator only** (thin Ctrl+D toggle and
+status text forwarding to `IDebugSessionCoordinator`).
 
-## Preferred service split
+## Service split (actual Phase 8 names)
 
-When Debug Mode is implemented, separate it into focused services such as:
+| Service | Namespace | Role |
+|---|---|---|
+| `DebugSessionCoordinator` | `DesktopAutomationDriver.Services.Debug` | Session start/stop, inspect orchestration |
+| `UiaTreeCaptureService` | `DesktopAutomationDriver.Services.Debug` | Bounded UIA ancestry/children/patterns |
+| `LocatorCandidateGenerator` | `DesktopAutomationDriver.Services.Debug` | Object-repository / Phase 3 candidate locators |
+| `NonInteractiveHighlightService` | `DesktopAutomationDriver.Services.Debug` | Yellow non-interactive highlight |
+| `CandidateVerificationService` | `DesktopAutomationDriver.Services.Debug` | Unique / ambiguous verification |
+| `DebugArtifactWriter` | `DesktopAutomationDriver.Services.Debug` | Candidate artifacts only |
 
-- debug-session coordinator
-- UIA tree capture service
-- locator-candidate generator
-- non-interactive highlight service
-- candidate verification service
-- artifact writer
+Dependency direction:
 
-## This phase
+```text
+RecordingOverlayWindow  -->  IDebugSessionCoordinator
+DebugSessionCoordinator -->  UiaTreeCaptureService
+                            LocatorCandidateGenerator
+                            NonInteractiveHighlightService
+                            CandidateVerificationService
+                            DebugArtifactWriter
+                            IUiaElementProbe
+```
 
-Phase 3.5 records the boundary only. It does **not** perform the large refactor
-or ship Debug Mode behavior.
+Vision services (`VisionFallbackPolicy`, `VisionScreenshotService`,
+`IVisionProvider` / `FakeVisionProvider`, `CoordinateActionGuard`,
+`VisionFallbackCoordinator`) live under
+`DesktopAutomationDriver.Services.Vision` and must not be folded into
+`UiService` or the overlay.
+
+## Hard rules
+
+- No automatic promotion of candidates
+- Vision disabled by default; never replaces working UIA locators
+- Highlight must not intercept clicks
+- Interactive desktop required for coordinate / hover / screenshot workflows
+  (no headless claims in this phase)
+
+See also: [`phase8-debug-vision.md`](phase8-debug-vision.md).

@@ -3,7 +3,9 @@ using System.Text;
 using System.Text.Json;
 using DesktopAutomationDriver.Middleware;
 using DesktopAutomationDriver.Services;
+using DesktopAutomationDriver.Services.Debug;
 using DesktopAutomationDriver.Services.NativeUia;
+using DesktopAutomationDriver.Services.Vision;
 using WinForms = System.Windows.Forms.Application;
 
 WinForms.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
@@ -51,6 +53,22 @@ builder.Services.AddSingleton<INativeUiaGridService, NativeUiaGridService>();
 builder.Services.AddSingleton<INativeUiaTreeDiagnosticService, NativeUiaTreeDiagnosticService>();
 builder.Services.AddSingleton<IUiOperationCatalog, UiOperationCatalog>();
 builder.Services.AddSingleton<IUiService, UiService>();
+
+// Phase 8 — Debug Mode + vision fallback (isolated services; overlay stays UI/menu only).
+builder.Services.AddSingleton<VisionFallbackOptions>(_ => new VisionFallbackOptions { Enabled = false });
+builder.Services.AddSingleton<VisionFallbackPolicy>();
+builder.Services.AddSingleton<VisionScreenshotService>();
+builder.Services.AddSingleton<IVisionProvider, FakeVisionProvider>();
+builder.Services.AddSingleton<CoordinateActionGuard>();
+builder.Services.AddSingleton<VisionFallbackCoordinator>();
+builder.Services.AddSingleton<IUiaElementProbe, FlaUIUiaElementProbe>();
+builder.Services.AddSingleton<UiaTreeCaptureService>();
+builder.Services.AddSingleton<LocatorCandidateGenerator>();
+builder.Services.AddSingleton<CandidateVerificationService>();
+builder.Services.AddSingleton<DebugArtifactWriter>();
+builder.Services.AddSingleton<IHighlightSurface, WinFormsHighlightSurface>();
+builder.Services.AddSingleton<NonInteractiveHighlightService>();
+builder.Services.AddSingleton<IDebugSessionCoordinator, DebugSessionCoordinator>();
 
 builder.Logging.AddConsole();
 

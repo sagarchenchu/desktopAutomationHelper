@@ -9,7 +9,8 @@ public enum OptionsValidationScope
     ObjectRepository,
     Knowledge,
     Jira,
-    Recovery
+    Recovery,
+    Vision
 }
 
 public sealed class AgentConfigurationException : Exception
@@ -79,6 +80,35 @@ public static class AgentOptionsValidator
         {
             ValidateJiraOptions(options.Jira);
         }
+
+        if (scope is OptionsValidationScope.Vision)
+        {
+            ValidateVisionOptions(options.Vision);
+        }
+    }
+
+    public static void ValidateVisionOptions(VisionOptions vision)
+    {
+        ArgumentNullException.ThrowIfNull(vision);
+
+        if (vision.MaxScreenshotAgeMilliseconds <= 0 || vision.MaxScreenshotAgeMilliseconds > 30_000)
+        {
+            throw new AgentConfigurationException(
+                "Vision:MaxScreenshotAgeMilliseconds must be between 1 and 30000.");
+        }
+
+        if (vision.MinimumConfidence is < 0 or > 1)
+            throw new AgentConfigurationException("Vision:MinimumConfidence must be between 0 and 1.");
+
+        var provider = (vision.Provider ?? "fake").Trim().ToLowerInvariant();
+        if (provider is not ("fake"))
+        {
+            // Phase 8 ships fake only; real OCR adapters are future work.
+            throw new AgentConfigurationException(
+                "Vision:Provider must be 'fake' in Phase 8 (real OCR providers are not enabled yet).");
+        }
+
+        vision.Provider = provider;
     }
 
     public static void ValidateJiraOptions(JiraOptions jira)
