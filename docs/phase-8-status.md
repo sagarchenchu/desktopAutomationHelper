@@ -8,7 +8,7 @@ Branch/base/head/PR:
 - Feature branch: `feature/driver-phase-8-debug-vision`
 - Base SHA: `8a4a165394623400af7a2686828ce8a6b49be044` / `8a4a165` (`origin/main` after Phase 7 merge)
 - Product / CI tip: `65a332695d24489e492efd8417e0f3abd5445871` / `65a3326`
-- Status docs tip: `e5d12bb` (this commit)
+- Status docs tip (HEAD): `349aef6`
 - Windows S1–S9 acceptance tip: `28b8712db032e867bb8433f1f2bd69161d85004d` / `28b8712`
 - Inspect re-smoke: **OK** on tip `65a3326` (IntPtr hex `windowHandle`)
 - PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft / READY FOR REVIEW** (do not merge unless instructed)
