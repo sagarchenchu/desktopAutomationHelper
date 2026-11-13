@@ -60,17 +60,22 @@ flowchart TD
 | Setting | Default | Role |
 |---|---|---|
 | `Enabled` | `true` | Master switch (false = Phase 2 fail-fast) |
-| `MaxTotalRecoveriesPerRun` | `5` | Cap across the run |
-| `MaxRecoveryAttemptsPerStep` | `3` | Cap per step |
-| `MaxAdditionalDurationSeconds` | `60` | Extra wall-clock budget |
+| `AllowMutationReplay` | `false` | When false, timed-out / uncertain mutation/invoke/input are never replayed |
+| `MaxTotalRecoveriesPerRun` | `12` | Cap of recovery **work units** (each probe/retry/model call) across the run |
+| `MaxRecoveryAttemptsPerStep` | `8` | Cap of work units per failing step |
+| `MaxAdditionalDurationSeconds` | `60` | Accumulated recovery wall-clock budget (linked CTS cancels in-flight work) |
 | `BoundedWaitMilliseconds` | `750` | Tier-1 wait |
+| `MaxCandidateArtifactBytes` | `65536` | Bound on redacted candidate repair JSON |
 | `Provider` | `fake` | CI must use fake |
 
 Additional hard rules:
 
-- **No recursive recovery** (a recovery attempt cannot start another).
+- **No recursive recovery** (a recovery work unit cannot start another).
 - **No recovery during cleanup** unless a future deterministic policy is added separately.
 - Confidence metadata never authorizes execution or promotion.
+- Multi-binding steps (`locator` + `parentLocator`/…) are **ambiguous** — recovery stops without rewriting.
+- Approved repo SHA-256 is compared before/after; candidate writes use link-aware containment under `object-repository/candidates/` only.
+- Optional manifests under `knowledge/approved/recovery/` wire equivalent transitions and application fingerprints; approved candidate markers live under `object-repository/candidates/recovery/*/approved.json`.
 
 ## Artifacts
 
@@ -97,10 +102,12 @@ requires a **separate reviewed** artifact/version.
 ```json
 "Recovery": {
   "Enabled": true,
-  "MaxTotalRecoveriesPerRun": 5,
-  "MaxRecoveryAttemptsPerStep": 3,
+  "AllowMutationReplay": false,
+  "MaxTotalRecoveriesPerRun": 12,
+  "MaxRecoveryAttemptsPerStep": 8,
   "MaxAdditionalDurationSeconds": 60,
   "BoundedWaitMilliseconds": 750,
+  "MaxCandidateArtifactBytes": 65536,
   "Provider": "fake"
 }
 ```

@@ -246,6 +246,12 @@ public static class AgentOptionsValidator
                 "Recovery:BoundedWaitMilliseconds must be between 0 and 60000.");
         }
 
+        if (recovery.MaxCandidateArtifactBytes < 1_024 || recovery.MaxCandidateArtifactBytes > 1_048_576)
+        {
+            throw new AgentConfigurationException(
+                "Recovery:MaxCandidateArtifactBytes must be between 1024 and 1048576.");
+        }
+
         if (string.IsNullOrWhiteSpace(recovery.Provider))
         {
             throw new AgentConfigurationException("Recovery:Provider is required (use 'fake' for CI).");

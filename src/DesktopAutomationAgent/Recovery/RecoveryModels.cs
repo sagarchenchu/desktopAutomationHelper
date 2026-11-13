@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DesktopAutomationAgent.Driver.Models;
 using DesktopAutomationAgent.ObjectRepository;
 
 namespace DesktopAutomationAgent.Recovery;
@@ -49,6 +50,8 @@ public sealed class RecoveryRunSummary
 
     public string? ObjectRepositorySha256 { get; init; }
 
+    public string? ObjectRepositorySha256After { get; init; }
+
     public bool PlanMutated { get; init; }
 
     public bool ApprovedRepositoryMutated { get; init; }
@@ -76,10 +79,15 @@ public sealed class RecoveryContext
 
     public ObjectRepositorySnapshot? RepositorySnapshot { get; init; }
 
+    public OperationsCatalogDto? Catalog { get; init; }
+
     public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> StepObjectBindings { get; init; }
         = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal);
 
     public IReadOnlyDictionary<string, ApprovedEquivalentTransition>? EquivalentTransitions { get; init; }
+
+    /// <summary>objectRef → approved candidate locator ready for unique verification.</summary>
+    public IReadOnlyDictionary<string, ObjectLocator>? ApprovedCandidateLocators { get; init; }
 
     public IReadOnlySet<string>? ApprovedCandidateLocatorIds { get; init; }
 
@@ -135,6 +143,9 @@ public sealed class RecoveryDecision
     public string? Evidence { get; init; }
 
     public string? ObjectReference { get; init; }
+
+    /// <summary>Exact locator argument key that failed (locator/locator2/parentLocator/containerLocator).</summary>
+    public string? BindingKey { get; init; }
 }
 
 public sealed class RecoveryOutcome
@@ -153,7 +164,6 @@ public sealed class RecoveryOutcome
 
     public Plans.PlanStep? RewrittenStep { get; init; }
 
-    /// <summary>Successful step result produced by a recovery tier, when Recovered is true.</summary>
     public Execution.StepRunResult? RecoveredStepResult { get; init; }
 
     public IReadOnlyList<RecoveryAttemptRecord> Attempts { get; init; } = Array.Empty<RecoveryAttemptRecord>();

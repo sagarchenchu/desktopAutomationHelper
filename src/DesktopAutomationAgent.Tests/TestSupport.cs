@@ -87,6 +87,7 @@ internal static class TestSupport
         services.AddSingleton<ApprovedAlternateLocatorResolver>();
         services.AddSingleton<RecoveryArtifactWriter>();
         services.AddSingleton<CandidateRepairWriter>();
+        services.AddSingleton<RecoveryManifestLoader>();
         services.AddSingleton<IRecoveryModelClient, FakeRecoveryModelClient>();
         services.AddSingleton<RecoveryLadderService>();
     }
@@ -97,12 +98,13 @@ internal static class TestSupport
         IDriverUiClient uiClient) =>
         new(
             Wrap(options),
-            new RecoveryFailureClassifier(),
+            RecoveryFailureClassifier.ForTests(options.Recovery),
             new ApprovedAlternateLocatorResolver(),
             new RecoveryArtifactWriter(workspace),
-            new CandidateRepairWriter(workspace),
+            CandidateRepairWriter.ForTests(workspace, options.Recovery),
             new FakeRecoveryModelClient(),
             uiClient,
+            new ObjectReferenceResolver(),
             NullLogger<RecoveryLadderService>.Instance);
 
     public static DeterministicPlanRunner CreatePlanRunner(
@@ -111,11 +113,12 @@ internal static class TestSupport
         IHttpClientFactory factory)
     {
         var uiClient = new DriverUiClient(Wrap(options), factory, NullLogger<DriverUiClient>.Instance);
+        var repositoryReader = new ObjectRepositoryReader(Wrap(options), workspace);
         return new DeterministicPlanRunner(
             Wrap(options),
             CreatePlanReader(options, workspace),
             new PlanObjectRepositoryIntegrator(
-                new ObjectRepositoryReader(Wrap(options), workspace),
+                repositoryReader,
                 new PlanObjectReferenceExpander(new ObjectReferenceResolver())),
             workspace,
             new DriverConnectionResolver(Wrap(options), factory, NullLogger<DriverConnectionResolver>.Instance),
@@ -125,6 +128,8 @@ internal static class TestSupport
             new RunArtifactWriter(),
             CreateRecoveryLadder(options, workspace, uiClient),
             new RecoveryArtifactWriter(workspace),
+            new RecoveryManifestLoader(workspace),
+            repositoryReader,
             NullLogger<DeterministicPlanRunner>.Instance);
     }
 

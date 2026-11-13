@@ -26,6 +26,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
     private readonly RunArtifactWriter _artifactWriter;
     private readonly RecoveryLadderService _recoveryLadder;
     private readonly RecoveryArtifactWriter _recoveryArtifactWriter;
+    private readonly RecoveryManifestLoader _recoveryManifestLoader;
+    private readonly ObjectRepositoryReader _objectRepositoryReader;
     private readonly ILogger<DeterministicPlanRunner> _logger;
 
     public DeterministicPlanRunner(
@@ -40,6 +42,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         RunArtifactWriter artifactWriter,
         RecoveryLadderService recoveryLadder,
         RecoveryArtifactWriter recoveryArtifactWriter,
+        RecoveryManifestLoader recoveryManifestLoader,
+        ObjectRepositoryReader objectRepositoryReader,
         ILogger<DeterministicPlanRunner> logger)
     {
         _options = options.Value;
@@ -53,6 +57,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         _artifactWriter = artifactWriter;
         _recoveryLadder = recoveryLadder;
         _recoveryArtifactWriter = recoveryArtifactWriter;
+        _recoveryManifestLoader = recoveryManifestLoader;
+        _objectRepositoryReader = objectRepositoryReader;
         _logger = logger;
     }
 
@@ -220,7 +226,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             }
             else
             {
-                var recoveryBudget = new RecoveryBudgetTracker(_options.Recovery, startedAt);
+                using var recoveryBudget = new RecoveryBudgetTracker(_options.Recovery);
+                var (approvedCandidateLocators, approvedCandidateIds) = _recoveryManifestLoader.LoadApprovedCandidates();
                 var recoveryContext = new RecoveryContext
                 {
                     RunId = runId,
@@ -230,8 +237,15 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                     ObjectRepositoryPath = validation.ObjectRepositoryPath,
                     ObjectRepositorySha256 = validation.ObjectRepositorySha256,
                     RepositorySnapshot = validation.ObjectRepositorySnapshot,
+                    Catalog = catalog,
                     StepObjectBindings = validation.StepObjectBindings
-                        ?? new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
+                        ?? new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal),
+                    EquivalentTransitions = _recoveryManifestLoader.LoadEquivalentTransitions(),
+                    ApprovedCandidateLocators = approvedCandidateLocators,
+                    ApprovedCandidateLocatorIds = approvedCandidateIds,
+                    ApplicationFingerprint = driverStatus.Build?.Version
+                        ?? catalog?.DriverVersion,
+                    ExpectedApplicationFingerprint = _recoveryManifestLoader.LoadExpectedApplicationFingerprint()
                 };
 
                 var steps = manifest.Steps!;
@@ -339,7 +353,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                     validation.PlanPath,
                     validation.ObjectRepositoryPath,
                     recoveryAttempts,
-                    failure is null ? "passed" : "failed");
+                    failure is null ? "passed" : "failed",
+                    _objectRepositoryReader);
 
                 if (recoveryAttempts.Count > 0)
                 {
@@ -826,7 +841,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         string planPath,
         string? objectRepositoryPath,
         List<RecoveryAttemptRecord> attempts,
-        string finalResult)
+        string finalResult,
+        ObjectRepositoryReader repositoryReader)
     {
         var planMutated = false;
         if (originalPlanBytes is not null && File.Exists(planPath))
@@ -835,12 +851,32 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             planMutated = !originalPlanBytes.AsSpan().SequenceEqual(current);
         }
 
+        string? afterHash = null;
         var repoMutated = false;
-        // Approved pages must never be written by recovery; detect unexpected mutation under pages/.
         if (!string.IsNullOrWhiteSpace(objectRepositoryPath))
         {
-            // Hash comparison is done at run start via ObjectRepositorySha256; recovery never writes pages/.
-            repoMutated = false;
+            try
+            {
+                var after = repositoryReader.Read(objectRepositoryPath);
+                if (after.IsValid && after.Snapshot is not null)
+                {
+                    afterHash = after.Snapshot.AggregateSha256;
+                    if (!string.IsNullOrWhiteSpace(objectRepositorySha256)
+                        && !string.Equals(objectRepositorySha256, afterHash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        repoMutated = true;
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(objectRepositorySha256))
+                {
+                    // Unable to re-read a previously hashed repo — treat as mutated/fail-closed signal.
+                    repoMutated = true;
+                }
+            }
+            catch
+            {
+                repoMutated = !string.IsNullOrWhiteSpace(objectRepositorySha256);
+            }
         }
 
         return new RecoveryRunSummary
@@ -848,6 +884,7 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             RunId = runId,
             OriginalPlanSha256 = originalPlanSha256,
             ObjectRepositorySha256 = objectRepositorySha256,
+            ObjectRepositorySha256After = afterHash,
             PlanMutated = planMutated,
             ApprovedRepositoryMutated = repoMutated,
             TotalRecoveryAttempts = attempts.Count,

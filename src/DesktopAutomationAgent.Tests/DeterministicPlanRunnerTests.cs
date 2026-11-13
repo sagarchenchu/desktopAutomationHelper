@@ -422,20 +422,22 @@ public class DeterministicPlanRunnerTests
             TestSupport.Wrap(options),
             TestSupport.CreateFactory(handler),
             NullLogger<DriverUiClient>.Instance);
+        var repositoryReader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
         var recoveryLadder = new RecoveryLadderService(
             TestSupport.Wrap(options),
-            new RecoveryFailureClassifier(),
+            RecoveryFailureClassifier.ForTests(options.Recovery),
             new ApprovedAlternateLocatorResolver(),
             new RecoveryArtifactWriter(workspace),
-            new CandidateRepairWriter(workspace),
+            CandidateRepairWriter.ForTests(workspace, options.Recovery),
             new FakeRecoveryModelClient(),
             uiClient,
+            new ObjectReferenceResolver(),
             NullLogger<RecoveryLadderService>.Instance);
         return new DeterministicPlanRunner(
             TestSupport.Wrap(options),
             TestSupport.CreatePlanReader(options, workspace),
             new PlanObjectRepositoryIntegrator(
-                new ObjectRepositoryReader(TestSupport.Wrap(options), workspace),
+                repositoryReader,
                 new PlanObjectReferenceExpander(new ObjectReferenceResolver())),
             workspace,
             new DriverConnectionResolver(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverConnectionResolver>.Instance),
@@ -445,6 +447,8 @@ public class DeterministicPlanRunnerTests
             new RunArtifactWriter(),
             recoveryLadder,
             new RecoveryArtifactWriter(workspace),
+            new RecoveryManifestLoader(workspace),
+            repositoryReader,
             NullLogger<DeterministicPlanRunner>.Instance);
     }
 

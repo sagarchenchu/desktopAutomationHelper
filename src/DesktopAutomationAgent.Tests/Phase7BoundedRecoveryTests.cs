@@ -5,6 +5,7 @@ using System.Text.Json;
 using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
+using DesktopAutomationAgent.Driver.Models;
 using DesktopAutomationAgent.Execution;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
@@ -26,7 +27,7 @@ public sealed class Phase7BoundedRecoveryTests
     [InlineData("unknown operation foobar", RecoveryClassification.UnknownOperation)]
     public void Classifier_MapsEveryFailureClassification(string message, RecoveryClassification expected)
     {
-        var classifier = new RecoveryFailureClassifier();
+        var classifier = RecoveryFailureClassifier.ForTests();
         var step = new StepRunResult
         {
             Sequence = 1,
@@ -55,7 +56,7 @@ public sealed class Phase7BoundedRecoveryTests
     [Fact]
     public void Classifier_AuthenticationNeverRecoverable()
     {
-        var decision = new RecoveryFailureClassifier().Classify(
+        var decision = RecoveryFailureClassifier.ForTests().Classify(
             new StepRunResult
             {
                 Sequence = 1,
@@ -76,7 +77,7 @@ public sealed class Phase7BoundedRecoveryTests
     [Fact]
     public void Classifier_CompileSchemaNeverRecoverable()
     {
-        var decision = new RecoveryFailureClassifier().Classify(
+        var decision = RecoveryFailureClassifier.ForTests().Classify(
             new StepRunResult
             {
                 Sequence = 1,
@@ -329,7 +330,7 @@ public sealed class Phase7BoundedRecoveryTests
     public async Task StaleBuild_Stops()
     {
         var options = ReadyOptions();
-        var classifier = new RecoveryFailureClassifier();
+        var classifier = RecoveryFailureClassifier.ForTests();
         var decision = classifier.Classify(
             new StepRunResult
             {
@@ -367,15 +368,240 @@ public sealed class Phase7BoundedRecoveryTests
             MaxRecoveryAttemptsPerStep = 1,
             MaxAdditionalDurationSeconds = 30
         };
-        var tracker = new RecoveryBudgetTracker(options);
+        using var tracker = new RecoveryBudgetTracker(options);
 
-        Assert.True(tracker.TryBeginAttempt("s1", out _));
-        Assert.False(tracker.TryBeginAttempt("s1", out var recursive));
+        Assert.True(tracker.TryConsumeUnit("s1", CancellationToken.None, out _, out _));
+        Assert.False(tracker.TryConsumeUnit("s1", CancellationToken.None, out _, out var recursive));
         Assert.Equal("no-recursive-recovery", recursive);
-        tracker.EndAttempt();
+        tracker.EndUnit();
 
-        Assert.False(tracker.TryBeginAttempt("s2", out var total));
+        Assert.False(tracker.TryConsumeUnit("s2", CancellationToken.None, out _, out var total));
         Assert.Equal("max-total-recoveries", total);
+    }
+
+    [Fact]
+    public void Budgets_ConsumePerProbe_AndLinkDeadline()
+    {
+        var options = new RecoveryOptions
+        {
+            Enabled = true,
+            MaxTotalRecoveriesPerRun = 3,
+            MaxRecoveryAttemptsPerStep = 2,
+            MaxAdditionalDurationSeconds = 60
+        };
+        using var tracker = new RecoveryBudgetTracker(options);
+
+        Assert.True(tracker.TryConsumeUnit("s1", CancellationToken.None, out var token1, out _));
+        Assert.False(token1.IsCancellationRequested);
+        tracker.EndUnit();
+
+        Assert.True(tracker.TryConsumeUnit("s1", CancellationToken.None, out _, out _));
+        tracker.EndUnit();
+
+        Assert.False(tracker.TryConsumeUnit("s1", CancellationToken.None, out _, out var perStep));
+        Assert.Equal("max-per-step-recoveries", perStep);
+        Assert.Equal(2, tracker.TotalAttempts);
+    }
+
+    [Fact]
+    public void Classifier_TimedOutMutation_NotRecoverable()
+    {
+        var decision = RecoveryFailureClassifier.ForTests().Classify(
+            new StepRunResult
+            {
+                Sequence = 1,
+                Id = "s1",
+                Operation = "click",
+                Phase = "steps",
+                Status = "failed",
+                Success = false,
+                Error = "Step 's1' timed out after 1 seconds.",
+                Classification = UiFailureClassification.ExecutionTimeout
+            },
+            EmptyContext());
+
+        Assert.Equal(RecoveryClassification.NotRecoverable, decision.Classification);
+        Assert.False(decision.MayAttemptRecovery);
+    }
+
+    [Fact]
+    public void Classifier_MultiBinding_Ambiguous()
+    {
+        var decision = RecoveryFailureClassifier.ForTests().Classify(
+            new StepRunResult
+            {
+                Sequence = 1,
+                Id = "s1",
+                Operation = "finduia",
+                Phase = "steps",
+                Status = "failed",
+                Success = false,
+                Error = "Element not found",
+                Classification = UiFailureClassification.OperationFailure
+            },
+            new RecoveryContext
+            {
+                RunId = "r",
+                RunDirectory = Path.GetTempPath(),
+                PlanPath = "p",
+                OriginalPlanSha256 = "abc",
+                StepObjectBindings = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
+                {
+                    ["s1"] = new Dictionary<string, string>(StringComparer.Ordinal)
+                    {
+                        ["locator"] = "login.submit",
+                        ["parentLocator"] = "login.form"
+                    }
+                }
+            });
+
+        Assert.Equal(RecoveryClassification.AmbiguousLocator, decision.Classification);
+        Assert.False(decision.MayAttemptRecovery);
+        Assert.Null(decision.BindingKey);
+    }
+
+    [Fact]
+    public void Classifier_SingleBinding_CarriesExactKey()
+    {
+        var decision = RecoveryFailureClassifier.ForTests().Classify(
+            new StepRunResult
+            {
+                Sequence = 1,
+                Id = "s1",
+                Operation = "finduia",
+                Phase = "steps",
+                Status = "failed",
+                Success = false,
+                Error = "Element not found",
+                Classification = UiFailureClassification.OperationFailure
+            },
+            new RecoveryContext
+            {
+                RunId = "r",
+                RunDirectory = Path.GetTempPath(),
+                PlanPath = "p",
+                OriginalPlanSha256 = "abc",
+                StepObjectBindings = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
+                {
+                    ["s1"] = new Dictionary<string, string>(StringComparer.Ordinal)
+                    {
+                        ["parentLocator"] = "login.form"
+                    }
+                }
+            });
+
+        Assert.Equal(RecoveryClassification.StateNotStable, decision.Classification);
+        Assert.Equal("parentLocator", decision.BindingKey);
+        Assert.Equal("login.form", decision.ObjectReference);
+    }
+
+    [Fact]
+    public async Task TimedOutClick_ExactlyOneUiPost()
+    {
+        var uiPosts = 0;
+        var handler = MutationCatalogHandler(async (req, ct) =>
+        {
+            if (req.Method != HttpMethod.Post)
+                return DefaultGetWithMutations(req);
+
+            Interlocked.Increment(ref uiPosts);
+            await Task.Delay(TimeSpan.FromSeconds(30), ct);
+            return FakeHttpMessageHandler.Json(new { success = true, value = "late" });
+        });
+
+        var options = ReadyOptions();
+        options.Runner.StepTransportTimeoutSeconds = 1;
+        options.Recovery.BoundedWaitMilliseconds = 1;
+        var plan = TestSupport.MinimalPlanJson(stepsOverride: """
+            [ { "id": "click", "operation": "clickuia", "arguments": { "locator": { "automationId": "Pay" } } } ]
+            """);
+        var path = TestSupport.WritePlan(options, "timeout-click.plan.json", plan);
+        var report = await CreateRunner(options, handler).RunAsync(path, dryRun: false);
+
+        Assert.Equal("failed", report.Status);
+        Assert.Equal(1, uiPosts);
+        Assert.True(
+            report.Recovery is null
+            || report.Recovery.Attempts.Count == 0
+            || report.Recovery.Attempts.All(a => a.Tier == RecoveryTier.None),
+            $"recovery={JsonSerializer.Serialize(report.Recovery)}; failure={report.Failure?.Message}");
+    }
+
+    [Fact]
+    public async Task TimedOutType_ExactlyOneUiPost()
+    {
+        var uiPosts = 0;
+        var handler = MutationCatalogHandler(async (req, ct) =>
+        {
+            if (req.Method != HttpMethod.Post)
+                return DefaultGetWithMutations(req);
+
+            Interlocked.Increment(ref uiPosts);
+            await Task.Delay(TimeSpan.FromSeconds(30), ct);
+            return FakeHttpMessageHandler.Json(new { success = true, value = "late" });
+        });
+
+        var options = ReadyOptions();
+        options.Runner.StepTransportTimeoutSeconds = 1;
+        options.Recovery.BoundedWaitMilliseconds = 1;
+        var plan = TestSupport.MinimalPlanJson(stepsOverride: """
+            [ { "id": "type", "operation": "typeuia", "arguments": { "locator": { "automationId": "User" }, "value": "secret" } } ]
+            """);
+        var path = TestSupport.WritePlan(options, "timeout-type.plan.json", plan);
+        var report = await CreateRunner(options, handler).RunAsync(path, dryRun: false);
+
+        Assert.Equal("failed", report.Status);
+        Assert.Equal(1, uiPosts);
+        Assert.True(
+            report.Recovery is null
+            || report.Recovery.Attempts.Count == 0
+            || report.Recovery.Attempts.All(a => a.Tier == RecoveryTier.None),
+            $"recovery={JsonSerializer.Serialize(report.Recovery)}; failure={report.Failure?.Message}");
+    }
+
+    [Fact]
+    public async Task ApprovedRepositoryHash_ComparedBeforeAfter()
+    {
+        var options = ReadyOptions();
+        options.Recovery.BoundedWaitMilliseconds = 1;
+        SeedRepoWithAlternate(options, ambiguous: false);
+
+        var handler = ReadyHandler((req, _) =>
+        {
+            if (req.Method != HttpMethod.Post)
+                return Task.FromResult(DefaultGet(req));
+
+            return Task.FromResult(FakeHttpMessageHandler.Json(new
+            {
+                success = false,
+                error = "Element not found for finduia"
+            }));
+        });
+
+        var plan = """
+            {
+              "schemaVersion": 1,
+              "catalogSchemaVersion": 2,
+              "planId": "HASH-1",
+              "name": "hash",
+              "objectRepository": "object-repository/repository.json",
+              "steps": [
+                {
+                  "id": "find",
+                  "operation": "finduia",
+                  "arguments": { "locator": { "$objectRef": "login.submit" } }
+                }
+              ]
+            }
+            """;
+        var path = TestSupport.WritePlan(options, "hash.plan.json", plan);
+        var report = await CreateRunner(options, handler).RunAsync(path, dryRun: false);
+
+        Assert.NotNull(report.Recovery);
+        Assert.False(string.IsNullOrWhiteSpace(report.Recovery!.ObjectRepositorySha256));
+        Assert.False(string.IsNullOrWhiteSpace(report.Recovery.ObjectRepositorySha256After));
+        Assert.Equal(report.Recovery.ObjectRepositorySha256, report.Recovery.ObjectRepositorySha256After);
+        Assert.False(report.Recovery.ApprovedRepositoryMutated);
     }
 
     [Fact]
@@ -534,7 +760,17 @@ public sealed class Phase7BoundedRecoveryTests
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> onRequest) =>
         new(onRequest);
 
-    private static HttpResponseMessage DefaultGet(HttpRequestMessage req)
+    private static FakeHttpMessageHandler MutationCatalogHandler(
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> onRequest) =>
+        new(onRequest);
+
+    private static HttpResponseMessage DefaultGet(HttpRequestMessage req) =>
+        DefaultGetCore(req, CatalogFixtures.Phase2Catalog());
+
+    private static HttpResponseMessage DefaultGetWithMutations(HttpRequestMessage req) =>
+        DefaultGetCore(req, MutationCatalog());
+
+    private static HttpResponseMessage DefaultGetCore(HttpRequestMessage req, object catalog)
     {
         if (req.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.OrdinalIgnoreCase))
         {
@@ -556,11 +792,35 @@ public sealed class Phase7BoundedRecoveryTests
             return FakeHttpMessageHandler.Json(new
             {
                 success = true,
-                value = CatalogFixtures.Phase2Catalog()
+                value = catalog
             });
         }
 
         return new HttpResponseMessage(HttpStatusCode.NotFound);
+    }
+
+    private static object MutationCatalog()
+    {
+        var catalog = CatalogFixtures.Phase2Catalog();
+        catalog.Operations.Add(new OperationDescriptorDto
+        {
+            Name = "clickuia",
+            Aliases = [],
+            Category = "element-action",
+            OperationType = "invoke",
+            RequiresSession = false,
+            RequiredInputs = ["locator"]
+        });
+        catalog.Operations.Add(new OperationDescriptorDto
+        {
+            Name = "typeuia",
+            Aliases = [],
+            Category = "element-action",
+            OperationType = "input",
+            RequiresSession = false,
+            RequiredInputs = ["locator", "value"]
+        });
+        return catalog;
     }
 
     private static string Sha256File(string path)
