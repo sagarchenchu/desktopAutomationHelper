@@ -834,6 +834,48 @@ public class Phase5McpTests
     }
 
     [Fact]
+    public async Task Tools_MaxLength_EnforcedBeforeFacade_VerifyNoOtherCalls()
+    {
+        var mock = new Mock<IDesktopMcpFacade>(MockBehavior.Strict);
+        var tools = new DesktopMcpTools(mock.Object);
+
+        async Task AssertValidation(CallToolResult result)
+        {
+            Assert.True(result.IsError == true, GetRawText(result));
+            AssertRawWireHasNoSecret(result);
+            AssertWireIsValidJsonUnderBudget(result);
+            using var doc = JsonDocument.Parse(GetRawText(result));
+            Assert.Equal(McpErrorCode.Validation, doc.RootElement.GetProperty("errorCode").GetString());
+            Assert.Contains("maximum length", doc.RootElement.GetProperty("message").GetString(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        var key65 = new string('K', 65);
+        var runId129 = new string('R', 129);
+        var query257 = new string('Q', 257);
+        var path513 = new string('P', 513);
+
+        await AssertValidation(await tools.DesktopCompileKey(
+            key65, file: null, fromJira: false, null, null, null, null, false, CancellationToken.None));
+        await AssertValidation(await tools.DesktopRunKey(
+            key65, dryRun: true, fromJira: false, null, null, null, null, CancellationToken.None));
+        await AssertValidation(await tools.DesktopGetRunSummary(runId129, CancellationToken.None));
+        await AssertValidation(await tools.DesktopSearchKnowledge(
+            "knowledge/app.json", query257, null, CancellationToken.None));
+        await AssertValidation(await tools.DesktopValidatePlan(path513, CancellationToken.None));
+        await AssertValidation(await tools.DesktopRunPlan(path513, dryRun: true, CancellationToken.None));
+        await AssertValidation(await tools.DesktopExploreDryRun(path513, CancellationToken.None));
+        await AssertValidation(await tools.DesktopExplore(path513, CancellationToken.None));
+        await AssertValidation(await tools.DesktopSearchKnowledge(path513, "ok", null, CancellationToken.None));
+        await AssertValidation(await tools.DesktopRunSuite(path513, dryRun: true, fromJira: false, false, null, null, null, null, null, CancellationToken.None));
+        await AssertValidation(await tools.DesktopCompileKey(
+            "SAMPLE-1", file: path513, fromJira: false, null, null, null, null, false, CancellationToken.None));
+        await AssertValidation(await tools.DesktopObserve(
+            null, null, null, null, null, false, false, false, null, null, path513, CancellationToken.None));
+
+        mock.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task Protocol_InvalidInput_RequiredOmissions_NoFacadeCalls()
     {
         var mock = new Mock<IDesktopMcpFacade>(MockBehavior.Strict);

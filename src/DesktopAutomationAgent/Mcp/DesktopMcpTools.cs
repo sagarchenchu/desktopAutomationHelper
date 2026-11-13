@@ -65,7 +65,7 @@ public sealed class DesktopMcpTools
                 includeHelpText,
                 includeFocusState,
                 actionableOnly,
-                outputPath,
+                OptionalArg(outputPath, nameof(outputPath), maxLength: 512),
                 cancellationToken);
         });
 
@@ -75,14 +75,14 @@ public sealed class DesktopMcpTools
     public Task<CallToolResult> DesktopExploreDryRun(
         [Required, MaxLength(512), Description("Workspace-contained exploration policy path")] string policyPath,
         CancellationToken cancellationToken = default) =>
-        InvokeAsync(() => _facade.ExploreAsync(RequireArg(policyPath, nameof(policyPath)), dryRun: true, cancellationToken));
+        InvokeAsync(() => _facade.ExploreAsync(RequireArg(policyPath, nameof(policyPath), maxLength: 512), dryRun: true, cancellationToken));
 
     [McpServerTool(Name = "desktop_explore", Title = "Desktop explore", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]
     [Description("Navigation: policy-bounded observe/navigate explorer. Deny-by-default; no typing or transactional actions. Not unrestricted execution.")]
     public Task<CallToolResult> DesktopExplore(
         [Required, MaxLength(512), Description("Workspace-contained exploration policy path")] string policyPath,
         CancellationToken cancellationToken = default) =>
-        InvokeAsync(() => _facade.ExploreAsync(RequireArg(policyPath, nameof(policyPath)), dryRun: false, cancellationToken));
+        InvokeAsync(() => _facade.ExploreAsync(RequireArg(policyPath, nameof(policyPath), maxLength: 512), dryRun: false, cancellationToken));
 
     [McpServerTool(Name = "desktop_search_knowledge", Title = "Desktop search knowledge", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("Observation: deterministic lexical search over approved application knowledge (no embeddings).")]
@@ -96,8 +96,8 @@ public sealed class DesktopMcpTools
             cancellationToken.ThrowIfCancellationRequested();
             ValidateOptionalRange(limit, nameof(limit), 1, 100);
             return Task.FromResult(_facade.SearchKnowledge(
-                RequireArg(knowledgePath, nameof(knowledgePath)),
-                RequireArg(query, nameof(query)),
+                RequireArg(knowledgePath, nameof(knowledgePath), maxLength: 512),
+                RequireArg(query, nameof(query), maxLength: 256),
                 limit));
         });
 
@@ -109,7 +109,7 @@ public sealed class DesktopMcpTools
         InvokeAsync(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(_facade.ValidatePlan(RequireArg(planPath, nameof(planPath))));
+            return Task.FromResult(_facade.ValidatePlan(RequireArg(planPath, nameof(planPath), maxLength: 512)));
         });
 
     // Not ReadOnly: compile writes plan-cache artifacts. OpenWorld=true: fromJira may contact remote Jira.
@@ -127,18 +127,24 @@ public sealed class DesktopMcpTools
         CancellationToken cancellationToken = default) =>
         InvokeAsync(async () =>
         {
-            var safeKey = RequireArg(key, nameof(key));
+            var safeKey = RequireArg(key, nameof(key), maxLength: 64);
+            var safeFile = OptionalArg(file, nameof(file), maxLength: 512);
+            var safeRegistry = OptionalArg(registry, nameof(registry), maxLength: 512);
+            var safeObjectRepository = OptionalArg(objectRepository, nameof(objectRepository), maxLength: 512);
+            var safeKnowledge = OptionalArg(knowledge, nameof(knowledge), maxLength: 512);
+            var safeCatalog = OptionalArg(catalog, nameof(catalog), maxLength: 512);
             if (fromJira)
             {
-                if (!string.IsNullOrWhiteSpace(file))
+                if (!string.IsNullOrWhiteSpace(safeFile))
                     throw new McpToolException(McpErrorCode.Validation, "fromJira cannot be combined with file.");
                 return await _facade.CompileKeyFromJiraAsync(
-                        safeKey, registry, objectRepository, knowledge, catalog, explain, cancellationToken)
+                        safeKey, safeRegistry, safeObjectRepository, safeKnowledge, safeCatalog, explain, cancellationToken)
                     .ConfigureAwait(false);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            return _facade.CompileKey(safeKey, file, fromJira: false, registry, objectRepository, knowledge, catalog, explain);
+            return _facade.CompileKey(
+                safeKey, safeFile, fromJira: false, safeRegistry, safeObjectRepository, safeKnowledge, safeCatalog, explain);
         });
 
     [McpServerTool(Name = "desktop_run_plan", Title = "Desktop run plan", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]
@@ -147,7 +153,7 @@ public sealed class DesktopMcpTools
         [Required, MaxLength(512)] string planPath,
         bool dryRun = true,
         CancellationToken cancellationToken = default) =>
-        InvokeAsync(() => _facade.RunPlanAsync(RequireArg(planPath, nameof(planPath)), dryRun, cancellationToken));
+        InvokeAsync(() => _facade.RunPlanAsync(RequireArg(planPath, nameof(planPath), maxLength: 512), dryRun, cancellationToken));
 
     // OpenWorld=true when fromJira syncs from remote Jira before execution.
     [McpServerTool(Name = "desktop_run_key", Title = "Desktop run key", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]
@@ -162,7 +168,14 @@ public sealed class DesktopMcpTools
         [MaxLength(512)] string? catalog = null,
         CancellationToken cancellationToken = default) =>
         InvokeAsync(() => _facade.RunKeyAsync(
-            RequireArg(key, nameof(key)), dryRun, fromJira, registry, objectRepository, knowledge, catalog, cancellationToken));
+            RequireArg(key, nameof(key), maxLength: 64),
+            dryRun,
+            fromJira,
+            OptionalArg(registry, nameof(registry), maxLength: 512),
+            OptionalArg(objectRepository, nameof(objectRepository), maxLength: 512),
+            OptionalArg(knowledge, nameof(knowledge), maxLength: 512),
+            OptionalArg(catalog, nameof(catalog), maxLength: 512),
+            cancellationToken));
 
     [McpServerTool(Name = "desktop_run_suite", Title = "Desktop run suite", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]
     [Description("Execution: sequential suite orchestration. Fail-fast by default. fromJira may contact remote Jira; dryRun defaults to true (omission never live-runs / never POST /ui).")]
@@ -181,15 +194,15 @@ public sealed class DesktopMcpTools
         {
             ValidateOptionalRange(maxFailures, nameof(maxFailures), 1, 10_000);
             return _facade.RunSuiteAsync(
-                RequireArg(suitePath, nameof(suitePath)),
+                RequireArg(suitePath, nameof(suitePath), maxLength: 512),
                 dryRun,
                 fromJira,
                 continueOnFailure,
                 maxFailures,
-                registry,
-                objectRepository,
-                knowledge,
-                catalog,
+                OptionalArg(registry, nameof(registry), maxLength: 512),
+                OptionalArg(objectRepository, nameof(objectRepository), maxLength: 512),
+                OptionalArg(knowledge, nameof(knowledge), maxLength: 512),
+                OptionalArg(catalog, nameof(catalog), maxLength: 512),
                 cancellationToken);
         });
 
@@ -201,14 +214,35 @@ public sealed class DesktopMcpTools
         InvokeAsync(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(_facade.GetRunSummary(RequireArg(runId, nameof(runId))));
+            return Task.FromResult(_facade.GetRunSummary(RequireArg(runId, nameof(runId), maxLength: 128)));
         });
 
-    private static string RequireArg(string? value, string name)
+    private static string RequireArg(string? value, string name, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value))
             throw new McpToolException(McpErrorCode.Validation, $"{name} is required.");
+        EnsureMaxLength(value, name, maxLength);
         return value;
+    }
+
+    private static string? OptionalArg(string? value, string name, int maxLength)
+    {
+        if (value is null)
+            return null;
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        EnsureMaxLength(value, name, maxLength);
+        return value;
+    }
+
+    private static void EnsureMaxLength(string value, string name, int maxLength)
+    {
+        if (value.Length > maxLength)
+        {
+            throw new McpToolException(
+                McpErrorCode.Validation,
+                $"{name} exceeds maximum length of {maxLength}.");
+        }
     }
 
     private static void ValidateOptionalEnum(string? value, string name, HashSet<string> allowed)
