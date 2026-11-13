@@ -33,9 +33,9 @@ dotnet run --project src/DesktopAutomationAgent -- mcp-server
 
 - The MCP client and agent run as the **same local user**
 - Driver discovery remains the existing internal/local mechanism
-- File arguments must resolve **inside the workspace root** (path traversal rejected)
-- Structured errors are redacted (`SecretRedactor`)
-- Observation responses are **bounded** (depth/children/nodes + response character budget)
+- File arguments must resolve **inside the workspace root** after link-aware expansion (symlinks / junctions / chained reparse points rejected when they escape)
+- Structured errors are redacted (`SecretRedactor`); JSON string values stay valid after redaction
+- Observation responses are **bounded** (depth/children/nodes + progressive response character budget; always valid JSON)
 - Opaque observe refs are in-process only and expire (default 15 minutes)
 - Tool descriptions distinguish **observation / navigation / mutation / execution / validation**
 - There is **no** unrestricted `desktop_execute` tool
@@ -50,10 +50,10 @@ dotnet run --project src/DesktopAutomationAgent -- mcp-server
 | `desktop_explore` | navigation | Policy-bounded explorer |
 | `desktop_search_knowledge` | observation | Lexical knowledge search |
 | `desktop_validate_plan` | validation | Offline plan validation |
-| `desktop_compile_key` | validation | BDD compile (`fromJira` optional sync) |
+| `desktop_compile_key` | validation | BDD compile; `fromJira` is OpenWorld (read-only remote sync) |
 | `desktop_run_plan` | execution | Phase 2 runner (`dryRun` skips POST /ui) |
-| `desktop_run_key` | execution | Compile + run key |
-| `desktop_run_suite` | execution | Sequential suite orchestration |
+| `desktop_run_key` | execution | Compile + run key; OpenWorld when `fromJira` |
+| `desktop_run_suite` | execution | Sequential suite orchestration; OpenWorld when `fromJira` |
 | `desktop_get_run_summary` | observation | Compact sanitized run / suite-run summary |
 
 ### Errors

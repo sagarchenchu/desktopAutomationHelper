@@ -29,18 +29,18 @@ public sealed class DesktopMcpTools
     [McpServerTool(Name = "desktop_observe", Title = "Desktop observe", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description("Observation: capture a bounded semantic UI snapshot (no clicks/types). Returns compact nodes with opaque refs that expire; never a raw unlimited UIA tree.")]
     public Task<CallToolResult> DesktopObserve(
-        [Description("control|content|raw")] string? view,
-        [Description("activeWindow|processWindows|desktopChildren")] string? root,
-        [Range(0, 12)] int? maxDepth,
-        [Range(1, 200)] int? maxChildren,
-        [Range(1, 500)] int? maxNodes,
-        bool includeOffscreen,
-        bool includeBounds,
-        bool includeHelpText,
-        bool? includeFocusState,
-        bool? actionableOnly,
-        [MaxLength(512)] string? outputPath,
-        CancellationToken cancellationToken) =>
+        [Description("control|content|raw")] string? view = null,
+        [Description("activeWindow|processWindows|desktopChildren")] string? root = null,
+        [Range(0, 12)] int? maxDepth = null,
+        [Range(1, 200)] int? maxChildren = null,
+        [Range(1, 500)] int? maxNodes = null,
+        bool includeOffscreen = false,
+        bool includeBounds = false,
+        bool includeHelpText = false,
+        bool? includeFocusState = null,
+        bool? actionableOnly = null,
+        [MaxLength(512)] string? outputPath = null,
+        CancellationToken cancellationToken = default) =>
         InvokeAsync(() => _facade.ObserveAsync(
             view,
             root,
@@ -56,7 +56,7 @@ public sealed class DesktopMcpTools
             cancellationToken));
 
     [McpServerTool(Name = "desktop_explore_dry_run", Title = "Desktop explore dry-run", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
-    [Description("Observation/navigation preview: list policy-permitted exploration candidates without UI mutation. Deny-by-default exploration policy required.")]
+    [Description("Observation: list policy-permitted exploration candidates without UI mutation. Deny-by-default exploration policy required.")]
     public Task<CallToolResult> DesktopExploreDryRun(
         [Required, MaxLength(512), Description("Workspace-contained exploration policy path")] string policyPath,
         CancellationToken cancellationToken) =>
@@ -93,8 +93,9 @@ public sealed class DesktopMcpTools
             return Task.FromResult(_facade.ValidatePlan(planPath));
         });
 
-    [McpServerTool(Name = "desktop_compile_key", Title = "Desktop compile key", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
-    [Description("Validation: compile a Jira BDD key into a deterministic plan cache entry. fromJira performs read-only sync then compile; never POST /ui.")]
+    // OpenWorld=true: fromJira may contact an external Jira host (read-only). Offline compiles stay local.
+    [McpServerTool(Name = "desktop_compile_key", Title = "Desktop compile key", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = true)]
+    [Description("Validation: compile a Jira BDD key into a deterministic plan cache entry. fromJira performs read-only remote sync then compile (open-world); never POST /ui.")]
     public Task<CallToolResult> DesktopCompileKey(
         [Required, MaxLength(64)] string key,
         [MaxLength(512)] string? file,
@@ -124,12 +125,13 @@ public sealed class DesktopMcpTools
     [Description("Execution: run a validated deterministic plan through the Phase 2 runner. dryRun=true validates against the live catalog without POST /ui.")]
     public Task<CallToolResult> DesktopRunPlan(
         [Required, MaxLength(512)] string planPath,
-        bool dryRun,
-        CancellationToken cancellationToken) =>
+        bool dryRun = false,
+        CancellationToken cancellationToken = default) =>
         InvokeAsync(() => _facade.RunPlanAsync(planPath, dryRun, cancellationToken));
 
-    [McpServerTool(Name = "desktop_run_key", Title = "Desktop run key", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]
-    [Description("Execution: compile (or reuse cache) then execute a Jira key via the Phase 2 runner. dryRun never calls POST /ui.")]
+    // OpenWorld=true when fromJira syncs from remote Jira before execution.
+    [McpServerTool(Name = "desktop_run_key", Title = "Desktop run key", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]
+    [Description("Execution: compile (or reuse cache) then execute a Jira key via the Phase 2 runner. fromJira may contact remote Jira; dryRun never calls POST /ui.")]
     public Task<CallToolResult> DesktopRunKey(
         [Required, MaxLength(64)] string key,
         bool dryRun,
@@ -142,8 +144,8 @@ public sealed class DesktopMcpTools
         InvokeAsync(() => _facade.RunKeyAsync(
             key, dryRun, fromJira, registry, objectRepository, knowledge, catalog, cancellationToken));
 
-    [McpServerTool(Name = "desktop_run_suite", Title = "Desktop run suite", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]
-    [Description("Execution: sequential suite orchestration. Fail-fast by default. dryRun never calls POST /ui.")]
+    [McpServerTool(Name = "desktop_run_suite", Title = "Desktop run suite", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]
+    [Description("Execution: sequential suite orchestration. Fail-fast by default. fromJira may contact remote Jira; dryRun never calls POST /ui.")]
     public Task<CallToolResult> DesktopRunSuite(
         [Required, MaxLength(512)] string suitePath,
         bool dryRun,
@@ -202,6 +204,7 @@ public sealed class DesktopMcpTools
         }
         catch (Exception ex)
         {
+            // Redact before placing on the wire — never leak bearer/Authorization via MCP errors.
             return ErrorResult(McpErrorCode.Internal, Driver.SecretRedactor.Redact(ex.Message));
         }
     }
@@ -219,7 +222,8 @@ public sealed class DesktopMcpTools
         return new CallToolResult
         {
             IsError = true,
-            Content = [new TextContentBlock { Text = json }]
+            Content = [new TextContentBlock { Text = json }],
+            StructuredContent = JsonSerializer.Deserialize<JsonElement>(json)
         };
     }
 }

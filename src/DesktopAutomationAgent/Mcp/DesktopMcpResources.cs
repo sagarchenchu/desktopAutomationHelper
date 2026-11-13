@@ -74,6 +74,7 @@ public sealed class DesktopMcpResources
                 _workspace,
                 Path.Combine("knowledge", knowledgeId),
                 "knowledgeId");
+            McpPathGuard.EnsureReadablePathInside(path, _workspace.RootPath);
             var doc = _knowledge.LoadDocument(path);
             var payload = new
             {

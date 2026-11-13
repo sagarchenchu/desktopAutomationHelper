@@ -7,8 +7,10 @@ namespace DesktopAutomationAgent.Driver;
 /// </summary>
 public static class SecretRedactor
 {
+    // Token patterns intentionally exclude JSON quotes/whitespace so redacting a
+    // serialized JSON document cannot eat the closing quote of a string value.
     private static readonly Regex BearerHeaderRegex = new(
-        @"(?i)(Authorization\s*[:=]\s*)Bearer\s+\S+",
+        @"(?i)(Authorization\s*[:=]\s*)Bearer\s+[^\s""]+",
         RegexOptions.Compiled);
 
     private static readonly Regex BearerTokenRegex = new(
@@ -20,11 +22,11 @@ public static class SecretRedactor
         RegexOptions.Compiled);
 
     private static readonly Regex AssignmentTokenRegex = new(
-        @"(?i)\b((?:token|bearerToken|authorizationHeader|apiToken|personalAccessToken|password|secret)\s*[:=]\s*)\S+",
+        @"(?i)\b((?:token|bearerToken|authorizationHeader|apiToken|personalAccessToken|password|secret)\s*[:=]\s*)[^\s""]+",
         RegexOptions.Compiled);
 
     private static readonly Regex BasicAuthHeaderRegex = new(
-        @"(?i)(Authorization\s*[:=]\s*)Basic\s+\S+",
+        @"(?i)(Authorization\s*[:=]\s*)Basic\s+[^\s""]+",
         RegexOptions.Compiled);
 
     public static string Redact(string? text)

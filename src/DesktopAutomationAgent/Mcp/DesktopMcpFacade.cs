@@ -358,6 +358,7 @@ public sealed class DesktopMcpFacade : IDesktopMcpFacade
 
         if (File.Exists(runJson))
         {
+            McpPathGuard.EnsureReadablePathInside(runJson, _workspace.RootPath);
             var report = JsonSerializer.Deserialize<RunReport>(File.ReadAllText(runJson), McpJson.Options)
                 ?? throw new McpToolException(McpErrorCode.Validation, "run.json could not be parsed.");
             return CompactRunReport(RunArtifactWriter.RedactReport(report));
@@ -365,6 +366,7 @@ public sealed class DesktopMcpFacade : IDesktopMcpFacade
 
         if (File.Exists(suiteJson))
         {
+            McpPathGuard.EnsureReadablePathInside(suiteJson, _workspace.RootPath);
             using var doc = JsonDocument.Parse(File.ReadAllText(suiteJson));
             var redacted = SecretRedactor.Redact(doc.RootElement.GetRawText());
             using var cleaned = JsonDocument.Parse(redacted);
