@@ -53,6 +53,8 @@ public class UiResponse
     /// <summary>
     /// Builds the HTTP envelope from an operation result. When the payload exposes
     /// <c>success: false</c>, the envelope <see cref="Success"/> matches it.
+    /// Typed non-execution proof is applied only from structured locator-resolution
+    /// signals (<c>found=false</c> / <c>matchCount=0</c>) — never from free-text errors.
     /// </summary>
     public static UiResponse FromOperationResult(object? value)
     {
@@ -74,7 +76,8 @@ public class UiResponse
                 Reason = reason
             };
 
-            if (foundFalse || matchCountZero || LooksLikeLocatorNotFound(response.Error))
+            // Structured locator-resolution miss only — never free-text phrase matching.
+            if (foundFalse || matchCountZero)
                 ApplyLocatorNotFoundProof(response);
 
             return response;
@@ -87,29 +90,52 @@ public class UiResponse
     public static UiResponse Fail(string error) =>
         Fail(error, screenshotPath: null);
 
-    /// <summary>Creates a failed response with an error message and a screenshot path.</summary>
-    public static UiResponse Fail(string error, string? screenshotPath)
-    {
-        var response = new UiResponse
+    /// <summary>
+    /// Creates a failed response with an error message and a screenshot path.
+    /// Free-text errors never receive typed non-execution proof.
+    /// </summary>
+    public static UiResponse Fail(string error, string? screenshotPath) =>
+        new()
         {
             Success = false,
             Error = error,
             ScreenshotPath = screenshotPath
         };
 
-        if (LooksLikeLocatorNotFound(error))
+    /// <summary>
+    /// Locator-resolution failure before any mutation/invoke. Sets typed non-execution proof.
+    /// </summary>
+    public static UiResponse FailLocatorNotFoundBeforeInvoke(
+        string error,
+        string? screenshotPath = null,
+        string? reason = null,
+        object? locator = null,
+        object? candidates = null,
+        object? suggestions = null)
+    {
+        var response = new UiResponse
         {
-            ApplyLocatorNotFoundProof(response);
-            response.Value ??= new
+            Success = false,
+            Error = error,
+            ScreenshotPath = screenshotPath,
+            Reason = reason,
+            Locator = locator,
+            Candidates = candidates,
+            Suggestions = suggestions,
+            Value = new
             {
                 success = false,
                 found = false,
                 message = error,
-                executionState = response.ExecutionState,
-                failureCode = response.FailureCode
-            };
-        }
-
+                reason,
+                locator,
+                candidates,
+                suggestions,
+                executionState = ExecutionStateNotStarted,
+                failureCode = FailureCodeLocatorNotFoundBeforeInvoke
+            }
+        };
+        ApplyLocatorNotFoundProof(response);
         return response;
     }
 
@@ -117,19 +143,6 @@ public class UiResponse
     {
         response.ExecutionState = ExecutionStateNotStarted;
         response.FailureCode = FailureCodeLocatorNotFoundBeforeInvoke;
-    }
-
-    private static bool LooksLikeLocatorNotFound(string? message)
-    {
-        if (string.IsNullOrWhiteSpace(message))
-            return false;
-
-        return message.Contains("no window", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("was found", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("not found", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("element not found", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("no matching window", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("no match", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryReadBoolProperty(object value, string propertyName, out bool result)

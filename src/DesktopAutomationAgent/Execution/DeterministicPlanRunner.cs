@@ -236,29 +236,32 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             else
             {
                 using var recoveryBudget = new RecoveryBudgetTracker(_options.Recovery);
-                var (approvedCandidateLocators, approvedCandidateIds) = _recoveryManifestLoader.LoadApprovedCandidates();
-                var liveAppFingerprint = await ResolveLiveApplicationFingerprintAsync(
-                        driverStatus, cancellationToken)
-                    .ConfigureAwait(false);
-                var recoveryContext = new RecoveryContext
+                RecoveryContext? recoveryContext = null;
+                var processScope = new PinnedProcessScope();
+
+                if (_options.Recovery.Enabled)
                 {
-                    RunId = runId,
-                    RunDirectory = runDirectory,
-                    PlanPath = validation.PlanPath,
-                    OriginalPlanSha256 = originalPlanSha256,
-                    ObjectRepositoryPath = validation.ObjectRepositoryPath,
-                    ObjectRepositorySha256 = validation.ObjectRepositorySha256,
-                    RepositorySnapshot = validation.ObjectRepositorySnapshot,
-                    Catalog = catalog,
-                    StepObjectBindings = validation.StepObjectBindings
-                        ?? new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal),
-                    EquivalentTransitions = _recoveryManifestLoader.LoadEquivalentTransitions(),
-                    ApprovedCandidateLocators = approvedCandidateLocators,
-                    ApprovedCandidateLocatorIds = approvedCandidateIds,
-                    // Live target process executable SHA — never driverStatus.Build / catalog.DriverVersion.
-                    ApplicationFingerprint = liveAppFingerprint,
-                    ExpectedApplicationFingerprint = _recoveryManifestLoader.LoadExpectedApplicationFingerprint()
-                };
+                    var (approvedCandidateLocators, approvedCandidateIds) = _recoveryManifestLoader.LoadApprovedCandidates();
+                    recoveryContext = new RecoveryContext
+                    {
+                        RunId = runId,
+                        RunDirectory = runDirectory,
+                        PlanPath = validation.PlanPath,
+                        OriginalPlanSha256 = originalPlanSha256,
+                        ObjectRepositoryPath = validation.ObjectRepositoryPath,
+                        ObjectRepositorySha256 = validation.ObjectRepositorySha256,
+                        RepositorySnapshot = validation.ObjectRepositorySnapshot,
+                        Catalog = catalog,
+                        StepObjectBindings = validation.StepObjectBindings
+                            ?? new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal),
+                        EquivalentTransitions = _recoveryManifestLoader.LoadEquivalentTransitions(),
+                        ApprovedCandidateLocators = approvedCandidateLocators,
+                        ApprovedCandidateLocatorIds = approvedCandidateIds,
+                        // Fingerprint resolved after launch / at recovery — never before plan launch.
+                        ApplicationFingerprint = null,
+                        ExpectedApplicationFingerprint = _recoveryManifestLoader.LoadExpectedApplicationFingerprint()
+                    };
+                }
 
                 var steps = manifest.Steps!;
                 for (var i = 0; i < steps.Count; i++)
@@ -284,11 +287,32 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                         step,
                         phase: "steps",
                         sequence: i + 1,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken,
+                        processScope).ConfigureAwait(false);
 
-                    if (!result.Success && _options.Recovery.Enabled)
+                    if (result.Success
+                        && isLaunch
+                        && recoveryContext is not null)
+                    {
+                        recoveryContext.ApplicationFingerprint =
+                            await ResolveLiveApplicationFingerprintAsync(
+                                    driverStatus,
+                                    processScope.ProcessId,
+                                    cancellationToken)
+                                .ConfigureAwait(false);
+                    }
+
+                    if (!result.Success && recoveryContext is not null)
                     {
                         var activeConnection = connection;
+                        // Refresh fingerprint at recovery from pinned / failed-step target process.
+                        recoveryContext.ApplicationFingerprint =
+                            await ResolveLiveApplicationFingerprintAsync(
+                                    driverStatus,
+                                    processScope.ProcessId ?? TryReadProcessId(result.ResponseValue),
+                                    cancellationToken)
+                                .ConfigureAwait(false);
+
                         RecoveryOutcome outcome;
                         try
                         {
@@ -303,7 +327,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                                     candidateStep,
                                     phase: "steps",
                                     sequence: i + 1,
-                                    ct).ConfigureAwait(false),
+                                    ct,
+                                    processScope).ConfigureAwait(false),
                                 cancellationToken).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -642,7 +667,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         PlanStep step,
         string phase,
         int sequence,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        PinnedProcessScope? processScope)
     {
         var startedAt = DateTimeOffset.UtcNow;
         var stopwatch = Stopwatch.StartNew();
@@ -670,7 +696,7 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                     UiFailureClassification.AssertionFailure);
             }
 
-            return BuildStepResult(
+            var result = BuildStepResult(
                 step,
                 phase,
                 sequence,
@@ -684,6 +710,16 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                 startedAt,
                 stopwatch.Elapsed,
                 classification: null);
+
+            if (processScope is not null)
+            {
+                if (IsLaunchOperation(step.Operation))
+                    TryPinLaunchedProcess(response.Value, processScope);
+
+                result = EnforcePinnedProcessScope(step, result, response.Value, processScope.ProcessId);
+            }
+
+            return result;
         }
         catch (UiExecutionException ex)
         {
@@ -742,12 +778,14 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
 
             try
             {
+                // Cleanup must not pin/scope-check against the original launch target.
                 results.Add(await ExecutePlanStepAsync(
                     connection,
                     step,
                     phase: "onFailureSteps",
                     sequence: i + 1,
-                    timeoutCts.Token).ConfigureAwait(false));
+                    timeoutCts.Token,
+                    processScope: null).ConfigureAwait(false));
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
             {
@@ -1077,10 +1115,11 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
 
     /// <summary>
     /// Resolves the live target desktop application fingerprint (executable SHA-256).
-    /// Never uses driver build/version — those identify the automation host, not the app under test.
+    /// Prefer an explicit process id (post-launch / failed-step target). Never uses driver build/version.
     /// </summary>
     private async Task<string?> ResolveLiveApplicationFingerprintAsync(
         StatusValueDto driverStatus,
+        int? preferredProcessId,
         CancellationToken cancellationToken)
     {
         // Prefer explicit SHA from status extension data when the driver reports target identity.
@@ -1091,10 +1130,14 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             return statusSha.Trim().ToLowerInvariant();
         }
 
-        var pid = TryReadExtensionInt(driverStatus.ExtensionData,
-            "processId", "applicationProcessId", "targetProcessId");
+        var pid = preferredProcessId is > 0
+            ? preferredProcessId
+            : TryReadExtensionInt(driverStatus.ExtensionData,
+                "processId", "applicationProcessId", "targetProcessId");
 
-        if (pid is null or <= 0 && _observation is not null)
+        // Only observe when we already have a preferred/target PID hint from launch or the failed step.
+        // Do not fingerprint an unrelated previously-active desktop process before launch.
+        if (pid is null or <= 0 && preferredProcessId is > 0 && _observation is not null)
         {
             try
             {
@@ -1125,6 +1168,113 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             && !string.IsNullOrWhiteSpace(info.ExecutableSha256))
         {
             return info.ExecutableSha256.Trim().ToLowerInvariant();
+        }
+
+        return null;
+    }
+
+    private static void TryPinLaunchedProcess(JsonElement? responseValue, PinnedProcessScope scope)
+    {
+        var pid = TryReadProcessId(responseValue);
+        if (pid is > 0)
+            scope.ProcessId = pid;
+    }
+
+    private sealed class PinnedProcessScope
+    {
+        public int? ProcessId { get; set; }
+    }
+
+    /// <summary>
+    /// After switchwindow (or other focus change), fail closed when the active window belongs to a
+    /// foreign process outside the launched target — surfaces UnexpectedExternalWindow via classifier.
+    /// </summary>
+    private static StepRunResult EnforcePinnedProcessScope(
+        PlanStep step,
+        StepRunResult result,
+        JsonElement? responseValue,
+        int? pinnedProcessId)
+    {
+        if (!result.Success || pinnedProcessId is null or <= 0)
+            return result;
+
+        if (!string.Equals(step.Operation, "switchwindow", StringComparison.OrdinalIgnoreCase))
+            return result;
+
+        var switchedPid = TryReadProcessId(responseValue);
+        if (switchedPid is null or <= 0)
+            return result;
+
+        if (switchedPid.Value == pinnedProcessId.Value)
+            return result;
+
+        // A different top-level PID (e.g. Notepad) is an unexpected external window/process.
+        var title = TryReadStringProperty(responseValue, "title") ?? "(unknown)";
+        var message =
+            $"Unexpected external window '{title}' / process pid {switchedPid.Value} " +
+            $"(outside approved launched process {pinnedProcessId.Value}).";
+
+        return new StepRunResult
+        {
+            Sequence = result.Sequence,
+            Id = result.Id,
+            Operation = result.Operation,
+            Phase = result.Phase,
+            Status = "failed",
+            Success = false,
+            Sensitive = result.Sensitive,
+            CaptureResponse = result.CaptureResponse,
+            HttpStatusCode = result.HttpStatusCode,
+            StartedAtUtc = result.StartedAtUtc,
+            Arguments = result.Arguments,
+            ResponseValue = result.ResponseValue ?? responseValue,
+            Error = message,
+            DriverReason = result.DriverReason,
+            ExecutionState = result.ExecutionState,
+            FailureCode = result.FailureCode,
+            ScreenshotPath = result.ScreenshotPath,
+            Classification = UiFailureClassification.OperationFailure,
+            Assertions = result.Assertions,
+            Duration = result.Duration
+        };
+    }
+
+    private static int? TryReadProcessId(JsonElement? value)
+    {
+        if (value is not { ValueKind: JsonValueKind.Object } obj)
+            return null;
+
+        foreach (var name in new[] { "launchedProcessId", "processId", "applicationProcessId", "targetProcessId" })
+        {
+            foreach (var prop in obj.EnumerateObject())
+            {
+                if (!string.Equals(prop.Name, name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (prop.Value.ValueKind == JsonValueKind.Number && prop.Value.TryGetInt32(out var n) && n > 0)
+                    return n;
+                if (prop.Value.ValueKind == JsonValueKind.String
+                    && int.TryParse(prop.Value.GetString(), out var parsed)
+                    && parsed > 0)
+                {
+                    return parsed;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string? TryReadStringProperty(JsonElement? value, string propertyName)
+    {
+        if (value is not { ValueKind: JsonValueKind.Object } obj)
+            return null;
+
+        foreach (var prop in obj.EnumerateObject())
+        {
+            if (!string.Equals(prop.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (prop.Value.ValueKind == JsonValueKind.String)
+                return prop.Value.GetString();
         }
 
         return null;

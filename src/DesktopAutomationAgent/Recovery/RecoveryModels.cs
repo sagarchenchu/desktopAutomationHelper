@@ -91,7 +91,8 @@ public sealed class RecoveryContext
 
     public IReadOnlySet<string>? ApprovedCandidateLocatorIds { get; init; }
 
-    public string? ApplicationFingerprint { get; init; }
+    /// <summary>Live target executable SHA — refreshed after launch / at recovery time.</summary>
+    public string? ApplicationFingerprint { get; set; }
 
     public string? ExpectedApplicationFingerprint { get; init; }
 }

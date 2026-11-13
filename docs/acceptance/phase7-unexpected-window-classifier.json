@@ -1,9 +1,4 @@
 {
-    "message":  "Unexpected external window \u0027Untitled - Notepad\u0027 / process \u0027notepad\u0027 (pid 12996).",
-    "operation":  "switchwindow",
-    "classification":  "UnexpectedExternalWindow",
-    "display":  "unexpected-external-window",
-    "mayAttemptRecovery":  false,
-    "evidence":  "Unexpected external window \u0027Untitled - Notepad\u0027 / process \u0027notepad\u0027 (pid 12996).",
-    "notepadPid":  12996
+  "note": "Obsolete for acceptance. Scenario 4 must be proven by DeterministicPlanRunner failing the switchwindow step — not by a standalone classifier probe. See phase7-unexpected-window-result.json.",
+  "obsolete": true
 }

@@ -1,20 +1,34 @@
 # Phase 7 Windows acceptance
 
-- Tip tested: `19e826905078514aae9e75fc197b15bec990a62f` (`19e8269`)
-- Requested review tip: `62d4c4a89ac894c0f36a8a3a544cd1761a6fd2d0` (S1 blocked without typed proof emission)
-- Enabling commit on tip: emits `executionState=notStarted` / `failureCode=locatorNotFoundBeforeInvoke` on locator/window misses
 - Branch: `feature/agent-phase-7-bounded-recovery`
-- PR: #147 (draft - not merged)
-- When: 2026-11-13T16:09:33.9140411+00:00
-- Overall: **PASS**
-- Approved pages unchanged: `True`
-- Recovery outside budget: `False`
+- PR: #147 (draft — **do not merge**)
+- Prior tip with partial evidence: `19e8269` / `70067f3` (scenario 4 was **not** a real runner STOP — superseded)
+- Current code tip under review: see branch HEAD after ae41ca0 follow-up fixes
 
-| # | Scenario | Expected | Result | Plan hash | Evidence |
-|---|---|---|---|---|---|
-| 1 | delayed dialog | recover | PASS `passed` | `38a7e06b56509ddb10260f29bf932d608d82f9e5b5f1ebcb4b21234a790e0da6` | `phase7-delayed-dialog-result.json` |
-| 2 | approved to alternate | recover | PASS `passed` | `c7fe31082f5175cc56b28767bc8c1c4025eeff5bdbd23817f87bbcd04cb58981` | `phase7-approved-alternate-result.json` |
-| 3 | ambiguous | STOP | PASS `failed` | `a29b3f87d8ab57bfc1fa89d2efcc7ec2cf47bd60d748221bf8d8bf1693dd76ca` | `phase7-ambiguous-result.json` |
-| 4 | unexpected window | STOP | PASS `passed` | `dcadaf3751a966e970f9555300f76cf6c03baca03d5d20a48325ea67c10bf8f1` | `phase7-unexpected-window-result.json` |
-| 5 | assertion | STOP | PASS `failed` | `270bc15f209f29be122dfb193813d50b007e4efdaa2faa8a840fc67e5c7d5412` | `phase7-assertion-result.json` |
-| 6 | only permitted + immutability | meta | PASS | n/a | `phase7-only-permitted-result.json` |
+## Status
+
+**NOT claiming 6/6 PASS.** Scenario 4 (unexpected external window) must be re-run as an end-to-end runner STOP:
+
+1. Launch target app (pin `launchedProcessId`)
+2. `switchwindow` to a foreign process (e.g. Notepad)
+3. `DeterministicPlanRunner` itself fails that step with `Unexpected external window … outside approved launched process`
+4. Classifier: `UnexpectedExternalWindow`, `mayAttemptRecovery=false`
+5. Plan hash unchanged; cleanup still runs
+
+Do **not** mark scenario 4 PASS via a separate classifier probe while the plan `status: passed`.
+
+| # | Scenario | Expected | Result | Evidence |
+|---|---|---|---|---|
+| 1 | delayed dialog | recover | pending re-run on new tip | prior JSON at tip `19e8269` only |
+| 2 | approved to alternate | recover | pending re-run on new tip | prior JSON at tip `19e8269` only |
+| 3 | ambiguous | STOP | pending re-run on new tip | prior JSON at tip `19e8269` only |
+| 4 | unexpected window | STOP via **runner** | **PENDING** real e2e | unit-covered; Windows evidence TBD |
+| 5 | assertion | STOP | pending re-run on new tip | prior JSON at tip `19e8269` only |
+| 6 | only permitted + immutability | meta | pending re-run on new tip | prior JSON at tip `19e8269` only |
+
+## Enabling code (this tip)
+
+- Typed proof only from locator-resolution path (`found=false` / `matchCount=0` / `UiResolutionException`) — never free-text
+- Runner pins launch PID and fails `switchwindow` to foreign PID
+- Fingerprint after launch / at recovery; skip when recovery disabled
+- Zero-duration budget on ladder entry → `BudgetExhausted`

@@ -101,11 +101,48 @@ public sealed class RecoveryLadderService
                 originalPlanSha256 = context.OriginalPlanSha256
             });
 
+        // Already-exhausted duration on ladder entry (or mid-ladder) must surface BudgetExhausted,
+        // not fall through to the original classification.
+        if (budget.RemainingDuration() <= TimeSpan.Zero)
+        {
+            var exhausted = Record(
+                budget.TotalAttempts,
+                originalStep.Id,
+                RecoveryClassification.BudgetExhausted,
+                RecoveryTier.FailAndCleanup,
+                "budget-exhausted",
+                "max-additional-duration",
+                beforePath,
+                null,
+                DateTimeOffset.UtcNow,
+                TimeSpan.Zero);
+            attempts.Add(exhausted);
+            if (!string.IsNullOrWhiteSpace(recoveryDir))
+                _artifactWriter.WriteAttempt(recoveryDir, exhausted);
+            return BudgetExhausted(decision, attempts, "max-additional-duration");
+        }
+
         foreach (var tier in LadderFor(decision.Classification))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (budget.RemainingDuration() <= TimeSpan.Zero)
-                break;
+            {
+                var exhausted = Record(
+                    budget.TotalAttempts,
+                    originalStep.Id,
+                    RecoveryClassification.BudgetExhausted,
+                    tier,
+                    "budget-exhausted",
+                    "max-additional-duration",
+                    beforePath,
+                    null,
+                    DateTimeOffset.UtcNow,
+                    TimeSpan.Zero);
+                attempts.Add(exhausted);
+                if (!string.IsNullOrWhiteSpace(recoveryDir))
+                    _artifactWriter.WriteAttempt(recoveryDir, exhausted);
+                return BudgetExhausted(decision, attempts, "max-additional-duration");
+            }
 
             try
             {

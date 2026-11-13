@@ -1241,7 +1241,8 @@ public partial class UiService : IUiService
             title = SafeElementName(asWindow),
             automationId = SafeElementAutomationId(asWindow),
             controlType = SafeElementControlType(asWindow),
-            hwnd = SafeWindowHandle(asWindow).ToInt64()
+            hwnd = SafeWindowHandle(asWindow).ToInt64(),
+            processId = SafeProcessId(asWindow) ?? session.Application.ProcessId
         };
     }
 

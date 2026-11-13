@@ -1,47 +1,11 @@
 {
-    "scenarioId":  "unexpected-window",
-    "headSha":  "19e826905078514aae9e75fc197b15bec990a62f",
-    "reportStatus":  "passed",
-    "exitCode":  0,
-    "failureClassification":  null,
-    "failureMessage":  null,
-    "recovery":  {
-                     "runId":  "20261113T160923889Z-e081d91d",
-                     "originalPlanSha256":  "dcadaf3751a966e970f9555300f76cf6c03baca03d5d20a48325ea67c10bf8f1",
-                     "planMutated":  false,
-                     "approvedRepositoryMutated":  false,
-                     "totalRecoveryAttempts":  0,
-                     "attempts":  [
-
-                                  ],
-                     "finalResult":  "passed"
-                 },
-    "recoverySummaryPath":  null,
-    "runDirectory":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\runs\\20261113T160923889Z-e081d91d",
-    "planPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\workspace\\plans\\phase7-unexpected-window.plan.json",
-    "planHashBefore":  "dcadaf3751a966e970f9555300f76cf6c03baca03d5d20a48325ea67c10bf8f1",
-    "planHashAfter":  "dcadaf3751a966e970f9555300f76cf6c03baca03d5d20a48325ea67c10bf8f1",
-    "planHashUnchanged":  true,
-    "pagesHashBefore":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
-    "pagesHashAfter":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
-    "pagesUnchanged":  true,
-    "stdoutPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\out\\phase7-unexpected-window.json",
-    "recoveryOutsideBudget":  false,
-    "expected":  "stop",
-    "classifierProbePath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase7-acceptance\\out\\phase7-unexpected-window-classifier.json",
-    "agentExitCode":  0,
-    "notepadPid":  12996,
-    "classifierProbe":  {
-                            "message":  "Unexpected external window \u0027Untitled - Notepad\u0027 / process \u0027notepad\u0027 (pid 12996).",
-                            "operation":  "switchwindow",
-                            "classification":  "UnexpectedExternalWindow",
-                            "display":  "unexpected-external-window",
-                            "mayAttemptRecovery":  false,
-                            "evidence":  "Unexpected external window \u0027Untitled - Notepad\u0027 / process \u0027notepad\u0027 (pid 12996).",
-                            "notepadPid":  12996
-                        },
-    "pass":  true,
-    "healed":  false,
-    "classifierStop":  true,
-    "note":  "STOP proven via RecoveryFailureClassifier on ProcessIdentityValidator message shape with live Notepad pid"
+  "scenarioId": "unexpected-window",
+  "status": "pending",
+  "note": "Prior evidence at 19e8269 was invalid: plan passed via Notepad switch + separate classifier probe. Rebuilt as DeterministicPlanRunner PID/scope STOP (unit test SwitchWindow_ToForeignProcess_FailsWithUnexpectedExternalWindow). Windows acceptance re-run required before claiming PASS.",
+  "expected": "stop",
+  "expectedFailureContains": "Unexpected external window",
+  "expectedClassification": "UnexpectedExternalWindow",
+  "mayAttemptRecovery": false,
+  "pass": false,
+  "pendingWindowsRerun": true
 }

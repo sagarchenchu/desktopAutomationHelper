@@ -896,6 +896,184 @@ public sealed class Phase7BoundedRecoveryTests
     }
 
     [Fact]
+    public async Task DriverResponse_FoundFalseWithTypedFields_FlowsIntoStepRunResult()
+    {
+        // Exercise the real driver JSON path (executionState/failureCode on the envelope), not omitted fields.
+        var options = ReadyOptions();
+        options.Recovery.Enabled = false;
+        var handler = ReadyHandler((req, _) =>
+        {
+            if (req.Method != HttpMethod.Post)
+                return Task.FromResult(DefaultGet(req));
+
+            return Task.FromResult(FakeHttpMessageHandler.Json(new
+            {
+                success = false,
+                error = "Element not found for listwindows.",
+                executionState = "notStarted",
+                failureCode = "locatorNotFoundBeforeInvoke",
+                value = new { success = false, found = false, message = "Element not found for listwindows." }
+            }, HttpStatusCode.NotFound));
+        });
+
+        var plan = TestSupport.MinimalPlanJson(planId: "typed.driver", operation: "listwindows");
+        var path = TestSupport.WritePlan(options, "typed-driver.plan.json", plan);
+        var report = await CreateRunner(options, handler).RunAsync(path, dryRun: false);
+
+        Assert.True(
+            report.Steps.Count > 0,
+            $"Expected steps; status={report.Status} failure={report.Failure?.Message}");
+        Assert.Equal("failed", report.Status);
+        var step = Assert.Single(report.Steps);
+        Assert.Equal(RecoveryOperationSafety.ExecutionStateNotStarted, step.ExecutionState);
+        Assert.Equal(RecoveryOperationSafety.FailureCodeLocatorNotFoundBeforeInvoke, step.FailureCode);
+    }
+
+    [Fact]
+    public async Task SwitchWindow_ToForeignProcess_FailsWithUnexpectedExternalWindow()
+    {
+        var options = ReadyOptions();
+        options.Recovery.Enabled = true;
+        var catalog = CatalogFixtures.Phase2Catalog();
+        catalog.Operations.Add(new OperationDescriptorDto
+        {
+            Name = "switchwindow",
+            Aliases = [],
+            Category = "session-window",
+            OperationType = "action",
+            RequiresSession = false,
+            RequiredInputs = ["value"]
+        });
+        var handler = ReadyHandler((req, _) =>
+        {
+            if (req.Method != HttpMethod.Post)
+                return Task.FromResult(DefaultGetCore(req, catalog));
+
+            return HandleLaunchOrSwitchAsync(req);
+        });
+
+        static async Task<HttpResponseMessage> HandleLaunchOrSwitchAsync(HttpRequestMessage req)
+        {
+            var body = req.Content is null
+                ? ""
+                : await req.Content.ReadAsStringAsync();
+            if (body.Contains("\"launch\"", StringComparison.OrdinalIgnoreCase))
+            {
+                return FakeHttpMessageHandler.Json(new
+                {
+                    success = true,
+                    value = new { sessionId = "s1", launchedProcessId = 4242, app = "DemoApp.exe" }
+                });
+            }
+
+            if (body.Contains("switchwindow", StringComparison.OrdinalIgnoreCase))
+            {
+                return FakeHttpMessageHandler.Json(new
+                {
+                    success = true,
+                    value = new { title = "Untitled - Notepad", processId = 9999, hwnd = 1 }
+                });
+            }
+
+            return FakeHttpMessageHandler.Json(new { success = true, value = new { } });
+        }
+
+        var plan = TestSupport.MinimalPlanJson(
+            planId: "unexpected.ext",
+            stepsOverride: """
+              [
+                { "id": "launch", "operation": "launch", "arguments": { "value": "DemoApp.exe" }, "captureResponse": true },
+                { "id": "switch-external", "operation": "switchwindow", "arguments": { "value": "Notepad" }, "captureResponse": true },
+                { "id": "quit", "operation": "quit", "arguments": {} }
+              ]
+              """,
+            onFailure: """
+              [ { "id": "cleanup", "operation": "quit", "arguments": {} } ]
+              """);
+        var path = TestSupport.WritePlan(options, "unexpected-ext.plan.json", plan);
+        var report = await CreateRunner(options, handler).RunAsync(path, dryRun: false);
+
+        Assert.Equal("failed", report.Status);
+        Assert.NotEqual(0, report.ExitCode);
+        var switchStep = Assert.Single(report.Steps.Where(s => s.Id == "switch-external"));
+        Assert.False(switchStep.Success);
+        Assert.Contains("Unexpected external window", switchStep.Error ?? "", StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("outside approved launched process", switchStep.Error ?? "", StringComparison.OrdinalIgnoreCase);
+        // quit must not run after STOP
+        Assert.DoesNotContain(report.Steps, s => s.Id == "quit" && s.Success && !s.Skipped);
+        var decision = RecoveryFailureClassifier.ForTests().Classify(switchStep, EmptyContext());
+        Assert.Equal(RecoveryClassification.UnexpectedExternalWindow, decision.Classification);
+        Assert.False(decision.MayAttemptRecovery);
+        Assert.Equal(0, report.Recovery?.Attempts.Count(a =>
+            string.Equals(a.Outcome, "recovered", StringComparison.OrdinalIgnoreCase)) ?? 0);
+    }
+
+    [Fact]
+    public async Task RecoveryLadder_AlreadyZeroDuration_ReturnsBudgetExhausted()
+    {
+        var options = ReadyOptions();
+        options.Recovery.BoundedWaitMilliseconds = 1;
+        options.Recovery.MaxAdditionalDurationSeconds = 0; // already exhausted on entry
+        options.Recovery.MaxRecoveryAttemptsPerStep = 8;
+        options.Recovery.MaxTotalRecoveriesPerRun = 8;
+
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var ladder = TestSupport.CreateRecoveryLadder(
+            options,
+            workspace,
+            new DriverUiClient(
+                TestSupport.Wrap(options),
+                TestSupport.CreateFactory(ReadyHandler((_, _) =>
+                    Task.FromResult(FakeHttpMessageHandler.Json(new { success = true })))),
+                NullLogger<DriverUiClient>.Instance));
+
+        using var budget = new RecoveryBudgetTracker(options.Recovery);
+        var runDirectory = Path.Combine(workspace.RootPath, "runs", "budget-already-zero");
+        Directory.CreateDirectory(runDirectory);
+        var failed = new StepRunResult
+        {
+            Sequence = 1,
+            Id = "q",
+            Operation = "listwindows",
+            Phase = "steps",
+            Status = "failed",
+            Success = false,
+            Error = "Element not found for listwindows",
+            ExecutionState = RecoveryOperationSafety.ExecutionStateNotStarted,
+            FailureCode = RecoveryOperationSafety.FailureCodeLocatorNotFoundBeforeInvoke,
+            Classification = UiFailureClassification.OperationFailure
+        };
+
+        var outcome = await ladder.TryRecoverAsync(
+            new DriverConnection
+            {
+                BaseUri = new Uri("http://127.0.0.1:33211/"),
+                BearerToken = "tok",
+                DiscoveryMethod = "explicit"
+            },
+            new PlanStep { Id = "q", Operation = "listwindows", Arguments = new Dictionary<string, JsonElement>() },
+            failed,
+            new RecoveryContext
+            {
+                RunId = "r",
+                RunDirectory = runDirectory,
+                PlanPath = "p",
+                OriginalPlanSha256 = "abc",
+                Catalog = CatalogFixtures.Phase2Catalog()
+            },
+            budget,
+            (_, _) => Task.FromResult(failed),
+            CancellationToken.None);
+
+        Assert.Equal(RecoveryClassification.BudgetExhausted, outcome.Classification);
+        Assert.Contains(
+            outcome.Attempts,
+            a => a.Classification == RecoveryClassification.BudgetExhausted
+                 || string.Equals(a.Outcome, "budget-exhausted", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void PlanImmutabilityAudit_MissingOrUnreadable_FailClosed()
     {
         // Mirrors BuildRecoverySummary fail-closed rules (missing/unreadable ⇒ PlanMutated).
