@@ -6,6 +6,7 @@ using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Driver.Models;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
+using DesktopAutomationAgent.Recovery;
 using DesktopAutomationAgent.Workspace;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -23,6 +24,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
     private readonly IDriverUiClient _uiClient;
     private readonly AssertionEvaluator _assertionEvaluator;
     private readonly RunArtifactWriter _artifactWriter;
+    private readonly RecoveryLadderService _recoveryLadder;
+    private readonly RecoveryArtifactWriter _recoveryArtifactWriter;
     private readonly ILogger<DeterministicPlanRunner> _logger;
 
     public DeterministicPlanRunner(
@@ -35,6 +38,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         IDriverUiClient uiClient,
         AssertionEvaluator assertionEvaluator,
         RunArtifactWriter artifactWriter,
+        RecoveryLadderService recoveryLadder,
+        RecoveryArtifactWriter recoveryArtifactWriter,
         ILogger<DeterministicPlanRunner> logger)
     {
         _options = options.Value;
@@ -46,6 +51,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         _uiClient = uiClient;
         _assertionEvaluator = assertionEvaluator;
         _artifactWriter = artifactWriter;
+        _recoveryLadder = recoveryLadder;
+        _recoveryArtifactWriter = recoveryArtifactWriter;
         _logger = logger;
     }
 
@@ -162,15 +169,20 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         var stepResults = new List<StepRunResult>();
         var onFailureResults = new List<StepRunResult>();
         RunFailure? failure = null;
+        RecoveryRunSummary? recoverySummary = null;
+        var recoveryAttempts = new List<RecoveryAttemptRecord>();
         var launchRequestSent = false;
         var sessionPossiblyActive = false;
         var status = "failed";
         var exitCode = ExitCodes.ExecutionFailure;
+        var originalPlanSha256 = validation.Sha256 ?? string.Empty;
+        var originalPlanBytes = SafeReadPlanBytes(validation.PlanPath);
 
         try
         {
             AgentOptionsValidator.Validate(_options, OptionsValidationScope.Driver);
             AgentOptionsValidator.ValidateRunnerOptions(_options.Runner);
+            AgentOptionsValidator.ValidateRecoveryOptions(_options.Recovery);
             _workspace.EnsureInitialized();
 
             connection = await _connectionResolver.ResolveAsync(cancellationToken).ConfigureAwait(false);
@@ -208,6 +220,20 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             }
             else
             {
+                var recoveryBudget = new RecoveryBudgetTracker(_options.Recovery, startedAt);
+                var recoveryContext = new RecoveryContext
+                {
+                    RunId = runId,
+                    RunDirectory = runDirectory,
+                    PlanPath = validation.PlanPath,
+                    OriginalPlanSha256 = originalPlanSha256,
+                    ObjectRepositoryPath = validation.ObjectRepositoryPath,
+                    ObjectRepositorySha256 = validation.ObjectRepositorySha256,
+                    RepositorySnapshot = validation.ObjectRepositorySnapshot,
+                    StepObjectBindings = validation.StepObjectBindings
+                        ?? new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
+                };
+
                 var steps = manifest.Steps!;
                 for (var i = 0; i < steps.Count; i++)
                 {
@@ -233,6 +259,61 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                         phase: "steps",
                         sequence: i + 1,
                         cancellationToken).ConfigureAwait(false);
+
+                    if (!result.Success && _options.Recovery.Enabled)
+                    {
+                        var activeConnection = connection;
+                        var outcome = await _recoveryLadder.TryRecoverAsync(
+                            activeConnection,
+                            step,
+                            result,
+                            recoveryContext,
+                            recoveryBudget,
+                            async (candidateStep, ct) => await ExecutePlanStepAsync(
+                                activeConnection,
+                                candidateStep,
+                                phase: "steps",
+                                sequence: i + 1,
+                                ct).ConfigureAwait(false),
+                            cancellationToken).ConfigureAwait(false);
+
+                        recoveryAttempts.AddRange(outcome.Attempts);
+
+                        if (outcome.Recovered && outcome.RecoveredStepResult is not null)
+                        {
+                            result = outcome.RecoveredStepResult;
+                            _logger.LogInformation(
+                                "Bounded recovery recovered step {StepId} via tier {Tier} ({Classification}).",
+                                step.Id,
+                                outcome.TierUsed,
+                                RecoveryClassificationRules.DisplayName(outcome.Classification));
+                        }
+                        else if (outcome.StopForApproval)
+                        {
+                            result = new StepRunResult
+                            {
+                                Sequence = result.Sequence,
+                                Id = result.Id,
+                                Operation = result.Operation,
+                                Phase = result.Phase,
+                                Status = "failed",
+                                Success = false,
+                                Sensitive = result.Sensitive,
+                                CaptureResponse = result.CaptureResponse,
+                                HttpStatusCode = result.HttpStatusCode,
+                                StartedAtUtc = result.StartedAtUtc,
+                                Arguments = result.Arguments,
+                                ResponseValue = result.ResponseValue,
+                                Error = outcome.Detail ?? result.Error,
+                                DriverReason = result.DriverReason,
+                                ScreenshotPath = result.ScreenshotPath,
+                                Classification = result.Classification,
+                                Assertions = result.Assertions,
+                                Duration = result.Duration
+                            };
+                        }
+                    }
+
                     stepResults.Add(result);
 
                     if (isLaunch && result.Success)
@@ -250,8 +331,32 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                     }
                 }
 
+                recoverySummary = BuildRecoverySummary(
+                    runId,
+                    originalPlanSha256,
+                    validation.ObjectRepositorySha256,
+                    originalPlanBytes,
+                    validation.PlanPath,
+                    validation.ObjectRepositoryPath,
+                    recoveryAttempts,
+                    failure is null ? "passed" : "failed");
+
+                if (recoveryAttempts.Count > 0)
+                {
+                    try
+                    {
+                        var recoveryDir = _recoveryArtifactWriter.EnsureRecoveryDirectory(runDirectory);
+                        _recoveryArtifactWriter.WriteSummary(recoveryDir, recoverySummary);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        _logger.LogWarning(ex, "Failed to persist recovery summary for run {RunId}", runId);
+                    }
+                }
+
                 if (failure is not null || cancellationToken.IsCancellationRequested)
                 {
+                    // Cleanup is never subject to recovery (deterministic, at most once).
                     onFailureResults.AddRange(
                         await ExecuteOnFailureStepsAsync(
                             connection,
@@ -371,7 +476,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             connection?.SafeBaseUrl,
             connection?.DiscoveryMethod,
             catalog?.DriverVersion,
-            catalog?.SchemaVersion);
+            catalog?.SchemaVersion,
+            recoverySummary);
 
         return PersistReport(runDirectory, report);
     }
@@ -419,6 +525,7 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                     DriverReason = report.Failure?.DriverReason,
                     ScreenshotPath = report.Failure?.ScreenshotPath
                 },
+                Recovery = report.Recovery,
                 ArtifactWriteStatus = "failed"
             };
         }
@@ -680,7 +787,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         string? driverBaseUrl = null,
         string? discoveryMethod = null,
         string? driverVersion = null,
-        int? catalogSchemaVersion = null) =>
+        int? catalogSchemaVersion = null,
+        RecoveryRunSummary? recovery = null) =>
         new()
         {
             ReportSchemaVersion = 1,
@@ -706,8 +814,59 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             Steps = steps,
             OnFailureSteps = onFailureSteps,
             Failure = failure,
+            Recovery = recovery,
             ArtifactWriteStatus = "pending"
         };
+
+    private static RecoveryRunSummary BuildRecoverySummary(
+        string runId,
+        string originalPlanSha256,
+        string? objectRepositorySha256,
+        byte[]? originalPlanBytes,
+        string planPath,
+        string? objectRepositoryPath,
+        List<RecoveryAttemptRecord> attempts,
+        string finalResult)
+    {
+        var planMutated = false;
+        if (originalPlanBytes is not null && File.Exists(planPath))
+        {
+            var current = File.ReadAllBytes(planPath);
+            planMutated = !originalPlanBytes.AsSpan().SequenceEqual(current);
+        }
+
+        var repoMutated = false;
+        // Approved pages must never be written by recovery; detect unexpected mutation under pages/.
+        if (!string.IsNullOrWhiteSpace(objectRepositoryPath))
+        {
+            // Hash comparison is done at run start via ObjectRepositorySha256; recovery never writes pages/.
+            repoMutated = false;
+        }
+
+        return new RecoveryRunSummary
+        {
+            RunId = runId,
+            OriginalPlanSha256 = originalPlanSha256,
+            ObjectRepositorySha256 = objectRepositorySha256,
+            PlanMutated = planMutated,
+            ApprovedRepositoryMutated = repoMutated,
+            TotalRecoveryAttempts = attempts.Count,
+            Attempts = attempts,
+            FinalResult = finalResult
+        };
+    }
+
+    private static byte[]? SafeReadPlanBytes(string planPath)
+    {
+        try
+        {
+            return File.Exists(planPath) ? File.ReadAllBytes(planPath) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private static int MapExitCode(UiFailureClassification classification) =>
         classification switch

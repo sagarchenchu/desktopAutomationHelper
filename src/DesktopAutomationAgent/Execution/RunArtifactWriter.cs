@@ -112,6 +112,7 @@ public sealed class RunArtifactWriter
                     DriverReason = SecretRedactor.Redact(report.Failure.DriverReason),
                     ScreenshotPath = report.Failure.ScreenshotPath
                 },
+            Recovery = report.Recovery,
             ArtifactWriteStatus = report.ArtifactWriteStatus
         };
 

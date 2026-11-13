@@ -1712,6 +1712,7 @@ public class Phase3ObjectRepositoryTests
                 new DriverUiClient(Options.Create(options), factory, NullLogger<DriverUiClient>.Instance));
             builder.Services.AddSingleton<AssertionEvaluator>();
             builder.Services.AddSingleton<RunArtifactWriter>();
+            TestSupport.AddRecoveryServices(builder.Services);
             builder.Services.AddSingleton<IDeterministicPlanRunner, DeterministicPlanRunner>();
             return builder.Build();
         }

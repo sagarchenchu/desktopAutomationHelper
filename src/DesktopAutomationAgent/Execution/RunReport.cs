@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DesktopAutomationAgent.Driver;
+using DesktopAutomationAgent.Recovery;
 
 namespace DesktopAutomationAgent.Execution;
 
@@ -50,6 +51,8 @@ public sealed class RunReport
     public IReadOnlyList<StepRunResult> OnFailureSteps { get; init; } = Array.Empty<StepRunResult>();
 
     public RunFailure? Failure { get; init; }
+
+    public RecoveryRunSummary? Recovery { get; init; }
 
     public string ArtifactWriteStatus { get; set; } = "pending";
 }

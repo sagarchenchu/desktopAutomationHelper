@@ -15,4 +15,10 @@ public sealed class PlanObjectReferenceExpansionResult
     public string? RepositorySha256 { get; init; }
 
     public IReadOnlyList<string> ResolvedObjectReferences { get; init; } = Array.Empty<string>();
+
+    /// <summary>Step id → locator argument key → objectRef (pre-expansion bindings).</summary>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> StepObjectBindings { get; init; }
+        = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal);
+
+    public ObjectRepositorySnapshot? Snapshot { get; init; }
 }

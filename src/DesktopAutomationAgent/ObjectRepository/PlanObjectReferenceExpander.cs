@@ -36,30 +36,31 @@ public sealed class PlanObjectReferenceExpander
         var errors = new List<string>();
         var warnings = new List<string>();
         var resolvedRefs = new HashSet<string>(StringComparer.Ordinal);
+        var stepBindings = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
 
         var hasObjectRefs = false;
         ValidateAndCollect(plan, planPath, errors, ref hasObjectRefs);
 
         if (errors.Count > 0)
         {
-            return BuildResult(errors, warnings, snapshot, resolvedRefs);
+            return BuildResult(errors, warnings, snapshot, resolvedRefs, stepBindings);
         }
 
         if (!hasObjectRefs)
         {
-            return BuildResult(errors, warnings, snapshot, resolvedRefs);
+            return BuildResult(errors, warnings, snapshot, resolvedRefs, stepBindings);
         }
 
         if (string.IsNullOrWhiteSpace(plan.ObjectRepository))
         {
             errors.Add($"{planPath}: plans containing $objectRef markers must declare objectRepository.");
-            return BuildResult(errors, warnings, snapshot, resolvedRefs);
+            return BuildResult(errors, warnings, snapshot, resolvedRefs, stepBindings);
         }
 
-        ExpandSteps(plan.Steps, planPath, "steps", snapshot, errors, warnings, resolvedRefs);
-        ExpandSteps(plan.OnFailureSteps, planPath, "onFailureSteps", snapshot, errors, warnings, resolvedRefs);
+        ExpandSteps(plan.Steps, planPath, "steps", snapshot, errors, warnings, resolvedRefs, stepBindings);
+        ExpandSteps(plan.OnFailureSteps, planPath, "onFailureSteps", snapshot, errors, warnings, resolvedRefs, stepBindings);
 
-        return BuildResult(errors, warnings, snapshot, resolvedRefs);
+        return BuildResult(errors, warnings, snapshot, resolvedRefs, stepBindings);
     }
 
     private void ValidateAndCollect(
@@ -150,7 +151,8 @@ public sealed class PlanObjectReferenceExpander
         ObjectRepositorySnapshot snapshot,
         List<string> errors,
         List<string> warnings,
-        HashSet<string> resolvedRefs)
+        HashSet<string> resolvedRefs,
+        Dictionary<string, Dictionary<string, string>> stepBindings)
     {
         if (steps is null)
             return;
@@ -164,6 +166,7 @@ public sealed class PlanObjectReferenceExpander
 
             var updated = new Dictionary<string, JsonElement>(step.Arguments, StringComparer.Ordinal);
             var changed = false;
+            Dictionary<string, string>? bindingsForStep = null;
 
             foreach (var key in AllowedLocatorKeys)
             {
@@ -172,6 +175,9 @@ public sealed class PlanObjectReferenceExpander
 
                 if (!TryGetObjectRef(value, out var reference))
                     continue;
+
+                bindingsForStep ??= new Dictionary<string, string>(StringComparer.Ordinal);
+                bindingsForStep[key] = reference;
 
                 var resolution = _resolver.Resolve(snapshot, reference);
                 warnings.AddRange(resolution.Warnings);
@@ -187,6 +193,9 @@ public sealed class PlanObjectReferenceExpander
                 resolvedRefs.Add(reference);
                 changed = true;
             }
+
+            if (bindingsForStep is not null)
+                stepBindings[step.Id] = bindingsForStep;
 
             if (changed)
                 step.Arguments = updated;
@@ -282,7 +291,8 @@ public sealed class PlanObjectReferenceExpander
         List<string> errors,
         List<string> warnings,
         ObjectRepositorySnapshot snapshot,
-        HashSet<string> resolvedRefs) =>
+        HashSet<string> resolvedRefs,
+        Dictionary<string, Dictionary<string, string>> stepBindings) =>
         new()
         {
             Errors = errors,
@@ -290,6 +300,11 @@ public sealed class PlanObjectReferenceExpander
             RepositoryPath = snapshot.RepositoryPath,
             RepositoryId = snapshot.Manifest.RepositoryId,
             RepositorySha256 = snapshot.AggregateSha256,
-            ResolvedObjectReferences = resolvedRefs.OrderBy(static r => r, StringComparer.Ordinal).ToArray()
+            ResolvedObjectReferences = resolvedRefs.OrderBy(static r => r, StringComparer.Ordinal).ToArray(),
+            StepObjectBindings = stepBindings.ToDictionary(
+                static pair => pair.Key,
+                static pair => (IReadOnlyDictionary<string, string>)pair.Value,
+                StringComparer.Ordinal),
+            Snapshot = snapshot
         };
 }

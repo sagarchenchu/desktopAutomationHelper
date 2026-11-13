@@ -1265,6 +1265,7 @@ public class Phase5McpTests
             new DriverUiClient(Options.Create(options), factory, NullLogger<DriverUiClient>.Instance));
         services.AddSingleton<AssertionEvaluator>();
         services.AddSingleton<RunArtifactWriter>();
+        TestSupport.AddRecoveryServices(services);
         services.AddSingleton<IDeterministicPlanRunner, DeterministicPlanRunner>();
         services.AddSingleton<Readiness.IAgentReadinessService, Readiness.AgentReadinessService>();
         services.AddSingleton<Plans.PlanManifestReader>(_ =>

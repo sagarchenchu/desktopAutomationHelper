@@ -10,6 +10,7 @@ using DesktopAutomationAgent.Observation;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Planning;
 using DesktopAutomationAgent.Readiness;
+using DesktopAutomationAgent.Recovery;
 using DesktopAutomationAgent.Suites;
 using DesktopAutomationAgent.Workspace;
 using Microsoft.Extensions.Configuration;
@@ -54,6 +55,23 @@ public static class AgentServiceRegistrar
         builder.Services.AddSingleton<IDriverUiClient, DriverUiClient>();
         builder.Services.AddSingleton<AssertionEvaluator>();
         builder.Services.AddSingleton<RunArtifactWriter>();
+        builder.Services.AddSingleton<RecoveryFailureClassifier>();
+        builder.Services.AddSingleton<ApprovedAlternateLocatorResolver>();
+        builder.Services.AddSingleton<RecoveryArtifactWriter>();
+        builder.Services.AddSingleton<CandidateRepairWriter>();
+        builder.Services.AddSingleton<IRecoveryModelClient>(sp =>
+        {
+            var recovery = sp.GetRequiredService<IOptions<AgentOptions>>().Value.Recovery;
+            if (string.IsNullOrWhiteSpace(recovery.Provider)
+                || string.Equals(recovery.Provider, "fake", StringComparison.OrdinalIgnoreCase))
+            {
+                return new FakeRecoveryModelClient();
+            }
+
+            throw new AgentConfigurationException(
+                $"Recovery:Provider '{recovery.Provider}' is not registered. Use 'fake' for CI or register a provider-neutral adapter.");
+        });
+        builder.Services.AddSingleton<RecoveryLadderService>();
         builder.Services.AddSingleton<IDeterministicPlanRunner, DeterministicPlanRunner>();
         builder.Services.AddSingleton<IAgentReadinessService, AgentReadinessService>();
         builder.Services.AddSingleton<ObjectRepositoryReader>();

@@ -4,9 +4,13 @@ using System.Text.Json;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Driver.Models;
+using DesktopAutomationAgent.Execution;
+using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
+using DesktopAutomationAgent.Recovery;
 using DesktopAutomationAgent.Suites;
 using DesktopAutomationAgent.Workspace;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -59,6 +63,15 @@ internal static class TestSupport
             {
                 Provider = "fake",
                 DefaultApprovalMode = "proposal-only"
+            },
+            Recovery = new RecoveryOptions
+            {
+                Enabled = true,
+                Provider = "fake",
+                MaxTotalRecoveriesPerRun = 5,
+                MaxRecoveryAttemptsPerStep = 3,
+                MaxAdditionalDurationSeconds = 60,
+                BoundedWaitMilliseconds = 10
             }
         };
     }
@@ -67,6 +80,53 @@ internal static class TestSupport
 
     public static WorkspaceManager CreateWorkspace(AgentOptions options) =>
         new(Wrap(options), NullLogger<WorkspaceManager>.Instance);
+
+    public static void AddRecoveryServices(IServiceCollection services)
+    {
+        services.AddSingleton<RecoveryFailureClassifier>();
+        services.AddSingleton<ApprovedAlternateLocatorResolver>();
+        services.AddSingleton<RecoveryArtifactWriter>();
+        services.AddSingleton<CandidateRepairWriter>();
+        services.AddSingleton<IRecoveryModelClient, FakeRecoveryModelClient>();
+        services.AddSingleton<RecoveryLadderService>();
+    }
+
+    public static RecoveryLadderService CreateRecoveryLadder(
+        AgentOptions options,
+        IWorkspaceManager workspace,
+        IDriverUiClient uiClient) =>
+        new(
+            Wrap(options),
+            new RecoveryFailureClassifier(),
+            new ApprovedAlternateLocatorResolver(),
+            new RecoveryArtifactWriter(workspace),
+            new CandidateRepairWriter(workspace),
+            new FakeRecoveryModelClient(),
+            uiClient,
+            NullLogger<RecoveryLadderService>.Instance);
+
+    public static DeterministicPlanRunner CreatePlanRunner(
+        AgentOptions options,
+        IWorkspaceManager workspace,
+        IHttpClientFactory factory)
+    {
+        var uiClient = new DriverUiClient(Wrap(options), factory, NullLogger<DriverUiClient>.Instance);
+        return new DeterministicPlanRunner(
+            Wrap(options),
+            CreatePlanReader(options, workspace),
+            new PlanObjectRepositoryIntegrator(
+                new ObjectRepositoryReader(Wrap(options), workspace),
+                new PlanObjectReferenceExpander(new ObjectReferenceResolver())),
+            workspace,
+            new DriverConnectionResolver(Wrap(options), factory, NullLogger<DriverConnectionResolver>.Instance),
+            new DriverCatalogClient(Wrap(options), factory, NullLogger<DriverCatalogClient>.Instance),
+            uiClient,
+            new AssertionEvaluator(Wrap(options)),
+            new RunArtifactWriter(),
+            CreateRecoveryLadder(options, workspace, uiClient),
+            new RecoveryArtifactWriter(workspace),
+            NullLogger<DeterministicPlanRunner>.Instance);
+    }
 
     public static SuiteManifestReader CreateSuiteReader(AgentOptions options, IWorkspaceManager? workspace = null) =>
         new(Wrap(options), workspace ?? CreateWorkspace(options));

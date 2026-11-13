@@ -349,6 +349,30 @@ public sealed class ObjectRepositoryValidator
             warnings.AddRange(locatorValidation.Warnings);
         }
 
+        if (element.AlternateLocators is not null)
+        {
+            if (element.AlternateLocators.Count > 8)
+            {
+                errors.Add($"{location}: alternateLocators may contain at most 8 entries.");
+            }
+
+            for (var i = 0; i < element.AlternateLocators.Count; i++)
+            {
+                var alternate = element.AlternateLocators[i];
+                if (alternate is null)
+                {
+                    errors.Add($"{location}.alternateLocators[{i}]: locator is required.");
+                    continue;
+                }
+
+                var alternateValidation = ObjectLocatorValidator.Validate(
+                    alternate,
+                    $"{location}.alternateLocators[{i}]");
+                errors.AddRange(alternateValidation.Errors);
+                warnings.AddRange(alternateValidation.Warnings);
+            }
+        }
+
         if (element.Quality is not null)
         {
             if (element.Quality.ExtensionData is { Count: > 0 })

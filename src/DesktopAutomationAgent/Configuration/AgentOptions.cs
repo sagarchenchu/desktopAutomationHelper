@@ -21,4 +21,6 @@ public sealed class AgentOptions
     public JiraOptions Jira { get; set; } = new();
 
     public PlanningOptions Planning { get; set; } = new();
+
+    public RecoveryOptions Recovery { get; set; } = new();
 }

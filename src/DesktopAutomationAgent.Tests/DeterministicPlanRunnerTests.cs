@@ -6,6 +6,7 @@ using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
+using DesktopAutomationAgent.Recovery;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DesktopAutomationAgent.Tests;
@@ -417,6 +418,19 @@ public class DeterministicPlanRunnerTests
         var workspace = TestSupport.CreateWorkspace(options);
         if (initialize)
             workspace.Initialize();
+        var uiClient = new DriverUiClient(
+            TestSupport.Wrap(options),
+            TestSupport.CreateFactory(handler),
+            NullLogger<DriverUiClient>.Instance);
+        var recoveryLadder = new RecoveryLadderService(
+            TestSupport.Wrap(options),
+            new RecoveryFailureClassifier(),
+            new ApprovedAlternateLocatorResolver(),
+            new RecoveryArtifactWriter(workspace),
+            new CandidateRepairWriter(workspace),
+            new FakeRecoveryModelClient(),
+            uiClient,
+            NullLogger<RecoveryLadderService>.Instance);
         return new DeterministicPlanRunner(
             TestSupport.Wrap(options),
             TestSupport.CreatePlanReader(options, workspace),
@@ -426,9 +440,11 @@ public class DeterministicPlanRunnerTests
             workspace,
             new DriverConnectionResolver(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverConnectionResolver>.Instance),
             new DriverCatalogClient(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverCatalogClient>.Instance),
-            new DriverUiClient(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverUiClient>.Instance),
+            uiClient,
             new AssertionEvaluator(TestSupport.Wrap(options)),
             new RunArtifactWriter(),
+            recoveryLadder,
+            new RecoveryArtifactWriter(workspace),
             NullLogger<DeterministicPlanRunner>.Instance);
     }
 

@@ -32,5 +32,12 @@ public sealed class PlanValidationResult
 
     public IReadOnlyList<string>? ResolvedObjectReferences { get; init; }
 
+    /// <summary>
+    /// Step id → (locator argument key → objectRef) captured before expansion for Phase 7 recovery.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>? StepObjectBindings { get; init; }
+
+    public ObjectRepository.ObjectRepositorySnapshot? ObjectRepositorySnapshot { get; init; }
+
     public PlanManifest? Plan { get; init; }
 }
