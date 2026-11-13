@@ -1,0 +1,13 @@
+{
+    "scenarioId":  "04-highlight-passthrough",
+    "name":  "Highlight does not intercept clicks",
+    "headSha":  "28b8712db032e867bb8433f1f2bd69161d85004d",
+    "pass":  true,
+    "clickOk":  true,
+    "beforeStatus":  "@{text=Status; resolverStrategy=unified-resolver-unique}",
+    "point":  {
+                  "y":  250,
+                  "x":  540
+              },
+    "afterStatus":  "@{text=Status: ClickButton clicked; resolverStrategy=unified-resolver-unique}"
+}

@@ -1,0 +1,11 @@
+{
+    "scenarioId":  "09-hover-probe",
+    "name":  "Hover probe (not UIA capability)",
+    "headSha":  "28b8712db032e867bb8433f1f2bd69161d85004d",
+    "pass":  true,
+    "hoverPoint":  {
+                       "x":  500,
+                       "y":  400
+                   },
+    "hoverOutcome":  "hover-noop"
+}

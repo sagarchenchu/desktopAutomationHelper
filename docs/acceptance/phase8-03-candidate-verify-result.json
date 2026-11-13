@@ -1,0 +1,16 @@
+{
+    "scenarioId":  "03-candidate-verify",
+    "name":  "Candidate unique verify",
+    "headSha":  "28b8712db032e867bb8433f1f2bd69161d85004d",
+    "pass":  true,
+    "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261113180928-b6fc0d5a8\\candidate.json",
+    "artifactOk":  true,
+    "unique":  true,
+    "verification":  {
+                         "unique":  true,
+                         "ambiguous":  false,
+                         "notFound":  false,
+                         "matchCount":  1,
+                         "message":  "Candidate locator resolves uniquely."
+                     }
+}
