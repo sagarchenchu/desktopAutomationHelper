@@ -1,4 +1,0 @@
-{
-  "note": "Obsolete for acceptance. Scenario 4 must be proven by DeterministicPlanRunner failing the switchwindow step — not by a standalone classifier probe. See phase7-unexpected-window-result.json.",
-  "obsolete": true
-}

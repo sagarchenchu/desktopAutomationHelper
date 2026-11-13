@@ -1,6 +1,6 @@
 {
     "scenarioId":  "only-permitted",
-    "headSha":  "19e826905078514aae9e75fc197b15bec990a62f",
+    "headSha":  "13c0f8af46e4e71f10194f3cae20801e970ca31c",
     "pass":  true,
     "onlyPermittedRecoveries":  true,
     "pagesHashBefore":  "2e53fc518f0f4103ce7d50e93cdd9e4b339eb05e96d3f3a646baac8f936404a8",
@@ -42,9 +42,9 @@
                             "outsideBudget":  false,
                             "healed":  false,
                             "pass":  true,
-                            "planHash":  "dcadaf3751a966e970f9555300f76cf6c03baca03d5d20a48325ea67c10bf8f1",
+                            "planHash":  "f70b32edcc994dabaf21b2094ed1b3d0d22ddc76ff7b520365e85a9cd732ffcb",
                             "expected":  "stop",
-                            "status":  "passed"
+                            "status":  "failed"
                         },
                         {
                             "id":  "assertion",
