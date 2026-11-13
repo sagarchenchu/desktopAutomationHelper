@@ -6,6 +6,7 @@ namespace DesktopAutomationAgent.Recovery;
 
 /// <summary>
 /// Maps a failed step into an explicit recovery classification. Fail-closed for unknowns.
+/// Mutation recovery requires typed driver non-execution proof — never free-text alone.
 /// </summary>
 public sealed class RecoveryFailureClassifier
 {
@@ -59,16 +60,24 @@ public sealed class RecoveryFailureClassifier
         if (ContainsAny(message, "build mismatch", "fingerprint mismatch", "stale build", "application build"))
             return Deny(RecoveryClassification.ApplicationBuildMismatch, message);
 
-        if (!string.IsNullOrWhiteSpace(context.ExpectedApplicationFingerprint)
-            && !string.IsNullOrWhiteSpace(context.ApplicationFingerprint)
-            && !string.Equals(
-                context.ExpectedApplicationFingerprint,
-                context.ApplicationFingerprint,
-                StringComparison.OrdinalIgnoreCase))
+        if (!string.IsNullOrWhiteSpace(context.ExpectedApplicationFingerprint))
         {
-            return Deny(
-                RecoveryClassification.ApplicationBuildMismatch,
-                "Live application fingerprint does not match approved knowledge.");
+            if (string.IsNullOrWhiteSpace(context.ApplicationFingerprint))
+            {
+                return Deny(
+                    RecoveryClassification.ApplicationBuildMismatch,
+                    "Expected application fingerprint is configured but live target process identity could not be resolved.");
+            }
+
+            if (!string.Equals(
+                    context.ExpectedApplicationFingerprint,
+                    context.ApplicationFingerprint,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return Deny(
+                    RecoveryClassification.ApplicationBuildMismatch,
+                    "Live application fingerprint does not match approved knowledge.");
+            }
         }
 
         if (ContainsAny(message, "unexpected external", "unexpected window", "foreign process", "outside approved"))
@@ -83,11 +92,8 @@ public sealed class RecoveryFailureClassifier
         }
 
         var safeToReplay = RecoveryOperationSafety.IsSafeToReplay(
-            failedStep.Operation,
-            context.Catalog,
-            failedStep.Classification,
-            message,
-            _options.AllowMutationReplay);
+            failedStep, context.Catalog, _options.AllowMutationReplay);
+        var isRead = RecoveryOperationSafety.IsReadOrQuery(failedStep.Operation, context.Catalog);
 
         // Timed-out / uncertain protocol-or-transport mutations must never enter the ladder.
         if (!safeToReplay
@@ -104,7 +110,7 @@ public sealed class RecoveryFailureClassifier
             {
                 return Deny(
                     RecoveryClassification.NotRecoverable,
-                    "Mutation recovery requires structured proof the action was not executed (e.g. element not found).");
+                    "Mutation recovery requires typed driver proof (executionState: notStarted or failureCode: locatorNotFoundBeforeInvoke).");
             }
 
             return Allow(
@@ -120,7 +126,7 @@ public sealed class RecoveryFailureClassifier
             {
                 return Deny(
                     RecoveryClassification.NotRecoverable,
-                    "Approved-candidate recovery requires structured proof the action was not executed.");
+                    "Approved-candidate recovery requires typed driver non-execution proof.");
             }
 
             return Allow(
@@ -132,12 +138,11 @@ public sealed class RecoveryFailureClassifier
 
         if (HasEquivalentTransition(failedStep, context, out var transitionEvidence))
         {
-            if (!safeToReplay
-                && !RecoveryOperationSafety.IsReadOrQuery(failedStep.Operation, context.Catalog))
+            if (!safeToReplay && !isRead)
             {
                 return Deny(
                     RecoveryClassification.NotRecoverable,
-                    "Equivalent-transition recovery requires structured proof the mutation was not executed.");
+                    "Equivalent-transition recovery requires typed driver non-execution proof.");
             }
 
             return Allow(
@@ -147,18 +152,42 @@ public sealed class RecoveryFailureClassifier
                 bindingKey);
         }
 
-        if (ContainsAny(message, "child window", "dialog not", "window not active", "not yet active", "modal not"))
+        // Timing / child-window text may classify reads; mutations need typed proof (safeToReplay).
+        if (ContainsAny(message, "child window", "dialog not", "window not active", "not yet active", "modal not")
+            || string.Equals(
+                failedStep.FailureCode,
+                RecoveryOperationSafety.FailureCodeLocatorNotFoundBeforeInvoke,
+                StringComparison.OrdinalIgnoreCase)
+            || string.Equals(
+                failedStep.ExecutionState,
+                RecoveryOperationSafety.ExecutionStateNotStarted,
+                StringComparison.OrdinalIgnoreCase))
         {
-            // Child-window not active is structured proof the mutation did not execute on target.
-            // Uncertain transport timeouts were already denied above.
+            if (!safeToReplay && !isRead)
+            {
+                return Deny(
+                    RecoveryClassification.NotRecoverable,
+                    "Mutation recovery requires typed driver non-execution proof.");
+            }
+
+            if (ContainsAny(message, "child window", "dialog not", "window not active", "not yet active", "modal not"))
+            {
+                return Allow(
+                    RecoveryClassification.ExpectedChildWindowNotActive,
+                    "Expected child window/dialog not yet active.",
+                    objectRef,
+                    bindingKey);
+            }
+
             return Allow(
-                RecoveryClassification.ExpectedChildWindowNotActive,
-                "Expected child window/dialog not yet active.",
+                RecoveryClassification.StateNotStable,
+                "State not yet stable / bounded timing drift (typed non-execution proof).",
                 objectRef,
                 bindingKey);
         }
 
-        if (ContainsAny(
+        if (isRead
+            && ContainsAny(
                 message,
                 "element not found",
                 "not found",
@@ -166,13 +195,19 @@ public sealed class RecoveryFailureClassifier
                 "stabiliz",
                 "timing"))
         {
-            // Element-not-found / not-stable is structured proof of non-execution.
-            // Generic timeout/connection-loss never reaches here for mutations (denied above).
+            // Free-text timing signals remain allowed for read/query retries only.
             return Allow(
                 RecoveryClassification.StateNotStable,
                 "State not yet stable / bounded timing drift.",
                 objectRef,
                 bindingKey);
+        }
+
+        if (!safeToReplay && !isRead)
+        {
+            return Deny(
+                RecoveryClassification.NotRecoverable,
+                "Mutation recovery requires typed driver proof (executionState: notStarted or failureCode: locatorNotFoundBeforeInvoke); free-text errors do not authorize replay.");
         }
 
         return Deny(RecoveryClassification.NotRecoverable, message.Length == 0 ? "Unclassified failure." : message);
@@ -212,7 +247,7 @@ public sealed class RecoveryFailureClassifier
         error = null;
 
         if (!context.StepObjectBindings.TryGetValue(stepId, out var bindings) || bindings.Count == 0)
-            return true; // raw locator steps are allowed; no binding key
+            return true;
 
         if (bindings.Count > 1)
         {

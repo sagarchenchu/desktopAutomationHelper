@@ -5,6 +5,7 @@ using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Driver.Models;
 using DesktopAutomationAgent.Execution;
+using DesktopAutomationAgent.Exploration;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Recovery;
@@ -90,6 +91,7 @@ internal static class TestSupport
         services.AddSingleton<RecoveryManifestLoader>();
         services.AddSingleton<IRecoveryModelClient, FakeRecoveryModelClient>();
         services.AddSingleton<RecoveryLadderService>();
+        services.AddSingleton<IProcessIdentityProbe, SystemProcessIdentityProbe>();
     }
 
     public static RecoveryLadderService CreateRecoveryLadder(
@@ -130,6 +132,7 @@ internal static class TestSupport
             new RecoveryArtifactWriter(workspace),
             new RecoveryManifestLoader(workspace),
             repositoryReader,
+            new SystemProcessIdentityProbe(),
             NullLogger<DeterministicPlanRunner>.Instance);
     }
 

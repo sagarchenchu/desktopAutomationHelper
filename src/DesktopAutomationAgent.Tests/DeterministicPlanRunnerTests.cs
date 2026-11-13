@@ -4,6 +4,7 @@ using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Execution;
+using DesktopAutomationAgent.Exploration;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Recovery;
@@ -449,6 +450,7 @@ public class DeterministicPlanRunnerTests
             new RecoveryArtifactWriter(workspace),
             new RecoveryManifestLoader(workspace),
             repositoryReader,
+            new SystemProcessIdentityProbe(),
             NullLogger<DeterministicPlanRunner>.Instance);
     }
 

@@ -1,38 +1,51 @@
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Driver.Models;
+using DesktopAutomationAgent.Execution;
 using DesktopAutomationAgent.Planning;
 
 namespace DesktopAutomationAgent.Recovery;
 
 /// <summary>
 /// Determines whether a failed operation may be safely re-executed during recovery.
-/// Mutations require structured proof of non-execution; uncertain protocol/transport
-/// outcomes after send never authorize mutation replay unless AllowMutationReplay.
+/// Mutations require <em>typed</em> driver non-execution proof (executionState / failureCode);
+/// free-text error phrases never authorize mutation replay.
 /// </summary>
 public static class RecoveryOperationSafety
 {
+    public const string ExecutionStateNotStarted = "notStarted";
+    public const string FailureCodeLocatorNotFoundBeforeInvoke = "locatorNotFoundBeforeInvoke";
+
     public static bool IsSafeToReplay(
         string operation,
         OperationsCatalogDto? catalog,
         UiFailureClassification? failureClassification,
         string? errorMessage,
-        bool allowMutationReplay)
+        bool allowMutationReplay,
+        string? executionState = null,
+        string? failureCode = null)
     {
         if (allowMutationReplay)
             return true;
 
         if (IsReadOrQuery(operation, catalog))
-        {
-            // Reads may retry even after uncertain transport; never "upgrade" via this helper alone.
             return true;
-        }
 
-        // Mutation / invoke / input: never replay without structured proof the action did not run.
+        // Mutation / invoke / input: never replay on uncertain outcomes, and never on free-text alone.
         if (IsUncertainExecutionOutcome(failureClassification, errorMessage))
             return false;
 
-        return HasStructuredNonExecutionProof(errorMessage);
+        return HasTypedNonExecutionProof(executionState, failureCode);
     }
+
+    public static bool IsSafeToReplay(StepRunResult failedStep, OperationsCatalogDto? catalog, bool allowMutationReplay) =>
+        IsSafeToReplay(
+            failedStep.Operation,
+            catalog,
+            failedStep.Classification,
+            Combine(failedStep.Error, failedStep.DriverReason),
+            allowMutationReplay,
+            failedStep.ExecutionState,
+            failedStep.FailureCode);
 
     public static bool IsReadOrQuery(string operation, OperationsCatalogDto? catalog)
     {
@@ -72,7 +85,6 @@ public static class RecoveryOperationSafety
                || message.Contains("connection reset", StringComparison.OrdinalIgnoreCase)
                || message.Contains("connection aborted", StringComparison.OrdinalIgnoreCase)
                || message.Contains("an error occurred while sending the request", StringComparison.OrdinalIgnoreCase)
-               // Protocol responses after send — request may already have mutated state.
                || message.Contains("empty response", StringComparison.OrdinalIgnoreCase)
                || message.Contains("invalid json", StringComparison.OrdinalIgnoreCase)
                || message.Contains("exceeded maximum size", StringComparison.OrdinalIgnoreCase)
@@ -85,25 +97,27 @@ public static class RecoveryOperationSafety
         string? errorMessage) =>
         IsUncertainExecutionOutcome(failureClassification, errorMessage);
 
-    public static bool HasStructuredNonExecutionProof(string? errorMessage)
+    /// <summary>
+    /// Typed driver fields only. Free-text phrases such as "not found" / "timing" do <b>not</b> count.
+    /// </summary>
+    public static bool HasTypedNonExecutionProof(string? executionState, string? failureCode)
     {
-        var message = errorMessage ?? string.Empty;
-        if (message.Length == 0)
-            return false;
+        if (!string.IsNullOrWhiteSpace(executionState)
+            && string.Equals(executionState.Trim(), ExecutionStateNotStarted, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
 
-        return ContainsAny(
-            message,
-            "element not found",
-            "not found",
-            "no match",
-            "child window",
-            "dialog not",
-            "window not active",
-            "not yet active",
-            "modal not",
-            "not stable",
-            "stabiliz",
-            "timing");
+        if (!string.IsNullOrWhiteSpace(failureCode)
+            && string.Equals(
+                failureCode.Trim(),
+                FailureCodeLocatorNotFoundBeforeInvoke,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -116,30 +130,27 @@ public static class RecoveryOperationSafety
         OperationsCatalogDto? catalog,
         UiFailureClassification? failureClassification,
         string? errorMessage,
-        bool allowMutationReplay)
+        bool allowMutationReplay,
+        string? executionState = null,
+        string? failureCode = null)
     {
         if (allowMutationReplay)
             return true;
 
-        var targetIsRead = IsReadOrQuery(targetOperation, catalog);
-        if (targetIsRead)
-        {
-            // Read→read is fine; still block only if we somehow lack a target.
+        if (IsReadOrQuery(targetOperation, catalog))
             return true;
-        }
 
-        // Target is a mutation: never upgrade from a read/query failure.
         if (IsReadOrQuery(originalOperation, catalog))
             return false;
 
-        // Original was already a mutation — only allow with structured non-execution proof
-        // and not on uncertain protocol/transport outcomes.
         return IsSafeToReplay(
             targetOperation,
             catalog,
             failureClassification,
             errorMessage,
-            allowMutationReplay: false);
+            allowMutationReplay: false,
+            executionState,
+            failureCode);
     }
 
     private static bool LooksLikeReadOnlyName(string operation)
@@ -149,14 +160,10 @@ public static class RecoveryOperationSafety
             or "getname" or "getcontroltype" or "screenshot" or "observe";
     }
 
-    private static bool ContainsAny(string message, params string[] needles)
+    private static string Combine(string? a, string? b)
     {
-        foreach (var needle in needles)
-        {
-            if (message.Contains(needle, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-
-        return false;
+        if (string.IsNullOrWhiteSpace(a)) return b ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(b)) return a!;
+        return a + " " + b;
     }
 }

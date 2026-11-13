@@ -83,8 +83,12 @@ public sealed class RecoveryLadderService
         }
 
         var attempts = new List<RecoveryAttemptRecord>();
-        var recoveryDir = _artifactWriter.EnsureRecoveryDirectory(context.RunDirectory);
-        var beforePath = _artifactWriter.WriteSnapshot(
+        string? beforePath = null;
+        string? recoveryDir = null;
+        try
+        {
+        recoveryDir = _artifactWriter.EnsureRecoveryDirectory(context.RunDirectory);
+        beforePath = _artifactWriter.WriteSnapshot(
             recoveryDir,
             TruncateId($"before-{originalStep.Id}-{Guid.NewGuid():N}"),
             new
@@ -171,6 +175,17 @@ public sealed class RecoveryLadderService
                         }
 
                         var retry = await executeStepAsync(originalStep, token).ConfigureAwait(false);
+                        if (IsRecoveryDeadlineFailure(retry, token, cancellationToken))
+                        {
+                            var budgetRecord = Record(
+                                budget.TotalAttempts, originalStep.Id, RecoveryClassification.BudgetExhausted, tier,
+                                "budget-exhausted", "max-additional-duration", beforePath, null,
+                                DateTimeOffset.UtcNow, TimeSpan.Zero);
+                            attempts.Add(budgetRecord);
+                            if (!string.IsNullOrWhiteSpace(recoveryDir))
+                                _artifactWriter.WriteAttempt(recoveryDir, budgetRecord);
+                            return BudgetExhausted(decision, attempts, "max-additional-duration");
+                        }
                         var afterPath = _artifactWriter.WriteSnapshot(
                             recoveryDir,
                             $"after-wait-{originalStep.Id}-{budget.TotalAttempts:00}",
@@ -238,6 +253,17 @@ public sealed class RecoveryLadderService
                         }
 
                         var retry = await executeStepAsync(rewritten, token).ConfigureAwait(false);
+                        if (IsRecoveryDeadlineFailure(retry, token, cancellationToken))
+                        {
+                            var budgetRecord = Record(
+                                budget.TotalAttempts, originalStep.Id, RecoveryClassification.BudgetExhausted, tier,
+                                "budget-exhausted", "max-additional-duration", beforePath, null,
+                                DateTimeOffset.UtcNow, TimeSpan.Zero);
+                            attempts.Add(budgetRecord);
+                            if (!string.IsNullOrWhiteSpace(recoveryDir))
+                                _artifactWriter.WriteAttempt(recoveryDir, budgetRecord);
+                            return BudgetExhausted(decision, attempts, "max-additional-duration");
+                        }
                         var afterPath = _artifactWriter.WriteSnapshot(
                             recoveryDir,
                             $"after-reresolve-{originalStep.Id}-{budget.TotalAttempts:00}",
@@ -300,6 +326,11 @@ public sealed class RecoveryLadderService
                         try
                         {
                             var probe = await ProbeUniqueAsync(connection, alternate, probeToken).ConfigureAwait(false);
+                            if (probeToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                            {
+                                return BudgetExhausted(decision, attempts, "max-additional-duration");
+                            }
+
                             if (probe == UniqueProbeResult.Unique)
                             {
                                 if (unique is not null)
@@ -378,6 +409,17 @@ public sealed class RecoveryLadderService
                         }
 
                         var retry = await executeStepAsync(rewritten, execToken).ConfigureAwait(false);
+                        if (IsRecoveryDeadlineFailure(retry, execToken, cancellationToken))
+                        {
+                            var budgetRecord = Record(
+                                budget.TotalAttempts, originalStep.Id, RecoveryClassification.BudgetExhausted, tier,
+                                "budget-exhausted", "max-additional-duration", beforePath, null,
+                                DateTimeOffset.UtcNow, TimeSpan.Zero);
+                            attempts.Add(budgetRecord);
+                            if (!string.IsNullOrWhiteSpace(recoveryDir))
+                                _artifactWriter.WriteAttempt(recoveryDir, budgetRecord);
+                            return BudgetExhausted(decision, attempts, "max-additional-duration");
+                        }
                         var afterPath = _artifactWriter.WriteSnapshot(
                             recoveryDir,
                             $"after-alternate-{originalStep.Id}-{budget.TotalAttempts:00}",
@@ -450,7 +492,9 @@ public sealed class RecoveryLadderService
                                 context.Catalog,
                                 failedResult.Classification,
                                 failureMessage,
-                                _options.AllowMutationReplay))
+                                _options.AllowMutationReplay,
+                                failedResult.ExecutionState,
+                                failedResult.FailureCode))
                         {
                             var blocked = Record(
                                 budget.TotalAttempts, originalStep.Id, decision.Classification, tier,
@@ -463,6 +507,17 @@ public sealed class RecoveryLadderService
                         }
 
                         var retry = await executeStepAsync(rewritten, token).ConfigureAwait(false);
+                        if (IsRecoveryDeadlineFailure(retry, token, cancellationToken))
+                        {
+                            var budgetRecord = Record(
+                                budget.TotalAttempts, originalStep.Id, RecoveryClassification.BudgetExhausted, tier,
+                                "budget-exhausted", "max-additional-duration", beforePath, null,
+                                DateTimeOffset.UtcNow, TimeSpan.Zero);
+                            attempts.Add(budgetRecord);
+                            if (!string.IsNullOrWhiteSpace(recoveryDir))
+                                _artifactWriter.WriteAttempt(recoveryDir, budgetRecord);
+                            return BudgetExhausted(decision, attempts, "max-additional-duration");
+                        }
                         var afterPath = _artifactWriter.WriteSnapshot(
                             recoveryDir,
                             $"after-transition-{originalStep.Id}-{budget.TotalAttempts:00}",
@@ -516,6 +571,10 @@ public sealed class RecoveryLadderService
                         try
                         {
                             probe = await ProbeUniqueAsync(connection, approvedLocator, probeToken).ConfigureAwait(false);
+                            if (probeToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                            {
+                                return BudgetExhausted(decision, attempts, "max-additional-duration");
+                            }
                         }
                         finally
                         {
@@ -578,6 +637,17 @@ public sealed class RecoveryLadderService
                             }
 
                             var retry = await executeStepAsync(rewritten, execToken).ConfigureAwait(false);
+                        if (IsRecoveryDeadlineFailure(retry, execToken, cancellationToken))
+                        {
+                            var budgetRecord = Record(
+                                budget.TotalAttempts, originalStep.Id, RecoveryClassification.BudgetExhausted, tier,
+                                "budget-exhausted", "max-additional-duration", beforePath, null,
+                                DateTimeOffset.UtcNow, TimeSpan.Zero);
+                            attempts.Add(budgetRecord);
+                            if (!string.IsNullOrWhiteSpace(recoveryDir))
+                                _artifactWriter.WriteAttempt(recoveryDir, budgetRecord);
+                            return BudgetExhausted(decision, attempts, "max-additional-duration");
+                        }
                             var afterPath = _artifactWriter.WriteSnapshot(
                                 recoveryDir,
                                 $"after-approved-candidate-{originalStep.Id}-{budget.TotalAttempts:00}",
@@ -701,7 +771,8 @@ public sealed class RecoveryLadderService
             "Recovery ladder exhausted; executing original cleanup.",
             beforePath, null, DateTimeOffset.UtcNow, TimeSpan.Zero);
         attempts.Add(failRecord);
-        _artifactWriter.WriteAttempt(recoveryDir, failRecord);
+        if (!string.IsNullOrWhiteSpace(recoveryDir))
+            _artifactWriter.WriteAttempt(recoveryDir, failRecord);
         return new RecoveryOutcome
         {
             Recovered = false,
@@ -710,6 +781,45 @@ public sealed class RecoveryLadderService
             Detail = failRecord.Detail,
             Attempts = attempts
         };
+        }
+        catch (Exception ex) when (ex is IOException or RecoveryPathException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            // Artifact/path failures must not escape TryRecoverAsync — runner must still cleanup.
+            if (budget.InRecovery)
+                budget.EndUnit();
+
+            var started = DateTimeOffset.UtcNow;
+            var record = Record(
+                budget.TotalAttempts,
+                originalStep.Id,
+                RecoveryClassification.NotRecoverable,
+                RecoveryTier.FailAndCleanup,
+                "artifact-failure",
+                $"Recovery artifact failure: {ex.Message}",
+                beforePath,
+                null,
+                started,
+                TimeSpan.Zero);
+            attempts.Add(record);
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(recoveryDir))
+                    _artifactWriter.WriteAttempt(recoveryDir, record);
+            }
+            catch
+            {
+                // best-effort
+            }
+
+            return new RecoveryOutcome
+            {
+                Recovered = false,
+                Classification = RecoveryClassification.NotRecoverable,
+                TierUsed = RecoveryTier.FailAndCleanup,
+                Detail = record.Detail,
+                Attempts = attempts
+            };
+        }
     }
 
     private bool IsReplayAllowed(PlanStep step, RecoveryContext context, StepRunResult failedResult) =>
@@ -718,7 +828,18 @@ public sealed class RecoveryLadderService
             context.Catalog,
             failedResult.Classification,
             Combine(failedResult.Error, failedResult.DriverReason),
-            _options.AllowMutationReplay);
+            _options.AllowMutationReplay,
+            failedResult.ExecutionState,
+            failedResult.FailureCode);
+
+    private static bool IsRecoveryDeadlineFailure(
+        StepRunResult result,
+        CancellationToken recoveryToken,
+        CancellationToken parentToken) =>
+        recoveryToken.IsCancellationRequested
+        && !parentToken.IsCancellationRequested
+        && result.Classification is UiFailureClassification.Cancelled
+            or UiFailureClassification.ExecutionTimeout;
 
     private static string Combine(string? a, string? b)
     {

@@ -7,6 +7,7 @@ using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Driver.Models;
 using DesktopAutomationAgent.Execution;
+using DesktopAutomationAgent.Exploration;
 using DesktopAutomationAgent.ObjectRepository;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Recovery;
@@ -28,6 +29,8 @@ public sealed class Phase7BoundedRecoveryTests
     public void Classifier_MapsEveryFailureClassification(string message, RecoveryClassification expected)
     {
         var classifier = RecoveryFailureClassifier.ForTests();
+        var needsTypedProof = expected is RecoveryClassification.StateNotStable
+            or RecoveryClassification.ExpectedChildWindowNotActive;
         var step = new StepRunResult
         {
             Sequence = 1,
@@ -37,6 +40,11 @@ public sealed class Phase7BoundedRecoveryTests
             Status = "failed",
             Success = false,
             Error = message,
+            // Mutations require typed driver fields — free-text alone must not authorize recovery.
+            ExecutionState = needsTypedProof ? RecoveryOperationSafety.ExecutionStateNotStarted : null,
+            FailureCode = expected == RecoveryClassification.StateNotStable
+                ? RecoveryOperationSafety.FailureCodeLocatorNotFoundBeforeInvoke
+                : null,
             Classification = expected == RecoveryClassification.AssertionFailure
                 ? UiFailureClassification.AssertionFailure
                 : UiFailureClassification.OperationFailure,
@@ -51,6 +59,30 @@ public sealed class Phase7BoundedRecoveryTests
         var decision = classifier.Classify(step, EmptyContext());
         Assert.Equal(expected, decision.Classification);
         Assert.Equal(RecoveryClassificationRules.IsRecoverable(expected), decision.MayAttemptRecovery);
+    }
+
+    [Fact]
+    public void Classifier_FreeTextNotFound_DoesNotAuthorizeMutationReplay()
+    {
+        var decision = RecoveryFailureClassifier.ForTests().Classify(
+            new StepRunResult
+            {
+                Sequence = 1,
+                Id = "pay",
+                Operation = "click",
+                Phase = "steps",
+                Status = "failed",
+                Success = false,
+                Error = "receipt not found",
+                Classification = UiFailureClassification.OperationFailure
+            },
+            EmptyContext());
+
+        Assert.Equal(RecoveryClassification.NotRecoverable, decision.Classification);
+        Assert.False(decision.MayAttemptRecovery);
+        Assert.False(RecoveryOperationSafety.HasTypedNonExecutionProof(null, null));
+        Assert.False(RecoveryOperationSafety.IsSafeToReplay(
+            "click", null, UiFailureClassification.OperationFailure, "receipt not found", false));
     }
 
     [Fact]
@@ -577,6 +609,199 @@ public sealed class Phase7BoundedRecoveryTests
     }
 
     [Fact]
+    public async Task RecoveryDeadlineCancel_ViaCancelledStepResult_MapsToBudgetExhausted()
+    {
+        // Mirrors DriverUiClient: linked-token cancel → UiExecutionException(Cancelled) → failed StepRunResult
+        // (ladder must still surface BudgetExhausted, not the original classification).
+        var options = ReadyOptions();
+        options.Recovery.BoundedWaitMilliseconds = 0;
+        options.Recovery.MaxAdditionalDurationSeconds = 1;
+        options.Recovery.MaxRecoveryAttemptsPerStep = 8;
+        options.Recovery.MaxTotalRecoveriesPerRun = 8;
+
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var ladder = TestSupport.CreateRecoveryLadder(
+            options,
+            workspace,
+            new DriverUiClient(
+                TestSupport.Wrap(options),
+                TestSupport.CreateFactory(ReadyHandler((_, _) =>
+                    Task.FromResult(FakeHttpMessageHandler.Json(new { success = true })))),
+                NullLogger<DriverUiClient>.Instance));
+
+        using var budget = new RecoveryBudgetTracker(options.Recovery);
+        var runDirectory = Path.Combine(workspace.RootPath, "runs", "budget-deadline-cancelled-step");
+        Directory.CreateDirectory(runDirectory);
+        var failed = new StepRunResult
+        {
+            Sequence = 1,
+            Id = "q",
+            Operation = "listwindows",
+            Phase = "steps",
+            Status = "failed",
+            Success = false,
+            Error = "Element not found for listwindows",
+            Classification = UiFailureClassification.OperationFailure
+        };
+
+        var outcome = await ladder.TryRecoverAsync(
+            new DriverConnection
+            {
+                BaseUri = new Uri("http://127.0.0.1:33211/"),
+                BearerToken = "tok",
+                DiscoveryMethod = "explicit"
+            },
+            new PlanStep { Id = "q", Operation = "listwindows", Arguments = new Dictionary<string, JsonElement>() },
+            failed,
+            new RecoveryContext
+            {
+                RunId = "r",
+                RunDirectory = runDirectory,
+                PlanPath = "p",
+                OriginalPlanSha256 = "abc",
+                Catalog = CatalogFixtures.Phase2Catalog()
+            },
+            budget,
+            async (_, ct) =>
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                    return failed;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    return new StepRunResult
+                    {
+                        Sequence = 1,
+                        Id = "q",
+                        Operation = "listwindows",
+                        Phase = "steps",
+                        Status = "failed",
+                        Success = false,
+                        Error = "Step 'q' was cancelled.",
+                        Classification = UiFailureClassification.Cancelled
+                    };
+                }
+            },
+            CancellationToken.None);
+
+        Assert.Equal(RecoveryClassification.BudgetExhausted, outcome.Classification);
+        Assert.Contains(
+            outcome.Attempts,
+            a => a.Classification == RecoveryClassification.BudgetExhausted
+                 || string.Equals(a.Outcome, "budget-exhausted", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task CandidateArtifactFailure_DoesNotEscape_CleanupStillRuns()
+    {
+        var options = ReadyOptions();
+        options.Recovery.BoundedWaitMilliseconds = 1;
+        options.Recovery.MaxCandidateArtifactBytes = 1024; // minimum allowed; huge evidence still overflows
+        options.Recovery.MaxRecoveryAttemptsPerStep = 8;
+        options.Recovery.MaxTotalRecoveriesPerRun = 8;
+
+        var handler = ReadyHandler((req, _) =>
+        {
+            if (req.Method != HttpMethod.Post)
+                return Task.FromResult(DefaultGet(req));
+            return Task.FromResult(FakeHttpMessageHandler.Json(new
+            {
+                success = false,
+                error = "Element not found for listwindows"
+            }));
+        });
+
+        var plan = """
+            {
+              "schemaVersion": 1,
+              "catalogSchemaVersion": 2,
+              "planId": "ART-1",
+              "name": "artifact",
+              "steps": [
+                { "id": "q", "operation": "listwindows", "arguments": {} }
+              ],
+              "onFailureSteps": [
+                { "id": "cleanup-list", "operation": "listwindows", "arguments": {} }
+              ]
+            }
+            """;
+        var path = TestSupport.WritePlan(options, "artifact-fail.plan.json", plan);
+
+        // Custom model emits huge evidence so CandidateRepairWriter throws IOException.
+        var workspace = TestSupport.CreateWorkspace(options);
+        workspace.Initialize();
+        var uiClient = new DriverUiClient(
+            TestSupport.Wrap(options),
+            TestSupport.CreateFactory(handler),
+            NullLogger<DriverUiClient>.Instance);
+        var ladder = new RecoveryLadderService(
+            TestSupport.Wrap(options),
+            RecoveryFailureClassifier.ForTests(options.Recovery),
+            new ApprovedAlternateLocatorResolver(),
+            new RecoveryArtifactWriter(workspace),
+            CandidateRepairWriter.ForTests(workspace, options.Recovery),
+            new HugeEvidenceRecoveryModelClient(),
+            uiClient,
+            new ObjectReferenceResolver(),
+            NullLogger<RecoveryLadderService>.Instance);
+
+        var repositoryReader = new ObjectRepositoryReader(TestSupport.Wrap(options), workspace);
+        var runner = new DeterministicPlanRunner(
+            TestSupport.Wrap(options),
+            TestSupport.CreatePlanReader(options, workspace),
+            new PlanObjectRepositoryIntegrator(
+                repositoryReader,
+                new PlanObjectReferenceExpander(new ObjectReferenceResolver())),
+            workspace,
+            new DriverConnectionResolver(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverConnectionResolver>.Instance),
+            new DriverCatalogClient(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverCatalogClient>.Instance),
+            uiClient,
+            new AssertionEvaluator(TestSupport.Wrap(options)),
+            new RunArtifactWriter(),
+            ladder,
+            new RecoveryArtifactWriter(workspace),
+            new RecoveryManifestLoader(workspace),
+            repositoryReader,
+            new SystemProcessIdentityProbe(),
+            NullLogger<DeterministicPlanRunner>.Instance);
+
+        var report = await runner.RunAsync(path, dryRun: false);
+        Assert.Equal("failed", report.Status);
+        Assert.Contains(report.OnFailureSteps, s => s.Id == "cleanup-list");
+        Assert.NotNull(report.Recovery);
+        Assert.Contains(
+            report.Recovery!.Attempts,
+            a => (a.Detail ?? string.Empty).Contains("artifact", StringComparison.OrdinalIgnoreCase)
+                 || string.Equals(a.Outcome, "artifact-failure", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private sealed class HugeEvidenceRecoveryModelClient : IRecoveryModelClient
+    {
+        public string ProviderName => "fake";
+
+        public Task<CandidateRepairProposal?> ProposeRepairAsync(
+            RecoveryRepairRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<CandidateRepairProposal?>(new CandidateRepairProposal
+            {
+                ProposalId = "rrp_huge",
+                StepId = request.StepId,
+                Evidence = new string('x', 10_000),
+                Confidence = 0.1,
+                OldLocator = new ObjectLocator { AutomationId = "A" },
+                NewLocator = new ObjectLocator { AutomationId = "B" },
+                VerificationCommand = "verify",
+                AutoPromoted = false,
+                RequiresHumanApproval = true
+            });
+        }
+    }
+
+    [Fact]
     public void Classifier_MultiBinding_Ambiguous()
     {
         var decision = RecoveryFailureClassifier.ForTests().Classify(
@@ -645,6 +870,66 @@ public sealed class Phase7BoundedRecoveryTests
         Assert.Equal(RecoveryClassification.StateNotStable, decision.Classification);
         Assert.Equal("parentLocator", decision.BindingKey);
         Assert.Equal("login.form", decision.ObjectReference);
+    }
+
+    [Fact]
+    public void TypedNonExecutionProof_AllowsMutationClassification()
+    {
+        var decision = RecoveryFailureClassifier.ForTests().Classify(
+            new StepRunResult
+            {
+                Sequence = 1,
+                Id = "s1",
+                Operation = "click",
+                Phase = "steps",
+                Status = "failed",
+                Success = false,
+                Error = "Element not found for click",
+                FailureCode = RecoveryOperationSafety.FailureCodeLocatorNotFoundBeforeInvoke,
+                ExecutionState = RecoveryOperationSafety.ExecutionStateNotStarted,
+                Classification = UiFailureClassification.OperationFailure
+            },
+            EmptyContext());
+
+        Assert.Equal(RecoveryClassification.StateNotStable, decision.Classification);
+        Assert.True(decision.MayAttemptRecovery);
+    }
+
+    [Fact]
+    public void PlanImmutabilityAudit_MissingOrUnreadable_FailClosed()
+    {
+        // Mirrors BuildRecoverySummary fail-closed rules (missing/unreadable ⇒ PlanMutated).
+        byte[]? original = [1, 2, 3];
+        var missingPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "gone.plan.json");
+        Assert.True(ComputePlanMutated(original, missingPath));
+
+        var unreadableDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(unreadableDir);
+        // Path that exists as a directory — ReadAllBytes throws → fail closed.
+        Assert.True(ComputePlanMutated(original, unreadableDir));
+
+        var ok = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".plan.json");
+        File.WriteAllBytes(ok, original);
+        Assert.False(ComputePlanMutated(original, ok));
+        Assert.True(ComputePlanMutated(null, ok));
+    }
+
+    private static bool ComputePlanMutated(byte[]? originalPlanBytes, string planPath)
+    {
+        if (originalPlanBytes is null)
+            return true;
+
+        try
+        {
+            if (!File.Exists(planPath))
+                return true;
+            var current = File.ReadAllBytes(planPath);
+            return !originalPlanBytes.AsSpan().SequenceEqual(current);
+        }
+        catch
+        {
+            return true;
+        }
     }
 
     [Fact]

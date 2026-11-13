@@ -4,7 +4,9 @@ using DesktopAutomationAgent.Cli;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
 using DesktopAutomationAgent.Driver.Models;
+using DesktopAutomationAgent.Exploration;
 using DesktopAutomationAgent.ObjectRepository;
+using DesktopAutomationAgent.Observation;
 using DesktopAutomationAgent.Plans;
 using DesktopAutomationAgent.Recovery;
 using DesktopAutomationAgent.Workspace;
@@ -28,6 +30,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
     private readonly RecoveryArtifactWriter _recoveryArtifactWriter;
     private readonly RecoveryManifestLoader _recoveryManifestLoader;
     private readonly ObjectRepositoryReader _objectRepositoryReader;
+    private readonly IProcessIdentityProbe _processIdentityProbe;
+    private readonly ISemanticObservationService? _observation;
     private readonly ILogger<DeterministicPlanRunner> _logger;
 
     public DeterministicPlanRunner(
@@ -44,7 +48,9 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         RecoveryArtifactWriter recoveryArtifactWriter,
         RecoveryManifestLoader recoveryManifestLoader,
         ObjectRepositoryReader objectRepositoryReader,
-        ILogger<DeterministicPlanRunner> logger)
+        IProcessIdentityProbe processIdentityProbe,
+        ILogger<DeterministicPlanRunner> logger,
+        ISemanticObservationService? observation = null)
     {
         _options = options.Value;
         _planReader = planReader;
@@ -59,6 +65,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         _recoveryArtifactWriter = recoveryArtifactWriter;
         _recoveryManifestLoader = recoveryManifestLoader;
         _objectRepositoryReader = objectRepositoryReader;
+        _processIdentityProbe = processIdentityProbe;
+        _observation = observation;
         _logger = logger;
     }
 
@@ -182,7 +190,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         var status = "failed";
         var exitCode = ExitCodes.ExecutionFailure;
         var originalPlanSha256 = validation.Sha256 ?? string.Empty;
-        var originalPlanBytes = SafeReadPlanBytes(validation.PlanPath);
+        var resolvedPlanPath = ResolveWorkspacePath(validation.PlanPath);
+        var originalPlanBytes = SafeReadPlanBytes(resolvedPlanPath);
 
         try
         {
@@ -228,6 +237,9 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             {
                 using var recoveryBudget = new RecoveryBudgetTracker(_options.Recovery);
                 var (approvedCandidateLocators, approvedCandidateIds) = _recoveryManifestLoader.LoadApprovedCandidates();
+                var liveAppFingerprint = await ResolveLiveApplicationFingerprintAsync(
+                        driverStatus, cancellationToken)
+                    .ConfigureAwait(false);
                 var recoveryContext = new RecoveryContext
                 {
                     RunId = runId,
@@ -243,8 +255,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                     EquivalentTransitions = _recoveryManifestLoader.LoadEquivalentTransitions(),
                     ApprovedCandidateLocators = approvedCandidateLocators,
                     ApprovedCandidateLocatorIds = approvedCandidateIds,
-                    ApplicationFingerprint = driverStatus.Build?.Version
-                        ?? catalog?.DriverVersion,
+                    // Live target process executable SHA — never driverStatus.Build / catalog.DriverVersion.
+                    ApplicationFingerprint = liveAppFingerprint,
                     ExpectedApplicationFingerprint = _recoveryManifestLoader.LoadExpectedApplicationFingerprint()
                 };
 
@@ -303,6 +315,22 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                                 Classification = RecoveryClassification.BudgetExhausted,
                                 TierUsed = RecoveryTier.FailAndCleanup,
                                 Detail = "max-additional-duration"
+                            };
+                        }
+                        catch (Exception ex) when (
+                            ex is IOException
+                                or RecoveryPathException
+                                or UnauthorizedAccessException
+                                or System.Security.SecurityException)
+                        {
+                            // Artifact/path failures from recovery must not skip deterministic cleanup.
+                            _logger.LogWarning(ex, "Recovery artifact failure for step {StepId}", step.Id);
+                            outcome = new RecoveryOutcome
+                            {
+                                Recovered = false,
+                                Classification = RecoveryClassification.NotRecoverable,
+                                TierUsed = RecoveryTier.FailAndCleanup,
+                                Detail = $"Recovery artifact failure: {ex.Message}"
                             };
                         }
 
@@ -365,7 +393,7 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                     originalPlanSha256,
                     validation.ObjectRepositorySha256,
                     originalPlanBytes,
-                    validation.PlanPath,
+                    resolvedPlanPath,
                     validation.ObjectRepositoryPath,
                     recoveryAttempts,
                     failure is null ? "passed" : "failed",
@@ -500,7 +528,7 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                 originalPlanSha256,
                 validation.ObjectRepositorySha256,
                 originalPlanBytes,
-                validation.PlanPath,
+                resolvedPlanPath,
                 validation.ObjectRepositoryPath,
                 recoveryAttempts,
                 failure is null && status == "passed" ? "passed" : "failed",
@@ -823,6 +851,8 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             ResponseValue = captureValue ? response?.Value : null,
             Error = error,
             DriverReason = response?.Reason,
+            ExecutionState = ExtractTypedField(response, "executionState", response?.ExecutionState),
+            FailureCode = ExtractTypedField(response, "failureCode", response?.FailureCode),
             ScreenshotPath = response?.ScreenshotPath,
             Classification = classification,
             Assertions = assertions.Select(a => new AssertionRunResult
@@ -836,6 +866,25 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             }).ToArray(),
             Duration = duration
         };
+    }
+
+    private static string? ExtractTypedField(UiExecutionResponse? response, string extensionKey, string? direct)
+    {
+        if (!string.IsNullOrWhiteSpace(direct))
+            return direct.Trim();
+
+        if (response?.ExtensionData is null)
+            return null;
+
+        foreach (var pair in response.ExtensionData)
+        {
+            if (!string.Equals(pair.Key, extensionKey, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (pair.Value.ValueKind == JsonValueKind.String)
+                return pair.Value.GetString()?.Trim();
+        }
+
+        return null;
     }
 
     private static RunFailure BuildStepFailure(StepRunResult result) =>
@@ -908,10 +957,31 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
         ObjectRepositoryReader repositoryReader)
     {
         var planMutated = false;
-        if (originalPlanBytes is not null && File.Exists(planPath))
+        if (originalPlanBytes is null)
         {
-            var current = File.ReadAllBytes(planPath);
-            planMutated = !originalPlanBytes.AsSpan().SequenceEqual(current);
+            // No baseline hash — fail closed (match repo audit).
+            planMutated = true;
+        }
+        else
+        {
+            try
+            {
+                if (!File.Exists(planPath))
+                {
+                    // Missing plan after run start — fail closed.
+                    planMutated = true;
+                }
+                else
+                {
+                    var current = File.ReadAllBytes(planPath);
+                    planMutated = !originalPlanBytes.AsSpan().SequenceEqual(current);
+                }
+            }
+            catch
+            {
+                // Unreadable plan — fail closed.
+                planMutated = true;
+            }
         }
 
         string? afterHash = null;
@@ -954,6 +1024,122 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
             Attempts = attempts,
             FinalResult = finalResult
         };
+    }
+
+    /// <summary>
+    /// Resolves the live target desktop application fingerprint (executable SHA-256).
+    /// Never uses driver build/version — those identify the automation host, not the app under test.
+    /// </summary>
+    private async Task<string?> ResolveLiveApplicationFingerprintAsync(
+        StatusValueDto driverStatus,
+        CancellationToken cancellationToken)
+    {
+        // Prefer explicit SHA from status extension data when the driver reports target identity.
+        if (TryReadExtensionString(driverStatus.ExtensionData, out var statusSha,
+                "executableSha256", "applicationExecutableSha256", "targetExecutableSha256")
+            && !string.IsNullOrWhiteSpace(statusSha))
+        {
+            return statusSha.Trim().ToLowerInvariant();
+        }
+
+        var pid = TryReadExtensionInt(driverStatus.ExtensionData,
+            "processId", "applicationProcessId", "targetProcessId");
+
+        if (pid is null or <= 0 && _observation is not null)
+        {
+            try
+            {
+                var observed = await _observation.ObserveAsync(
+                    new ObservationOptions
+                    {
+                        View = "control",
+                        Root = "activeWindow",
+                        MaxDepth = 1,
+                        MaxChildren = 1,
+                        MaxNodes = 8,
+                        IncludeBounds = false,
+                        ActionableOnly = false,
+                        PersistArtifact = false
+                    },
+                    cancellationToken).ConfigureAwait(false);
+                pid = observed.Snapshot?.Window?.ProcessId
+                      ?? observed.Snapshot?.Application.ProcessId;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Unable to observe active window for application fingerprint.");
+            }
+        }
+
+        if (pid is > 0
+            && _processIdentityProbe.TryGetIdentity(pid.Value, out var info, out _)
+            && !string.IsNullOrWhiteSpace(info.ExecutableSha256))
+        {
+            return info.ExecutableSha256.Trim().ToLowerInvariant();
+        }
+
+        return null;
+    }
+
+    private static bool TryReadExtensionString(
+        Dictionary<string, JsonElement>? extensionData,
+        out string? value,
+        params string[] keys)
+    {
+        value = null;
+        if (extensionData is null)
+            return false;
+
+        foreach (var key in keys)
+        {
+            foreach (var pair in extensionData)
+            {
+                if (!string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (pair.Value.ValueKind == JsonValueKind.String)
+                {
+                    value = pair.Value.GetString();
+                    return !string.IsNullOrWhiteSpace(value);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static int? TryReadExtensionInt(
+        Dictionary<string, JsonElement>? extensionData,
+        params string[] keys)
+    {
+        if (extensionData is null)
+            return null;
+
+        foreach (var key in keys)
+        {
+            foreach (var pair in extensionData)
+            {
+                if (!string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (pair.Value.ValueKind == JsonValueKind.Number && pair.Value.TryGetInt32(out var n))
+                    return n;
+                if (pair.Value.ValueKind == JsonValueKind.String
+                    && int.TryParse(pair.Value.GetString(), out var parsed))
+                {
+                    return parsed;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private string ResolveWorkspacePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return path;
+        if (Path.IsPathRooted(path))
+            return Path.GetFullPath(path);
+        return Path.GetFullPath(Path.Combine(_workspace.RootPath, path));
     }
 
     private static byte[]? SafeReadPlanBytes(string planPath)

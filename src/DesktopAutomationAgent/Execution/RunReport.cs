@@ -92,6 +92,12 @@ public sealed class StepRunResult
 
     public string? DriverReason { get; init; }
 
+    /// <summary>Typed driver execution state (e.g. notStarted).</summary>
+    public string? ExecutionState { get; init; }
+
+    /// <summary>Typed driver failure code (e.g. locatorNotFoundBeforeInvoke).</summary>
+    public string? FailureCode { get; init; }
+
     public string? ScreenshotPath { get; init; }
 
     /// <summary>Preserved driver/UI failure classification when the step failed.</summary>
