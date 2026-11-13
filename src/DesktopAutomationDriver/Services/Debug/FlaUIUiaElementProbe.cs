@@ -192,10 +192,10 @@ public sealed class FlaUIUiaElementProbe : IUiaElementProbe, IDisposable
             if (!r.IsEmpty && r.Width > 0 && r.Height > 0)
             {
                 bounds = new Rectangle(
-                    (int)Math.Round(r.X),
-                    (int)Math.Round(r.Y),
-                    (int)Math.Round(r.Width),
-                    (int)Math.Round(r.Height));
+                    (int)Math.Round((double)r.X),
+                    (int)Math.Round((double)r.Y),
+                    (int)Math.Round((double)r.Width),
+                    (int)Math.Round((double)r.Height));
             }
         }
         catch
@@ -295,10 +295,10 @@ public sealed class FlaUIUiaElementProbe : IUiaElementProbe, IDisposable
                 ProcessId = pid,
                 ProcessName = processName,
                 Bounds = new Rectangle(
-                    (int)Math.Round(bounds.X),
-                    (int)Math.Round(bounds.Y),
-                    (int)Math.Round(bounds.Width),
-                    (int)Math.Round(bounds.Height)),
+                    (int)Math.Round((double)bounds.X),
+                    (int)Math.Round((double)bounds.Y),
+                    (int)Math.Round((double)bounds.Width),
+                    (int)Math.Round((double)bounds.Height)),
                 DpiScaleX = 1.0,
                 DpiScaleY = 1.0
             };
