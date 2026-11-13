@@ -424,6 +424,124 @@ public sealed class Phase7BoundedRecoveryTests
         Assert.False(decision.MayAttemptRecovery);
     }
 
+    [Theory]
+    [InlineData("Step 's1' returned an empty response body (HTTP 200).")]
+    [InlineData("Step 's1' returned invalid JSON (HTTP 200).")]
+    [InlineData("Driver response Content-Length 999999 exceeded maximum size of 1048576 bytes.")]
+    public void Classifier_UncertainProtocolMutation_NotRecoverable(string error)
+    {
+        var decision = RecoveryFailureClassifier.ForTests().Classify(
+            new StepRunResult
+            {
+                Sequence = 1,
+                Id = "s1",
+                Operation = "click",
+                Phase = "steps",
+                Status = "failed",
+                Success = false,
+                Error = error,
+                Classification = UiFailureClassification.OperationFailure
+            },
+            EmptyContext());
+
+        Assert.Equal(RecoveryClassification.NotRecoverable, decision.Classification);
+        Assert.False(decision.MayAttemptRecovery);
+        Assert.False(RecoveryOperationSafety.IsSafeToReplay(
+            "click", null, UiFailureClassification.OperationFailure, error, allowMutationReplay: false));
+    }
+
+    [Fact]
+    public void EquivalentTransition_NeverUpgradesReadTimeoutToMutation()
+    {
+        var catalog = CatalogFixtures.Phase2Catalog();
+        catalog.Operations.Add(new OperationDescriptorDto
+        {
+            Name = "clickuia",
+            Aliases = [],
+            Category = "element-action",
+            OperationType = "invoke",
+            RequiresSession = false,
+            RequiredInputs = ["locator"]
+        });
+
+        Assert.False(RecoveryOperationSafety.IsEquivalentTransitionAllowed(
+            originalOperation: "listwindows",
+            targetOperation: "clickuia",
+            catalog,
+            UiFailureClassification.ExecutionTimeout,
+            "Step 's1' timed out after 1 seconds.",
+            allowMutationReplay: false));
+
+        Assert.True(RecoveryOperationSafety.IsEquivalentTransitionAllowed(
+            originalOperation: "listwindows",
+            targetOperation: "finduia",
+            catalog,
+            UiFailureClassification.ExecutionTimeout,
+            "Step 's1' timed out after 1 seconds.",
+            allowMutationReplay: false));
+    }
+
+    [Fact]
+    public void Budgets_AccumulateOnlyActiveRecoveryIntervals()
+    {
+        var options = new RecoveryOptions
+        {
+            Enabled = true,
+            MaxTotalRecoveriesPerRun = 5,
+            MaxRecoveryAttemptsPerStep = 5,
+            MaxAdditionalDurationSeconds = 2
+        };
+        using var tracker = new RecoveryBudgetTracker(options);
+
+        Assert.True(tracker.TryConsumeUnit("s1", CancellationToken.None, out _, out _));
+        Thread.Sleep(50);
+        tracker.EndUnit();
+        var afterFirst = tracker.Elapsed;
+
+        Thread.Sleep(400); // normal plan execution — must not burn recovery budget
+        Assert.Equal(afterFirst, tracker.Elapsed);
+
+        Assert.True(tracker.TryConsumeUnit("s1", CancellationToken.None, out _, out _));
+        tracker.EndUnit();
+        Assert.True(tracker.Elapsed >= afterFirst);
+        Assert.True(tracker.RemainingDuration() > TimeSpan.Zero);
+    }
+
+    [Fact]
+    public async Task RecoveryDeadlineCancel_MapsToBudgetExhausted_NotUnhandled()
+    {
+        var options = ReadyOptions();
+        options.Recovery.BoundedWaitMilliseconds = 5_000;
+        options.Recovery.MaxAdditionalDurationSeconds = 1;
+        options.Recovery.MaxRecoveryAttemptsPerStep = 8;
+        options.Recovery.MaxTotalRecoveriesPerRun = 8;
+
+        var handler = ReadyHandler((req, _) =>
+        {
+            if (req.Method != HttpMethod.Post)
+                return Task.FromResult(DefaultGet(req));
+
+            return Task.FromResult(FakeHttpMessageHandler.Json(new
+            {
+                success = false,
+                error = "Element not found for listwindows"
+            }));
+        });
+
+        var plan = TestSupport.MinimalPlanJson(stepsOverride: """
+            [ { "id": "q", "operation": "listwindows", "arguments": {} } ]
+            """);
+        var path = TestSupport.WritePlan(options, "budget-deadline.plan.json", plan);
+        var report = await CreateRunner(options, handler).RunAsync(path, dryRun: false);
+
+        Assert.Equal("failed", report.Status);
+        Assert.NotNull(report.Recovery);
+        Assert.Contains(
+            report.Recovery!.Attempts,
+            a => a.Classification == RecoveryClassification.BudgetExhausted
+                 || string.Equals(a.Outcome, "budget-exhausted", StringComparison.OrdinalIgnoreCase));
+    }
+
     [Fact]
     public void Classifier_MultiBinding_Ambiguous()
     {

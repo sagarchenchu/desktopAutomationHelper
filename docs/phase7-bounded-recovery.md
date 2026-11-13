@@ -63,7 +63,7 @@ flowchart TD
 | `AllowMutationReplay` | `false` | When false, timed-out / uncertain mutation/invoke/input are never replayed |
 | `MaxTotalRecoveriesPerRun` | `12` | Cap of recovery **work units** (each probe/retry/model call) across the run |
 | `MaxRecoveryAttemptsPerStep` | `8` | Cap of work units per failing step |
-| `MaxAdditionalDurationSeconds` | `60` | Accumulated recovery wall-clock budget (linked CTS cancels in-flight work) |
+| `MaxAdditionalDurationSeconds` | `60` | Accumulated **active recovery** wall-clock only (plan execution between units does not burn it; linked CTS cancels in-flight recovery work) |
 | `BoundedWaitMilliseconds` | `750` | Tier-1 wait |
 | `MaxCandidateArtifactBytes` | `65536` | Bound on redacted candidate repair JSON |
 | `Provider` | `fake` | CI must use fake |

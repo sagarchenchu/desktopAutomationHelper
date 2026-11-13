@@ -89,9 +89,9 @@ public sealed class RecoveryFailureClassifier
             message,
             _options.AllowMutationReplay);
 
-        // Timed-out / uncertain mutations must never enter the recoverable ladder.
+        // Timed-out / uncertain protocol-or-transport mutations must never enter the ladder.
         if (!safeToReplay
-            && RecoveryOperationSafety.IsUncertainTransportFailure(failedStep.Classification, message))
+            && RecoveryOperationSafety.IsUncertainExecutionOutcome(failedStep.Classification, message))
         {
             return Deny(
                 RecoveryClassification.NotRecoverable,
@@ -102,15 +102,9 @@ public sealed class RecoveryFailureClassifier
         {
             if (!safeToReplay)
             {
-                // Alternate path still re-executes the original operation with a new locator —
-                // only allow when the failure is a clear element-not-found (not transport timeout).
-                if (RecoveryOperationSafety.IsUncertainTransportFailure(failedStep.Classification, message)
-                    || !ContainsAny(message, "element not found", "not found", "no match"))
-                {
-                    return Deny(
-                        RecoveryClassification.NotRecoverable,
-                        "Mutation recovery requires structured proof the action was not executed (e.g. element not found).");
-                }
+                return Deny(
+                    RecoveryClassification.NotRecoverable,
+                    "Mutation recovery requires structured proof the action was not executed (e.g. element not found).");
             }
 
             return Allow(
@@ -122,6 +116,13 @@ public sealed class RecoveryFailureClassifier
 
         if (HasApprovedCandidate(objectRef, context))
         {
+            if (!safeToReplay)
+            {
+                return Deny(
+                    RecoveryClassification.NotRecoverable,
+                    "Approved-candidate recovery requires structured proof the action was not executed.");
+            }
+
             return Allow(
                 RecoveryClassification.ExplicitlyApprovedCandidateLocator,
                 "Explicitly approved candidate locator proposal is available.",
@@ -131,6 +132,14 @@ public sealed class RecoveryFailureClassifier
 
         if (HasEquivalentTransition(failedStep, context, out var transitionEvidence))
         {
+            if (!safeToReplay
+                && !RecoveryOperationSafety.IsReadOrQuery(failedStep.Operation, context.Catalog))
+            {
+                return Deny(
+                    RecoveryClassification.NotRecoverable,
+                    "Equivalent-transition recovery requires structured proof the mutation was not executed.");
+            }
+
             return Allow(
                 RecoveryClassification.ApprovedEquivalentTransition,
                 transitionEvidence,

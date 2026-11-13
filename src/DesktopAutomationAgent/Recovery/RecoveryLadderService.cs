@@ -103,6 +103,8 @@ public sealed class RecoveryLadderService
             if (budget.RemainingDuration() <= TimeSpan.Zero)
                 break;
 
+            try
+            {
             switch (tier)
             {
                 case RecoveryTier.FreshObservationAndBoundedWait:
@@ -364,6 +366,17 @@ public sealed class RecoveryLadderService
                         var started = DateTimeOffset.UtcNow;
                         var sw = Stopwatch.StartNew();
                         var rewritten = _alternateResolver.CloneStepWithLocator(originalStep, unique, bindingKey);
+                        if (!IsReplayAllowed(rewritten, context, failedResult))
+                        {
+                            var blocked = Record(
+                                budget.TotalAttempts, originalStep.Id, decision.Classification, tier,
+                                "skipped", "Alternate replay blocked for mutation/uncertain protocol failure.",
+                                beforePath, null, started, sw.Elapsed);
+                            attempts.Add(blocked);
+                            _artifactWriter.WriteAttempt(recoveryDir, blocked);
+                            break;
+                        }
+
                         var retry = await executeStepAsync(rewritten, execToken).ConfigureAwait(false);
                         var afterPath = _artifactWriter.WriteSnapshot(
                             recoveryDir,
@@ -430,14 +443,19 @@ public sealed class RecoveryLadderService
                         if (rewritten is null)
                             break;
 
-                        if (!IsReplayAllowed(rewritten, context, failedResult)
-                            && !RecoveryOperationSafety.IsSafeToReplay(
-                                rewritten.Operation, context.Catalog, null, null, _options.AllowMutationReplay))
+                        var failureMessage = Combine(failedResult.Error, failedResult.DriverReason);
+                        if (!RecoveryOperationSafety.IsEquivalentTransitionAllowed(
+                                originalStep.Operation,
+                                rewritten.Operation,
+                                context.Catalog,
+                                failedResult.Classification,
+                                failureMessage,
+                                _options.AllowMutationReplay))
                         {
-                            // Equivalent transition to another mutation still requires AllowMutationReplay or read target.
                             var blocked = Record(
                                 budget.TotalAttempts, originalStep.Id, decision.Classification, tier,
-                                "skipped", "Equivalent transition target is not safe to replay.",
+                                "skipped",
+                                "Equivalent transition blocked: cannot upgrade to mutation without AllowMutationReplay / non-execution proof.",
                                 beforePath, null, started, sw.Elapsed);
                             attempts.Add(blocked);
                             _artifactWriter.WriteAttempt(recoveryDir, blocked);
@@ -541,6 +559,24 @@ public sealed class RecoveryLadderService
                             var sw = Stopwatch.StartNew();
                             var bindingKey = decision.BindingKey ?? "locator";
                             var rewritten = _alternateResolver.CloneStepWithLocator(originalStep, approvedLocator, bindingKey);
+                            if (!IsReplayAllowed(rewritten, context, failedResult))
+                            {
+                                var blocked = Record(
+                                    budget.TotalAttempts, originalStep.Id, decision.Classification, tier,
+                                    "skipped", "Approved-candidate replay blocked for mutation/uncertain protocol failure.",
+                                    beforePath, null, started, sw.Elapsed);
+                                attempts.Add(blocked);
+                                _artifactWriter.WriteAttempt(recoveryDir, blocked);
+                                return new RecoveryOutcome
+                                {
+                                    Recovered = false,
+                                    Classification = decision.Classification,
+                                    TierUsed = tier,
+                                    Detail = blocked.Detail,
+                                    Attempts = attempts
+                                };
+                            }
+
                             var retry = await executeStepAsync(rewritten, execToken).ConfigureAwait(false);
                             var afterPath = _artifactWriter.WriteSnapshot(
                                 recoveryDir,
@@ -640,6 +676,22 @@ public sealed class RecoveryLadderService
                         budget.EndUnit();
                     }
                 }
+            }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Linked recovery-deadline CTS cancelled mid-unit — map to budget exhausted
+                // so the runner always receives a normal outcome (summary + cleanup).
+                if (budget.InRecovery)
+                    budget.EndUnit();
+
+                var started = DateTimeOffset.UtcNow;
+                var record = Record(
+                    budget.TotalAttempts, originalStep.Id, RecoveryClassification.BudgetExhausted, tier,
+                    "budget-exhausted", "max-additional-duration", beforePath, null, started, TimeSpan.Zero);
+                attempts.Add(record);
+                _artifactWriter.WriteAttempt(recoveryDir, record);
+                return BudgetExhausted(decision, attempts, "max-additional-duration");
             }
         }
 

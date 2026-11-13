@@ -4,15 +4,17 @@ using DesktopAutomationAgent.Configuration;
 namespace DesktopAutomationAgent.Recovery;
 
 /// <summary>
-/// Enforces non-recursive budgets per probe/retry/model call with accumulated recovery duration.
+/// Enforces non-recursive budgets per probe/retry/model call with accumulated
+/// <em>active recovery</em> duration only (plan execution between units does not burn budget).
 /// </summary>
 public sealed class RecoveryBudgetTracker : IDisposable
 {
     private readonly RecoveryOptions _options;
-    private readonly Stopwatch _elapsed = new();
+    private readonly Stopwatch _unitWatch = new();
     private readonly Dictionary<string, int> _perStep = new(StringComparer.Ordinal);
     private readonly object _gate = new();
     private CancellationTokenSource? _deadlineCts;
+    private TimeSpan _accumulated;
     private int _total;
     private bool _inRecovery;
     private bool _disposed;
@@ -32,9 +34,19 @@ public sealed class RecoveryBudgetTracker : IDisposable
         get { lock (_gate) return _inRecovery; }
     }
 
+    /// <summary>Accumulated active recovery time (excludes normal plan execution between units).</summary>
     public TimeSpan Elapsed
     {
-        get { lock (_gate) return _elapsed.Elapsed; }
+        get
+        {
+            lock (_gate)
+            {
+                var total = _accumulated;
+                if (_inRecovery)
+                    total += _unitWatch.Elapsed;
+                return total;
+            }
+        }
     }
 
     /// <summary>
@@ -79,10 +91,15 @@ public sealed class RecoveryBudgetTracker : IDisposable
                 return false;
             }
 
-            if (!_elapsed.IsRunning)
-                _elapsed.Start();
+            var budget = TimeSpan.FromSeconds(Math.Max(0, _options.MaxAdditionalDurationSeconds));
+            if (_accumulated >= budget)
+            {
+                denyReason = "max-additional-duration";
+                return false;
+            }
 
-            if (_elapsed.Elapsed >= TimeSpan.FromSeconds(Math.Max(0, _options.MaxAdditionalDurationSeconds)))
+            var remaining = budget - _accumulated;
+            if (remaining <= TimeSpan.Zero)
             {
                 denyReason = "max-additional-duration";
                 return false;
@@ -91,14 +108,7 @@ public sealed class RecoveryBudgetTracker : IDisposable
             _inRecovery = true;
             _total++;
             _perStep[stepId] = stepCount + 1;
-
-            var remaining = TimeSpan.FromSeconds(Math.Max(0, _options.MaxAdditionalDurationSeconds)) - _elapsed.Elapsed;
-            if (remaining <= TimeSpan.Zero)
-            {
-                _inRecovery = false;
-                denyReason = "max-additional-duration";
-                return false;
-            }
+            _unitWatch.Restart();
 
             _deadlineCts?.Dispose();
             _deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(parentToken);
@@ -113,7 +123,14 @@ public sealed class RecoveryBudgetTracker : IDisposable
     {
         lock (_gate)
         {
+            if (!_inRecovery)
+                return;
+
+            _unitWatch.Stop();
+            _accumulated += _unitWatch.Elapsed;
             _inRecovery = false;
+            _deadlineCts?.Dispose();
+            _deadlineCts = null;
         }
     }
 
@@ -122,10 +139,10 @@ public sealed class RecoveryBudgetTracker : IDisposable
         lock (_gate)
         {
             var budget = TimeSpan.FromSeconds(Math.Max(0, _options.MaxAdditionalDurationSeconds));
-            if (!_elapsed.IsRunning)
-                return budget;
-
-            var remaining = budget - _elapsed.Elapsed;
+            var used = _accumulated;
+            if (_inRecovery)
+                used += _unitWatch.Elapsed;
+            var remaining = budget - used;
             return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
         }
     }
@@ -136,6 +153,13 @@ public sealed class RecoveryBudgetTracker : IDisposable
         {
             if (_disposed)
                 return;
+            if (_inRecovery)
+            {
+                _unitWatch.Stop();
+                _accumulated += _unitWatch.Elapsed;
+                _inRecovery = false;
+            }
+
             _disposed = true;
             _deadlineCts?.Dispose();
             _deadlineCts = null;

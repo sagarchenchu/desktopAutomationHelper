@@ -277,19 +277,34 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                     if (!result.Success && _options.Recovery.Enabled)
                     {
                         var activeConnection = connection;
-                        var outcome = await _recoveryLadder.TryRecoverAsync(
-                            activeConnection,
-                            step,
-                            result,
-                            recoveryContext,
-                            recoveryBudget,
-                            async (candidateStep, ct) => await ExecutePlanStepAsync(
+                        RecoveryOutcome outcome;
+                        try
+                        {
+                            outcome = await _recoveryLadder.TryRecoverAsync(
                                 activeConnection,
-                                candidateStep,
-                                phase: "steps",
-                                sequence: i + 1,
-                                ct).ConfigureAwait(false),
-                            cancellationToken).ConfigureAwait(false);
+                                step,
+                                result,
+                                recoveryContext,
+                                recoveryBudget,
+                                async (candidateStep, ct) => await ExecutePlanStepAsync(
+                                    activeConnection,
+                                    candidateStep,
+                                    phase: "steps",
+                                    sequence: i + 1,
+                                    ct).ConfigureAwait(false),
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            // Recovery deadline CTS must not abort the run without summary/cleanup.
+                            outcome = new RecoveryOutcome
+                            {
+                                Recovered = false,
+                                Classification = RecoveryClassification.BudgetExhausted,
+                                TierUsed = RecoveryTier.FailAndCleanup,
+                                Detail = "max-additional-duration"
+                            };
+                        }
 
                         recoveryAttempts.AddRange(outcome.Attempts);
 
@@ -475,6 +490,54 @@ public sealed class DeterministicPlanRunner : IDeterministicPlanRunner
                 Classification = UiFailureClassification.PlanValidation,
                 Message = ex.Message
             };
+        }
+
+        // Always summarize recovery attempts and prefer cleanup even if an earlier catch aborted the main loop.
+        if (recoverySummary is null && recoveryAttempts.Count > 0 && !dryRun)
+        {
+            recoverySummary = BuildRecoverySummary(
+                runId,
+                originalPlanSha256,
+                validation.ObjectRepositorySha256,
+                originalPlanBytes,
+                validation.PlanPath,
+                validation.ObjectRepositoryPath,
+                recoveryAttempts,
+                failure is null && status == "passed" ? "passed" : "failed",
+                _objectRepositoryReader);
+
+            try
+            {
+                var recoveryDir = _recoveryArtifactWriter.EnsureRecoveryDirectory(runDirectory);
+                _recoveryArtifactWriter.WriteSummary(recoveryDir, recoverySummary);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _logger.LogWarning(ex, "Failed to persist recovery summary for run {RunId}", runId);
+            }
+        }
+
+        if (!dryRun
+            && failure is not null
+            && onFailureResults.Count == 0
+            && connection is not null
+            && catalog is not null
+            && (sessionPossiblyActive || launchRequestSent))
+        {
+            try
+            {
+                onFailureResults.AddRange(
+                    await ExecuteOnFailureStepsAsync(
+                        connection,
+                        catalog,
+                        validation.Plan?.OnFailureSteps,
+                        sessionPossiblyActive || launchRequestSent,
+                        CancellationToken.None).ConfigureAwait(false));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Cleanup after recovery/exception failed for run {RunId}", runId);
+            }
         }
 
         var report = BuildReport(
