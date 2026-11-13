@@ -26,7 +26,8 @@ public enum AgentCommandKind
     ValidateCompiledKey,
     SyncKey,
     RunKey,
-    RunSuite
+    RunSuite,
+    McpServer
 }
 
 public sealed class ParsedCommand
@@ -156,12 +157,32 @@ public static class CommandLine
             "sync-key" => ParseSyncKey(rest),
             "run-key" => ParseRunKey(rest),
             "run-suite" => ParseRunSuite(rest),
+            "mcp-server" => ParseMcpServer(rest),
             _ => new ParsedCommand
             {
                 Kind = AgentCommandKind.Help,
                 Json = HasFlag(rest, "--json") || HasFlag(args, "--json"),
                 Error = $"Unknown command '{args[0]}'."
             }
+        };
+    }
+
+    private static ParsedCommand ParseMcpServer(string[] rest)
+    {
+        var (config, unknown) = SplitConfigArgs(rest);
+        if (unknown.Count > 0)
+        {
+            return Error(
+                AgentCommandKind.McpServer,
+                json: false,
+                $"Unknown mcp-server argument '{unknown[0]}'.",
+                config.ToList());
+        }
+
+        return new ParsedCommand
+        {
+            Kind = AgentCommandKind.McpServer,
+            ConfigurationArgs = config
         };
     }
 
@@ -2035,11 +2056,15 @@ public static class CommandLine
 
     public static string HelpText =>
         """
-        Desktop Automation Agent (Phase 4E)
+        Desktop Automation Agent (Phase 5)
 
         Commands:
           init
               Create the automation workspace templates (idempotent).
+
+          mcp-server
+              Start the local stdio MCP sidecar (protocol adapter over existing services).
+              stdout is JSON-RPC only; logs go to stderr. No network listener.
 
           validate-suite --file <path>
               Validate one suite manifest. Does not require the driver.
@@ -2146,7 +2171,7 @@ public static class CommandLine
           6 UI operation, timeout, capture/verify/observe or assertion failure
           7 execution cancelled
 
-        Phase 4E adds a provider-neutral read-only Jira test-source and sequential suite execution.
-        AI is not implemented. Scheduling, notifications, parallel runs, and Jira writeback are not implemented.
+        Phase 5 exposes already-tested application services through a local stdio MCP interface.
+        AI is not implemented. Autonomous planning, self-healing, and public remote MCP are not implemented.
         """;
 }

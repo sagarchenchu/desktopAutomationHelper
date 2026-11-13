@@ -1770,9 +1770,10 @@ It never references driver internals (no project reference, no FlaUI).
 | Phase 4B — safe explorer | Complete (`docs/phase4b-safe-explorer.md`) |
 | Phase 4C — application knowledge | Complete (`docs/phase4c-application-knowledge.md`) |
 | Phase 4D — deterministic BDD compiler | Complete (`docs/phase4d-deterministic-bdd-compiler.md`) — offline compile; no Jira/AI/`POST /ui` |
-| Phase 4E — Jira adapter + suite orchestration | This work (`docs/phase4e-jira-suite-orchestration.md`) — read-only provider-neutral Jira source; sequential suites |
+| Phase 4E — Jira adapter + suite orchestration | Complete (`docs/phase4e-jira-suite-orchestration.md`) — read-only provider-neutral Jira source; sequential suites |
+| Phase 5 — MCP interface | This work (`docs/phase5-mcp-interface.md`) — local stdio MCP adapter over existing services |
 
-The agent does **not** call live Jira, invent steps with AI, self-heal, or schedule suites. Phase 4D compiles offline BDD exports only.
+The agent does **not** invent steps with AI, self-heal, schedule suites, or expose a public remote MCP. Live Jira remains read-only (Phase 4E).
 
 ```cmd
 dotnet run --project src/DesktopAutomationAgent -- init
@@ -1792,7 +1793,10 @@ dotnet run --project src/DesktopAutomationAgent -- compile-key --key DEMO-1 --js
 dotnet run --project src/DesktopAutomationAgent -- validate-compiled-key --key DEMO-1 --json
 dotnet run --project src/DesktopAutomationAgent -- doctor
 dotnet run --project src/DesktopAutomationAgent -- doctor --json
+dotnet run --project src/DesktopAutomationAgent -- mcp-server
 ```
+
+MCP client example (placeholders only): [`automation/config/mcp-client.example.json`](automation/config/mcp-client.example.json).
 
 Configuration precedence: `appsettings.json` → `automation/config/agentsettings.local.json`
 → `DA_AGENT__*` environment variables → command-line. See
@@ -1802,8 +1806,10 @@ Configuration precedence: `appsettings.json` → `automation/config/agentsetting
 [`docs/phase3-5-post-merge-hardening.md`](docs/phase3-5-post-merge-hardening.md),
 [`docs/phase4a-semantic-observation.md`](docs/phase4a-semantic-observation.md),
 [`docs/phase4b-safe-explorer.md`](docs/phase4b-safe-explorer.md),
-[`docs/phase4c-application-knowledge.md`](docs/phase4c-application-knowledge.md), and
-[`docs/phase4d-deterministic-bdd-compiler.md`](docs/phase4d-deterministic-bdd-compiler.md).
+[`docs/phase4c-application-knowledge.md`](docs/phase4c-application-knowledge.md),
+[`docs/phase4d-deterministic-bdd-compiler.md`](docs/phase4d-deterministic-bdd-compiler.md),
+[`docs/phase4e-jira-suite-orchestration.md`](docs/phase4e-jira-suite-orchestration.md), and
+[`docs/phase5-mcp-interface.md`](docs/phase5-mcp-interface.md).
 
 ---
 
@@ -1885,10 +1891,11 @@ DesktopAutomationAgent (separate process; HTTP client only)
   Safe explorer / knowledge (Phase 4B/4C) — exploration runs + approved knowledge
   Deterministic BDD compiler (Phase 4D) — offline Jira export → compiled plan cache
   Jira adapter + suite orchestration (Phase 4E) — read-only sync, compile-key --from-jira, run-key, run-suite
+  MCP interface (Phase 5) — local stdio sidecar (`mcp-server`); protocol adapter only
   Suite manifests — Jira-key lists for validation and sequential suite execution
   Schemas under automation/schemas/
   Run artifacts under automation/runs/
-  Live Jira is read-only (Phase 4E sync); never invents steps with AI, schedules suites, or self-heals
+  Live Jira is read-only (Phase 4E sync); never invents steps with AI, schedules suites, self-heals, or exposes public remote MCP
 
 Artifact distinctions
   Approved Page Objects     automation/object-repository (manual promotion)

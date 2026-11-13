@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "desktop-automation-agent": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "<PATH_TO_REPO>/src/DesktopAutomationAgent/DesktopAutomationAgent.csproj",
+        "--",
+        "mcp-server"
+      ],
+      "env": {
+        "DA_AGENT__Workspace__Root": "<PATH_TO_WORKSPACE_OR_automation>",
+        "DA_AGENT__Driver__BaseUrl": "<DRIVER_BASE_URL_OR_LEAVE_UNSET_FOR_DISCOVERY>",
+        "DA_AGENT__Driver__BearerToken": "<DO_NOT_COMMIT_REAL_TOKEN>"
+      }
+    }
+  }
+}
