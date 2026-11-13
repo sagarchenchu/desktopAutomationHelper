@@ -1,11 +1,12 @@
 # Phase 8 - Windows acceptance
 
 - Tip tested (GitHub-resolvable): [`28b8712db032e867bb8433f1f2bd69161d85004d`](https://github.com/sagarchenchu/desktopAutomationHelper/commit/28b8712db032e867bb8433f1f2bd69161d85004d) (`28b8712`)
+- Review tip (CI + inspect re-smoke): [`65a332695d24489e492efd8417e0f3abd5445871`](https://github.com/sagarchenchu/desktopAutomationHelper/commit/65a332695d24489e492efd8417e0f3abd5445871) (`65a3326`)
 - Branch: `feature/driver-phase-8-debug-vision`
-- PR: #148 (draft - not merged)
+- PR: #148 (**draft / READY FOR REVIEW** — not merged)
 - When: 2026-11-13T18:10:05.5397620+00:00
 - Overall: **PASS** (S1–S9 on tip `28b8712`)
-- Note: product tip matches `5972d28` (`28b8712` only fixed test usings). Live `/debug/inspect` HTTP 500 on `IntPtr` `WindowHandle` serialization was observed during acceptance; scenarios 1–4 asserted via on-disk `candidate.json` artifacts written before response serialization. Follow-up tip on this branch stringifies `windowHandle` for STJ — re-smoke `/debug/inspect` HTTP after that lands.
+- Note: S1–S9 PASS on `28b8712`. During that run, live `/debug/inspect` HTTP 500ed on `IntPtr` `WindowHandle` (scenarios 1–4 still PASS via on-disk `candidate.json`). Fixed on `65a3326` via hex `windowHandle` converter; `/debug/inspect` HTTP re-smoke **OK**. #149 closed; evidence owned by #148.
 
 | # | Scenario | Expected | Result | Evidence |
 |---|---|---|---|---|
