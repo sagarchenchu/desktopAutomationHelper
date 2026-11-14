@@ -1,13 +1,24 @@
 {
     "scenarioId":  "04-highlight-passthrough",
     "name":  "Highlight does not intercept clicks",
-    "headSha":  "28b8712db032e867bb8433f1f2bd69161d85004d",
+    "headSha":  "ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf",
     "pass":  true,
-    "clickOk":  true,
-    "beforeStatus":  "@{text=Status; resolverStrategy=unified-resolver-unique}",
+    "clickError":  null,
+    "beforeStatus":  "Status",
+    "httpAllOk":  true,
+    "startHttpOk":  true,
+    "inspectHttpOk":  true,
+    "apiClickOk":  true,
+    "findMatch":  true,
+    "statusChanged":  true,
+    "inspectHttpError":  null,
+    "afterStatus":  "Status: ClickButton clicked",
+    "verifyHttpOk":  null,
     "point":  {
                   "y":  250,
                   "x":  540
               },
-    "afterStatus":  "@{text=Status: ClickButton clicked; resolverStrategy=unified-resolver-unique}"
+    "note":  "clickuia must succeed while yellow highlight is visible (WS_EX_TRANSPARENT / STA overlay)",
+    "stopHttpOk":  true,
+    "clickOk":  true
 }

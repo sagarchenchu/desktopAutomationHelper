@@ -103,46 +103,162 @@ public sealed class FakeHighlightSurface : IHighlightSurface
 
 /// <summary>
 /// WinForms click-through yellow border overlay. Created only on interactive desktops.
+/// All UI work runs on a dedicated STA thread so ASP.NET/FlaUI request threads do not hang.
 /// </summary>
 public sealed class WinFormsHighlightSurface : IHighlightSurface
 {
-    private HighlightForm? _form;
+    private readonly object _gate = new();
+    private Thread? _uiThread;
+    private volatile HighlightForm? _form;
+    private volatile bool _disposed;
+    private readonly ManualResetEventSlim _ready = new(false);
 
-    public bool IsVisible => _form is { Visible: true };
-    public Rectangle? CurrentBounds => _form?.Bounds;
+    public bool IsVisible
+    {
+        get
+        {
+            var form = _form;
+            if (form is null)
+                return false;
+            try
+            {
+                return Invoke(form, () => form.Visible);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+
+    public Rectangle? CurrentBounds
+    {
+        get
+        {
+            var form = _form;
+            if (form is null)
+                return null;
+            try
+            {
+                return Invoke(form, () => form.Bounds);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+
     public bool InterceptsClicks => false;
 
     public void Show(Rectangle screenBounds)
     {
-        EnsureForm();
-        _form!.Bounds = screenBounds;
-        if (!_form.Visible)
-            _form.Show();
-        else
-            _form.Invalidate();
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureUiThread();
+        var form = _form ?? throw new InvalidOperationException("Highlight UI thread failed to start.");
+        Invoke(form, () =>
+        {
+            form.Bounds = screenBounds;
+            if (!form.Visible)
+                form.Show();
+            else
+                form.Invalidate();
+        });
     }
 
     public void Hide()
     {
-        if (_form is null)
+        if (_disposed)
             return;
-        _form.Hide();
+        var form = _form;
+        if (form is null)
+            return;
+        try
+        {
+            Invoke(form, () => form.Hide());
+        }
+        catch
+        {
+            // Ignore teardown races.
+        }
     }
 
     public void Dispose()
     {
-        if (_form is null)
+        if (_disposed)
             return;
-        _form.Close();
-        _form.Dispose();
+        _disposed = true;
+        var form = _form;
+        if (form is not null)
+        {
+            try
+            {
+                Invoke(form, () =>
+                {
+                    form.Close();
+                    form.Dispose();
+                });
+            }
+            catch
+            {
+                // Ignore teardown races.
+            }
+        }
+
         _form = null;
+        _ready.Dispose();
     }
 
-    private void EnsureForm()
+    private void EnsureUiThread()
     {
-        if (_form is not null)
+        lock (_gate)
+        {
+            if (_uiThread is { IsAlive: true } && _form is not null)
+                return;
+
+            _ready.Reset();
+            _uiThread = new Thread(() =>
+            {
+                try
+                {
+                    var form = new HighlightForm();
+                    _form = form;
+                    _ready.Set();
+                    Application.Run();
+                }
+                catch
+                {
+                    _ready.Set();
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "Phase8-HighlightSTA"
+            };
+            _uiThread.SetApartmentState(ApartmentState.STA);
+            _uiThread.Start();
+        }
+
+        if (!_ready.Wait(TimeSpan.FromSeconds(5)) || _form is null)
+            throw new InvalidOperationException("Timed out starting Phase 8 highlight STA thread.");
+    }
+
+    private static T Invoke<T>(HighlightForm form, Func<T> action)
+    {
+        if (!form.IsHandleCreated || !form.InvokeRequired)
+            return action();
+        return (T)form.Invoke(action)!;
+    }
+
+    private static void Invoke(HighlightForm form, Action action)
+    {
+        if (!form.IsHandleCreated || !form.InvokeRequired)
+        {
+            action();
             return;
-        _form = new HighlightForm();
+        }
+
+        form.Invoke(action);
     }
 
     private sealed class HighlightForm : Form
@@ -161,6 +277,8 @@ public sealed class WinFormsHighlightSurface : IHighlightSurface
             BackColor = Color.Magenta;
             TransparencyKey = Color.Magenta;
             Opacity = 1.0;
+            // Create HWND on the STA thread before Application.Run so callers can Invoke.
+            CreateHandle();
         }
 
         protected override bool ShowWithoutActivation => true;
@@ -173,6 +291,12 @@ public sealed class WinFormsHighlightSurface : IHighlightSurface
                 cp.ExStyle |= WsExTransparent | WsExToolWindow | WsExNoActivate | WsExLayered;
                 return cp;
             }
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            base.OnFormClosed(e);
+            try { Application.ExitThread(); } catch { /* ignore */ }
         }
 
         protected override void OnPaint(PaintEventArgs e)

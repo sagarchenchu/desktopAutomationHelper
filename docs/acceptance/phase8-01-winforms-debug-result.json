@@ -1,20 +1,26 @@
 {
     "scenarioId":  "01-winforms-debug",
     "name":  "WinForms debug inspect",
-    "headSha":  "28b8712db032e867bb8433f1f2bd69161d85004d",
+    "headSha":  "ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf",
     "pass":  true,
-    "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261113180852-1d5a005d9\\candidate.json",
-    "note":  "HTTP snapshot may 500 on IntPtr WindowHandle; artifact written before serialization",
-    "verifyHttpOk":  false,
-    "inspectHttpOk":  false,
-    "unique":  true,
+    "stopStatus":  200,
+    "verifyStatus":  200,
+    "candidateCount":  1,
+    "startHttpOk":  true,
+    "startStatus":  200,
+    "inspectHttpOk":  true,
+    "verifyHttpError":  null,
+    "autoPromoted":  false,
+    "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114002727-63baa09ad\\candidate.json",
+    "inspectHttpError":  null,
+    "stopHttpOk":  true,
+    "verifyHttpOk":  true,
     "point":  {
                   "y":  250,
                   "x":  540
               },
-    "candidateCount":  1,
-    "inspectHttpError":  "The remote server returned an error: (500) Internal Server Error.",
-    "autoPromoted":  false,
-    "stopHttpOk":  false,
-    "interceptsClicks":  false
+    "httpAllOk":  true,
+    "unique":  true,
+    "interceptsClicks":  false,
+    "inspectStatus":  200
 }

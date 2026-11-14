@@ -1,16 +1,22 @@
 {
     "scenarioId":  "03-candidate-verify",
     "name":  "Candidate unique verify",
-    "headSha":  "28b8712db032e867bb8433f1f2bd69161d85004d",
+    "headSha":  "ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf",
     "pass":  true,
-    "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261113180928-b6fc0d5a8\\candidate.json",
-    "artifactOk":  true,
-    "unique":  true,
+    "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114002743-0cbca1bef\\candidate.json",
+    "verifyHttpOk":  true,
+    "startHttpOk":  true,
+    "inspectHttpOk":  true,
     "verification":  {
                          "unique":  true,
                          "ambiguous":  false,
                          "notFound":  false,
+                         "probeUnavailable":  false,
                          "matchCount":  1,
                          "message":  "Candidate locator resolves uniquely."
-                     }
+                     },
+    "unique":  true,
+    "stopHttpOk":  true,
+    "artifactOk":  true,
+    "httpAllOk":  true
 }

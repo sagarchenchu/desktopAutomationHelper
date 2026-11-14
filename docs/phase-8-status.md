@@ -2,44 +2,39 @@
 
 ## Required final report
 
-Phase 8 status: **CHANGES REQUESTED → fixes pushed** — P1/P2 from user review of draft PR #148 @ `212e270` addressed on branch. CI/unit tests re-run on this tip. Windows S1–S9 acceptance **PENDING** (DNU-23); prior 9/9 PASS on `28b8712` **retracted** (HTTP inspect/stop not OK). PR remains **draft**. Do **not** merge.
+Phase 8 status: **WINDOWS ACCEPTANCE PASS** — DNU-23 S1–S9 re-run complete. Prior 9/9 PASS on `28b8712` remains retracted (HTTP inspect/stop not OK). PR #148 remains **draft**. Do **not** merge.
 
 Branch/base/head/PR:
 - Feature branch: `feature/driver-phase-8-debug-vision`
 - Base: `origin/main`
 - Review baseline: `212e270`
-- Product fix tip: `8bf785f`
-- Tip (CI green): `ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf` / `ab05a0f`
+- Product review fixes: `8bf785f`
+- CI assertion fix (green): `ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf` / `ab05a0f`
+- Tip tested / evidence tip: `bac8a1f` (ab05a0f + highlight STA fix + acceptance evidence; see HEAD after tip-pointer commit)
 - PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft** (do not merge)
-- CI: **green** on `ab05a0f` (4/4 — Build and Test + Publish Standalone Packages)
+- CI: **green** on `ab05a0f` (Build and Test + Publish Standalone Packages)
 
-### Review fixes (P1/P2)
+### Windows acceptance (DNU-23)
 
-| # | Item | Status |
+- Overall: **PASS** (9/9)
+- Runtime base: `ab05a0f` + highlight STA overlay fix (committed with this evidence)
+- HTTP gates asserted: `startHttpOk` / `inspectHttpOk` / `verifyHttpOk` / `stopHttpOk` where used
+- Scenario 5: real CustomDrawnCanvas (empty Name/AutomationId) + `Vision:Enabled` gated `/debug/inspect` fallback (`AllowedUiaInaccessible`, vision candidates ≥ 1)
+
+| # | Result | HTTP notes |
 |---|---|---|
-| P1-1 | Config-gated production vision (`Vision:*`, `/vision/*`, Debug inspect fallback); CustomDrawnCanvas empty Name; Hover/DoubleClick HTTP surfaces | Fixed |
-| P1-2 | CoordinateActionGuard: click point + full candidate bounds inside window; HWND+PID fail-closed | Fixed |
-| P1-3 | Destructive Candidate.Label heuristics denied even for Action=click | Fixed |
-| P1-4 | Retract 9/9 PASS; acceptance asserts HTTP start/inspect/verify/stop OK (`phase8-assert-http-ok.ps1`) | Fixed (Windows re-run = DNU-23) |
-| P2-5 | Live probe unavailable / zero-match never becomes unique via stale capture | Fixed |
-| P2-6 | FlaUIUiaElementProbe captures real DpiScale via GetDpiForWindow | Fixed |
+| 1 | PASS | start/inspect/verify/stop OK |
+| 2 | PASS | start/inspect/verify/stop OK |
+| 3 | PASS | start/inspect/verify/stop OK |
+| 4 | PASS | start/inspect/stop OK (verify N/A); clickuia under yellow highlight |
+| 5 | PASS | start/inspect/verify/stop OK + live inaccessible vision |
+| 6 | PASS | `/vision/status` + `/vision/candidates` default-off |
+| 7 | PASS | stale/DPI/layout/destructive + Delete label deny |
+| 8 | PASS | sensitive screenshot not persisted |
+| 9 | PASS | `/debug/hover` mouse probe |
 
-### Debug / vision surfaces
-
-- Debug: `/debug/status|start|stop|toggle|inspect|verify|hover|doubleclick-allowed`
-- Vision (default off): `/vision/status|evaluate|candidates|authorize|hover|doubleclick`
-- `Vision:Enabled=false` in `appsettings.json`; bind via `IOptions<VisionFallbackOptions>`
-
-### Windows acceptance
-
-**PENDING (DNU-23).** Do not claim PASS until Windows worker re-runs S1–S9 on post-fix tip with `startHttpOk`/`inspectHttpOk`/`verifyHttpOk`/`stopHttpOk` all true. Helper: `docs/acceptance/phase8-assert-http-ok.ps1`.
-
-### Known limitations
-
-- Real OCR providers not enabled (fake only)
-- No headless claim; interactive desktop required
-- Vision independently gated; Debug Mode does not enable vision by itself
+Evidence: `docs/acceptance/phase8-*` (+ store mirror under Project `docs/acceptance/`).
 
 ### Exit gate
 
-Debug capture and visual fallback must work on controlled fixtures without intercepting clicks, persisting sensitive screenshots by default, or promoting any candidate automatically. **Code fixes in; Windows re-acceptance pending.** PR stays draft; do not merge unless instructed.
+Windows re-acceptance **PASS**. PR stays **draft**; do not merge unless instructed.

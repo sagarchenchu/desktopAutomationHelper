@@ -1,40 +1,64 @@
 {
     "scenarioId":  "05-customdrawn-vision",
     "name":  "CustomDrawnCanvas vision path",
-    "headSha":  "28b8712db032e867bb8433f1f2bd69161d85004d",
+    "headSha":  "ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf",
     "pass":  true,
-    "canvasArtifact":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261113181002-a7f486ff0\\candidate.json",
-    "canvasFound":  true,
-    "probe":  {
-                  "visionEnabledCustomDrawn":  true,
-                  "visionDisabledByDefault":  true,
-                  "staleDenied":  true,
-                  "dpiDenied":  true,
-                  "layoutDenied":  true,
-                  "destructiveDenied":  true,
-                  "sensitiveNotPersisted":  true,
-                  "hoverIsNotUiaCapability":  true,
-                  "hoverOutcome":  "hover-noop",
-                  "hoverPoint":  {
-                                     "x":  500,
-                                     "y":  400
-                                 },
-                  "eligibilityEnabled":  "AllowedUiaInaccessible",
-                  "candidateCountEnabled":  1,
-                  "eligibilityDisabled":  "DisabledByDefault",
-                  "staleReason":  "Stale vision screenshot/candidate rejected (age 5000ms; max 500ms).",
-                  "dpiReason":  "DPI/scale changed; saved coordinates are invalid.",
-                  "layoutReason":  "Window bounds/layout changed; saved coordinates are invalid.",
-                  "destructiveReason":  "Destructive coordinate actions are denied.",
-                  "window":  {
-                                 "x":  100,
-                                 "y":  100,
-                                 "w":  800,
-                                 "h":  600,
-                                 "pid":  6324,
-                                 "hwnd":  3081602,
-                                 "title":  "DA Test Harness"
-                             }
+    "inspectTarget":  {
+                          "automationId":  "",
+                          "name":  "",
+                          "className":  "WindowsForms10.Window.8.app.0.1f550a4_r3_ad1",
+                          "controlType":  "Pane",
+                          "path":  "target",
+                          "depth":  0,
+                          "bounds":  {
+                                         "location":  {
+                                                          "isEmpty":  false,
+                                                          "x":  490,
+                                                          "y":  674
+                                                      },
+                                         "size":  {
+                                                      "isEmpty":  false,
+                                                      "width":  940,
+                                                      "height":  196
+                                                  },
+                                         "x":  490,
+                                         "y":  674,
+                                         "width":  940,
+                                         "height":  196,
+                                         "left":  490,
+                                         "top":  674,
+                                         "right":  1430,
+                                         "bottom":  870,
+                                         "isEmpty":  false
+                                     },
+                          "availablePatterns":  [
+
+                                                ],
+                          "isOffscreen":  false,
+                          "isEnabled":  true,
+                          "isSemanticAccessible":  false,
+                          "inaccessibilityReason":  "custom-drawn-or-empty-identity"
+                      },
+    "targetInaccessible":  true,
+    "point":  {
+                  "y":  699,
+                  "x":  630
               },
-    "inspectHttpOk":  false
+    "note":  "Real CustomDrawnCanvas (empty Name/AutomationId) + Vision:Enabled gated /debug/inspect fallback and /vision/candidates",
+    "canvasFoundVia":  "customdrawn-group-offset",
+    "stopHttpOk":  true,
+    "visionStatusEnabled":  true,
+    "visionEligibility":  "AllowedUiaInaccessible",
+    "visionCandidateCountInspect":  1,
+    "inspectHttpOk":  true,
+    "visionCandidateCountHttp":  1,
+    "canvasArtifact":  null,
+    "verifyHttpOk":  true,
+    "autoPromoted":  false,
+    "liveVisionOk":  true,
+    "startHttpOk":  true,
+    "httpAllOk":  true,
+    "visionCandidatesHttpOk":  true,
+    "legacyAutomationIdMatches":  0,
+    "inspectHttpError":  null
 }

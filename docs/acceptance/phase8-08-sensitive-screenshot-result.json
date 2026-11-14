@@ -1,7 +1,7 @@
 {
     "scenarioId":  "08-sensitive-screenshot",
     "name":  "Sensitive screenshot not persisted",
-    "headSha":  "28b8712db032e867bb8433f1f2bd69161d85004d",
+    "headSha":  "ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf",
     "pass":  true,
     "probe":  {
                   "visionEnabledCustomDrawn":  true,
@@ -20,17 +20,17 @@
                   "eligibilityEnabled":  "AllowedUiaInaccessible",
                   "candidateCountEnabled":  1,
                   "eligibilityDisabled":  "DisabledByDefault",
-                  "staleReason":  "Stale vision screenshot/candidate rejected (age 5000ms; max 500ms).",
-                  "dpiReason":  "DPI/scale changed; saved coordinates are invalid.",
-                  "layoutReason":  "Window bounds/layout changed; saved coordinates are invalid.",
-                  "destructiveReason":  "Destructive coordinate actions are denied.",
+                  "staleReason":  "Stale vision candidate (age 5000ms \u003e 500ms).",
+                  "dpiReason":  "DPI scale changed since candidate capture.",
+                  "layoutReason":  "Window layout/bounds changed since candidate capture.",
+                  "destructiveReason":  "Destructive coordinate actions and destructive candidate labels are denied.",
                   "window":  {
                                  "x":  100,
                                  "y":  100,
                                  "w":  800,
                                  "h":  600,
-                                 "pid":  6324,
-                                 "hwnd":  3081602,
+                                 "pid":  2252,
+                                 "hwnd":  5571616,
                                  "title":  "DA Test Harness"
                              }
               }
