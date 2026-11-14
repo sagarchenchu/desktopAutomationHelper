@@ -1,12 +1,12 @@
 # Phase 8 - Windows acceptance
 
-- Tip tested (GitHub-resolvable): [`8eeef9290e45342f5981cbb492dffd4eda840eed`](https://github.com/sagarchenchu/desktopAutomationHelper/commit/8eeef9290e45342f5981cbb492dffd4eda840eed) (`8eeef92`)
-- tipSha (single, unchanged across all result files): `8eeef9290e45342f5981cbb492dffd4eda840eed`
+- Tip tested (GitHub-resolvable): [`9c927cad21168afc584138a77b686c5362731640`](https://github.com/sagarchenchu/desktopAutomationHelper/commit/9c927cad21168afc584138a77b686c5362731640) (`9c927ca`)
+- tipSha (single, unchanged across all result files): `9c927cad21168afc584138a77b686c5362731640`
 - Branch: `feature/driver-phase-8-debug-vision`
 - PR: #148 (**draft** - not merged)
-- When: 2026-11-14T07:58:58.9633659+00:00
+- When: 2026-11-14T08:30:04.6503350+00:00
 - Overall: **PASS**
-- Note: DNU-29 after round-7 (`7c22673`+). API honesty: `requiresHumanApproval=false`, `requiresOperatorConfirmationUx=true`. Operator confirmation UX (UIA-automatable); no human-approval/presence claim; timeout deny; S5 Allowed=true + consume; S7 destructive deny with vision on.
+- Note: DNU-32 after round-8 (`9c927ca`+; supersedes DNU-29 `8eeef92`). API honesty: `requiresHumanApproval=false`, `requiresOperatorConfirmationUx=true`. Operator confirmation UX (UIA-automatable); no human-approval/presence claim; timeout deny; S5 Allowed=true + consume; S7 destructive deny with vision on.
 
 ## HTTP / vision success requirements
 

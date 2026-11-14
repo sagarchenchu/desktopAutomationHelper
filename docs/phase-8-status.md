@@ -2,19 +2,19 @@
 
 ## Required final report
 
-Phase 8 status: **WINDOWS ACCEPTANCE PASS** - DNU-29 confirmation-honesty S1-S9 on tipSha `8eeef92`. Prior PASS claims superseded. PR #148 remains **draft**. Do **not** merge.
+Phase 8 status: **WINDOWS ACCEPTANCE PASS** - DNU-32 round-8 cancel-cleanup S1-S9 on tipSha `9c927ca`. Prior PASS claims superseded. PR #148 remains **draft**. Do **not** merge.
 
 Branch/base/head/PR:
 - Feature branch: `feature/driver-phase-8-debug-vision`
 - Base: `origin/main`
-- Round-7 product tip: `7c22673d497e22a9ba6e6a1a710f4f79f8ef7951` / `7c22673`
-- Tested tipSha (contains product): `8eeef9290e45342f5981cbb492dffd4eda840eed` / `8eeef92`
+- Round-8 product tip: `9c927cad21168afc584138a77b686c5362731640` / `9c927ca`
+- Tested tipSha (contains product): `9c927cad21168afc584138a77b686c5362731640` / `9c927ca`
 - PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 - **draft** (do not merge)
 
-### Windows acceptance (DNU-29)
+### Windows acceptance (DNU-32)
 
 - Overall: **PASS**
-- tipSha consistency: **PASS** - all `docs/acceptance/phase8-*-result.json` + summary + acceptance md record `8eeef9290e45342f5981cbb492dffd4eda840eed` (no post-hoc rewrite)
+- tipSha consistency: **PASS** - all `docs/acceptance/phase8-*-result.json` + summary + acceptance md record `9c927cad21168afc584138a77b686c5362731640` (no post-hoc rewrite)
 - HTTP gates: start/inspect/verify/stop OK where used (S1-S5, S9)
 - Pixel path: ScreenWindowPixelCapture PrintWindow client PNG (not HWND/PID text)
 - API honesty: `requiresHumanApproval=false`, `requiresOperatorConfirmationUx=true` (apiHonestyOk=`True`)
@@ -38,4 +38,4 @@ Branch/base/head/PR:
 
 ### Exit gate
 
-Windows DNU-29 PASS on single tipSha. PR stays draft; do not merge unless instructed.
+Windows DNU-32 PASS on single tipSha. PR stays draft; do not merge unless instructed.
