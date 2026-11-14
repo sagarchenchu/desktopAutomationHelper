@@ -308,24 +308,37 @@ public class SecureBootstrapTests
         Assert.True(host1.HasPublishedDescriptor);
         Assert.True(File.Exists(path));
 
-        var tokenBefore = File.ReadAllText(path);
+        var store = new ConnectionDescriptorStore(path);
+        var before = store.TryRead();
+        Assert.NotNull(before);
+        Assert.Equal(host1.PublishedPid, before!.Pid);
+        Assert.Equal(host1.PublishedProcessStartTimeUtc, before.ProcessStartTimeUtc);
+        Assert.Equal(ctx1.BearerToken, before.Token);
+        Assert.Equal(Environment.ProcessId, before.Pid);
+
+        var rawBefore = File.ReadAllText(path);
 
         await using (var host2 = new SecureBootstrapHost(ctx2, descriptorPath: path, logger: NullLogger.Instance))
         {
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => host2.StartAsync());
-            Assert.True(
-                ex.Message.Contains("already holds", StringComparison.OrdinalIgnoreCase)
-                || ex.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase),
-                $"Unexpected rejection message: {ex.Message}");
+            Assert.Contains("already holds", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(ctx1.BearerToken, ex.Message, StringComparison.Ordinal);
             Assert.DoesNotContain(ctx2.BearerToken, ex.Message, StringComparison.Ordinal);
             Assert.False(host2.HasPublishedDescriptor);
+            Assert.Equal(0, host2.PublishedPid);
         }
 
-        // Disposing the rejected second host must not wipe the live descriptor.
+        // Disposing the rejected second host must not wipe or rewrite the live descriptor.
         Assert.True(File.Exists(path));
-        Assert.Equal(tokenBefore, File.ReadAllText(path));
-        Assert.Contains(ctx1.BearerToken, File.ReadAllText(path), StringComparison.Ordinal);
+        Assert.Equal(rawBefore, File.ReadAllText(path));
+
+        var after = store.TryRead();
+        Assert.NotNull(after);
+        Assert.Equal(before.Pid, after!.Pid);
+        Assert.Equal(before.ProcessStartTimeUtc, after.ProcessStartTimeUtc);
+        Assert.Equal(before.Token, after.Token);
+        Assert.Equal(ctx1.BearerToken, after.Token);
+        Assert.NotEqual(ctx2.BearerToken, after.Token);
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace DesktopAutomationDriver.Services.Bootstrap;
@@ -13,7 +14,8 @@ public sealed class ConnectionDescriptorStore
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false
+        WriteIndented = false,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
     private readonly string _descriptorPath;

@@ -2,6 +2,7 @@ using System.IO.Pipes;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -17,7 +18,9 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false
+        WriteIndented = false,
+        // Descriptor/pipe payloads are not HTML; keep base64 tokens unescaped (+,/).
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
     private readonly SecureBootstrapPayload _payload;
@@ -91,29 +94,37 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
     /// <summary>True when this host successfully published the live descriptor.</summary>
     public bool HasPublishedDescriptor => Volatile.Read(ref _published) == 1;
 
+    /// <summary>PID recorded in the published payload (0 if never published).</summary>
+    public int PublishedPid => HasPublishedDescriptor ? _payload.Pid : 0;
+
+    /// <summary>Process start time recorded in the published payload.</summary>
+    public DateTimeOffset PublishedProcessStartTimeUtc =>
+        HasPublishedDescriptor ? _payload.ProcessStartTimeUtc : default;
+
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (Interlocked.CompareExchange(ref _started, 1, 0) != 0)
             throw new InvalidOperationException("Secure bootstrap host is already running.");
 
+        // Rejected hosts must never enter the publish/rollback path: no WriteAtomic,
+        // no DeleteIfExists, and no catch that could touch a live peer descriptor.
+        if (!TryAcquireExclusiveLock())
+        {
+            Interlocked.Exchange(ref _started, 0);
+            throw new InvalidOperationException(
+                "A live secure bootstrap instance already holds the per-user lock for this SID. " +
+                "Stop the other driver instance before starting a new one.");
+        }
+
         try
         {
-            // Exclusive per-user lock first — covers races where two processes
-            // both observe a missing/stale descriptor before either publishes.
-            if (!TryAcquireExclusiveLock())
-            {
-                Interlocked.Exchange(ref _started, 0);
-                throw new InvalidOperationException(
-                    "A live secure bootstrap instance already holds the per-user lock for this SID. " +
-                    "Stop the other driver instance before starting a new one.");
-            }
-
             // Remove crash leftovers only after we own the lock.
             _descriptorStore.TryCleanupStale();
 
             var existing = _descriptorStore.TryRead();
             if (existing is not null && !StaleBootstrapDetector.IsStale(existing))
             {
+                // Live peer descriptor — release lock only; never delete/overwrite it.
                 ReleaseExclusiveLock();
                 Interlocked.Exchange(ref _started, 0);
                 throw new InvalidOperationException(
@@ -135,7 +146,8 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
         }
         catch
         {
-            // Roll back a partially published descriptor if StartAsync fails after write.
+            // Roll back only a descriptor this host just published. Never delete a
+            // peer's live file (rejected hosts never set _published).
             if (Interlocked.Exchange(ref _published, 0) == 1)
                 _descriptorStore.DeleteIfExists();
 
