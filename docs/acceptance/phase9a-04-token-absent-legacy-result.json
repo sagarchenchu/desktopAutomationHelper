@@ -1,0 +1,10 @@
+{
+  "id": "token-absent-and-legacy-gated",
+  "tipSha": "6938263d32fb045589353c69eecc033d79c597a2",
+  "whenUtc": "2026-11-14T10:33:59.8030179+00:00",
+  "result": "PASS",
+  "secureBannerOmitsToken": true,
+  "legacyRequiresAck": true,
+  "legacyBannerWarns": true,
+  "notes": "Secure banner omits bearer/operator tokens; LegacyVerify HTTP path requires AcknowledgeLegacyVerifyRisk; legacy banner includes token and WARNING."
+}

@@ -1,45 +1,89 @@
 # Shared-host driver discovery security boundary
 
-## Current facts
+## Current facts (Phase 9A)
 
 - The driver binds its **main API to loopback by default**.
 - Authenticated endpoints require the **Bearer token**.
-- The **`GET /verify` bootstrap endpoint returns the token without authentication**.
+- **Secure bootstrap is the default** (`Bootstrap:Mode=Secure` / `Driver:DiscoveryMode=Secure`).
+- In secure mode the bearer token is delivered only via a **per-user Windows SID
+  ACL-protected named pipe** and an **ACL-protected connection descriptor** under
+  `%LOCALAPPDATA%\DesktopAutomationDriver\bootstrap\connection.json`.
+- Unauthenticated **`GET /verify` never returns the bearer token in secure mode**
+  (HTTP 403 `secure_bootstrap_required`).
 - Loopback is **machine-local** but **not necessarily Windows-user isolated**. Another
   local process (including another interactive user session on some Citrix/RDS
-  topologies) may be able to call loopback HTTP.
-- Agent **username matching** prevents accidental connection to another user’s driver
-  instance when multiple drivers are present.
-- Username matching **does not protect the bearer token** from another local process
-  that can reach `/verify` on loopback.
-- This matters on **shared Citrix / RDS / VDI hosts**.
+  topologies) may be able to call loopback HTTP — which is why HTTP token return is
+  disabled by default.
+- Agent discovery matches the **Windows SID** on the secure channel (not username alone).
+- Username matching remains a secondary guard for legacy `/verify` only.
 
-## What is acceptable today
+## Secure bootstrap contract
 
-Trusted **single-user workstation** usage can continue with the current `/verify`
-bootstrap model.
+| Channel | Identity | Token returned? |
+|---|---|---|
+| Named pipe `DesktopAutomationDriver.bootstrap.{SID}` | DACL: user SID + SYSTEM + Administrators | Yes (to allowed identities only) |
+| Descriptor `%LOCALAPPDATA%\...\bootstrap\connection.json` | NTFS ACL: user SID + SYSTEM + Administrators | Yes (to allowed identities only) |
+| `GET /verify` (main or probe 9102) | none | **No** in Secure mode |
 
-## Release blocker
+Additional properties:
 
-**Secure bootstrap is a release blocker before untrusted shared-host deployment.**
+- **Atomic create/cleanup** of the descriptor: temp file is created with a restrictive
+  `FileSecurity` **before** token bytes are written; `File.Move` is the publication
+  point (post-rename failure rolls back under the host lock). Deleted only by the
+  host that published it.
+- **Pipe ownership before ready**: the host creates the SID named-pipe server before
+  publishing the descriptor so bootstrap is never ready without a live pipe.
+- **Exclusive per-user lock** (`host.lock`) serializes publication; a rejected second
+  start must not delete the live descriptor on dispose.
+- **Named-pipe server authentication**: the agent resolves the server process via
+  `GetNamedPipeServerProcessId` and verifies the process token SID before trusting
+  payload fields. If the pipe is unavailable or rejected, the agent falls back to
+  the ACL-protected descriptor.
+- **Stale detection** via owning **PID + exact OS process creation time** (no skew
+  tolerance; PID reuse safe); crash leftovers are removed on next start.
+- **Concurrent starts** refuse to overwrite a live descriptor.
+- **No token logging** in secure mode (startup banner, traces, errors).
 
+## Legacy `/verify` migration switch
+
+Trusted **single-user workstation** clients that still call HTTP `/verify` can opt in:
+
+**Driver `appsettings.json`:**
+
+```json
+"Bootstrap": {
+  "Mode": "LegacyVerify",
+  "AcknowledgeLegacyVerifyRisk": true
+}
+```
+
+**Agent `appsettings.json`:**
+
+```json
+"Driver": {
+  "DiscoveryMode": "LegacyVerify",
+  "AcknowledgeLegacyVerifyRisk": true,
+  "VerifyUrl": "http://localhost:9102/verify"
+}
+```
+
+Both `Mode`/`DiscoveryMode` **and** `AcknowledgeLegacyVerifyRisk=true` are required.
+Secure mode ignores the acknowledgement flag and never returns the token over HTTP.
+
+### Legacy risk (shared-host)
+
+**LegacyVerify is unsafe on shared Citrix / RDS / VDI hosts.** Any local process that
+can reach loopback may call `/verify` and obtain the bearer token. Username matching
+does **not** protect the token. Do not enable LegacyVerify for untrusted multi-user
+hosts.
+
+## Release posture
+
+Secure bootstrap is required before untrusted shared-host deployment.
 Do not treat username matching or loopback binding alone as multi-user token isolation.
-
-## Recommended future secure-bootstrap design (not implemented here)
-
-Phase 3.5 documents the direction only. Implementing it changes the discovery
-contract and needs an isolated review.
-
-1. Prefer a **per-user ACL-protected named pipe** or **per-user ACL-protected
-   connection descriptor** for bootstrap, rather than unauthenticated HTTP token return.
-2. Use the Windows **SID** (not a normalized username string) as the identity for ACL checks.
-3. **Never return the bearer token from unauthenticated HTTP** when secure mode is enabled.
-4. Ensure **atomic creation and cleanup** of the bootstrap object.
-5. **No token logging** in secure mode (stdout banners, traces, CI logs).
-6. Provide a **migration/compatibility switch** for existing `/verify` clients.
-7. Add tests using **multiple Windows identities** (or equivalent security-boundary tests).
 
 ## Documentation / test hygiene
 
 Do not expose any real token in tests, logs, documentation, or CI output.
-Use placeholders such as `REPLACE_WITH_TOKEN_FROM_VERIFY` in examples.
+Use placeholders such as `REPLACE_WITH_TOKEN_FROM_VERIFY` (legacy) or
+`REPLACE_WITH_TOKEN_FROM_SECURE_BOOTSTRAP` in examples.

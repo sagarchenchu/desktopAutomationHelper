@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using DesktopAutomationDriver.Middleware;
 using DesktopAutomationDriver.Services;
+using DesktopAutomationDriver.Services.Bootstrap;
 using DesktopAutomationDriver.Services.Debug;
 using DesktopAutomationDriver.Services.NativeUia;
 using DesktopAutomationDriver.Services.Vision;
@@ -41,6 +42,7 @@ builder.Services.AddControllers()
             System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
     });
 
+builder.Services.Configure<BootstrapOptions>(builder.Configuration.GetSection(BootstrapOptions.SectionName));
 builder.Services.AddSingleton<IDriverContext>(driverContext);
 builder.Services.AddSingleton<ISessionManager, SessionManager>();
 builder.Services.AddSingleton<IAutomationService, AutomationService>();
@@ -92,6 +94,10 @@ builder.Logging.AddConsole();
 // -----------------------------------------------------------------------
 var app = builder.Build();
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
+var bootstrapOptions = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<BootstrapOptions>>().Value
+                       ?? new BootstrapOptions();
+
+ValidateBootstrapOptions(bootstrapOptions, logger);
 
 // Bearer-token authentication middleware.
 // All routes except GET /verify require: Authorization: Bearer <token>
@@ -100,28 +106,64 @@ app.UseMiddleware<BearerTokenMiddleware>();
 app.MapControllers();
 
 // -----------------------------------------------------------------------
+// Secure per-user bootstrap (SID ACL named pipe + connection descriptor).
+// Always published so agents can discover without HTTP token return.
+// -----------------------------------------------------------------------
+await using var secureBootstrap = new SecureBootstrapHost(driverContext, logger: logger);
+await secureBootstrap.StartAsync();
+
+// -----------------------------------------------------------------------
 // Probe server on port 9102 (best-effort).
-// Serves only GET /verify so that callers can discover which port and
-// token to use.  If 9102 is already held by another user's driver the
-// attempt is silently skipped and the flag stays false.
+// In LegacyVerify mode it may return the token. In Secure mode it refuses
+// token return (same contract as VerifyController).
 // -----------------------------------------------------------------------
 using var probeCts = new CancellationTokenSource();
-var probeTask = RunProbeServerAsync(driverContext, logger, probeCts.Token);
+var probeTask = RunProbeServerAsync(driverContext, bootstrapOptions, logger, probeCts.Token);
 
 // Wait briefly so the probe-port result is known before printing the banner.
 await Task.Delay(200);
 
-LogStartupBanner(driverContext, logger);
+LogStartupBanner(driverContext, bootstrapOptions, logger);
 
-app.Run();            // Blocks until Ctrl+C / shutdown signal
-probeCts.Cancel();
-await probeTask;
+try
+{
+    app.Run();            // Blocks until Ctrl+C / shutdown signal
+}
+finally
+{
+    probeCts.Cancel();
+    await probeTask;
+}
+
+// =======================================================================
+// Bootstrap option validation
+// =======================================================================
+static void ValidateBootstrapOptions(BootstrapOptions options, ILogger logger)
+{
+    if (options.Mode == BootstrapDiscoveryMode.LegacyVerify && !options.AcknowledgeLegacyVerifyRisk)
+    {
+        throw new InvalidOperationException(
+            "Bootstrap:Mode=LegacyVerify also requires Bootstrap:AcknowledgeLegacyVerifyRisk=true. " +
+            "Legacy HTTP /verify returns the bearer token without authentication and is unsafe on " +
+            "shared Citrix/RDS/VDI hosts. Prefer Bootstrap:Mode=Secure (default).");
+    }
+
+    if (options.AllowsLegacyVerifyHttp)
+    {
+        logger.LogWarning(
+            "LegacyVerify bootstrap is enabled: unauthenticated HTTP /verify returns the bearer token. " +
+            "This is unsafe on shared hosts. See docs/shared-host-driver-discovery-security.md.");
+    }
+}
 
 // =======================================================================
 // Probe-server helper (HttpListener on port 9102)
 // =======================================================================
 static async Task RunProbeServerAsync(
-    IDriverContext ctx, ILogger logger, CancellationToken ct)
+    IDriverContext ctx,
+    BootstrapOptions bootstrap,
+    ILogger logger,
+    CancellationToken ct)
 {
     // Bind only on "localhost:9102" for the /verify probe endpoint.
     const string prefix = "http://localhost:9102/";
@@ -133,7 +175,9 @@ static async Task RunProbeServerAsync(
         listener.Start();
         ctx.ProbePortActive = true;
         logger.LogInformation(
-            "Probe server bound to http://localhost:9102/verify");
+            bootstrap.AllowsLegacyVerifyHttp
+                ? "Probe server bound to http://localhost:9102/verify (legacy token return enabled)"
+                : "Probe server bound to http://localhost:9102/verify (secure mode — token not returned)");
     }
     catch (HttpListenerException ex)
     {
@@ -174,19 +218,38 @@ static async Task RunProbeServerAsync(
                     return;
                 }
 
-                var payload = new
+                object payload;
+                if (!bootstrap.AllowsLegacyVerifyHttp)
                 {
-                    status = 0,
-                    value = new
+                    resp.StatusCode = 403;
+                    payload = new
                     {
-                        running = true,
-                        username = ctx.Username,
-                        port = ctx.MainPort,
-                        probePort = ctx.ProbePortActive ? (int?)ctx.ProbePort : null,
-                        token = ctx.BearerToken,
-                        authorizationHeader = $"Bearer {ctx.BearerToken}"
-                    }
-                };
+                        status = 403,
+                        value = new
+                        {
+                            error = "secure_bootstrap_required",
+                            message =
+                                "Unauthenticated HTTP /verify does not return the bearer token in secure mode. " +
+                                "Use the per-user SID ACL-protected named pipe or connection descriptor."
+                        }
+                    };
+                }
+                else
+                {
+                    payload = new
+                    {
+                        status = 0,
+                        value = new
+                        {
+                            running = true,
+                            username = ctx.Username,
+                            port = ctx.MainPort,
+                            probePort = ctx.ProbePortActive ? (int?)ctx.ProbePort : null,
+                            token = ctx.BearerToken,
+                            authorizationHeader = $"Bearer {ctx.BearerToken}"
+                        }
+                    };
+                }
 
                 var json = JsonSerializer.Serialize(payload, jsonOpts);
                 var bytes = Encoding.UTF8.GetBytes(json);
@@ -205,8 +268,8 @@ static async Task RunProbeServerAsync(
 // =======================================================================
 // Startup banner
 // =======================================================================
-static void LogStartupBanner(IDriverContext ctx, ILogger logger)
+static void LogStartupBanner(IDriverContext ctx, BootstrapOptions bootstrap, ILogger logger)
 {
-    // Operator token must never appear in stdout/logs. Approval uses operator confirmation UX.
-    logger.LogInformation("{Banner}", StartupBanner.Format(ctx));
+    // Secure mode: bearer token must never appear in stdout/logs.
+    logger.LogInformation("{Banner}", StartupBanner.Format(ctx, bootstrap));
 }

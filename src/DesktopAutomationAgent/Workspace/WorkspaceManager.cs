@@ -361,8 +361,10 @@ public sealed class WorkspaceManager : IWorkspaceManager
         """
         {
           "Driver": {
+            "DiscoveryMode": "Secure",
+            "AcknowledgeLegacyVerifyRisk": false,
             "BaseUrl": "http://127.0.0.1:33201",
-            "BearerToken": "REPLACE_WITH_TOKEN_FROM_VERIFY",
+            "BearerToken": "REPLACE_WITH_TOKEN_FROM_SECURE_BOOTSTRAP",
             "VerifyUrl": "http://localhost:9102/verify",
             "RequestTimeoutSeconds": 20,
             "ExpectedCatalogSchemaVersion": 2,

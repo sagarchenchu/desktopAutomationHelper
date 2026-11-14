@@ -1,0 +1,14 @@
+{
+  "id": "second-interactive-user-production-acl",
+  "tipSha": "6938263d32fb045589353c69eecc033d79c597a2",
+  "whenUtc": "2026-11-14T10:33:59.8030179+00:00",
+  "result": "NOT_PROVEN",
+  "acl": "production BootstrapAcl.CreatePipeSecurity / CreateFileSecurity (not LocalService-only)",
+  "genuineSecondInteractiveUser": false,
+  "pipeDenied": false,
+  "descriptorDenied": false,
+  "productionMultiUserGate": "NOT_PROVEN",
+  "secondaryUserCreateAttempt": "net user DNU38Probe ... /add -> System error 5 Access is denied (medium integrity; Administrators deny-only; Windows sudo disabled)",
+  "gap": "Required DNU-38 gate (User A publishes under production ACL; second interactive User B denied pipe connect + descriptor read) was not executable on this host. Do not claim PASS via LocalService-only test ACL.",
+  "notes": "Attempted temporary local interactive user creation and elevation paths (scheduled task Highest, Windows sudo). All failed without elevated admin rights."
+}

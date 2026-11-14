@@ -1,11 +1,14 @@
 using DesktopAutomationDriver.Services;
+using DesktopAutomationDriver.Services.Bootstrap;
+using Microsoft.Extensions.Options;
 using System.Text.Json;
 
 namespace DesktopAutomationDriver.Middleware;
 
 /// <summary>
 /// ASP.NET Core middleware that enforces Bearer-token authentication on all
-/// routes except <c>GET /verify</c>.
+/// routes except <c>GET /verify</c> (which remains reachable but does not
+/// return the token in secure mode).
 ///
 /// <c>POST /vision/approve</c> requires a valid automation bearer; the coordinator
 /// then runs operator confirmation UX (UIA-automatable dialog — not OS human-presence).
@@ -14,6 +17,7 @@ public class BearerTokenMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly IDriverContext _driverContext;
+    private readonly BootstrapOptions _bootstrap;
 
     private static readonly string[] PublicPaths = ["/verify"];
 
@@ -23,9 +27,18 @@ public class BearerTokenMiddleware
     };
 
     public BearerTokenMiddleware(RequestDelegate next, IDriverContext driverContext)
+        : this(next, driverContext, Options.Create(new BootstrapOptions()))
+    {
+    }
+
+    public BearerTokenMiddleware(
+        RequestDelegate next,
+        IDriverContext driverContext,
+        IOptions<BootstrapOptions> bootstrapOptions)
     {
         _next = next;
         _driverContext = driverContext;
+        _bootstrap = bootstrapOptions?.Value ?? new BootstrapOptions();
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -56,10 +69,14 @@ public class BearerTokenMiddleware
         if (string.IsNullOrEmpty(authHeader) ||
             !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
         {
-            error =
-                "Missing or malformed Authorization header. " +
-                "Expected: Authorization: Bearer <token>. " +
-                "Retrieve the token from GET /verify or from the driver startup log.";
+            error = _bootstrap.IsSecure
+                ? "Missing or malformed Authorization header. " +
+                  "Expected: Authorization: Bearer <token>. " +
+                  "Retrieve the token via the SID ACL-protected secure bootstrap channel " +
+                  "(named pipe / connection descriptor) — not from HTTP /verify."
+                : "Missing or malformed Authorization header. " +
+                  "Expected: Authorization: Bearer <token>. " +
+                  "Retrieve the token from GET /verify or from the driver startup log.";
             return false;
         }
 

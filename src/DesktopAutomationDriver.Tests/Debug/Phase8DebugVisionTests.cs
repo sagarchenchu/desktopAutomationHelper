@@ -886,19 +886,26 @@ public class Phase8DebugVisionTests
     public void StartupBanner_NeverIncludesOperatorToken()
     {
         var ctx = new DriverContext("banner-test-user");
-        var banner = StartupBanner.Format(ctx);
+        var secureBanner = StartupBanner.Format(ctx); // Secure mode is the default
         Assert.False(string.IsNullOrWhiteSpace(ctx.OperatorToken));
-        Assert.Contains("Bearer token", banner, StringComparison.Ordinal);
-        Assert.Contains(ctx.BearerToken, banner, StringComparison.Ordinal);
-        // Secret value must never appear. Disclaimer may wrap across lines in the banner.
-        Assert.DoesNotContain(ctx.OperatorToken, banner, StringComparison.Ordinal);
-        Assert.Contains("confirmation UX", banner, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("UIA-automatable", banner, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Bearer token", secureBanner, StringComparison.Ordinal);
+        Assert.DoesNotContain(ctx.BearerToken, secureBanner, StringComparison.Ordinal);
+        Assert.DoesNotContain(ctx.OperatorToken, secureBanner, StringComparison.Ordinal);
+        Assert.Contains("confirmation UX", secureBanner, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("UIA-automatable", secureBanner, StringComparison.OrdinalIgnoreCase);
         var bannerFlat = string.Join(' ',
-            banner.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            secureBanner.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
         Assert.Contains("not OS-enforced human presence", bannerFlat, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("ACL secret path", banner, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("X-Operator-Token:", banner, StringComparison.Ordinal);
+        Assert.DoesNotContain("ACL secret path", secureBanner, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("X-Operator-Token:", secureBanner, StringComparison.Ordinal);
+
+        var legacyBanner = StartupBanner.Format(ctx, new DesktopAutomationDriver.Services.Bootstrap.BootstrapOptions
+        {
+            Mode = DesktopAutomationDriver.Services.Bootstrap.BootstrapDiscoveryMode.LegacyVerify,
+            AcknowledgeLegacyVerifyRisk = true
+        });
+        Assert.Contains(ctx.BearerToken, legacyBanner, StringComparison.Ordinal);
+        Assert.DoesNotContain(ctx.OperatorToken, legacyBanner, StringComparison.Ordinal);
     }
 
     [Fact]

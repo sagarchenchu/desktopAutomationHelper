@@ -1,0 +1,58 @@
+{
+  "scenario": "phase9a-dnu38-production-acl-evidence",
+  "tipSha": "6938263d32fb045589353c69eecc033d79c597a2",
+  "whenUtc": "2026-11-14T10:33:59.8030179+00:00",
+  "host": "DESKTOP-5JD30DR",
+  "currentUser": "DESKTOP-5JD30DR\\ADMIN",
+  "currentSid": "S-1-5-21-2097163997-1254372408-68186133-1001",
+  "isElevatedAdmin": false,
+  "integrityLevel": "Medium",
+  "genuineSecondInteractiveUser": false,
+  "productionMultiUserGate": "NOT_PROVEN",
+  "gap": "Host cannot create/run a second interactive Windows user under production ACL. Do not treat LocalService-only test ACL as a substitute for interactive User A vs User B. net user add -> exit 2; System error 5 Access is denied (medium integrity; Administrators deny-only; Windows sudo disabled on host).",
+  "notes": [
+    "secondaryUserCreateAttempt=net user add -> exit 2; System error 5 Access is denied (medium integrity; Administrators deny-only; Windows sudo disabled on host)",
+    "productionMultiUserGate=NOT_PROVEN"
+  ],
+  "scenarios": [
+    {
+      "id": "intended-sid-pipe-descriptor",
+      "result": "PASS",
+      "pipeOk": true,
+      "descriptorOk": true,
+      "pipeServerProcessIdMatched": true,
+      "acl": "production BootstrapAcl.CreatePipeSecurity / CreateFileSecurity",
+      "error": null,
+      "tokenLeak": null,
+      "userSid": "S-1-5-21-2097163997-1254372408-68186133-1001"
+    },
+    {
+      "id": "second-interactive-user-production-acl",
+      "result": "NOT_PROVEN",
+      "acl": "production BootstrapAcl.CreatePipeSecurity / CreateFileSecurity (not LocalService-only)",
+      "genuineSecondInteractiveUser": false,
+      "secondaryUser": null,
+      "secondarySid": null,
+      "pipeDenied": false,
+      "descriptorDenied": false,
+      "gap": "Host cannot create/run a second interactive Windows user under production ACL. Do not treat LocalService-only test ACL as a substitute for interactive User A vs User B. net user add -> System error 5 Access is denied.",
+      "secondaryUserCreateAttempt": "net user add -> exit 2; System error 5 Access is denied (medium integrity; Administrators deny-only; Windows sudo disabled on host)"
+    },
+    {
+      "id": "concurrent-reject-preserve-and-stale-cleanup",
+      "result": "PASS",
+      "concurrentRefused": true,
+      "rejectedDisposePreservesDescriptor": true,
+      "stalePidAndCreationTimeCleanupRestart": true,
+      "error": null
+    },
+    {
+      "id": "token-absent-and-legacy-gated",
+      "result": "PASS",
+      "secureBannerOmitsToken": true,
+      "legacyRequiresAck": true,
+      "legacyBannerWarns": true
+    }
+  ],
+  "OVERALL": "PASS_WITH_GAP"
+}

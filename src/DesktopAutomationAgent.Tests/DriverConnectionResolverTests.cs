@@ -1,6 +1,7 @@
 using System.Net;
 using DesktopAutomationAgent.Configuration;
 using DesktopAutomationAgent.Driver;
+using DesktopAutomationAgent.Driver.Bootstrap;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DesktopAutomationAgent.Tests;
@@ -38,7 +39,189 @@ public class DriverConnectionResolverTests
     }
 
     [Fact]
-    public async Task VerifyDiscovery_SucceedsWhenUsernameMatches()
+    public async Task SecureDiscovery_IsDefaultAndUsesSecureBootstrap()
+    {
+        const string sid = "S-1-5-21-100-200-300-400";
+        const string token = "secure-discovered-token";
+        var processStart = DateTimeOffset.UtcNow;
+        var secureClient = new SecureBootstrapClient(
+            currentSid: () => sid,
+            localAppData: () => Path.GetTempPath(),
+            pipeReaderOverride: (_, _) => Task.FromResult<SecureBootstrapPayload?>(new SecureBootstrapPayload
+            {
+                SchemaVersion = SecureBootstrapConstants.SchemaVersion,
+                UserSid = sid,
+                Username = "alice",
+                Port = 33201,
+                Token = token,
+                AuthorizationHeader = $"Bearer {token}",
+                Pid = Environment.ProcessId,
+                ProcessStartTimeUtc = processStart,
+                StartedAtUtc = DateTimeOffset.UtcNow,
+                PipeName = SecureBootstrapConstants.BuildPipeName(sid)
+            }),
+            descriptorReaderOverride: _ => null,
+            getProcessStartTimeUtc: _ => processStart);
+
+        var options = TestSupport.CreateOptions(); // DiscoveryMode defaults to Secure
+        var resolver = new DriverConnectionResolver(
+            TestSupport.Wrap(options),
+            TestSupport.CreateFactory(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("HTTP verify must not be used in Secure mode"))),
+            NullLogger<DriverConnectionResolver>.Instance,
+            () => "alice",
+            secureClient);
+
+        var connection = await resolver.ResolveAsync();
+
+        Assert.Equal("secure-bootstrap", connection.DiscoveryMethod);
+        Assert.Equal("http://127.0.0.1:33201", connection.SafeBaseUrl);
+        Assert.Equal(token, connection.BearerToken);
+        Assert.Equal("alice", connection.DiscoveredUsername);
+    }
+
+    [Fact]
+    public async Task SecureDiscovery_PipeTimeoutWithoutCallerCancel_MapsToDriverConnectionException()
+    {
+        const string sid = "S-1-5-21-100-200-300-402";
+        var secureClient = new SecureBootstrapClient(
+            currentSid: () => sid,
+            localAppData: () => Path.GetTempPath(),
+            pipeReaderOverride: async (_, _) =>
+            {
+                // Simulate CancelAfter timeout: OCE while caller token is still open.
+                var timedOut = new CancellationTokenSource();
+                timedOut.Cancel();
+                timedOut.Token.ThrowIfCancellationRequested();
+                await Task.CompletedTask;
+                return null;
+            },
+            descriptorReaderOverride: _ => null,
+            getProcessStartTimeUtc: _ => null);
+
+        var options = TestSupport.CreateOptions();
+        var resolver = new DriverConnectionResolver(
+            TestSupport.Wrap(options),
+            TestSupport.CreateFactory(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("unused"))),
+            NullLogger<DriverConnectionResolver>.Instance,
+            () => "alice",
+            secureClient);
+
+        var ex = await Assert.ThrowsAsync<DriverConnectionException>(() => resolver.ResolveAsync());
+        Assert.Contains("secure bootstrap", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SecureDiscovery_RejectsStaleDescriptor()
+    {
+        const string sid = "S-1-5-21-100-200-300-401";
+        const string token = "stale-token-must-not-leak";
+        var secureClient = new SecureBootstrapClient(
+            currentSid: () => sid,
+            localAppData: () => Path.GetTempPath(),
+            pipeReaderOverride: (_, _) => Task.FromResult<SecureBootstrapPayload?>(null),
+            descriptorReaderOverride: _ => new SecureBootstrapPayload
+            {
+                SchemaVersion = SecureBootstrapConstants.SchemaVersion,
+                UserSid = sid,
+                Username = "alice",
+                Port = 33201,
+                Token = token,
+                Pid = 424242,
+                ProcessStartTimeUtc = DateTimeOffset.UtcNow.AddMinutes(-10),
+                StartedAtUtc = DateTimeOffset.UtcNow
+            },
+            getProcessStartTimeUtc: _ => null);
+
+        var options = TestSupport.CreateOptions();
+        var resolver = new DriverConnectionResolver(
+            TestSupport.Wrap(options),
+            TestSupport.CreateFactory(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("unused"))),
+            NullLogger<DriverConnectionResolver>.Instance,
+            () => "alice",
+            secureClient);
+
+        var ex = await Assert.ThrowsAsync<DriverConnectionException>(() => resolver.ResolveAsync());
+        Assert.Contains("stale", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(token, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SecureDiscovery_FallsBackToDescriptor_WhenPipeUnavailable()
+    {
+        const string sid = "S-1-5-21-100-200-300-403";
+        const string token = "descriptor-fallback-token";
+        var processStart = DateTimeOffset.UtcNow;
+        var secureClient = new SecureBootstrapClient(
+            currentSid: () => sid,
+            localAppData: () => Path.GetTempPath(),
+            pipeReaderOverride: (_, _) => throw new IOException("pipe unavailable"),
+            descriptorReaderOverride: _ => new SecureBootstrapPayload
+            {
+                SchemaVersion = SecureBootstrapConstants.SchemaVersion,
+                UserSid = sid,
+                Username = "alice",
+                Port = 33211,
+                Token = token,
+                AuthorizationHeader = $"Bearer {token}",
+                Pid = Environment.ProcessId,
+                ProcessStartTimeUtc = processStart,
+                StartedAtUtc = DateTimeOffset.UtcNow,
+                PipeName = SecureBootstrapConstants.BuildPipeName(sid)
+            },
+            getProcessStartTimeUtc: _ => processStart);
+
+        var connection = await new DriverConnectionResolver(
+            TestSupport.Wrap(TestSupport.CreateOptions()),
+            TestSupport.CreateFactory(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("unused"))),
+            NullLogger<DriverConnectionResolver>.Instance,
+            () => "alice",
+            secureClient).ResolveAsync();
+
+        Assert.Equal("secure-bootstrap", connection.DiscoveryMethod);
+        Assert.Equal(token, connection.BearerToken);
+        Assert.Equal("http://127.0.0.1:33211", connection.SafeBaseUrl);
+    }
+
+    [Fact]
+    public async Task SecureDiscovery_FallsBackToDescriptor_WhenPipeRejected()
+    {
+        const string sid = "S-1-5-21-100-200-300-404";
+        const string token = "descriptor-after-pipe-reject";
+        var processStart = DateTimeOffset.UtcNow;
+        var secureClient = new SecureBootstrapClient(
+            currentSid: () => sid,
+            localAppData: () => Path.GetTempPath(),
+            pipeReaderOverride: (_, _) => throw new DriverConnectionException(
+                "Secure bootstrap named-pipe server process SID does not match the current Windows user SID."),
+            descriptorReaderOverride: _ => new SecureBootstrapPayload
+            {
+                SchemaVersion = SecureBootstrapConstants.SchemaVersion,
+                UserSid = sid,
+                Username = "alice",
+                Port = 33212,
+                Token = token,
+                AuthorizationHeader = $"Bearer {token}",
+                Pid = Environment.ProcessId,
+                ProcessStartTimeUtc = processStart,
+                StartedAtUtc = DateTimeOffset.UtcNow,
+                PipeName = SecureBootstrapConstants.BuildPipeName(sid)
+            },
+            getProcessStartTimeUtc: _ => processStart);
+
+        var connection = await new DriverConnectionResolver(
+            TestSupport.Wrap(TestSupport.CreateOptions()),
+            TestSupport.CreateFactory(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("unused"))),
+            NullLogger<DriverConnectionResolver>.Instance,
+            () => "alice",
+            secureClient).ResolveAsync();
+
+        Assert.Equal("secure-bootstrap", connection.DiscoveryMethod);
+        Assert.Equal(token, connection.BearerToken);
+        Assert.Equal("http://127.0.0.1:33212", connection.SafeBaseUrl);
+    }
+
+    [Fact]
+    public async Task LegacyVerifyDiscovery_SucceedsWhenExplicitlyConfigured()
     {
         var user = Environment.UserName;
         var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(new
@@ -55,7 +238,9 @@ public class DriverConnectionResolverTests
             }
         }));
 
-        var options = TestSupport.CreateOptions();
+        var options = TestSupport.CreateOptions(
+            discoveryMode: "LegacyVerify",
+            acknowledgeLegacyVerifyRisk: true);
         var resolver = new DriverConnectionResolver(
             TestSupport.Wrap(options),
             TestSupport.CreateFactory(handler),
@@ -71,7 +256,19 @@ public class DriverConnectionResolverTests
     }
 
     [Fact]
-    public async Task VerifyDiscovery_RejectsUsernameMismatch()
+    public void LegacyVerifyDiscovery_RequiresRiskAcknowledgement()
+    {
+        var options = TestSupport.CreateOptions(
+            discoveryMode: "LegacyVerify",
+            acknowledgeLegacyVerifyRisk: false);
+
+        var ex = Assert.Throws<AgentConfigurationException>(() =>
+            AgentOptionsValidator.ValidateDriverOptions(options.Driver));
+        Assert.Contains("AcknowledgeLegacyVerifyRisk", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task LegacyVerifyDiscovery_RejectsUsernameMismatch()
     {
         var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(new
         {
@@ -86,7 +283,9 @@ public class DriverConnectionResolverTests
             }
         }));
 
-        var options = TestSupport.CreateOptions();
+        var options = TestSupport.CreateOptions(
+            discoveryMode: "LegacyVerify",
+            acknowledgeLegacyVerifyRisk: true);
         var resolver = new DriverConnectionResolver(
             TestSupport.Wrap(options),
             TestSupport.CreateFactory(handler),
@@ -125,6 +324,8 @@ public class DriverConnectionResolverTests
     {
         var options = TestSupport.CreateOptions(
             allowRemote: true,
+            discoveryMode: "LegacyVerify",
+            acknowledgeLegacyVerifyRisk: true,
             verifyUrl: "http://example.com:9102/verify");
 
         var ex = Assert.Throws<AgentConfigurationException>(() =>

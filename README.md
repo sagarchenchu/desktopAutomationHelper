@@ -9,9 +9,10 @@ Designed for **shared Citrix / RDS / VDI machines** where multiple users run sim
 - **UIA2 and UIA3 support** - choose the UI Automation backend that best fits your application.
 - **Standalone EXE** - publish as a single self-contained `.exe`; no additional runtime required.
 - **Per-user port isolation** - port is derived from the Windows login name (FNV-1a hash → 30000–39999); no two users on the same machine will collide.
-- **Bearer token authentication** - a random token is generated at startup and required on every call (except `GET /verify`).
-- **`/verify` bootstrap endpoint** - unauthenticated; returns the token and port so clients always know how to connect.
-- **Probe discovery port 9102** - the driver also binds a fixed well-known port for `/verify`; first user to start the driver claims it; subsequent users still work via their own port.
+- **Bearer token authentication** - a random token is generated at startup and required on every authenticated call.
+- **Secure per-user bootstrap (default)** - token is delivered via a Windows SID ACL-protected named pipe and connection descriptor; unauthenticated HTTP `/verify` does **not** return the token.
+- **Legacy `/verify` opt-in** - unauthenticated token return remains available only with an explicit risk acknowledgement (unsafe on shared hosts).
+- **Probe discovery port 9102** - still bound for compatibility; in secure mode it refuses token return (same contract as main `/verify`).
 - **WebDriver-compatible REST API** - sessions, element finding, actions, and screenshots.
 - **Multiple element location strategies** - `automation id`, `name`, `class name`, `tag name`, `xpath`, and more.
 - **Rich actions** - click, double-click, right-click, send keys (WebDriver key codes), clear, get text, get attribute, take screenshot.
@@ -22,56 +23,45 @@ Designed for **shared Citrix / RDS / VDI machines** where multiple users run sim
 
 ### Running the Driver
 
-Launch `DesktopAutomationDriver.exe`. On startup it prints a full connection banner:
+Launch `DesktopAutomationDriver.exe`. On startup it prints a connection banner.
+In **secure mode (default)** the bearer token is **not** printed — retrieve it via
+the SID ACL-protected bootstrap channel (see below).
 
-```
-╔══════════════════════════════════════════════════════════════╗
-║          Desktop Automation Driver — Started                 ║
-╠══════════════════════════════════════════════════════════════╣
-║  Windows user  : DOMAIN\alice                                ║
-║  Main port     : 33201                                       ║
-║  Bearer token  : 7kP2mXqR...base64...                       ║
-╠══════════════════════════════════════════════════════════════╣
-║  ENDPOINTS  (require: Authorization: Bearer <token>)         ║
-║                                                              ║
-║  GET  http://localhost:33201/verify    <- no auth, returns token
-║  ...                                                         ║
-╠══════════════════════════════════════════════════════════════╣
-║  PROBE (no auth)                                             ║
-║  http://localhost:9102/verify  (active)                      ║
-╚══════════════════════════════════════════════════════════════╝
-  Authorization header to use:
-    Authorization: Bearer 7kP2mXqR...
-```
+### Discovering the token at runtime (secure default)
 
-### Discovering the token at runtime
+The agent discovers the driver automatically (`Driver:DiscoveryMode=Secure`):
 
-Use either URL to retrieve the connection info without any prior knowledge:
+1. Connect to named pipe `DesktopAutomationDriver.bootstrap.{currentUserSid}`
+2. Or read `%LOCALAPPDATA%\DesktopAutomationDriver\bootstrap\connection.json`
 
-```http
-GET http://localhost:9102/verify
-GET http://localhost:<user-port>/verify
-```
+Both objects are ACL-restricted to the user SID plus SYSTEM/Administrators.
+Unauthenticated HTTP `/verify` returns `403` and never includes the token.
 
-Response:
+### Legacy `/verify` (opt-in only)
+
+Trusted single-user workstations may enable legacy HTTP bootstrap. This is
+**unsafe on shared Citrix/RDS/VDI hosts** — any local process can read the token
+from loopback. See [`docs/shared-host-driver-discovery-security.md`](docs/shared-host-driver-discovery-security.md).
+
+Driver:
 
 ```json
-{
-  "status": 0,
-  "value": {
-    "running": true,
-    "username": "DOMAIN\\alice",
-    "port": 33201,
-    "probePort": 9102,
-    "token": "7kP2mXqR...",
-    "authorizationHeader": "Bearer 7kP2mXqR..."
-  }
+"Bootstrap": { "Mode": "LegacyVerify", "AcknowledgeLegacyVerifyRisk": true }
+```
+
+Agent:
+
+```json
+"Driver": {
+  "DiscoveryMode": "LegacyVerify",
+  "AcknowledgeLegacyVerifyRisk": true,
+  "VerifyUrl": "http://localhost:9102/verify"
 }
 ```
 
 ### Authentication
 
-Every request (except `GET /verify`) must include:
+Every authenticated request must include:
 
 ```http
 Authorization: Bearer <token>
@@ -103,12 +93,26 @@ Below is the detailed specification of all WebDriver-compatible REST endpoints.
 
 ---
 
-### GET /verify *(no authentication required)*
+### GET /verify *(unauthenticated; token only in LegacyVerify)*
 
-Returns the current running status, username, connection port, fixed probe port (if active), and the Bearer token required for other endpoints. Use this to bootstrap your automated client sessions.
+In **secure mode (default)** this endpoint returns HTTP 403 and does **not** include
+the bearer token. Use the SID ACL-protected named pipe / connection descriptor instead.
+
+When **LegacyVerify** is explicitly enabled (with risk acknowledgement), the response
+includes the Bearer token for bootstrap. That mode is unsafe on shared hosts.
 
 - **Request Format:** No request body required.
-- **Success Response (HTTP 200):**
+- **Secure mode (default) — HTTP 403:**
+  ```json
+  {
+    "status": 403,
+    "value": {
+      "error": "secure_bootstrap_required",
+      "message": "Unauthenticated HTTP /verify does not return the bearer token in secure mode. ..."
+    }
+  }
+  ```
+- **LegacyVerify only — HTTP 200:**
   ```json
   {
     "sessionId": null,
@@ -118,8 +122,8 @@ Returns the current running status, username, connection port, fixed probe port 
       "username": "DOMAIN\\alice",
       "port": 33201,
       "probePort": 9102,
-      "token": "7kP2mXqR...",
-      "authorizationHeader": "Bearer 7kP2mXqR..."
+      "token": "REPLACE_WITH_TOKEN_FROM_VERIFY",
+      "authorizationHeader": "Bearer REPLACE_WITH_TOKEN_FROM_VERIFY"
     }
   }
   ```
@@ -1714,14 +1718,16 @@ or non-deterministic actions are marked as skipped with a `skipReason`.
 ## Example: Automating Notepad (Python)
 
 ```python
-import requests
+import json, os, requests
+from pathlib import Path
 
-PROBE = "http://localhost:9102"   # fixed well-known probe port
-
-# 1. Discover the token and user-specific port (no auth needed)
-info = requests.get(f"{PROBE}/verify").json()["value"]
-BASE  = f"http://localhost:{info['port']}"
-AUTH  = {"Authorization": info["authorizationHeader"]}
+# 1. Secure bootstrap (default): read the SID ACL-protected descriptor.
+#    Prefer the named pipe DesktopAutomationDriver.bootstrap.{SID} in production agents.
+descriptor = Path(os.environ["LOCALAPPDATA"]) / "DesktopAutomationDriver" / "bootstrap" / "connection.json"
+info = json.loads(descriptor.read_text(encoding="utf-8"))
+BASE = f"http://127.0.0.1:{info['port']}"
+AUTH = {"Authorization": info["authorizationHeader"]}
+# token placeholder in docs: REPLACE_WITH_TOKEN_FROM_SECURE_BOOTSTRAP
 
 # 2. Create session — all calls from here need the Authorization header
 session = requests.post(f"{BASE}/session", headers=AUTH, json={
@@ -1745,9 +1751,10 @@ requests.post(f"{BASE}/session/{session_id}/element/{el_id}/value", headers=AUTH
 requests.delete(f"{BASE}/session/{session_id}", headers=AUTH)
 ```
 
-> **Note:** If the probe port (9102) is taken by another user's driver, query the
-> user-specific port directly. The port for a given Windows account is always
-> `30000 + fnv1a32(username.lower()) % 10000`.
+> **Note:** HTTP `/verify` no longer returns the token in secure mode. Legacy
+> `/verify` bootstrap is opt-in only and unsafe on shared hosts — see
+> [`docs/shared-host-driver-discovery-security.md`](docs/shared-host-driver-discovery-security.md).
+> The port for a given Windows account remains `30000 + fnv1a32(username.lower()) % 10000`.
 
 ---
 
@@ -1875,7 +1882,8 @@ dotnet publish src/DesktopAutomationAgent ^
 ```
 DesktopAutomationDriver (Windows process)
   HTTP/API boundary on loopback by default
-    GET  /verify              unauthenticated bootstrap (returns token/port)
+    Secure bootstrap          SID ACL named pipe + connection descriptor (default)
+    GET  /verify              unauthenticated; token only when LegacyVerify opted in
     GET  /status              readiness + build version
     GET  /ui/operations       operation catalog (schema version 2)
     POST /ui                  execute one catalog operation

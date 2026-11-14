@@ -1,0 +1,27 @@
+{
+  "phase": "9A",
+  "tipSha": "6938263d32fb045589353c69eecc033d79c597a2",
+  "branch": "feature/security-phase-9a-secure-bootstrap",
+  "pr": 151,
+  "prDraft": true,
+  "whenUtc": "2026-11-14T10:33:59.8030179+00:00",
+  "host": "DESKTOP-5JD30DR",
+  "user": "DESKTOP-5JD30DR\\ADMIN",
+  "userSid": "S-1-5-21-2097163997-1254372408-68186133-1001",
+  "OVERALL": "PASS_WITH_GAP",
+  "productionMultiUserGate": "NOT_PROVEN",
+  "genuineSecondInteractiveUser": false,
+  "gap": "Host cannot create/run a second interactive Windows user under production ACL (net user add -> System error 5 Access denied; medium integrity; Administrators deny-only; Windows sudo disabled). Do not claim the production multi-user gate passed. LocalService-only test ACL is not used as a substitute.",
+  "scenarios": {
+    "intendedSidPipeDescriptor": "PASS",
+    "secondInteractiveUserProductionAcl": "NOT_PROVEN",
+    "concurrentRejectPreserveAndStaleCleanup": "PASS",
+    "tokenAbsentAndLegacyGated": "PASS",
+    "agentSecureDiscovery": "PASS"
+  },
+  "xunit": {
+    "driverSecureBootstrapAndVerify": { "passed": 15, "total": 15 },
+    "agentDiscoveryAndReadiness": { "passed": 22, "total": 22 }
+  },
+  "ciGreenTip": "6938263d32fb045589353c69eecc033d79c597a2"
+}
