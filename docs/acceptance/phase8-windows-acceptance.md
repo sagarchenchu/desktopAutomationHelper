@@ -1,6 +1,6 @@
 # Phase 8 - Windows acceptance
 
-- Tip tested (GitHub-resolvable): [`a1cbf790d089561a0ebeb8e5bd6b67b75c0281d2`](https://github.com/sagarchenchu/desktopAutomationHelper/commit/a1cbf790d089561a0ebeb8e5bd6b67b75c0281d2) (`a1cbf79`) — CI-green `ab05a0f` + STA highlight fix + DNU-23 evidence
+- Tip tested (GitHub-resolvable): [`464ab9ece517edd2c26417be6d56239dcc8286ec`](https://github.com/sagarchenchu/desktopAutomationHelper/commit/464ab9ece517edd2c26417be6d56239dcc8286ec) (`464ab9e`) — CI-green `ab05a0f` + STA highlight fix + DNU-23 evidence
 - Branch: `feature/driver-phase-8-debug-vision`
 - PR: #148 (**draft** - not merged)
 - When: 2026-11-14T00:28:13.0536693+00:00

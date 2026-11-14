@@ -1,5 +1,5 @@
 {
-    "headSha":  "bac8a1f4751742764cd29afdad0fb1f6f8d0a502",
+    "headSha":  "464ab9ece517edd2c26417be6d56239dcc8286ec",
     "branch":  "feature/driver-phase-8-debug-vision",
     "pr":  148,
     "executedAtUtc":  "2026-11-14T00:28:13.0536693+00:00",
@@ -17,7 +17,7 @@
                       {
                           "scenarioId":  "01-winforms-debug",
                           "name":  "WinForms debug inspect",
-                          "headSha":  "bac8a1f4751742764cd29afdad0fb1f6f8d0a502",
+                          "headSha":  "464ab9ece517edd2c26417be6d56239dcc8286ec",
                           "pass":  true,
                           "stopStatus":  200,
                           "verifyStatus":  200,
@@ -43,7 +43,7 @@
                       {
                           "scenarioId":  "02-wpf-debug",
                           "name":  "WPF debug inspect",
-                          "headSha":  "bac8a1f4751742764cd29afdad0fb1f6f8d0a502",
+                          "headSha":  "464ab9ece517edd2c26417be6d56239dcc8286ec",
                           "pass":  true,
                           "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114002734-cce179d59\\candidate.json",
                           "verifyHttpOk":  true,
@@ -62,7 +62,7 @@
                       {
                           "scenarioId":  "03-candidate-verify",
                           "name":  "Candidate unique verify",
-                          "headSha":  "bac8a1f4751742764cd29afdad0fb1f6f8d0a502",
+                          "headSha":  "464ab9ece517edd2c26417be6d56239dcc8286ec",
                           "pass":  true,
                           "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114002743-0cbca1bef\\candidate.json",
                           "verifyHttpOk":  true,
@@ -84,7 +84,7 @@
                       {
                           "scenarioId":  "04-highlight-passthrough",
                           "name":  "Highlight does not intercept clicks",
-                          "headSha":  "bac8a1f4751742764cd29afdad0fb1f6f8d0a502",
+                          "headSha":  "464ab9ece517edd2c26417be6d56239dcc8286ec",
                           "pass":  true,
                           "clickError":  null,
                           "beforeStatus":  "Status",
@@ -108,7 +108,7 @@
                       {
                           "scenarioId":  "05-customdrawn-vision",
                           "name":  "CustomDrawnCanvas vision path",
-                          "headSha":  "bac8a1f4751742764cd29afdad0fb1f6f8d0a502",
+                          "headSha":  "464ab9ece517edd2c26417be6d56239dcc8286ec",
                           "pass":  true,
                           "inspectTarget":  {
                                                 "automationId":  "",
@@ -172,7 +172,7 @@
                       {
                           "scenarioId":  "06-vision-default-off",
                           "name":  "Vision disabled by default",
-                          "headSha":  "bac8a1f4751742764cd29afdad0fb1f6f8d0a502",
+                          "headSha":  "464ab9ece517edd2c26417be6d56239dcc8286ec",
                           "pass":  true,
                           "visionStatusEnabled":  false,
                           "statusHttpOk":  true,
@@ -183,7 +183,7 @@
                       {
                           "scenarioId":  "07-stale-dpi-guards",
                           "name":  "Stale/DPI/layout/destructive denied",
-                          "headSha":  "bac8a1f4751742764cd29afdad0fb1f6f8d0a502",
+                          "headSha":  "464ab9ece517edd2c26417be6d56239dcc8286ec",
                           "pass":  true,
                           "destructiveLabelHttpOk":  true,
                           "destructiveLabelReason":  "Destructive coordinate actions and destructive candidate labels are denied.",
@@ -223,7 +223,7 @@
                       {
                           "scenarioId":  "08-sensitive-screenshot",
                           "name":  "Sensitive screenshot not persisted",
-                          "headSha":  "bac8a1f4751742764cd29afdad0fb1f6f8d0a502",
+                          "headSha":  "464ab9ece517edd2c26417be6d56239dcc8286ec",
                           "pass":  true,
                           "probe":  {
                                         "visionEnabledCustomDrawn":  true,
@@ -260,7 +260,7 @@
                       {
                           "scenarioId":  "09-hover-probe",
                           "name":  "Hover probe (not UIA capability)",
-                          "headSha":  "bac8a1f4751742764cd29afdad0fb1f6f8d0a502",
+                          "headSha":  "464ab9ece517edd2c26417be6d56239dcc8286ec",
                           "pass":  true,
                           "inspectHttpOk":  null,
                           "note":  "Hover via POST /debug/hover mouse probe (not a UIA capability)",
