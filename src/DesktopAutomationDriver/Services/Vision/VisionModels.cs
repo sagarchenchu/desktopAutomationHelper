@@ -17,8 +17,21 @@ public sealed class VisionFallbackOptions
     /// <summary>Explicit policy override to permit vision even when UIA is accessible.</summary>
     public bool AllowWhenPolicyPermits { get; set; }
 
-    /// <summary>Maximum age of a screenshot before coordinate actions are rejected.</summary>
+    /// <summary>
+    /// Maximum age of a revalidated execution token / post-approval probe before authorize is rejected.
+    /// Human approve may happen later (see <see cref="CandidateTtlMilliseconds"/>); do not force
+    /// inspect+approve+authorize inside this window alone.
+    /// </summary>
     public int MaxScreenshotAgeMilliseconds { get; set; } = 1500;
+
+    /// <summary>How long an unconsumed issued candidate may wait for operator approval.</summary>
+    public int CandidateTtlMilliseconds { get; set; } = 300_000;
+
+    /// <summary>How long a post-approval execution token remains valid (one-use).</summary>
+    public int ExecutionTokenTtlMilliseconds { get; set; } = 30_000;
+
+    /// <summary>Maximum retained issued candidates (oldest evicted).</summary>
+    public int MaxStoredCandidates { get; set; } = 64;
 
     /// <summary>When false (default), screenshots with sensitive markers are not persisted.</summary>
     public bool PersistSensitiveScreenshots { get; set; }
@@ -61,7 +74,7 @@ public sealed record VisionCandidateTarget
     public string? ScreenshotFingerprint { get; init; }
 }
 
-public sealed class CoordinateActionRequest
+public sealed record CoordinateActionRequest
 {
     public required VisionCandidateTarget Candidate { get; init; }
     /// <summary>Must be a fresh server probe — never trust the HTTP caller for this value.</summary>
@@ -70,6 +83,10 @@ public sealed class CoordinateActionRequest
     public required DateTimeOffset NowUtc { get; init; }
     public bool IsDestructive { get; init; }
     public string Action { get; init; } = "click";
+    /// <summary>When set, age is measured from this anchor (e.g. execution-token issue / revalidation).</summary>
+    public DateTimeOffset? FreshnessAnchorUtc { get; init; }
+    /// <summary>When true, skip MaxScreenshotAgeMilliseconds (operator approve revalidation).</summary>
+    public bool SkipAgeCheck { get; init; }
 }
 
 public sealed class CoordinateActionDecision

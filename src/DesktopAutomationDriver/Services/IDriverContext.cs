@@ -36,4 +36,10 @@ public interface IDriverContext
     /// (except <c>GET /verify</c>).
     /// </summary>
     string BearerToken { get; }
+
+    /// <summary>
+    /// Separate operator token for human vision approval (<c>X-Operator-Token</c>).
+    /// Must not equal <see cref="BearerToken"/> — automation agents cannot self-approve.
+    /// </summary>
+    string OperatorToken { get; }
 }

@@ -33,9 +33,15 @@ public sealed class CoordinateActionGuard
             return Deny("Destructive or unknown coordinate actions and destructive candidate labels are denied.");
         }
 
-        var ageMs = (request.NowUtc - request.Candidate.ProducedAtUtc).TotalMilliseconds;
-        if (ageMs < 0 || ageMs > _options.MaxScreenshotAgeMilliseconds)
-            return Deny($"Stale vision candidate (age {ageMs:0}ms > {_options.MaxScreenshotAgeMilliseconds}ms).");
+        // Age is measured from FreshnessAnchorUtc (token/revalidation time), not original issue,
+        // so humans are not forced through inspect+approve+authorize inside MaxScreenshotAgeMs alone.
+        if (!request.SkipAgeCheck)
+        {
+            var anchor = request.FreshnessAnchorUtc ?? request.Candidate.ProducedAtUtc;
+            var ageMs = (request.NowUtc - anchor).TotalMilliseconds;
+            if (ageMs < 0 || ageMs > _options.MaxScreenshotAgeMilliseconds)
+                return Deny($"Stale vision candidate (age {ageMs:0}ms > {_options.MaxScreenshotAgeMilliseconds}ms).");
+        }
 
         if (request.Candidate.Confidence < _options.MinimumConfidence)
             return Deny($"Confidence {request.Candidate.Confidence:0.###} below minimum {_options.MinimumConfidence:0.###}.");
@@ -74,6 +80,10 @@ public sealed class CoordinateActionGuard
             ScreenPoint = center
         };
     }
+
+    /// <summary>Revalidation at operator approve time — skips screenshot-age so humans have CandidateTtl.</summary>
+    public CoordinateActionDecision EvaluateForApproval(CoordinateActionRequest request) =>
+        Evaluate(request with { SkipAgeCheck = true });
 
     private static CoordinateActionDecision Deny(string reason) =>
         new() { Allowed = false, Reason = reason, ScreenPoint = null };

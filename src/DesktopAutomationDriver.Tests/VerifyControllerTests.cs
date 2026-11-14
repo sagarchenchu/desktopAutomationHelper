@@ -22,6 +22,7 @@ public class VerifyControllerTests
         mock.Setup(c => c.Username).Returns(username);
         mock.Setup(c => c.MainPort).Returns(mainPort);
         mock.Setup(c => c.BearerToken).Returns(token);
+        mock.Setup(c => c.OperatorToken).Returns(token + "-op");
         mock.Setup(c => c.ProbePortActive).Returns(probePortActive);
         mock.Setup(c => c.ProbePort).Returns(probePort);
         return mock;

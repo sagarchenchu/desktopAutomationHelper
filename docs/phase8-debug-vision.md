@@ -61,11 +61,11 @@ Bound via `IOptions<VisionFallbackOptions>` and exposed at:
 |---|---|
 | `GET /vision/status` | Enabled flag + options |
 | `POST /vision/evaluate` | Eligibility for a semantic target |
-| `POST /vision/candidates` | Issue opaque server candidates (no-op when disabled) |
-| `POST /vision/approve` | Human approval of a server-issued candidate id |
-| `POST /vision/authorize` | Authorize by candidate id (gated on `Vision:Enabled`) |
-| `POST /vision/hover` | Gated hover authorize-by-id |
-| `POST /vision/doubleclick` | DoubleClickPolicy + gated authorize-by-id |
+| `POST /vision/candidates` | Server HWND/cursor capture → opaque candidates |
+| `POST /vision/approve` | **Operator** approval (`X-Operator-Token`); action-bound; issues one-use execution token |
+| `POST /vision/authorize` | Authorize with execution token (gated on `Vision:Enabled`; consumes on success) |
+| `POST /vision/hover` | Gated hover via execution token |
+| `POST /vision/doubleclick` | DoubleClickPolicy + execution token |
 
 When Debug Mode inspects an inaccessible target and Vision is enabled,
 `DebugSessionCoordinator` also produces vision candidates on the session snapshot
@@ -78,12 +78,13 @@ Allowed only when:
 
 Authorization rules (fail-closed):
 
-- Opaque **server-issued** candidate id; client cannot forge candidates/windows/timestamps
-- Human **approval** required; auto-promoted rejected
-- **Server clock** for freshness; fresh Win32/UIA probe for HWND/PID/bounds/DPI
-- Full candidate bounds + click point inside live window
-- Destructive / unknown actions denied (allow-list: click/hover/doubleclick); labels Send/Approve/Publish/Install/Delete/Pay/… denied
-- Sensitive screenshots are not persisted by default; text may be redacted
+- Server captures window/screenshot/UIA from HWND/cursor — client PNG/window not trusted
+- Opaque server-issued candidate id; **operator channel** distinct from automation bearer
+- Approval bound to **candidate + action**; revalidate live window; short-lived **one-use** execution token
+- Humans are not forced through MaxScreenshotAgeMs for approve (CandidateTtl); token TTL gates authorize
+- Successful authorize **consumes** candidate/token; store has TTL + capacity
+- Destructive / unknown actions denied; labels Send/Approve/Publish/Install/Delete/Pay/… denied
+- Sensitive screenshots are not persisted by default
 
 Fake provider (`Provider=fake`) is required in CI.
 
@@ -120,10 +121,9 @@ Do **not** set `Name = CustomDrawnCanvas` — that made the control accessible.
 
 ## Windows acceptance
 
-Prior PASS claims (`28b8712`, inconsistent DNU-23 SHAs) are **retracted**.
-Re-run S1–S9 is **DNU-24** on one clean tip SHA. Helper: `docs/acceptance/phase8-assert-http-ok.ps1`
-(including `-AssertVisionAuthorizeDenied` for Scenario 6). Do not claim PASS until HTTP OK flags
-and authorize-deny-when-off are true on that tip.
+Prior PASS claims are **retracted**. Re-run S1–S9 is **DNU-25** on one clean tip SHA.
+S5 must exercise candidates→approve→authorize Allowed=true; S7 destructive after approve with vision on.
+Helper: `docs/acceptance/phase8-assert-http-ok.ps1`.
 
 ## Limitations
 

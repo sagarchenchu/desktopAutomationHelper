@@ -5,8 +5,8 @@ using Microsoft.AspNetCore.Mvc;
 namespace DesktopAutomationDriver.Controllers;
 
 /// <summary>
-/// Config-gated production surface for vision fallback (default off via Vision:Enabled=false).
-/// Candidates are server-issued (opaque id); authorization uses server clock + fresh window probe.
+/// Config-gated vision surface. Candidates are server-captured; approval uses the operator channel
+/// (<c>X-Operator-Token</c>); authorize consumes a short-lived one-use execution token.
 /// </summary>
 [ApiController]
 [Route("vision")]
@@ -35,6 +35,9 @@ public sealed class VisionController : ControllerBase
             allowWhenUiaInaccessible = _options.AllowWhenUiaInaccessible,
             allowWhenPolicyPermits = _options.AllowWhenPolicyPermits,
             maxScreenshotAgeMilliseconds = _options.MaxScreenshotAgeMilliseconds,
+            candidateTtlMilliseconds = _options.CandidateTtlMilliseconds,
+            executionTokenTtlMilliseconds = _options.ExecutionTokenTtlMilliseconds,
+            maxStoredCandidates = _options.MaxStoredCandidates,
             minimumConfidence = _options.MinimumConfidence
         });
 
@@ -63,45 +66,31 @@ public sealed class VisionController : ControllerBase
 
     public sealed class ProduceCandidatesRequest
     {
-        public required DebugWindowIdentity Window { get; set; }
-        public DebugUiaNode? SemanticTarget { get; set; }
-        public string? PngBase64 { get; set; }
-        public bool UiaReportsInaccessible { get; set; }
+        /// <summary>HWND hex (e.g. 0x1234ABCD) or decimal. Server probes this handle — client window/PNG ignored.</summary>
+        public string? WindowHandle { get; set; }
+        public int? CursorX { get; set; }
+        public int? CursorY { get; set; }
         public bool PolicyOverride { get; set; }
         public string? Query { get; set; }
     }
 
     /// <summary>
-    /// Production path for vision candidates. Returns empty when Vision:Enabled=false.
-    /// Issued candidates carry opaque ids and require human approval before authorize.
+    /// Server-side capture from HWND (+ optional cursor). Client PNG/window/UIA flags are not trusted.
     /// </summary>
     [HttpPost("candidates")]
     public IActionResult ProduceCandidates([FromBody] ProduceCandidatesRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ArgumentNullException.ThrowIfNull(request.Window);
+        if (!TryParseHandle(request.WindowHandle, out var hwnd) || hwnd == IntPtr.Zero)
+            return BadRequest(new { error = "windowHandle is required (server captures window/screenshot/UIA)." });
 
-        byte[] png;
-        if (!string.IsNullOrWhiteSpace(request.PngBase64))
-            png = Convert.FromBase64String(request.PngBase64);
-        else
-            png = System.Text.Encoding.UTF8.GetBytes($"vision-candidates:{request.Window.WindowHandleHex}");
+        Point? cursor = request.CursorX is int x && request.CursorY is int y
+            ? new Point(x, y)
+            : null;
 
-        var semantic = request.SemanticTarget;
-        if (semantic is null && request.UiaReportsInaccessible)
-        {
-            semantic = new DebugUiaNode
-            {
-                ControlType = "Custom",
-                IsSemanticAccessible = false,
-                InaccessibilityReason = "caller-reported-inaccessible"
-            };
-        }
-
-        var (eligibility, _, candidates) = _coordinator.TryProduceCandidates(
-            semantic,
-            request.Window,
-            png,
+        var (eligibility, _, candidates) = _coordinator.TryProduceCandidatesFromHandle(
+            hwnd,
+            cursor,
             query: request.Query,
             policyExplicitlyPermits: request.PolicyOverride);
 
@@ -111,40 +100,54 @@ public sealed class VisionController : ControllerBase
             eligibility = eligibility.ToString(),
             candidates,
             autoPromoted = false,
-            requiresHumanApproval = true
+            requiresHumanApproval = true,
+            requiresOperatorToken = true
         });
     }
 
     public sealed class ApproveRequest
     {
         public required string CandidateId { get; set; }
+        /// <summary>Action bound to this approval (click/hover/doubleclick).</summary>
+        public string Action { get; set; } = "click";
     }
 
-    /// <summary>Mark a server-issued candidate as human-approved (still gated by Vision:Enabled on authorize).</summary>
+    /// <summary>
+    /// Operator approval channel (middleware requires <c>X-Operator-Token</c>).
+    /// Revalidates live window and returns a short-lived one-use execution token.
+    /// </summary>
     [HttpPost("approve")]
     public IActionResult Approve([FromBody] ApproveRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.CandidateId)
-            || !_coordinator.TryApproveCandidate(request.CandidateId, out var issued)
-            || issued is null)
+        var result = _coordinator.ApproveCandidate(request.CandidateId, request.Action);
+        if (!result.Allowed)
         {
-            return NotFound(new { error = "Unknown vision candidate id.", candidateId = request.CandidateId });
+            return BadRequest(new
+            {
+                allowed = false,
+                reason = result.Reason,
+                candidateId = request.CandidateId
+            });
         }
 
         return Ok(new
         {
-            candidateId = issued.Id,
-            approved = issued.Approved,
-            requiresHumanApproval = issued.RequiresHumanApproval,
-            autoPromoted = issued.AutoPromoted
+            allowed = true,
+            reason = result.Reason,
+            candidateId = result.CandidateId,
+            action = result.Action,
+            executionToken = result.ExecutionToken,
+            executionTokenExpiresAtUtc = result.ExecutionTokenExpiresAtUtc,
+            screenPoint = result.ScreenPoint,
+            oneUse = true
         });
     }
 
     public sealed class AuthorizeRequest
     {
-        /// <summary>Opaque server-issued candidate id. Client-supplied candidate/window/timestamps are ignored.</summary>
-        public required string CandidateId { get; set; }
-        public string Action { get; set; } = "click";
+        /// <summary>Short-lived one-use token from operator approve.</summary>
+        public required string ExecutionToken { get; set; }
+        public string? Action { get; set; }
         public bool IsDestructive { get; set; }
     }
 
@@ -152,7 +155,7 @@ public sealed class VisionController : ControllerBase
     public IActionResult Authorize([FromBody] AuthorizeRequest request)
     {
         var decision = _coordinator.AuthorizeCoordinateAction(
-            request.CandidateId,
+            request.ExecutionToken,
             request.Action,
             request.IsDestructive);
         return Ok(new
@@ -161,16 +164,15 @@ public sealed class VisionController : ControllerBase
             decision.Reason,
             decision.ScreenPoint,
             visionEnabled = _options.Enabled,
-            candidateId = request.CandidateId
+            consumed = decision.Allowed
         });
     }
 
-    /// <summary>Gated hover authorization (same fail-closed authorize-by-id path).</summary>
     [HttpPost("hover")]
     public IActionResult AuthorizeHover([FromBody] AuthorizeRequest request)
     {
         var decision = _coordinator.AuthorizeGatedPointerAction(
-            request.CandidateId,
+            request.ExecutionToken,
             "hover",
             request.IsDestructive);
         return Ok(new
@@ -179,7 +181,7 @@ public sealed class VisionController : ControllerBase
             decision.Reason,
             decision.ScreenPoint,
             visionEnabled = _options.Enabled,
-            candidateId = request.CandidateId
+            consumed = decision.Allowed
         });
     }
 
@@ -188,12 +190,9 @@ public sealed class VisionController : ControllerBase
         public string? ControlType { get; set; }
         public bool PolicyAllowsDoubleClick { get; set; }
         public bool KnownBehavior { get; set; }
-        public string? CandidateId { get; set; }
+        public string? ExecutionToken { get; set; }
     }
 
-    /// <summary>
-    /// Double-click requires DoubleClickPolicy and (when a candidate id is supplied) Vision:Enabled + authorize-by-id.
-    /// </summary>
     [HttpPost("doubleclick")]
     public IActionResult AuthorizeDoubleClick([FromBody] DoubleClickRequest request)
     {
@@ -212,18 +211,18 @@ public sealed class VisionController : ControllerBase
             });
         }
 
-        if (string.IsNullOrWhiteSpace(request.CandidateId))
+        if (string.IsNullOrWhiteSpace(request.ExecutionToken))
         {
             return Ok(new
             {
                 allowed = false,
-                reason = "Double-click with vision requires a server-issued candidateId.",
+                reason = "Double-click with vision requires an operator executionToken.",
                 visionEnabled = _options.Enabled,
                 policyAllowed
             });
         }
 
-        var decision = _coordinator.AuthorizeGatedPointerAction(request.CandidateId, "doubleclick");
+        var decision = _coordinator.AuthorizeGatedPointerAction(request.ExecutionToken, "doubleclick");
         return Ok(new
         {
             allowed = decision.Allowed,
@@ -231,7 +230,34 @@ public sealed class VisionController : ControllerBase
             screenPoint = decision.ScreenPoint,
             visionEnabled = _options.Enabled,
             policyAllowed,
-            candidateId = request.CandidateId
+            consumed = decision.Allowed
         });
+    }
+
+    private static bool TryParseHandle(string? value, out IntPtr hwnd)
+    {
+        hwnd = IntPtr.Zero;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var trimmed = value.Trim();
+        if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            if (long.TryParse(trimmed[2..], System.Globalization.NumberStyles.HexNumber, null, out var hex))
+            {
+                hwnd = new IntPtr(hex);
+                return true;
+            }
+
+            return false;
+        }
+
+        if (long.TryParse(trimmed, out var dec))
+        {
+            hwnd = new IntPtr(dec);
+            return true;
+        }
+
+        return false;
     }
 }

@@ -215,6 +215,7 @@ public class PublicContractProtectionTests
     {
         var mock = new Mock<IDriverContext>();
         mock.SetupGet(c => c.BearerToken).Returns(Token);
+        mock.SetupGet(c => c.OperatorToken).Returns(Token + "-operator");
         return mock.Object;
     }
 

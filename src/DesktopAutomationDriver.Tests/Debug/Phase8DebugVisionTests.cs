@@ -601,12 +601,10 @@ public class Phase8DebugVisionTests
             DpiScaleX = 1,
             DpiScaleY = 1
         };
-        var store = new VisionCandidateStore();
+        var options = new VisionFallbackOptions { Enabled = false, Provider = "fake", MinimumConfidence = 0.5 };
+        var store = new VisionCandidateStore(options);
         var probe = new ScriptedLiveWindowProbe(window);
-        var coordinator = VisionFallbackCoordinator.ForTests(
-            new VisionFallbackOptions { Enabled = false, Provider = "fake", MinimumConfidence = 0.5 },
-            store,
-            probe);
+        var coordinator = VisionFallbackCoordinator.ForTests(options, store, probe);
 
         var issued = store.Issue(new VisionCandidateTarget
         {
@@ -616,15 +614,15 @@ public class Phase8DebugVisionTests
             Window = window,
             ProducedAtUtc = DateTimeOffset.UtcNow
         }, DateTimeOffset.UtcNow);
-        store.TryApprove(issued.Id, out _);
+        store.TryBindApproval(issued.Id, "click", "vtx-test", DateTimeOffset.UtcNow, out _);
 
-        var decision = coordinator.AuthorizeCoordinateAction(issued.Id, "click");
+        var decision = coordinator.AuthorizeCoordinateAction("vtx-test", "click");
         Assert.False(decision.Allowed);
         Assert.Contains("Vision:Enabled=false", decision.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void Authorize_RequiresOpaqueIdApprovalAndFreshProbe_RejectsUnapprovedAndForged()
+    public void Authorize_RequiresOperatorApprovalToken_AndConsumesOnSuccess()
     {
         var window = new DebugWindowIdentity
         {
@@ -634,8 +632,67 @@ public class Phase8DebugVisionTests
             DpiScaleX = 1,
             DpiScaleY = 1
         };
-        var store = new VisionCandidateStore();
+        var options = new VisionFallbackOptions
+        {
+            Enabled = true,
+            AllowWhenUiaInaccessible = true,
+            Provider = "fake",
+            MinimumConfidence = 0.5,
+            MaxScreenshotAgeMilliseconds = 5000,
+            CandidateTtlMilliseconds = 60_000,
+            ExecutionTokenTtlMilliseconds = 30_000
+        };
+        var store = new VisionCandidateStore(options);
         var probe = new ScriptedLiveWindowProbe(window);
+        var capture = new ScriptedVisionCaptureService(new VisionServerCapture
+        {
+            Window = window,
+            SemanticTarget = new DebugUiaNode
+            {
+                ControlType = "Custom",
+                IsSemanticAccessible = false,
+                InaccessibilityReason = "custom-drawn"
+            },
+            PngBytes = Encoding.UTF8.GetBytes("server-png")
+        });
+        var coordinator = VisionFallbackCoordinator.ForTests(options, store, probe, capture);
+
+        var (_, _, candidates) = coordinator.TryProduceCandidatesFromHandle(
+            window.WindowHandle,
+            cursorScreenPoint: new Point(50, 60),
+            query: "OK");
+        Assert.NotEmpty(candidates);
+        Assert.False(string.IsNullOrWhiteSpace(candidates[0].Id));
+
+        var missingToken = coordinator.AuthorizeCoordinateAction("vtx-missing", "click");
+        Assert.False(missingToken.Allowed);
+
+        var approval = coordinator.ApproveCandidate(candidates[0].Id!, "click");
+        Assert.True(approval.Allowed);
+        Assert.False(string.IsNullOrWhiteSpace(approval.ExecutionToken));
+
+        var wrongAction = coordinator.AuthorizeCoordinateAction(approval.ExecutionToken!, "hover");
+        Assert.False(wrongAction.Allowed);
+
+        var ok = coordinator.AuthorizeCoordinateAction(approval.ExecutionToken!, "click");
+        Assert.True(ok.Allowed);
+        Assert.NotNull(ok.ScreenPoint);
+
+        var replay = coordinator.AuthorizeCoordinateAction(approval.ExecutionToken!, "click");
+        Assert.False(replay.Allowed);
+    }
+
+    [Fact]
+    public void Destructive_AfterApprove_StillDenied_WithVisionEnabled()
+    {
+        var window = new DebugWindowIdentity
+        {
+            WindowHandle = new IntPtr(77),
+            ProcessId = 300,
+            Bounds = new Rectangle(0, 0, 400, 300),
+            DpiScaleX = 1,
+            DpiScaleY = 1
+        };
         var options = new VisionFallbackOptions
         {
             Enabled = true,
@@ -644,36 +701,58 @@ public class Phase8DebugVisionTests
             MinimumConfidence = 0.5,
             MaxScreenshotAgeMilliseconds = 5000
         };
+        var store = new VisionCandidateStore(options);
+        var probe = new ScriptedLiveWindowProbe(window);
         var coordinator = VisionFallbackCoordinator.ForTests(options, store, probe);
 
-        var inaccessible = new DebugUiaNode
+        var issued = store.Issue(new VisionCandidateTarget
         {
-            ControlType = "Custom",
-            IsSemanticAccessible = false,
-            InaccessibilityReason = "custom-drawn"
+            Label = "Delete",
+            Bounds = new Rectangle(40, 40, 80, 24),
+            Confidence = 0.9,
+            Window = window,
+            ProducedAtUtc = DateTimeOffset.UtcNow
+        }, DateTimeOffset.UtcNow);
+
+        var approval = coordinator.ApproveCandidate(issued.Id, "click");
+        Assert.False(approval.Allowed);
+        Assert.DoesNotContain("Vision:Enabled=false", approval.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Destructive", approval.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CandidateStore_EvictsByCapacity_AndExpires()
+    {
+        var options = new VisionFallbackOptions { MaxStoredCandidates = 2, CandidateTtlMilliseconds = 50 };
+        var store = new VisionCandidateStore(options);
+        var window = new DebugWindowIdentity
+        {
+            WindowHandle = new IntPtr(1),
+            ProcessId = 1,
+            Bounds = new Rectangle(0, 0, 10, 10),
+            DpiScaleX = 1,
+            DpiScaleY = 1
         };
-        var (_, _, candidates) = coordinator.TryProduceCandidates(
-            inaccessible,
-            window,
-            Encoding.UTF8.GetBytes("png"),
-            query: "OK");
-        Assert.NotEmpty(candidates);
-        Assert.False(string.IsNullOrWhiteSpace(candidates[0].Id));
 
-        var unapproved = coordinator.AuthorizeCoordinateAction(candidates[0].Id!, "click");
-        Assert.False(unapproved.Allowed);
-        Assert.Contains("not approved", unapproved.Reason, StringComparison.OrdinalIgnoreCase);
+        VisionCandidateTarget Make(string label) => new()
+        {
+            Label = label,
+            Bounds = new Rectangle(1, 1, 2, 2),
+            Confidence = 0.9,
+            Window = window
+        };
 
-        Assert.True(coordinator.TryApproveCandidate(candidates[0].Id!, out _));
-        var ok = coordinator.AuthorizeCoordinateAction(candidates[0].Id!, "click");
-        Assert.True(ok.Allowed);
-        Assert.NotNull(ok.ScreenPoint);
+        var a = store.Issue(Make("a"), DateTimeOffset.UtcNow);
+        var b = store.Issue(Make("b"), DateTimeOffset.UtcNow);
+        var c = store.Issue(Make("c"), DateTimeOffset.UtcNow);
+        Assert.True(store.Count <= 2);
+        Assert.False(store.TryGet(a.Id, out _));
+        Assert.True(store.TryGet(c.Id, out _));
 
-        var forged = coordinator.AuthorizeCoordinateAction("vc-forged-not-issued", "click");
-        Assert.False(forged.Allowed);
-
-        var unknownAction = coordinator.AuthorizeCoordinateAction(candidates[0].Id!, "explode");
-        Assert.False(unknownAction.Allowed);
+        Thread.Sleep(60);
+        store.EvictExpired(DateTimeOffset.UtcNow);
+        Assert.Equal(0, store.Count);
+        _ = b;
     }
 
     [Fact]

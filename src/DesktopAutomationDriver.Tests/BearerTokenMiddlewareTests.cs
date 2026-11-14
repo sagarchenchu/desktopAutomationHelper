@@ -12,16 +12,19 @@ public class BearerTokenMiddlewareTests
 {
     private const string ValidToken = "test-valid-token-abc123";
 
+    private const string OperatorToken = "test-operator-token-xyz";
+
     private static Mock<IDriverContext> BuildContext(string token = ValidToken)
     {
         var mock = new Mock<IDriverContext>();
         mock.Setup(c => c.BearerToken).Returns(token);
+        mock.Setup(c => c.OperatorToken).Returns(OperatorToken);
         return mock;
     }
 
     private static (BearerTokenMiddleware middleware, DefaultHttpContext httpContext, bool nextCalled)
         BuildMiddleware(string? authHeaderValue = null, string path = "/session",
-                        string token = ValidToken)
+                        string token = ValidToken, string method = "GET")
     {
         bool nextCalled = false;
         RequestDelegate next = ctx => { nextCalled = true; return Task.CompletedTask; };
@@ -31,6 +34,7 @@ public class BearerTokenMiddlewareTests
 
         var httpContext = new DefaultHttpContext();
         httpContext.Request.Path = path;
+        httpContext.Request.Method = method;
         if (authHeaderValue != null)
             httpContext.Request.Headers.Authorization = authHeaderValue;
 
@@ -120,6 +124,34 @@ public class BearerTokenMiddlewareTests
 
         await middleware.InvokeAsync(httpContext);
 
+        Assert.True(nextCalled);
+    }
+
+    [Fact]
+    public async Task VisionApprove_WithoutOperatorToken_Returns403()
+    {
+        var (middleware, ctx, _) = BuildMiddleware(
+            $"Bearer {ValidToken}",
+            path: "/vision/approve",
+            method: "POST");
+        await middleware.InvokeAsync(ctx);
+        Assert.Equal(403, ctx.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task VisionApprove_WithOperatorAndBearer_Succeeds()
+    {
+        bool nextCalled = false;
+        RequestDelegate next = _ => { nextCalled = true; return Task.CompletedTask; };
+        var middleware = new BearerTokenMiddleware(next, BuildContext().Object);
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Path = "/vision/approve";
+        httpContext.Request.Method = "POST";
+        httpContext.Request.Headers.Authorization = $"Bearer {ValidToken}";
+        httpContext.Request.Headers["X-Operator-Token"] = OperatorToken;
+        httpContext.Response.Body = new MemoryStream();
+
+        await middleware.InvokeAsync(httpContext);
         Assert.True(nextCalled);
     }
 }

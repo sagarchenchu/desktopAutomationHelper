@@ -28,6 +28,9 @@ public sealed class DriverContext : IDriverContext
     /// <inheritdoc/>
     public string BearerToken { get; }
 
+    /// <inheritdoc/>
+    public string OperatorToken { get; }
+
     public DriverContext() : this(Environment.UserName) { }
 
     /// <summary>
@@ -39,6 +42,11 @@ public sealed class DriverContext : IDriverContext
         Username = username;
         MainPort = ComputeUserPort(username);
         BearerToken = GenerateToken();
+        // Distinct from BearerToken so automation cannot self-approve vision candidates.
+        do
+        {
+            OperatorToken = GenerateToken();
+        } while (string.Equals(OperatorToken, BearerToken, StringComparison.Ordinal));
     }
 
     /// <summary>

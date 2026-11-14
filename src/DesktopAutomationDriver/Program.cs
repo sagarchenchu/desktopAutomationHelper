@@ -67,8 +67,10 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<VisionFallbackPolicy>();
 builder.Services.AddSingleton<VisionScreenshotService>();
 builder.Services.AddSingleton<IVisionProvider, FakeVisionProvider>();
-builder.Services.AddSingleton<VisionCandidateStore>();
+builder.Services.AddSingleton(sp =>
+    new VisionCandidateStore(sp.GetRequiredService<VisionFallbackOptions>()));
 builder.Services.AddSingleton<ILiveWindowProbe, Win32LiveWindowProbe>();
+builder.Services.AddSingleton<IVisionCaptureService, ServerVisionCaptureService>();
 builder.Services.AddSingleton<CoordinateActionGuard>();
 builder.Services.AddSingleton<VisionFallbackCoordinator>();
 builder.Services.AddSingleton<IUiaElementProbe, FlaUIUiaElementProbe>();
@@ -215,6 +217,7 @@ static void LogStartupBanner(IDriverContext ctx, ILogger logger)
     sb.AppendLine($"║  Windows user  : {ctx.Username,-44}║");
     sb.AppendLine($"║  Main port     : {ctx.MainPort,-44}║");
     sb.AppendLine($"║  Bearer token  : {ctx.BearerToken,-44}║");
+    sb.AppendLine($"║  Operator token: {ctx.OperatorToken,-44}║");
     sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
     sb.AppendLine("║  UNIFIED ENDPOINT (require: Authorization: Bearer <token>)   ║");
     sb.AppendLine("║                                                              ║");
@@ -265,6 +268,8 @@ static void LogStartupBanner(IDriverContext ctx, ILogger logger)
     sb.AppendLine("╚══════════════════════════════════════════════════════════════╝");
     sb.AppendLine($"  Authorization header to use:");
     sb.AppendLine($"    Authorization: Bearer {ctx.BearerToken}");
+    sb.AppendLine($"  Vision operator approval (POST /vision/approve):");
+    sb.AppendLine($"    X-Operator-Token: {ctx.OperatorToken}");
 
     logger.LogInformation("{Banner}", sb.ToString());
 }
