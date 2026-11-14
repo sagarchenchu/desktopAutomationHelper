@@ -1010,9 +1010,11 @@ public class Phase8DebugVisionTests
         worker.Start();
 
         Assert.True(started.Wait(TimeSpan.FromSeconds(2)));
-        // Allow STA dialog thread to start / wait on ready before cancelling.
-        Thread.Sleep(250);
-        Assert.True(svc.IsInFlight);
+        // Poll until single-flight is acquired — fixed sleep flakes on slow CI before dialog starts.
+        var inFlightDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!svc.IsInFlight && DateTime.UtcNow < inFlightDeadline)
+            Thread.Sleep(20);
+        Assert.True(svc.IsInFlight, "Confirmation never acquired single-flight before cancel window elapsed.");
         cts.Cancel();
 
         Assert.True(done.Wait(TimeSpan.FromSeconds(15)), "Confirmation did not return after cancel.");
