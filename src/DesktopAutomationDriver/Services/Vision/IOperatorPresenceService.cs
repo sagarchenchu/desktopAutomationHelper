@@ -62,6 +62,18 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
     /// <summary>True while a confirmation is in flight (for tests).</summary>
     public bool IsInFlight => Volatile.Read(ref _inFlight) != 0;
 
+    /// <summary>Test seam: delay STA form creation to exercise cancel-before-ready races.</summary>
+    internal TimeSpan FormCreationDelay { get; set; }
+
+    /// <summary>Test seam: how many times the STA path entered <c>ShowDialog</c>.</summary>
+    internal int ShowDialogEntryCount => Volatile.Read(ref _showDialogEntries);
+
+    /// <summary>Test seam: last background STA confirmation thread (if any).</summary>
+    internal Thread? LastUiThread => _lastUiThread;
+
+    private int _showDialogEntries;
+    private Thread? _lastUiThread;
+
     public bool TryConfirmVisionApproval(
         OperatorPresenceRequest request,
         out string denyReason,
@@ -89,10 +101,9 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
         }
         finally
         {
-            // Hold single-flight until the background dialog thread has terminated.
-            if (uiThread is not null)
-                JoinUiThread(uiThread);
-            Interlocked.Exchange(ref _inFlight, 0);
+            // Hold single-flight until the dialog thread ends. Bounded join for the HTTP
+            // caller; if still alive, hand off so a stale dialog cannot be overlapped.
+            ReleaseSingleFlight(uiThread);
         }
     }
 
@@ -110,6 +121,12 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
         if (System.Windows.Forms.Application.MessageLoop)
         {
             using var form = CreateConfirmationForm(request);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                denyReason = "Operator confirmation cancelled.";
+                return false;
+            }
+
             using var timeoutTimer = new System.Windows.Forms.Timer
             {
                 Interval = (int)Math.Min(int.MaxValue, _timeout.TotalMilliseconds)
@@ -139,6 +156,12 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
                 }
             });
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                denyReason = "Operator confirmation cancelled.";
+                return false;
+            }
+
             var shown = form.ShowDialog();
             timeoutTimer.Stop();
 
@@ -164,7 +187,7 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
         {
             System.Windows.Forms.Form? form = null;
             var timedOut = false;
-            var cancelled = false;
+            var cancelledFlag = 0;
             var ready = new ManualResetEventSlim(false);
 
             var thread = new Thread(() =>
@@ -172,8 +195,30 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
                 try
                 {
                     System.Windows.Forms.Application.EnableVisualStyles();
-                    form = CreateConfirmationForm(request);
+
+                    // Optional test delay — non-cooperative so cancel can win before ready.Set.
+                    if (FormCreationDelay > TimeSpan.Zero)
+                        Thread.Sleep(FormCreationDelay);
+
+                    var created = CreateConfirmationForm(request);
+
+                    // Cancel may have won before form was assigned — never ShowDialog.
+                    if (Volatile.Read(ref cancelledFlag) != 0 || cancellationToken.IsCancellationRequested)
+                    {
+                        DisposeFormQuietly(created);
+                        ready.Set();
+                        return;
+                    }
+
+                    form = created;
                     ready.Set();
+
+                    // Cancel between ready.Set and ShowDialog — close without prompting.
+                    if (Volatile.Read(ref cancelledFlag) != 0 || cancellationToken.IsCancellationRequested)
+                    {
+                        TryCloseForm(form);
+                        return;
+                    }
 
                     using var timeoutTimer = new System.Windows.Forms.Timer
                     {
@@ -191,9 +236,10 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
                     };
                     timeoutTimer.Start();
 
+                    Interlocked.Increment(ref _showDialogEntries);
                     var shown = form.ShowDialog();
                     timeoutTimer.Stop();
-                    if (!timedOut && !cancelled)
+                    if (!timedOut && Volatile.Read(ref cancelledFlag) == 0)
                     {
                         dialogResult = shown == System.Windows.Forms.DialogResult.Yes
                             ? DialogResultBox.Yes
@@ -212,10 +258,11 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
             };
             thread.SetApartmentState(ApartmentState.STA);
             uiThread = thread;
+            _lastUiThread = thread;
             thread.Start();
 
             // Wait until form exists or thread failed. OCE must be caught — cancel/timeout
-            // still closes the form and joins before releasing single-flight.
+            // still marks cancelled and joins before releasing single-flight.
             bool readySignaled;
             try
             {
@@ -223,9 +270,9 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
             }
             catch (OperationCanceledException)
             {
-                cancelled = true;
+                Interlocked.Exchange(ref cancelledFlag, 1);
                 TryCloseForm(form);
-                // Caller finally joins uiThread before releasing _inFlight.
+                // Caller finally joins / hands off uiThread before releasing _inFlight.
                 denyReason = "Operator confirmation cancelled.";
                 return false;
             }
@@ -233,6 +280,7 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
             if (!readySignaled)
             {
                 timedOut = true;
+                Interlocked.Exchange(ref cancelledFlag, 1);
                 TryCloseForm(form);
                 denyReason = "Operator confirmation timed out.";
                 return false;
@@ -245,25 +293,34 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
                 return false;
             }
 
+            if (Volatile.Read(ref cancelledFlag) != 0 || cancellationToken.IsCancellationRequested)
+            {
+                Interlocked.Exchange(ref cancelledFlag, 1);
+                TryCloseForm(form);
+                denyReason = "Operator confirmation cancelled.";
+                return false;
+            }
+
             using var cancelReg = cancellationToken.Register(() =>
             {
-                cancelled = true;
+                Interlocked.Exchange(ref cancelledFlag, 1);
                 TryCloseForm(form);
             });
 
             if (!thread.Join(_timeout))
             {
                 timedOut = true;
+                Interlocked.Exchange(ref cancelledFlag, 1);
                 TryCloseForm(form);
-                // Remaining join happens in caller finally via JoinUiThread.
+                // Remaining join / handoff happens in caller finally via ReleaseSingleFlight.
                 denyReason = "Operator confirmation timed out.";
                 return false;
             }
 
-            // Thread already terminated — clear so finally does not double-join unnecessarily.
+            // Thread already terminated — clear so finally does not join again.
             uiThread = null;
 
-            if (cancelled || cancellationToken.IsCancellationRequested)
+            if (Volatile.Read(ref cancelledFlag) != 0 || cancellationToken.IsCancellationRequested)
             {
                 denyReason = "Operator confirmation cancelled.";
                 return false;
@@ -285,17 +342,56 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
         return true;
     }
 
-    private static void JoinUiThread(Thread thread)
+    /// <summary>
+    /// Releases single-flight after a bounded join. If the UI thread is still alive,
+    /// ownership is handed to a background waiter so HTTP does not block forever while
+    /// a second confirmation cannot start until the stale thread ends.
+    /// </summary>
+    private void ReleaseSingleFlight(Thread? uiThread)
     {
-        if (!thread.IsAlive)
+        if (uiThread is null || !uiThread.IsAlive)
+        {
+            Interlocked.Exchange(ref _inFlight, 0);
             return;
+        }
 
-        if (thread.Join(CleanupJoinMilliseconds))
+        if (uiThread.Join(CleanupJoinMilliseconds) || uiThread.Join(CleanupJoinMilliseconds))
+        {
+            Interlocked.Exchange(ref _inFlight, 0);
             return;
+        }
 
-        // Best-effort second join window; single-flight stays held until IsAlive is false
-        // or this budget is exhausted.
-        thread.Join(CleanupJoinMilliseconds);
+        var orphan = uiThread;
+        new Thread(() =>
+        {
+            try
+            {
+                orphan.Join();
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _inFlight, 0);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "VisionOperatorConfirmationCleanup"
+        }.Start();
+    }
+
+    private static void DisposeFormQuietly(System.Windows.Forms.Form? form)
+    {
+        if (form is null)
+            return;
+        try
+        {
+            if (!form.IsDisposed)
+                form.Dispose();
+        }
+        catch
+        {
+            // best effort
+        }
     }
 
     private static void TryCloseForm(System.Windows.Forms.Form? form)

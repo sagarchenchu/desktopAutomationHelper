@@ -1020,7 +1020,9 @@ public class Phase8DebugVisionTests
         Assert.True(done.Wait(TimeSpan.FromSeconds(15)), "Confirmation did not return after cancel.");
         Assert.False(ok);
         Assert.Contains("cancelled", reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-        Assert.False(svc.IsInFlight);
+        Assert.True(
+            WaitUntil(() => !svc.IsInFlight, TimeSpan.FromSeconds(15)),
+            "Single-flight was not released after cancel cleanup.");
 
         // Single-flight must be released — a follow-up call must not hit single-flight deny.
         using var cts2 = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
@@ -1030,6 +1032,87 @@ public class Phase8DebugVisionTests
             cts2.Token);
         Assert.False(second);
         Assert.DoesNotContain("single-flight", reason2, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void InteractiveOperatorConfirmation_CancelBeforeFormReady_DoesNotShowDialog()
+    {
+        // Deterministic race: delay form creation past cancel so ready.Set has not fired.
+        // Production must not ShowDialog after cancel, must end the UI thread, and must
+        // keep single-flight correct (held until thread ends, then released).
+        var svc = new InteractiveOperatorPresenceService(TimeSpan.FromSeconds(30))
+        {
+            // Longer than CleanupJoinMilliseconds * 2 so ReleaseSingleFlight may hand off.
+            FormCreationDelay = TimeSpan.FromMilliseconds(
+                InteractiveOperatorPresenceService.CleanupJoinMilliseconds * 2 + 1_500)
+        };
+        using var cts = new CancellationTokenSource();
+        var started = new ManualResetEventSlim(false);
+        var done = new ManualResetEventSlim(false);
+        var ok = true;
+        string? reason = null;
+        var httpElapsed = TimeSpan.Zero;
+
+        var worker = new Thread(() =>
+        {
+            started.Set();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            ok = svc.TryConfirmVisionApproval(
+                new OperatorPresenceRequest("vc-cancel-before-ready", "click", "OK"),
+                out reason,
+                cts.Token);
+            sw.Stop();
+            httpElapsed = sw.Elapsed;
+            done.Set();
+        })
+        {
+            IsBackground = true,
+            Name = "InteractiveConfirmCancelBeforeReadyTest"
+        };
+        worker.Start();
+
+        Assert.True(started.Wait(TimeSpan.FromSeconds(2)));
+        var inFlightDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!svc.IsInFlight && DateTime.UtcNow < inFlightDeadline)
+            Thread.Sleep(20);
+        Assert.True(svc.IsInFlight, "Confirmation never acquired single-flight before cancel.");
+        cts.Cancel();
+
+        Assert.True(done.Wait(TimeSpan.FromSeconds(20)), "Confirmation did not return after cancel.");
+        Assert.False(ok);
+        Assert.Contains("cancelled", reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        // HTTP must not wait for the full FormCreationDelay / unbounded Join.
+        Assert.True(
+            httpElapsed < svc.FormCreationDelay,
+            $"HTTP blocked for full form-creation delay: {httpElapsed} >= {svc.FormCreationDelay}");
+        Assert.Equal(0, svc.ShowDialogEntryCount);
+
+        Assert.True(
+            WaitUntil(() => !svc.IsInFlight, TimeSpan.FromSeconds(20)),
+            "Single-flight was not released after delayed UI thread ended.");
+        var ui = svc.LastUiThread;
+        Assert.True(ui is null || !ui.IsAlive, "Stale UI thread still alive after cancel cleanup.");
+
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
+        var second = svc.TryConfirmVisionApproval(
+            new OperatorPresenceRequest("vc-cancel-before-ready-2", "click", "OK"),
+            out var reason2,
+            cts2.Token);
+        Assert.False(second);
+        Assert.DoesNotContain("single-flight", reason2, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool WaitUntil(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+                return true;
+            Thread.Sleep(25);
+        }
+
+        return condition();
     }
 
     [Fact]
