@@ -22,12 +22,15 @@ public sealed class CoordinateActionGuard
         ArgumentNullException.ThrowIfNull(request.Candidate);
         ArgumentNullException.ThrowIfNull(request.CurrentWindow);
 
+        if (request.Candidate.AutoPromoted)
+            return Deny("Auto-promoted vision candidates are denied.");
+
         if (DestructiveActionHeuristics.IsDestructive(
                 request.Action,
                 request.Candidate.Label,
                 request.IsDestructive))
         {
-            return Deny("Destructive coordinate actions and destructive candidate labels are denied.");
+            return Deny("Destructive or unknown coordinate actions and destructive candidate labels are denied.");
         }
 
         var ageMs = (request.NowUtc - request.Candidate.ProducedAtUtc).TotalMilliseconds;

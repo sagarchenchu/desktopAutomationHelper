@@ -1,11 +1,16 @@
 {
-    "scenarioId":  "06-vision-default-off",
-    "name":  "Vision disabled by default",
-    "headSha":  "ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf",
-    "pass":  true,
-    "visionStatusEnabled":  false,
-    "statusHttpOk":  true,
-    "candidateCount":  0,
-    "eligibility":  "DisabledByDefault",
-    "candidatesHttpOk":  true
+  "scenarioId": "06-vision-default-off",
+  "name": "Vision disabled by default",
+  "headSha": "PENDING_DNU24",
+  "pass": false,
+  "status": "PENDING",
+  "visionStatusEnabled": false,
+  "statusHttpOk": null,
+  "candidateCount": 0,
+  "eligibility": "DisabledByDefault",
+  "candidatesHttpOk": null,
+  "authorizeHttpOk": null,
+  "authorizeAllowed": false,
+  "authorizeHttpDenied": true,
+  "note": "DNU-24 must assert POST /vision/authorize returns Allowed=false when Vision:Enabled=false (master switch). Do not treat prior PASS as current."
 }

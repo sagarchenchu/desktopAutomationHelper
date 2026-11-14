@@ -6,9 +6,8 @@
   Cloud + Windows workers must treat a scenario as FAIL unless these flags are true:
     startHttpOk, inspectHttpOk, verifyHttpOk (when verify is exercised), stopHttpOk
 
-  Historical S1–S9 on tip 28b8712 claimed PASS while inspectHttpOk/stopHttpOk were false
-  (IntPtr STJ 500). That claim is retracted. Re-run on the post-review tip (DNU-23) and only
-  mark overallPass=true when HTTP flags are OK.
+  Historical PASS claims with inspectHttpOk=false or inconsistent SHAs are retracted.
+  Re-run is DNU-24: one committed tip SHA; every result file must record that unchanged SHA.
 
 .PARAMETER BaseUrl
   Driver base URL (e.g. http://127.0.0.1:91xx).
@@ -21,6 +20,9 @@
 
 .PARAMETER SkipVerify
   When set, verifyHttpOk is reported as $null (not required for scenarios that only inspect).
+
+.PARAMETER AssertVisionAuthorizeDenied
+  Scenario 6: also POST /vision/authorize and require Allowed=false while Vision:Enabled=false.
 #>
 [CmdletBinding()]
 param(
@@ -29,7 +31,8 @@ param(
     [Parameter(Mandatory = $true)][int]$X,
     [Parameter(Mandatory = $true)][int]$Y,
     [string]$OutputDirectory,
-    [switch]$SkipVerify
+    [switch]$SkipVerify,
+    [switch]$AssertVisionAuthorizeDenied
 )
 
 Set-StrictMode -Version Latest
@@ -83,8 +86,30 @@ $result = [ordered]@{
     httpAllOk     = $false
 }
 
+if ($AssertVisionAuthorizeDenied) {
+    $auth = Invoke-Driver -Method 'POST' -Path '/vision/authorize' -Body @{
+        candidateId   = 'vc-acceptance-probe-unissued'
+        action        = 'click'
+        isDestructive = $false
+    }
+    $allowed = $false
+    if ($auth.Ok -and $auth.Content) {
+        try {
+            $parsed = $auth.Content | ConvertFrom-Json
+            $allowed = [bool]$parsed.allowed
+        }
+        catch { $allowed = $true }
+    }
+    $result.authorizeHttpOk = [bool]$auth.Ok
+    $result.authorizeAllowed = $allowed
+    $result.authorizeHttpDenied = (-not $allowed)
+    $result.authorizeStatus = $auth.StatusCode
+    $result.authorizeError = $auth.Error
+}
+
 $required = @($result.startHttpOk, $result.inspectHttpOk, $result.stopHttpOk)
 if (-not $SkipVerify) { $required += $result.verifyHttpOk }
+if ($AssertVisionAuthorizeDenied) { $required += $result.authorizeHttpDenied }
 $result.httpAllOk = -not ($required -contains $false)
 
 # Fail closed: do not allow PASS when HTTP flags are false.

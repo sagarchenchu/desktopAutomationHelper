@@ -336,7 +336,7 @@ public class Phase8DebugVisionTests
         });
         Assert.False(destructiveFlag.Allowed);
 
-        foreach (var label in new[] { "Delete", "Pay now", "Purchase", "Submit order", "Confirm" })
+        foreach (var label in new[] { "Delete", "Pay now", "Purchase", "Submit order", "Confirm", "Send", "Approve", "Publish", "Install" })
         {
             var denied = guard.Evaluate(new CoordinateActionRequest
             {
@@ -348,6 +348,15 @@ public class Phase8DebugVisionTests
             Assert.False(denied.Allowed);
             Assert.Contains("Destructive", denied.Reason, StringComparison.OrdinalIgnoreCase);
         }
+
+        var unknownAction = guard.Evaluate(new CoordinateActionRequest
+        {
+            Candidate = fresh,
+            CurrentWindow = window,
+            NowUtc = DateTimeOffset.UtcNow,
+            Action = "warp"
+        });
+        Assert.False(unknownAction.Allowed);
 
         var ok = guard.Evaluate(new CoordinateActionRequest
         {
@@ -567,6 +576,104 @@ public class Phase8DebugVisionTests
         Assert.True(DestructiveActionHeuristics.IsDestructiveLabel("Pay"));
         Assert.True(DestructiveActionHeuristics.IsDestructive("click", "Purchase", false));
         Assert.False(DestructiveActionHeuristics.IsDestructiveLabel("Save"));
+
+        // P2 fail-closed: Send/Approve/Publish/Install labels + unknown actions denied.
+        Assert.True(DestructiveActionHeuristics.IsDestructiveLabel("Send"));
+        Assert.True(DestructiveActionHeuristics.IsDestructiveLabel("Approve request"));
+        Assert.True(DestructiveActionHeuristics.IsDestructiveLabel("Publish"));
+        Assert.True(DestructiveActionHeuristics.IsDestructiveLabel("Install now"));
+        Assert.True(DestructiveActionHeuristics.IsUnknownOrDisallowedAction("explode"));
+        Assert.True(DestructiveActionHeuristics.IsUnknownOrDisallowedAction("delete"));
+        Assert.True(DestructiveActionHeuristics.IsUnknownOrDisallowedAction(null));
+        Assert.False(DestructiveActionHeuristics.IsUnknownOrDisallowedAction("click"));
+        Assert.False(DestructiveActionHeuristics.IsUnknownOrDisallowedAction("hover"));
+        Assert.True(DestructiveActionHeuristics.IsDestructive("send", "OK", false));
+    }
+
+    [Fact]
+    public void Authorize_DeniesWhenVisionDisabled_EvenWithFreshCandidate()
+    {
+        var window = new DebugWindowIdentity
+        {
+            WindowHandle = new IntPtr(42),
+            ProcessId = 100,
+            Bounds = new Rectangle(0, 0, 800, 600),
+            DpiScaleX = 1,
+            DpiScaleY = 1
+        };
+        var store = new VisionCandidateStore();
+        var probe = new ScriptedLiveWindowProbe(window);
+        var coordinator = VisionFallbackCoordinator.ForTests(
+            new VisionFallbackOptions { Enabled = false, Provider = "fake", MinimumConfidence = 0.5 },
+            store,
+            probe);
+
+        var issued = store.Issue(new VisionCandidateTarget
+        {
+            Label = "OK",
+            Bounds = new Rectangle(40, 40, 80, 24),
+            Confidence = 0.9,
+            Window = window,
+            ProducedAtUtc = DateTimeOffset.UtcNow
+        }, DateTimeOffset.UtcNow);
+        store.TryApprove(issued.Id, out _);
+
+        var decision = coordinator.AuthorizeCoordinateAction(issued.Id, "click");
+        Assert.False(decision.Allowed);
+        Assert.Contains("Vision:Enabled=false", decision.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Authorize_RequiresOpaqueIdApprovalAndFreshProbe_RejectsUnapprovedAndForged()
+    {
+        var window = new DebugWindowIdentity
+        {
+            WindowHandle = new IntPtr(99),
+            ProcessId = 200,
+            Bounds = new Rectangle(0, 0, 400, 300),
+            DpiScaleX = 1,
+            DpiScaleY = 1
+        };
+        var store = new VisionCandidateStore();
+        var probe = new ScriptedLiveWindowProbe(window);
+        var options = new VisionFallbackOptions
+        {
+            Enabled = true,
+            AllowWhenUiaInaccessible = true,
+            Provider = "fake",
+            MinimumConfidence = 0.5,
+            MaxScreenshotAgeMilliseconds = 5000
+        };
+        var coordinator = VisionFallbackCoordinator.ForTests(options, store, probe);
+
+        var inaccessible = new DebugUiaNode
+        {
+            ControlType = "Custom",
+            IsSemanticAccessible = false,
+            InaccessibilityReason = "custom-drawn"
+        };
+        var (_, _, candidates) = coordinator.TryProduceCandidates(
+            inaccessible,
+            window,
+            Encoding.UTF8.GetBytes("png"),
+            query: "OK");
+        Assert.NotEmpty(candidates);
+        Assert.False(string.IsNullOrWhiteSpace(candidates[0].Id));
+
+        var unapproved = coordinator.AuthorizeCoordinateAction(candidates[0].Id!, "click");
+        Assert.False(unapproved.Allowed);
+        Assert.Contains("not approved", unapproved.Reason, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(coordinator.TryApproveCandidate(candidates[0].Id!, out _));
+        var ok = coordinator.AuthorizeCoordinateAction(candidates[0].Id!, "click");
+        Assert.True(ok.Allowed);
+        Assert.NotNull(ok.ScreenPoint);
+
+        var forged = coordinator.AuthorizeCoordinateAction("vc-forged-not-issued", "click");
+        Assert.False(forged.Allowed);
+
+        var unknownAction = coordinator.AuthorizeCoordinateAction(candidates[0].Id!, "explode");
+        Assert.False(unknownAction.Allowed);
     }
 
     [Fact]

@@ -48,12 +48,15 @@ public sealed class VisionScreenshot
 
 public sealed record VisionCandidateTarget
 {
+    /// <summary>Opaque server-issued id. Absent on client-forged payloads (authorization rejects those).</summary>
+    public string? Id { get; init; }
     public required string Label { get; init; }
     public required Rectangle Bounds { get; init; }
     public required double Confidence { get; init; }
     public string Kind { get; init; } = "ocr";
     public bool AutoPromoted { get; init; }
     public required DebugWindowIdentity Window { get; init; }
+    /// <summary>Server clock at issue time. Authorization ignores client-supplied timestamps.</summary>
     public DateTimeOffset ProducedAtUtc { get; init; } = DateTimeOffset.UtcNow;
     public string? ScreenshotFingerprint { get; init; }
 }
@@ -61,7 +64,9 @@ public sealed record VisionCandidateTarget
 public sealed class CoordinateActionRequest
 {
     public required VisionCandidateTarget Candidate { get; init; }
+    /// <summary>Must be a fresh server probe — never trust the HTTP caller for this value.</summary>
     public required DebugWindowIdentity CurrentWindow { get; init; }
+    /// <summary>Must be server clock (DateTimeOffset.UtcNow) — never trust the HTTP caller.</summary>
     public required DateTimeOffset NowUtc { get; init; }
     public bool IsDestructive { get; init; }
     public string Action { get; init; } = "click";

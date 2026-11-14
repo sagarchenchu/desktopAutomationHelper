@@ -2,29 +2,38 @@ namespace DesktopAutomationDriver.Services.Vision;
 
 /// <summary>
 /// Fail-closed destructive detection for coordinate/vision actions and candidate labels.
+/// Unknown action strings are denied (allow-list only).
 /// </summary>
 public static class DestructiveActionHeuristics
 {
-    private static readonly string[] DestructiveActions =
-    [
-        "delete", "close", "submit", "confirm", "destructive", "purchase", "pay", "buy",
-        "checkout", "transfer", "remove", "uninstall", "format", "wipe", "sendmoney"
-    ];
+    private static readonly HashSet<string> AllowedActions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "click",
+        "hover",
+        "doubleclick",
+        "double-click"
+    };
 
     private static readonly string[] DestructiveLabelTokens =
     [
         "delete", "remove", "uninstall", "wipe", "format",
         "pay", "payment", "purchase", "buy", "checkout", "order now",
-        "submit", "confirm", "close", "transfer", "send money", "authorize payment"
+        "submit", "confirm", "close", "transfer", "send money", "authorize payment",
+        "send", "approve", "publish", "install"
     ];
 
-    public static bool IsDestructiveAction(string? action)
+    /// <summary>
+    /// True when the action is not on the allow-list (includes blank, unknown, and destructive verbs).
+    /// </summary>
+    public static bool IsUnknownOrDisallowedAction(string? action)
     {
         if (string.IsNullOrWhiteSpace(action))
-            return false;
-        var normalized = action.Trim().ToLowerInvariant();
-        return DestructiveActions.Any(token => normalized.Equals(token, StringComparison.Ordinal));
+            return true;
+        return !AllowedActions.Contains(action.Trim());
     }
+
+    public static bool IsDestructiveAction(string? action) =>
+        IsUnknownOrDisallowedAction(action);
 
     public static bool IsDestructiveLabel(string? label)
     {
@@ -46,7 +55,7 @@ public static class DestructiveActionHeuristics
 
     public static bool IsDestructive(string? action, string? label, bool callerMarkedDestructive) =>
         callerMarkedDestructive
-        || IsDestructiveAction(action)
+        || IsUnknownOrDisallowedAction(action)
         || IsDestructiveLabel(label);
 
     private static string CollapseWhitespace(string value) =>

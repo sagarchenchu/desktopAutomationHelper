@@ -61,10 +61,11 @@ Bound via `IOptions<VisionFallbackOptions>` and exposed at:
 |---|---|
 | `GET /vision/status` | Enabled flag + options |
 | `POST /vision/evaluate` | Eligibility for a semantic target |
-| `POST /vision/candidates` | `TryProduceCandidates` (no-op when disabled) |
-| `POST /vision/authorize` | `AuthorizeCoordinateAction` |
-| `POST /vision/hover` | Gated hover authorization |
-| `POST /vision/doubleclick` | DoubleClickPolicy + gated authorize |
+| `POST /vision/candidates` | Issue opaque server candidates (no-op when disabled) |
+| `POST /vision/approve` | Human approval of a server-issued candidate id |
+| `POST /vision/authorize` | Authorize by candidate id (gated on `Vision:Enabled`) |
+| `POST /vision/hover` | Gated hover authorize-by-id |
+| `POST /vision/doubleclick` | DoubleClickPolicy + gated authorize-by-id |
 
 When Debug Mode inspects an inaccessible target and Vision is enabled,
 `DebugSessionCoordinator` also produces vision candidates on the session snapshot
@@ -75,13 +76,13 @@ Allowed only when:
 1. Vision is enabled, and
 2. Semantic UIA reports inaccessible **or** policy explicitly permits
 
-Rules:
+Authorization rules (fail-closed):
 
-- Window-scoped screenshots (not unrestricted desktop)
-- OCR/vision output is a **candidate** with confidence + bounds
-- Revalidate window identity (**HWND + PID required**), DPI/scale, **full candidate bounds + click point inside window**, and freshness before coordinates
-- Never reuse saved coordinates after window/layout change
-- Destructive **actions and candidate labels** (Delete/Pay/Purchase/Submit/…) denied even for `Action=click`
+- Opaque **server-issued** candidate id; client cannot forge candidates/windows/timestamps
+- Human **approval** required; auto-promoted rejected
+- **Server clock** for freshness; fresh Win32/UIA probe for HWND/PID/bounds/DPI
+- Full candidate bounds + click point inside live window
+- Destructive / unknown actions denied (allow-list: click/hover/doubleclick); labels Send/Approve/Publish/Install/Delete/Pay/… denied
 - Sensitive screenshots are not persisted by default; text may be redacted
 
 Fake provider (`Provider=fake`) is required in CI.
@@ -119,9 +120,10 @@ Do **not** set `Name = CustomDrawnCanvas` — that made the control accessible.
 
 ## Windows acceptance
 
-Prior 9/9 PASS on tip `28b8712` is **retracted** (HTTP inspect/stop failed).
-Re-run S1–S9 is **DNU-23**. Helper: `docs/acceptance/phase8-assert-http-ok.ps1`.
-Do not claim PASS until `startHttpOk` / `inspectHttpOk` / `verifyHttpOk` / `stopHttpOk` are true.
+Prior PASS claims (`28b8712`, inconsistent DNU-23 SHAs) are **retracted**.
+Re-run S1–S9 is **DNU-24** on one clean tip SHA. Helper: `docs/acceptance/phase8-assert-http-ok.ps1`
+(including `-AssertVisionAuthorizeDenied` for Scenario 6). Do not claim PASS until HTTP OK flags
+and authorize-deny-when-off are true on that tip.
 
 ## Limitations
 

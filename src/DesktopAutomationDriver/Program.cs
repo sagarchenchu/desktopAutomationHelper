@@ -67,6 +67,8 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<VisionFallbackPolicy>();
 builder.Services.AddSingleton<VisionScreenshotService>();
 builder.Services.AddSingleton<IVisionProvider, FakeVisionProvider>();
+builder.Services.AddSingleton<VisionCandidateStore>();
+builder.Services.AddSingleton<ILiveWindowProbe, Win32LiveWindowProbe>();
 builder.Services.AddSingleton<CoordinateActionGuard>();
 builder.Services.AddSingleton<VisionFallbackCoordinator>();
 builder.Services.AddSingleton<IUiaElementProbe, FlaUIUiaElementProbe>();

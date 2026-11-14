@@ -6,7 +6,7 @@ namespace DesktopAutomationDriver.Controllers;
 
 /// <summary>
 /// Config-gated production surface for vision fallback (default off via Vision:Enabled=false).
-/// Exposes candidate production, coordinate authorization, hover, and double-click policy checks.
+/// Candidates are server-issued (opaque id); authorization uses server clock + fresh window probe.
 /// </summary>
 [ApiController]
 [Route("vision")]
@@ -73,6 +73,7 @@ public sealed class VisionController : ControllerBase
 
     /// <summary>
     /// Production path for vision candidates. Returns empty when Vision:Enabled=false.
+    /// Issued candidates carry opaque ids and require human approval before authorize.
     /// </summary>
     [HttpPost("candidates")]
     public IActionResult ProduceCandidates([FromBody] ProduceCandidatesRequest request)
@@ -114,42 +115,72 @@ public sealed class VisionController : ControllerBase
         });
     }
 
+    public sealed class ApproveRequest
+    {
+        public required string CandidateId { get; set; }
+    }
+
+    /// <summary>Mark a server-issued candidate as human-approved (still gated by Vision:Enabled on authorize).</summary>
+    [HttpPost("approve")]
+    public IActionResult Approve([FromBody] ApproveRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.CandidateId)
+            || !_coordinator.TryApproveCandidate(request.CandidateId, out var issued)
+            || issued is null)
+        {
+            return NotFound(new { error = "Unknown vision candidate id.", candidateId = request.CandidateId });
+        }
+
+        return Ok(new
+        {
+            candidateId = issued.Id,
+            approved = issued.Approved,
+            requiresHumanApproval = issued.RequiresHumanApproval,
+            autoPromoted = issued.AutoPromoted
+        });
+    }
+
     public sealed class AuthorizeRequest
     {
-        public required VisionCandidateTarget Candidate { get; set; }
-        public required DebugWindowIdentity CurrentWindow { get; set; }
+        /// <summary>Opaque server-issued candidate id. Client-supplied candidate/window/timestamps are ignored.</summary>
+        public required string CandidateId { get; set; }
         public string Action { get; set; } = "click";
         public bool IsDestructive { get; set; }
-        public DateTimeOffset? NowUtc { get; set; }
     }
 
     [HttpPost("authorize")]
     public IActionResult Authorize([FromBody] AuthorizeRequest request)
     {
-        var decision = _coordinator.AuthorizeCoordinateAction(new CoordinateActionRequest
+        var decision = _coordinator.AuthorizeCoordinateAction(
+            request.CandidateId,
+            request.Action,
+            request.IsDestructive);
+        return Ok(new
         {
-            Candidate = request.Candidate,
-            CurrentWindow = request.CurrentWindow,
-            Action = request.Action,
-            IsDestructive = request.IsDestructive,
-            NowUtc = request.NowUtc ?? DateTimeOffset.UtcNow
+            decision.Allowed,
+            decision.Reason,
+            decision.ScreenPoint,
+            visionEnabled = _options.Enabled,
+            candidateId = request.CandidateId
         });
-        return Ok(decision);
     }
 
-    /// <summary>Gated hover authorization (same fail-closed guard; requires Vision:Enabled).</summary>
+    /// <summary>Gated hover authorization (same fail-closed authorize-by-id path).</summary>
     [HttpPost("hover")]
     public IActionResult AuthorizeHover([FromBody] AuthorizeRequest request)
     {
-        var decision = _coordinator.AuthorizeGatedPointerAction(new CoordinateActionRequest
+        var decision = _coordinator.AuthorizeGatedPointerAction(
+            request.CandidateId,
+            "hover",
+            request.IsDestructive);
+        return Ok(new
         {
-            Candidate = request.Candidate,
-            CurrentWindow = request.CurrentWindow,
-            Action = "hover",
-            IsDestructive = request.IsDestructive,
-            NowUtc = request.NowUtc ?? DateTimeOffset.UtcNow
+            decision.Allowed,
+            decision.Reason,
+            decision.ScreenPoint,
+            visionEnabled = _options.Enabled,
+            candidateId = request.CandidateId
         });
-        return Ok(decision);
     }
 
     public sealed class DoubleClickRequest
@@ -157,12 +188,11 @@ public sealed class VisionController : ControllerBase
         public string? ControlType { get; set; }
         public bool PolicyAllowsDoubleClick { get; set; }
         public bool KnownBehavior { get; set; }
-        public VisionCandidateTarget? Candidate { get; set; }
-        public DebugWindowIdentity? CurrentWindow { get; set; }
+        public string? CandidateId { get; set; }
     }
 
     /// <summary>
-    /// Double-click requires DoubleClickPolicy and (when a vision candidate is supplied) Vision:Enabled + guard.
+    /// Double-click requires DoubleClickPolicy and (when a candidate id is supplied) Vision:Enabled + authorize-by-id.
     /// </summary>
     [HttpPost("doubleclick")]
     public IActionResult AuthorizeDoubleClick([FromBody] DoubleClickRequest request)
@@ -182,34 +212,26 @@ public sealed class VisionController : ControllerBase
             });
         }
 
-        if (request.Candidate is null || request.CurrentWindow is null)
+        if (string.IsNullOrWhiteSpace(request.CandidateId))
         {
             return Ok(new
             {
-                allowed = policyAllowed && _options.Enabled,
-                reason = _options.Enabled
-                    ? "Double-click policy allowed (no vision candidate to authorize)."
-                    : "Vision fallback disabled (Vision:Enabled=false).",
+                allowed = false,
+                reason = "Double-click with vision requires a server-issued candidateId.",
                 visionEnabled = _options.Enabled,
                 policyAllowed
             });
         }
 
-        var decision = _coordinator.AuthorizeGatedPointerAction(new CoordinateActionRequest
-        {
-            Candidate = request.Candidate,
-            CurrentWindow = request.CurrentWindow,
-            Action = "doubleclick",
-            NowUtc = DateTimeOffset.UtcNow
-        });
-
+        var decision = _coordinator.AuthorizeGatedPointerAction(request.CandidateId, "doubleclick");
         return Ok(new
         {
             allowed = decision.Allowed,
             reason = decision.Reason,
             screenPoint = decision.ScreenPoint,
             visionEnabled = _options.Enabled,
-            policyAllowed
+            policyAllowed,
+            candidateId = request.CandidateId
         });
     }
 }

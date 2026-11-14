@@ -2,39 +2,34 @@
 
 ## Required final report
 
-Phase 8 status: **WINDOWS ACCEPTANCE PASS** — DNU-23 S1–S9 re-run complete. Prior 9/9 PASS on `28b8712` remains retracted (HTTP inspect/stop not OK). PR #148 remains **draft**. Do **not** merge.
+Phase 8 status: **CHANGES REQUESTED → round-2 fixes pushed** — P1/P2 from user review of draft PR #148 @ `785304f` addressed on branch. Prior Windows 9/9 PASS claims **retracted** (SHA inconsistency + security gaps). Windows S1–S9 re-run is **DNU-24** (queued). PR remains **draft**. Do **not** merge.
 
 Branch/base/head/PR:
 - Feature branch: `feature/driver-phase-8-debug-vision`
 - Base: `origin/main`
-- Review baseline: `212e270`
-- Product review fixes: `8bf785f`
-- CI assertion fix (green): `ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf` / `ab05a0f`
-- Tip tested / evidence tip: `464ab9ece517edd2c26417be6d56239dcc8286ec` / `464ab9e`
+- Round-2 review baseline: `785304f`
+- Tip: see HEAD after round-2 commit
 - PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft** (do not merge)
-- CI: **green** on `ab05a0f` (Build and Test + Publish Standalone Packages)
 
-### Windows acceptance (DNU-23)
+### Round-2 review fixes
 
-- Overall: **PASS** (9/9)
-- Runtime base: `ab05a0f` + highlight STA overlay fix (committed with this evidence)
-- HTTP gates asserted: `startHttpOk` / `inspectHttpOk` / `verifyHttpOk` / `stopHttpOk` where used
-- Scenario 5: real CustomDrawnCanvas (empty Name/AutomationId) + `Vision:Enabled` gated `/debug/inspect` fallback (`AllowedUiaInaccessible`, vision candidates ≥ 1)
-
-| # | Result | HTTP notes |
+| # | Item | Status |
 |---|---|---|
-| 1 | PASS | start/inspect/verify/stop OK |
-| 2 | PASS | start/inspect/verify/stop OK |
-| 3 | PASS | start/inspect/verify/stop OK |
-| 4 | PASS | start/inspect/stop OK (verify N/A); clickuia under yellow highlight |
-| 5 | PASS | start/inspect/verify/stop OK + live inaccessible vision |
-| 6 | PASS | `/vision/status` + `/vision/candidates` default-off |
-| 7 | PASS | stale/DPI/layout/destructive + Delete label deny |
-| 8 | PASS | sensitive screenshot not persisted |
-| 9 | PASS | `/debug/hover` mouse probe |
+| P1-1 | Gate `AuthorizeCoordinateAction` / `POST /vision/authorize` on `Vision:Enabled`; S6 asserts authorize deny when off | Fixed |
+| P1-2 | Opaque server-issued candidate id; server clock; stored approval; fresh Win32/UIA HWND/PID/bounds/DPI probe; reject unapproved/auto-promoted; no trust of client window/timestamps | Fixed |
+| P1-3 | Retract inconsistent acceptance SHAs; leave Windows re-run to DNU-24; do not claim 9/9 PASS | Fixed |
+| P2 | Fail-closed destructive heuristics: Send/Approve/Publish/Install labels + unknown action strings denied | Fixed |
 
-Evidence: `docs/acceptance/phase8-*` (+ store mirror under Project `docs/acceptance/`).
+### Vision auth surfaces
+
+- Issue: `POST /vision/candidates` → opaque `vc-…` ids (`requiresHumanApproval=true`)
+- Approve: `POST /vision/approve` `{ candidateId }`
+- Authorize: `POST /vision/authorize` `{ candidateId, action }` — gated on `Vision:Enabled`, approval, fresh probe
+
+### Windows acceptance
+
+**PENDING (DNU-24).** Do not claim PASS. One clean tip SHA; every result file must record that SHA. S6 must include authorize deny when vision off (`-AssertVisionAuthorizeDenied`).
 
 ### Exit gate
 
-Windows re-acceptance **PASS**. PR stays **draft**; do not merge unless instructed.
+Code fixes in; Windows re-acceptance pending DNU-24. PR stays draft; do not merge unless instructed.
