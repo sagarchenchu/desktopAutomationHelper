@@ -238,7 +238,7 @@ public class Phase8DebugVisionTests
     }
 
     [Fact]
-    public void CoordinateGuard_RejectsStaleDpiAndLayoutChanges_AndDestructive()
+    public void CoordinateGuard_RejectsStaleDpiLayoutBoundsOutside_AndDestructiveLabels()
     {
         var options = new VisionFallbackOptions { MaxScreenshotAgeMilliseconds = 500, MinimumConfidence = 0.5 };
         var guard = new CoordinateActionGuard(options);
@@ -291,7 +291,42 @@ public class Phase8DebugVisionTests
         });
         Assert.False(layoutChanged.Allowed);
 
-        var destructive = guard.Evaluate(new CoordinateActionRequest
+        // Intersecting but not fully contained — center would be outside a tight window.
+        var smallWindow = window with { Bounds = new Rectangle(0, 0, 100, 100) };
+        var overflowing = fresh with
+        {
+            Bounds = new Rectangle(90, 90, 100, 100),
+            Window = smallWindow
+        };
+        var outside = guard.Evaluate(new CoordinateActionRequest
+        {
+            Candidate = overflowing,
+            CurrentWindow = smallWindow,
+            NowUtc = DateTimeOffset.UtcNow,
+            Action = "click"
+        });
+        Assert.False(outside.Allowed);
+        Assert.Contains("inside", outside.Reason, StringComparison.OrdinalIgnoreCase);
+
+        var missingHwnd = guard.Evaluate(new CoordinateActionRequest
+        {
+            Candidate = fresh with { Window = window with { WindowHandle = IntPtr.Zero } },
+            CurrentWindow = window with { WindowHandle = IntPtr.Zero },
+            NowUtc = DateTimeOffset.UtcNow,
+            Action = "click"
+        });
+        Assert.False(missingHwnd.Allowed);
+
+        var missingPid = guard.Evaluate(new CoordinateActionRequest
+        {
+            Candidate = fresh with { Window = window with { ProcessId = null } },
+            CurrentWindow = window with { ProcessId = null },
+            NowUtc = DateTimeOffset.UtcNow,
+            Action = "click"
+        });
+        Assert.False(missingPid.Allowed);
+
+        var destructiveFlag = guard.Evaluate(new CoordinateActionRequest
         {
             Candidate = fresh,
             CurrentWindow = window,
@@ -299,7 +334,20 @@ public class Phase8DebugVisionTests
             Action = "click",
             IsDestructive = true
         });
-        Assert.False(destructive.Allowed);
+        Assert.False(destructiveFlag.Allowed);
+
+        foreach (var label in new[] { "Delete", "Pay now", "Purchase", "Submit order", "Confirm" })
+        {
+            var denied = guard.Evaluate(new CoordinateActionRequest
+            {
+                Candidate = fresh with { Label = label },
+                CurrentWindow = window,
+                NowUtc = DateTimeOffset.UtcNow,
+                Action = "click"
+            });
+            Assert.False(denied.Allowed);
+            Assert.Contains("Destructive", denied.Reason, StringComparison.OrdinalIgnoreCase);
+        }
 
         var ok = guard.Evaluate(new CoordinateActionRequest
         {
@@ -310,6 +358,7 @@ public class Phase8DebugVisionTests
         });
         Assert.True(ok.Allowed);
         Assert.NotNull(ok.ScreenPoint);
+        Assert.True(window.Bounds.Contains(ok.ScreenPoint!.Value));
     }
 
     [Fact]
@@ -393,12 +442,116 @@ public class Phase8DebugVisionTests
         {
             ControlType = "Custom"
         }));
+        // WinForms UserPaint often reports Pane with empty AutomationId+Name.
+        Assert.True(UiaTreeCaptureService.IsSemanticallyInaccessible(new DebugUiaNode
+        {
+            ControlType = "Pane",
+            AutomationId = null,
+            Name = null,
+            IsSemanticAccessible = true
+        }));
+        // Named canvas would break the inaccessibility rule (regression guard).
+        Assert.False(UiaTreeCaptureService.IsSemanticallyInaccessible(new DebugUiaNode
+        {
+            ControlType = "Pane",
+            AutomationId = "CustomDrawnCanvas",
+            Name = "CustomDrawnCanvas",
+            IsSemanticAccessible = true
+        }));
         Assert.False(UiaTreeCaptureService.IsSemanticallyInaccessible(new DebugUiaNode
         {
             AutomationId = "Ok",
             ControlType = "Button",
             IsSemanticAccessible = true
         }));
+    }
+
+    [Fact]
+    public void CustomDrawnCanvas_HasEmptyWinFormsName_ForInaccessibilityRule()
+    {
+        // Compile-time fixture check: Name must stay empty so UIA AutomationId stays empty.
+        var source = File.ReadAllText(Path.Combine(
+            FindRepoRoot(),
+            "src", "DesktopAutomationTestApp", "CustomDrawnCanvas.cs"));
+        Assert.Contains("Name = string.Empty", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Name = UiIds.CustomDrawnCanvas", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DebugSession_ProbeUnavailable_DoesNotBecomeUniqueViaStaleCapture()
+    {
+        var probe = new ScriptedUiaElementProbe { MatchResult = LocatorMatchProbeResult.Unavailable("boom") };
+        using var coordinator = DebugSessionCoordinator.ForTests(probe);
+        coordinator.Start();
+        var inspected = coordinator.InspectUnderCursor(new Point(50, 60));
+        Assert.NotNull(inspected.LastVerification);
+        Assert.True(inspected.LastVerification!.ProbeUnavailable);
+        Assert.False(inspected.LastVerification.Unique);
+
+        var verified = coordinator.VerifyLastCandidate();
+        Assert.True(verified.LastVerification!.ProbeUnavailable);
+        Assert.False(verified.LastVerification.Unique);
+    }
+
+    [Fact]
+    public void DebugSession_LiveZeroMatch_IsNotFound_NotUnique()
+    {
+        var probe = new ScriptedUiaElementProbe { MatchResult = LocatorMatchProbeResult.Ok(0) };
+        using var coordinator = DebugSessionCoordinator.ForTests(probe);
+        coordinator.Start();
+        var inspected = coordinator.InspectUnderCursor(new Point(50, 60));
+        Assert.True(inspected.LastVerification!.NotFound);
+        Assert.False(inspected.LastVerification.Unique);
+        Assert.False(inspected.LastVerification.ProbeUnavailable);
+    }
+
+    [Fact]
+    public void DebugSession_VisionFallback_ProducesCandidatesWhenEnabledAndInaccessible()
+    {
+        var options = new VisionFallbackOptions
+        {
+            Enabled = true,
+            AllowWhenUiaInaccessible = true,
+            Provider = "fake",
+            MinimumConfidence = 0.5
+        };
+        var vision = VisionFallbackCoordinator.ForTests(options);
+        var probe = new InaccessibleUiaElementProbe();
+        using var coordinator = DebugSessionCoordinator.ForTests(
+            probe,
+            vision: vision,
+            screenshots: new VisionScreenshotService(options));
+
+        coordinator.Start();
+        var inspected = coordinator.InspectUnderCursor(new Point(120, 140));
+        Assert.Equal(nameof(VisionEligibility.AllowedUiaInaccessible), inspected.VisionEligibility);
+        Assert.NotEmpty(inspected.VisionCandidates);
+        Assert.All(inspected.VisionCandidates, c => Assert.False(c.AutoPromoted));
+    }
+
+    [Fact]
+    public void FlaUIProbe_ScaleFromWindowDpi_UsesRealDpiNotHardcodedOne()
+    {
+        var (x96, y96) = FlaUIUiaElementProbe.ScaleFromWindowDpi(96);
+        Assert.Equal(1.0, x96);
+        Assert.Equal(1.0, y96);
+
+        var (x144, y144) = FlaUIUiaElementProbe.ScaleFromWindowDpi(144);
+        Assert.Equal(1.5, x144);
+        Assert.Equal(1.5, y144);
+
+        var (x120, _) = FlaUIUiaElementProbe.ScaleFromWindowDpi(120);
+        Assert.Equal(1.25, x120);
+    }
+
+    [Fact]
+    public void VisionOptions_DefaultDisabled_AndDestructiveHeuristicsCoverLabels()
+    {
+        Assert.False(new VisionFallbackOptions().Enabled);
+        Assert.True(DestructiveActionHeuristics.IsDestructiveLabel("Delete item"));
+        Assert.True(DestructiveActionHeuristics.IsDestructiveLabel("Pay"));
+        Assert.True(DestructiveActionHeuristics.IsDestructive("click", "Purchase", false));
+        Assert.False(DestructiveActionHeuristics.IsDestructiveLabel("Save"));
     }
 
     [Fact]
@@ -451,6 +604,8 @@ public class Phase8DebugVisionTests
 
     private sealed class ScriptedUiaElementProbe : IUiaElementProbe
     {
+        public LocatorMatchProbeResult MatchResult { get; set; } = LocatorMatchProbeResult.Ok(1);
+
         public DebugTreeCapture? CaptureAtPoint(Point screenPoint, int maxAncestry = 8, int maxChildren = 25)
         {
             var target = new DebugUiaNode
@@ -474,6 +629,8 @@ public class Phase8DebugVisionTests
                 window: new DebugWindowIdentity
                 {
                     WindowTitle = "App",
+                    WindowHandle = new IntPtr(42),
+                    ProcessId = 100,
                     Bounds = new Rectangle(0, 0, 800, 600),
                     DpiScaleX = 1,
                     DpiScaleY = 1
@@ -481,11 +638,67 @@ public class Phase8DebugVisionTests
                 cursor: screenPoint);
         }
 
-        public int CountLocatorMatches(IReadOnlyDictionary<string, object?> locator, DebugWindowIdentity? scope) =>
-            1;
+        public LocatorMatchProbeResult CountLocatorMatches(
+            IReadOnlyDictionary<string, object?> locator,
+            DebugWindowIdentity? scope) =>
+            MatchResult;
 
         public HoverProbeResult ProbeHover(Point screenPoint) =>
             new() { ScreenPoint = screenPoint, NoOp = true };
+    }
+
+    private sealed class InaccessibleUiaElementProbe : IUiaElementProbe
+    {
+        public DebugTreeCapture? CaptureAtPoint(Point screenPoint, int maxAncestry = 8, int maxChildren = 25)
+        {
+            var target = new DebugUiaNode
+            {
+                ControlType = "Pane",
+                AutomationId = null,
+                Name = null,
+                Bounds = new Rectangle(screenPoint.X - 20, screenPoint.Y - 10, 280, 80),
+                Path = "target",
+                IsSemanticAccessible = false,
+                InaccessibilityReason = "custom-drawn-or-empty-identity"
+            };
+            return UiaTreeCaptureService.FromNodes(
+                target,
+                window: new DebugWindowIdentity
+                {
+                    WindowTitle = "App",
+                    WindowHandle = new IntPtr(99),
+                    ProcessId = 200,
+                    Bounds = new Rectangle(0, 0, 800, 600),
+                    DpiScaleX = 1,
+                    DpiScaleY = 1
+                },
+                cursor: screenPoint);
+        }
+
+        public LocatorMatchProbeResult CountLocatorMatches(
+            IReadOnlyDictionary<string, object?> locator,
+            DebugWindowIdentity? scope) =>
+            LocatorMatchProbeResult.Ok(0);
+
+        public HoverProbeResult ProbeHover(Point screenPoint) =>
+            new() { ScreenPoint = screenPoint, NoOp = true };
+    }
+
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "DesktopAutomationHelper.sln"))
+                || File.Exists(Path.Combine(dir.FullName, "src", "DesktopAutomationTestApp", "CustomDrawnCanvas.cs")))
+            {
+                return dir.FullName;
+            }
+
+            dir = dir.Parent;
+        }
+
+        throw new InvalidOperationException("Could not locate repo root from test base directory.");
     }
 }
 

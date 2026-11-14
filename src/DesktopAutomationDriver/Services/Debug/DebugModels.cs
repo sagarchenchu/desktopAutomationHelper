@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using DesktopAutomationDriver.Services.Vision;
 
 namespace DesktopAutomationDriver.Services.Debug;
 
@@ -72,6 +73,8 @@ public sealed class CandidateVerificationResult
     public bool Unique { get; init; }
     public bool Ambiguous { get; init; }
     public bool NotFound { get; init; }
+    /// <summary>True when the live locator probe could not run — never treat as unique.</summary>
+    public bool ProbeUnavailable { get; init; }
     public int MatchCount { get; init; }
     public string? Message { get; init; }
 }
@@ -87,6 +90,9 @@ public sealed class DebugSessionSnapshot
     public CandidateVerificationResult? LastVerification { get; init; }
     public string? ArtifactPath { get; init; }
     public string StatusText { get; init; } = string.Empty;
+    /// <summary>Vision candidates produced when UIA reports inaccessible and Vision:Enabled.</summary>
+    public IReadOnlyList<VisionCandidateTarget> VisionCandidates { get; init; } = [];
+    public string? VisionEligibility { get; init; }
 }
 
 /// <summary>Hover is a mouse probe — record structure/state/tooltip/no-op outcomes.</summary>

@@ -3,16 +3,17 @@ using DesktopAutomationDriver.Services.Debug;
 namespace DesktopAutomationDriver.Services.Vision;
 
 /// <summary>
-/// Revalidates window identity, DPI/scale, bounds, and screenshot freshness before any coordinate action.
-/// Never uses a saved coordinate after window/layout change. Destructive actions remain denied.
+/// Fail-closed authorization for coordinate/vision actions.
+/// Requires click point (and preferably full candidate bounds) inside the live window;
+/// requires HWND + PID identity; denies destructive actions and destructive candidate labels.
 /// </summary>
 public sealed class CoordinateActionGuard
 {
     private readonly VisionFallbackOptions _options;
 
-    public CoordinateActionGuard(VisionFallbackOptions? options = null)
+    public CoordinateActionGuard(VisionFallbackOptions options)
     {
-        _options = options ?? new VisionFallbackOptions();
+        _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
     public CoordinateActionDecision Evaluate(CoordinateActionRequest request)
@@ -21,95 +22,88 @@ public sealed class CoordinateActionGuard
         ArgumentNullException.ThrowIfNull(request.Candidate);
         ArgumentNullException.ThrowIfNull(request.CurrentWindow);
 
-        if (request.IsDestructive
-            || IsDestructiveAction(request.Action))
+        if (DestructiveActionHeuristics.IsDestructive(
+                request.Action,
+                request.Candidate.Label,
+                request.IsDestructive))
         {
-            return Deny("Destructive coordinate actions are denied.");
-        }
-
-        if (request.Candidate.AutoPromoted)
-            return Deny("Vision candidates must never be auto-promoted.");
-
-        if (request.Candidate.Confidence < _options.MinimumConfidence)
-        {
-            return Deny(
-                $"Vision confidence {request.Candidate.Confidence:0.###} is below minimum {_options.MinimumConfidence:0.###}.");
+            return Deny("Destructive coordinate actions and destructive candidate labels are denied.");
         }
 
         var ageMs = (request.NowUtc - request.Candidate.ProducedAtUtc).TotalMilliseconds;
         if (ageMs < 0 || ageMs > _options.MaxScreenshotAgeMilliseconds)
-        {
-            return Deny(
-                $"Stale vision screenshot/candidate rejected (age {ageMs:0}ms; max {_options.MaxScreenshotAgeMilliseconds}ms).");
-        }
+            return Deny($"Stale vision candidate (age {ageMs:0}ms > {_options.MaxScreenshotAgeMilliseconds}ms).");
+
+        if (request.Candidate.Confidence < _options.MinimumConfidence)
+            return Deny($"Confidence {request.Candidate.Confidence:0.###} below minimum {_options.MinimumConfidence:0.###}.");
 
         if (!WindowIdentityMatches(request.Candidate.Window, request.CurrentWindow))
-            return Deny("Window identity changed; saved coordinates are invalid.");
+            return Deny("Window identity mismatch (HWND and ProcessId required and must match).");
 
-        if (!DpiScaleMatches(request.Candidate.Window, request.CurrentWindow))
-            return Deny("DPI/scale changed; saved coordinates are invalid.");
+        if (!DpiMatches(request.Candidate.Window, request.CurrentWindow))
+            return Deny("DPI scale changed since candidate capture.");
 
-        if (!BoundsCompatible(request.Candidate.Window.Bounds, request.CurrentWindow.Bounds))
-            return Deny("Window bounds/layout changed; saved coordinates are invalid.");
+        if (!LayoutMatches(request.Candidate.Window, request.CurrentWindow))
+            return Deny("Window layout/bounds changed since candidate capture.");
 
-        if (!request.CurrentWindow.Bounds.Contains(Center(request.Candidate.Bounds))
-            && !request.CurrentWindow.Bounds.IntersectsWith(request.Candidate.Bounds))
-        {
-            return Deny("Candidate bounds fall outside the current window.");
-        }
+        var currentBounds = request.CurrentWindow.Bounds;
+        if (currentBounds.IsEmpty || currentBounds.Width <= 0 || currentBounds.Height <= 0)
+            return Deny("Current window bounds are unavailable.");
+
+        var candidateBounds = request.Candidate.Bounds;
+        if (candidateBounds.IsEmpty || candidateBounds.Width <= 0 || candidateBounds.Height <= 0)
+            return Deny("Candidate bounds are empty.");
+
+        // Prefer full containment of candidate bounds; always require the click point inside the window.
+        if (!currentBounds.Contains(candidateBounds))
+            return Deny("Candidate bounds are not fully inside the current window.");
+
+        var center = new Point(
+            candidateBounds.X + candidateBounds.Width / 2,
+            candidateBounds.Y + candidateBounds.Height / 2);
+        if (!currentBounds.Contains(center))
+            return Deny("Click point is outside the current window bounds.");
 
         return new CoordinateActionDecision
         {
             Allowed = true,
-            Reason = "Coordinate action revalidated.",
-            ScreenPoint = Center(request.Candidate.Bounds)
+            Reason = "Authorized.",
+            ScreenPoint = center
         };
     }
 
-    public static bool WindowIdentityMatches(DebugWindowIdentity a, DebugWindowIdentity b)
+    private static CoordinateActionDecision Deny(string reason) =>
+        new() { Allowed = false, Reason = reason, ScreenPoint = null };
+
+    /// <summary>
+    /// Fail closed: both HWND and ProcessId must be present (non-zero) on candidate and current, and match.
+    /// </summary>
+    internal static bool WindowIdentityMatches(DebugWindowIdentity a, DebugWindowIdentity b)
     {
-        if (a.WindowHandle != IntPtr.Zero && b.WindowHandle != IntPtr.Zero && a.WindowHandle != b.WindowHandle)
+        if (a.WindowHandle == IntPtr.Zero || b.WindowHandle == IntPtr.Zero)
             return false;
-        if (a.ProcessId is int pa && b.ProcessId is int pb && pa != pb)
+        if (a.WindowHandle != b.WindowHandle)
             return false;
-        if (!string.IsNullOrWhiteSpace(a.ProcessName)
-            && !string.IsNullOrWhiteSpace(b.ProcessName)
-            && !string.Equals(a.ProcessName, b.ProcessName, StringComparison.OrdinalIgnoreCase))
-        {
+
+        if (a.ProcessId is null or <= 0 || b.ProcessId is null or <= 0)
             return false;
-        }
+        if (a.ProcessId != b.ProcessId)
+            return false;
 
         return true;
     }
 
-    public static bool DpiScaleMatches(DebugWindowIdentity a, DebugWindowIdentity b, double tolerance = 0.01)
+    private static bool DpiMatches(DebugWindowIdentity a, DebugWindowIdentity b) =>
+        NearlyEqual(a.DpiScaleX, b.DpiScaleX) && NearlyEqual(a.DpiScaleY, b.DpiScaleY);
+
+    private static bool LayoutMatches(DebugWindowIdentity a, DebugWindowIdentity b)
     {
-        return Math.Abs(a.DpiScaleX - b.DpiScaleX) <= tolerance
-            && Math.Abs(a.DpiScaleY - b.DpiScaleY) <= tolerance;
+        const int tolerance = 2;
+        return Math.Abs(a.Bounds.X - b.Bounds.X) <= tolerance
+               && Math.Abs(a.Bounds.Y - b.Bounds.Y) <= tolerance
+               && Math.Abs(a.Bounds.Width - b.Bounds.Width) <= tolerance
+               && Math.Abs(a.Bounds.Height - b.Bounds.Height) <= tolerance;
     }
 
-    public static bool BoundsCompatible(Rectangle original, Rectangle current, int maxDelta = 2)
-    {
-        return Math.Abs(original.X - current.X) <= maxDelta
-            && Math.Abs(original.Y - current.Y) <= maxDelta
-            && Math.Abs(original.Width - current.Width) <= maxDelta
-            && Math.Abs(original.Height - current.Height) <= maxDelta;
-    }
-
-    public static bool IsDestructiveAction(string? action)
-    {
-        if (string.IsNullOrWhiteSpace(action))
-            return false;
-        return action.Equals("delete", StringComparison.OrdinalIgnoreCase)
-            || action.Equals("close", StringComparison.OrdinalIgnoreCase)
-            || action.Equals("submit", StringComparison.OrdinalIgnoreCase)
-            || action.Equals("confirm", StringComparison.OrdinalIgnoreCase)
-            || action.Equals("destructive", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static Point Center(Rectangle r) =>
-        new(r.X + Math.Max(0, r.Width / 2), r.Y + Math.Max(0, r.Height / 2));
-
-    private static CoordinateActionDecision Deny(string reason) =>
-        new() { Allowed = false, Reason = reason, ScreenPoint = null };
+    private static bool NearlyEqual(double x, double y) => Math.Abs(x - y) < 0.01;
 }

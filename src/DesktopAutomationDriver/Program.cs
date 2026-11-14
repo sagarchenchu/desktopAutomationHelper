@@ -55,7 +55,15 @@ builder.Services.AddSingleton<IUiOperationCatalog, UiOperationCatalog>();
 builder.Services.AddSingleton<IUiService, UiService>();
 
 // Phase 8 — Debug Mode + vision fallback (isolated services; overlay stays UI/menu only).
-builder.Services.AddSingleton<VisionFallbackOptions>(_ => new VisionFallbackOptions { Enabled = false });
+// Vision is config-gated (Vision:Enabled, default false). Production HTTP: /vision/*.
+builder.Services.Configure<VisionFallbackOptions>(builder.Configuration.GetSection("Vision"));
+builder.Services.AddSingleton(sp =>
+{
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<VisionFallbackOptions>>().Value
+                  ?? new VisionFallbackOptions();
+    // Fail closed: never enable vision unless the bound config explicitly sets Enabled=true.
+    return options;
+});
 builder.Services.AddSingleton<VisionFallbackPolicy>();
 builder.Services.AddSingleton<VisionScreenshotService>();
 builder.Services.AddSingleton<IVisionProvider, FakeVisionProvider>();

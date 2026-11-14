@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
 using FlaUI.Core.Definitions;
@@ -63,27 +64,32 @@ public sealed class FlaUIUiaElementProbe : IUiaElementProbe, IDisposable
         }
     }
 
-    public int CountLocatorMatches(IReadOnlyDictionary<string, object?> locator, DebugWindowIdentity? scope)
+    public LocatorMatchProbeResult CountLocatorMatches(
+        IReadOnlyDictionary<string, object?> locator,
+        DebugWindowIdentity? scope)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         try
         {
-            AutomationElement root;
-            if (scope is { WindowHandle: var hwnd } && hwnd != IntPtr.Zero)
-                root = _automation.FromHandle(hwnd);
-            else
-                root = _automation.GetDesktop();
+            // Fail closed: missing HWND means the live probe cannot safely scope — report unavailable,
+            // never invent a zero-match that Debug Mode could confuse with uniqueness from stale captures.
+            if (scope is null || scope.WindowHandle == IntPtr.Zero)
+                return LocatorMatchProbeResult.Unavailable("Window HWND required for live locator match probe.");
+
+            var root = _automation.FromHandle(scope.WindowHandle);
+            if (root is null)
+                return LocatorMatchProbeResult.Unavailable("Unable to resolve window HWND for locator match probe.");
 
             var condition = BuildCondition(locator);
             if (condition is null)
-                return 0;
+                return LocatorMatchProbeResult.Unavailable("Locator condition could not be built.");
 
             var matches = root.FindAllDescendants(condition);
-            return matches.Length;
+            return LocatorMatchProbeResult.Ok(matches.Length);
         }
-        catch
+        catch (Exception ex)
         {
-            return 0;
+            return LocatorMatchProbeResult.Unavailable(ex.Message);
         }
     }
 
@@ -240,9 +246,7 @@ public sealed class FlaUIUiaElementProbe : IUiaElementProbe, IDisposable
             // ignore
         }
 
-        var inaccessible = string.Equals(controlType, "Custom", StringComparison.OrdinalIgnoreCase)
-            && string.IsNullOrWhiteSpace(automationId)
-            && string.IsNullOrWhiteSpace(name);
+        var inaccessible = IsEmptyIdentityInaccessible(controlType, automationId, name);
 
         return new DebugUiaNode
         {
@@ -259,6 +263,17 @@ public sealed class FlaUIUiaElementProbe : IUiaElementProbe, IDisposable
             IsSemanticAccessible = !inaccessible,
             InaccessibilityReason = inaccessible ? "custom-drawn-or-empty-identity" : null
         };
+    }
+
+    /// <summary>
+    /// Empty AutomationId+Name on Custom/Pane surfaces (WinForms UserPaint often reports Pane).
+    /// </summary>
+    internal static bool IsEmptyIdentityInaccessible(string? controlType, string? automationId, string? name)
+    {
+        if (!string.IsNullOrWhiteSpace(automationId) || !string.IsNullOrWhiteSpace(name))
+            return false;
+        return string.Equals(controlType, "Custom", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(controlType, "Pane", StringComparison.OrdinalIgnoreCase);
     }
 
     private static DebugWindowIdentity? CaptureWindowIdentity(AutomationElement element)
@@ -288,6 +303,7 @@ public sealed class FlaUIUiaElementProbe : IUiaElementProbe, IDisposable
                 // ignore
             }
 
+            var (dpiX, dpiY) = ResolveDpiScale(hwnd);
             return new DebugWindowIdentity
             {
                 WindowHandle = hwnd,
@@ -299,8 +315,8 @@ public sealed class FlaUIUiaElementProbe : IUiaElementProbe, IDisposable
                     (int)Math.Round((double)bounds.Y),
                     (int)Math.Round((double)bounds.Width),
                     (int)Math.Round((double)bounds.Height)),
-                DpiScaleX = 1.0,
-                DpiScaleY = 1.0
+                DpiScaleX = dpiX,
+                DpiScaleY = dpiY
             };
         }
         catch
@@ -308,4 +324,31 @@ public sealed class FlaUIUiaElementProbe : IUiaElementProbe, IDisposable
             return null;
         }
     }
+
+    /// <summary>Convert Win32 window DPI to scale factors (96 DPI = 1.0).</summary>
+    internal static (double DpiScaleX, double DpiScaleY) ScaleFromWindowDpi(uint dpi)
+    {
+        if (dpi == 0)
+            return (1.0, 1.0);
+        var scale = dpi / 96.0;
+        return (scale, scale);
+    }
+
+    private static (double DpiScaleX, double DpiScaleY) ResolveDpiScale(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+            return (1.0, 1.0);
+        try
+        {
+            var dpi = GetDpiForWindow(hwnd);
+            return ScaleFromWindowDpi(dpi);
+        }
+        catch
+        {
+            return (1.0, 1.0);
+        }
+    }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr hwnd);
 }

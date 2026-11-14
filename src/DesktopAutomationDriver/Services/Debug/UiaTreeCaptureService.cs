@@ -59,11 +59,16 @@ public sealed class UiaTreeCaptureService
             return true;
         if (!string.IsNullOrWhiteSpace(node.InaccessibilityReason))
             return true;
-        // Custom-drawn surfaces often report as Custom with empty identity.
-        if (string.Equals(node.ControlType, "Custom", StringComparison.OrdinalIgnoreCase)
-            && string.IsNullOrWhiteSpace(node.AutomationId)
-            && string.IsNullOrWhiteSpace(node.Name))
+        // Custom-drawn surfaces often report as Custom or Pane with empty AutomationId+Name.
+        // Phase-8 rule requires both identity fields empty (WinForms UserPaint often surfaces as Pane).
+        if (string.IsNullOrWhiteSpace(node.AutomationId)
+            && string.IsNullOrWhiteSpace(node.Name)
+            && (string.Equals(node.ControlType, "Custom", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(node.ControlType, "Pane", StringComparison.OrdinalIgnoreCase)))
+        {
             return true;
+        }
+
         return false;
     }
 

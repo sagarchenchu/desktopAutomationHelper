@@ -5,6 +5,7 @@ namespace DesktopAutomationDriver.Services.Vision;
 /// <summary>
 /// Orchestrates gated vision fallback: policy → window screenshot → OCR candidate → coordinate guard.
 /// Never replaces working UIA locators and never auto-promotes.
+/// Production path is config-gated (Vision:Enabled, default false) via DI-bound options.
 /// </summary>
 public sealed class VisionFallbackCoordinator
 {
@@ -36,11 +37,34 @@ public sealed class VisionFallbackCoordinator
             new CoordinateActionGuard(options));
     }
 
+    public VisionFallbackOptions Options => _policy.Options;
+
     public VisionEligibility EvaluateEligibility(
         DebugUiaNode? semanticTarget,
         bool policyExplicitlyPermits = false) =>
         _policy.Evaluate(semanticTarget, policyExplicitlyPermits);
 
+    public VisionEligibility EvaluateEligibility(bool uiaReportsInaccessible, bool policyOverride = false)
+    {
+        if (!_policy.Options.Enabled)
+            return VisionEligibility.DisabledByDefault;
+
+        if (uiaReportsInaccessible && _policy.Options.AllowWhenUiaInaccessible)
+            return VisionEligibility.AllowedUiaInaccessible;
+
+        if (policyOverride && _policy.Options.AllowWhenPolicyPermits)
+            return VisionEligibility.AllowedByPolicy;
+
+        if (!uiaReportsInaccessible)
+            return VisionEligibility.DeniedUiaAccessible;
+
+        return VisionEligibility.Denied;
+    }
+
+    /// <summary>
+    /// Production/test entry: produce vision candidates only when policy allows.
+    /// Returns empty candidates when Vision:Enabled=false or UIA is accessible.
+    /// </summary>
     public (VisionEligibility Eligibility, VisionScreenshot? Screenshot, IReadOnlyList<VisionCandidateTarget> Candidates)
         TryProduceCandidates(
             DebugUiaNode? semanticTarget,
@@ -74,4 +98,22 @@ public sealed class VisionFallbackCoordinator
 
     public CoordinateActionDecision AuthorizeCoordinateAction(CoordinateActionRequest request) =>
         _guard.Evaluate(request);
+
+    /// <summary>
+    /// Hover / double-click share the same fail-closed guard and require Vision:Enabled.
+    /// </summary>
+    public CoordinateActionDecision AuthorizeGatedPointerAction(CoordinateActionRequest request)
+    {
+        if (!_policy.Options.Enabled)
+        {
+            return new CoordinateActionDecision
+            {
+                Allowed = false,
+                Reason = "Vision fallback disabled (Vision:Enabled=false).",
+                ScreenPoint = null
+            };
+        }
+
+        return _guard.Evaluate(request);
+    }
 }

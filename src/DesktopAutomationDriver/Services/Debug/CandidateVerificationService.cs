@@ -2,10 +2,44 @@ namespace DesktopAutomationDriver.Services.Debug;
 
 /// <summary>
 /// Verifies a candidate locator resolves uniquely against a provided match count.
-/// Does not promote candidates.
+/// Does not promote candidates. Never treats probe-unavailable as unique.
 /// </summary>
 public sealed class CandidateVerificationService
 {
+    public CandidateVerificationResult Verify(LocatorCandidate candidate, LocatorMatchProbeResult probe)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        ArgumentNullException.ThrowIfNull(probe);
+
+        if (candidate.AutoPromoted)
+        {
+            return new CandidateVerificationResult
+            {
+                Unique = false,
+                Ambiguous = false,
+                NotFound = true,
+                ProbeUnavailable = false,
+                MatchCount = 0,
+                Message = "Auto-promoted candidates are rejected; Debug Mode never promotes."
+            };
+        }
+
+        if (!probe.ProbeSucceeded)
+        {
+            return new CandidateVerificationResult
+            {
+                Unique = false,
+                Ambiguous = false,
+                NotFound = false,
+                ProbeUnavailable = true,
+                MatchCount = 0,
+                Message = probe.Error ?? "Live locator match probe unavailable; refusing uniqueness from stale capture."
+            };
+        }
+
+        return Verify(candidate, probe.MatchCount);
+    }
+
     public CandidateVerificationResult Verify(LocatorCandidate candidate, int matchCount)
     {
         ArgumentNullException.ThrowIfNull(candidate);

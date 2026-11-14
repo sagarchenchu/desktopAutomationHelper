@@ -2,92 +2,42 @@
 
 ## Required final report
 
-Phase 8 status: **READY FOR REVIEW** — CI **green** on tip `65a3326` (4/4); Windows acceptance **9/9 PASS**; `/debug/inspect` re-smoke **OK**; evidence on #148; #149 closed. PR remains **draft**. Do **not** merge unless explicitly instructed.
+Phase 8 status: **CHANGES REQUESTED → fixes pushed** — P1/P2 from user review of draft PR #148 @ `212e270` addressed on branch. CI/unit tests re-run on this tip. Windows S1–S9 acceptance **PENDING** (DNU-23); prior 9/9 PASS on `28b8712` **retracted** (HTTP inspect/stop not OK). PR remains **draft**. Do **not** merge.
 
 Branch/base/head/PR:
 - Feature branch: `feature/driver-phase-8-debug-vision`
-- Base SHA: `8a4a165394623400af7a2686828ce8a6b49be044` / `8a4a165` (`origin/main` after Phase 7 merge)
-- Product / CI tip: `65a332695d24489e492efd8417e0f3abd5445871` / `65a3326`
-- Status docs tip (HEAD): `349aef6`
-- Windows S1–S9 acceptance tip: `28b8712db032e867bb8433f1f2bd69161d85004d` / `28b8712`
-- Inspect re-smoke: **OK** on tip `65a3326` (IntPtr hex `windowHandle`)
-- PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft / READY FOR REVIEW** (do not merge unless instructed)
+- Base: `origin/main`
+- Review baseline: `212e270`
+- Tip: see HEAD after review-fix commit
+- PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft** (do not merge)
 
-### CI failures / fixes (historical)
+### Review fixes (P1/P2)
 
-1. **`75649ee` → `5972d28`:** `FlaUIUiaElementProbe.cs` CS0121 — `Math.Round` cast to `(double)`.
-2. **`5972d28` → `28b8712`:** `Phase8DebugVisionTests.cs` `using System.Drawing;` (CS0246/CS0535).
-3. **`28b8712` → `af6756f`:** IntPtr STJ 500 — first `[JsonIgnore]` attempt; unit test round-trip failed (`Actual: "0"`).
-4. **`af6756f` → `65a3326`:** `IntPtrHexJsonConverter` on `WindowHandle` (hex string in/out). CI green.
+| # | Item | Status |
+|---|---|---|
+| P1-1 | Config-gated production vision (`Vision:*`, `/vision/*`, Debug inspect fallback); CustomDrawnCanvas empty Name; Hover/DoubleClick HTTP surfaces | Fixed |
+| P1-2 | CoordinateActionGuard: click point + full candidate bounds inside window; HWND+PID fail-closed | Fixed |
+| P1-3 | Destructive Candidate.Label heuristics denied even for Action=click | Fixed |
+| P1-4 | Retract 9/9 PASS; acceptance asserts HTTP start/inspect/verify/stop OK (`phase8-assert-http-ok.ps1`) | Fixed (Windows re-run = DNU-23) |
+| P2-5 | Live probe unavailable / zero-match never becomes unique via stale capture | Fixed |
+| P2-6 | FlaUIUiaElementProbe captures real DpiScale via GetDpiForWindow | Fixed |
 
-### Debug services
+### Debug / vision surfaces
 
-| Service | Location |
-|---|---|
-| `DebugSessionCoordinator` | `src/DesktopAutomationDriver/Services/Debug/` |
-| `UiaTreeCaptureService` | same |
-| `LocatorCandidateGenerator` | same |
-| `NonInteractiveHighlightService` | same |
-| `CandidateVerificationService` | same |
-| `DebugArtifactWriter` | same |
-
-Vision: `VisionFallbackPolicy`, `VisionScreenshotService`, `FakeVisionProvider`, `CoordinateActionGuard`, `VisionFallbackCoordinator` under `Services/Vision/`.
-
-### Large class line changes
-
-| File | Diff vs base |
-|---|---|
-| `RecordingOverlayWindow.cs` | **+37 / −2** (thin Ctrl+D + status/inspect forward only) |
-| `UiService.cs` | **0** (unchanged) |
-
-### Highlight behavior
-
-Yellow click-through overlay (`WS_EX_TRANSPARENT` / no activate). `InterceptsClicks=false`. Cleared on Debug Mode stop / dispose.
-
-### Candidate behavior
-
-Phase-3 / object-repository locator strategies; unique verification required; artifacts under `debug-candidates/<session>/candidate.json` with `autoPromoted=false` and `requiresHumanApproval=true`. Never writes approved `pages/`.
-
-### Vision enablement policy
-
-Disabled by default (`Vision:Enabled=false` / `VisionFallbackOptions.Enabled=false`). Allowed only when enabled **and** (UIA inaccessible **or** `AllowWhenPolicyPermits`). Never replaces working UIA locators. Provider=`fake` in Phase 8.
-
-### Stale/DPI safeguards
-
-`CoordinateActionGuard` rejects stale screenshots (default max age 1500ms), window identity mismatch, DPI/scale change, bounds/layout change, and out-of-window bounds. Saved coordinates are not reused after layout change.
-
-### Screenshot privacy
-
-Window-scoped only (unrestricted desktop throws). Sensitive markers → not persisted by default (`PersistSensitiveScreenshots=false`). Optional text redaction helper.
-
-### Agent tests
-
-`Phase8VisionPolicyTests` — default-off, gates, provider validation, hover probe rules.
-
-### Driver tests
-
-`Phase8DebugVisionTests` — service separation, candidate quality, unique/ambiguous verify, highlight lifecycle, artifact no-auto-promotion, vision policy, screenshot scope/privacy, DPI/stale/destructive guards, custom-drawn fixture path, double-click policy, STJ `windowHandle` hex serialization. `/debug/status` covered in `PublicContractProtectionTests`.
+- Debug: `/debug/status|start|stop|toggle|inspect|verify|hover|doubleclick-allowed`
+- Vision (default off): `/vision/status|evaluate|candidates|authorize|hover|doubleclick`
+- `Vision:Enabled=false` in `appsettings.json`; bind via `IOptions<VisionFallbackOptions>`
 
 ### Windows acceptance
 
-**OVERALL PASS (9/9)** on tip `28b8712` — evidence on #148 under `docs/acceptance/phase8-*`. `/debug/inspect` HTTP re-smoke **OK** on `65a3326`. Duplicate PR #149 closed; #148 owns evidence.
-
-See [`docs/acceptance/phase8-windows-acceptance.md`](acceptance/phase8-windows-acceptance.md).
-
-### Publish results
-
-**CI green** on tip `65a3326` (4/4 — Build and Test + Publish Standalone Packages).
-
-### git diff --check
-
-Clean against `origin/main...HEAD` at `65a3326`.
+**PENDING (DNU-23).** Do not claim PASS until Windows worker re-runs S1–S9 on post-fix tip with `startHttpOk`/`inspectHttpOk`/`verifyHttpOk`/`stopHttpOk` all true. Helper: `docs/acceptance/phase8-assert-http-ok.ps1`.
 
 ### Known limitations
 
 - Real OCR providers not enabled (fake only)
 - No headless claim; interactive desktop required
-- Vision independently gated; Debug Mode does not enable vision
+- Vision independently gated; Debug Mode does not enable vision by itself
 
 ### Exit gate
 
-Debug capture and visual fallback must work on controlled fixtures without intercepting clicks, persisting sensitive screenshots by default, or promoting any candidate automatically. **Met** for review: CI green on `65a3326`, Windows 9/9 PASS, inspect re-smoke OK. PR stays draft; do not merge unless instructed.
+Debug capture and visual fallback must work on controlled fixtures without intercepting clicks, persisting sensitive screenshots by default, or promoting any candidate automatically. **Code fixes in; Windows re-acceptance pending.** PR stays draft; do not merge unless instructed.

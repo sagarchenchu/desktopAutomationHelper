@@ -8,7 +8,13 @@ public interface IUiaElementProbe
 {
     DebugTreeCapture? CaptureAtPoint(Point screenPoint, int maxAncestry = 8, int maxChildren = 25);
 
-    int CountLocatorMatches(IReadOnlyDictionary<string, object?> locator, DebugWindowIdentity? scope);
+    /// <summary>
+    /// Live locator match count. Must report <see cref="LocatorMatchProbeResult.ProbeSucceeded"/>=false
+    /// when the probe cannot run (missing scope, UIA failure) — never invent uniqueness from stale captures.
+    /// </summary>
+    LocatorMatchProbeResult CountLocatorMatches(
+        IReadOnlyDictionary<string, object?> locator,
+        DebugWindowIdentity? scope);
 
     HoverProbeResult ProbeHover(Point screenPoint);
 }

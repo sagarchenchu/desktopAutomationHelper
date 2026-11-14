@@ -1,21 +1,26 @@
 namespace DesktopAutomationTestApp;
 
 /// <summary>
-/// Custom-drawn control with intentionally weak UIA identity for Phase 8 vision/debug fixtures.
-/// Painted text is not exposed as a standard AutomationId/Name pair.
+/// Custom-drawn control with intentionally empty UIA AutomationId/Name for Phase 8 vision fixtures.
+/// Painted text is not exposed as a standard AutomationId/Name pair. Find via parent
+/// <see cref="UiIds.CustomDrawnGroup"/> (not via control Name — Name would break the inaccessibility rule).
 /// </summary>
 public sealed class CustomDrawnCanvas : Control
 {
     public CustomDrawnCanvas()
     {
-        Name = UiIds.CustomDrawnCanvas;
-        // Deliberately leave AccessibleName empty so semantic UIA treats this as inaccessible/custom.
+        // Deliberately leave WinForms Name empty so UIA AutomationId is empty.
+        // Do NOT set Name = UiIds.CustomDrawnCanvas — that made the control semantically accessible.
+        Name = string.Empty;
         AccessibleName = string.Empty;
+        AccessibleDescription = string.Empty;
+        // Client → Pane in UIA; empty AutomationId+Name + Pane/Custom = inaccessible under Phase-8 rule.
         AccessibleRole = AccessibleRole.Client;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
         BackColor = Color.FromArgb(32, 48, 64);
         Size = new Size(280, 80);
         Cursor = Cursors.Hand;
+        Tag = UiIds.CustomDrawnCanvas; // app-only marker; not exposed as UIA AutomationId
     }
 
     public string DrawnLabel { get; set; } = "Custom Drawn Target";

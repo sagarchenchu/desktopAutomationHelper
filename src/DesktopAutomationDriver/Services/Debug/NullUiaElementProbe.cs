@@ -6,8 +6,10 @@ public sealed class NullUiaElementProbe : IUiaElementProbe
     public DebugTreeCapture? CaptureAtPoint(Point screenPoint, int maxAncestry = 8, int maxChildren = 25) =>
         null;
 
-    public int CountLocatorMatches(IReadOnlyDictionary<string, object?> locator, DebugWindowIdentity? scope) =>
-        0;
+    public LocatorMatchProbeResult CountLocatorMatches(
+        IReadOnlyDictionary<string, object?> locator,
+        DebugWindowIdentity? scope) =>
+        LocatorMatchProbeResult.Unavailable("NullUiaElementProbe has no live UIA session.");
 
     public HoverProbeResult ProbeHover(Point screenPoint) =>
         new()
