@@ -1,6 +1,6 @@
 # Phase 8 - Windows acceptance
 
-- Tip tested: CI-green `ab05a0f` + STA highlight fix + DNU-23 evidence (see branch HEAD / `a09fe2f` lineage after rebase)
+- Tip tested (GitHub-resolvable): [`a1cbf790d089561a0ebeb8e5bd6b67b75c0281d2`](https://github.com/sagarchenchu/desktopAutomationHelper/commit/a1cbf790d089561a0ebeb8e5bd6b67b75c0281d2) (`a1cbf79`) — CI-green `ab05a0f` + STA highlight fix + DNU-23 evidence
 - Branch: `feature/driver-phase-8-debug-vision`
 - PR: #148 (**draft** - not merged)
 - When: 2026-11-14T00:28:13.0536693+00:00
@@ -11,10 +11,10 @@
 
 | Flag | Endpoint |
 |---|---|
-| `startHttpOk` | `POST /debug/start` → 2xx |
-| `inspectHttpOk` | `POST /debug/inspect` → 2xx |
-| `verifyHttpOk` | `POST /debug/verify` → 2xx (when verify is part of the scenario) |
-| `stopHttpOk` | `POST /debug/stop` → 2xx |
+| `startHttpOk` | `POST /debug/start` â†’ 2xx |
+| `inspectHttpOk` | `POST /debug/inspect` â†’ 2xx |
+| `verifyHttpOk` | `POST /debug/verify` â†’ 2xx (when verify is part of the scenario) |
+| `stopHttpOk` | `POST /debug/stop` â†’ 2xx |
 
 Helper: [`phase8-assert-http-ok.ps1`](phase8-assert-http-ok.ps1).
 
@@ -24,7 +24,7 @@ Helper: [`phase8-assert-http-ok.ps1`](phase8-assert-http-ok.ps1).
 | 2 | Debug Mode on WPF smoke app | Same as above; HTTP OK | PASS | `phase8-02-wpf-debug-result.json` |
 | 3 | Candidate locator unique verify | Unique OK; no auto-promote; HTTP OK | PASS | `phase8-03-candidate-verify-result.json` |
 | 4 | Yellow highlight does not intercept clicks | Click reaches underlying control; HTTP OK | PASS | `phase8-04-highlight-passthrough-result.json` |
-| 5 | CustomDrawnCanvas vision path (Enabled=true) | Real inaccessible canvas → vision candidates; no auto-promote | PASS | `phase8-05-customdrawn-vision-result.json` |
+| 5 | CustomDrawnCanvas vision path (Enabled=true) | Real inaccessible canvas â†’ vision candidates; no auto-promote | PASS | `phase8-05-customdrawn-vision-result.json` |
 | 6 | Vision disabled by default | No vision candidates | PASS | `phase8-06-vision-default-off-result.json` |
 | 7 | Stale/DPI/layout change | Coordinate action denied | PASS | `phase8-07-stale-dpi-guards-result.json` |
 | 8 | Sensitive screenshot | Not persisted by default | PASS | `phase8-08-sensitive-screenshot-result.json` |
