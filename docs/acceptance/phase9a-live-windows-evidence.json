@@ -1,41 +1,49 @@
 {
-  "scenario": "phase9a-live-windows-evidence",
-  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
-  "whenUtc": "2026-11-14T09:47:08.6254239+00:00",
+  "scenario": "phase9a-dnu38-production-acl-evidence",
+  "tipSha": "6938263d32fb045589353c69eecc033d79c597a2",
+  "whenUtc": "2026-11-14T10:33:59.8030179+00:00",
+  "host": "DESKTOP-5JD30DR",
   "currentUser": "DESKTOP-5JD30DR\\ADMIN",
   "currentSid": "S-1-5-21-2097163997-1254372408-68186133-1001",
+  "isElevatedAdmin": false,
+  "integrityLevel": "Medium",
   "genuineSecondInteractiveUser": false,
-  "gap": "Host cannot create/run as second interactive Windows user (System error 5; medium integrity, Administrators deny-only). Strongest available ACL denial uses distinct well-known LocalService SID S-1-5-19 vs interactive SID — real Windows DACL enforcement, not a same-user mock. Interactive multi-user isolation remains unproven on this host.",
+  "productionMultiUserGate": "NOT_PROVEN",
+  "gap": "Host cannot create/run a second interactive Windows user under production ACL. Do not treat LocalService-only test ACL as a substitute for interactive User A vs User B. net user add -> exit 2; System error 5 Access is denied (medium integrity; Administrators deny-only; Windows sudo disabled on host).",
+  "notes": [
+    "secondaryUserCreateAttempt=net user add -> exit 2; System error 5 Access is denied (medium integrity; Administrators deny-only; Windows sudo disabled on host)",
+    "productionMultiUserGate=NOT_PROVEN"
+  ],
   "scenarios": [
     {
       "id": "intended-sid-pipe-descriptor",
       "result": "PASS",
       "pipeOk": true,
       "descriptorOk": true,
+      "pipeServerProcessIdMatched": true,
+      "acl": "production BootstrapAcl.CreatePipeSecurity / CreateFileSecurity",
       "error": null,
       "tokenLeak": null,
       "userSid": "S-1-5-21-2097163997-1254372408-68186133-1001"
     },
     {
-      "id": "other-identity-acl-denial",
-      "result": "PASS",
-      "denialIdentity": "NT AUTHORITY\\LOCAL SERVICE",
-      "denialSid": "S-1-5-19",
-      "pipeDenied": true,
-      "pipeDeniedType": "System.UnauthorizedAccessException",
-      "pipeDeniedMessage": "Access to the path is denied.",
-      "serverAcceptedForeignIdentity": false,
-      "descriptorDenied": true,
-      "descriptorNotes": [
-        "write-denied: Access to the path is denied."
-      ],
-      "genuineSecondInteractiveUser": false
+      "id": "second-interactive-user-production-acl",
+      "result": "NOT_PROVEN",
+      "acl": "production BootstrapAcl.CreatePipeSecurity / CreateFileSecurity (not LocalService-only)",
+      "genuineSecondInteractiveUser": false,
+      "secondaryUser": null,
+      "secondarySid": null,
+      "pipeDenied": false,
+      "descriptorDenied": false,
+      "gap": "Host cannot create/run a second interactive Windows user under production ACL. Do not treat LocalService-only test ACL as a substitute for interactive User A vs User B. net user add -> System error 5 Access is denied.",
+      "secondaryUserCreateAttempt": "net user add -> exit 2; System error 5 Access is denied (medium integrity; Administrators deny-only; Windows sudo disabled on host)"
     },
     {
-      "id": "concurrent-and-crash-cleanup",
+      "id": "concurrent-reject-preserve-and-stale-cleanup",
       "result": "PASS",
       "concurrentRefused": true,
-      "crashCleanupRestart": true,
+      "rejectedDisposePreservesDescriptor": true,
+      "stalePidAndCreationTimeCleanupRestart": true,
       "error": null
     },
     {
@@ -46,5 +54,5 @@
       "legacyBannerWarns": true
     }
   ],
-  "OVERALL": "PASS"
+  "OVERALL": "PASS_WITH_GAP"
 }

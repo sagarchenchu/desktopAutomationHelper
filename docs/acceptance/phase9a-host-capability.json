@@ -1,17 +1,20 @@
 {
-  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
-  "whenUtc": "2026-11-14T09:41:10.8840731+00:00",
+  "tipSha": "6938263d32fb045589353c69eecc033d79c597a2",
+  "whenUtc": "2026-11-14T10:33:59.8030179+00:00",
   "machine": "DESKTOP-5JD30DR",
   "user": "desktop-5jd30dr\\admin",
   "userSid": "S-1-5-21-2097163997-1254372408-68186133-1001",
   "isElevatedAdmin": false,
+  "integrityLevel": "Medium",
+  "windowsSudo": "disabled",
   "enabledLocalUsers": [
     {
       "name": "ADMIN",
       "sid": "S-1-5-21-2097163997-1254372408-68186133-1001"
     }
   ],
-  "secondaryUserCreateAttempt": "net user add -> System error 5 Access is denied (medium integrity; Administrators deny-only)",
+  "secondaryUserCreateAttempt": "net user add -> System error 5 Access is denied (medium integrity; Administrators deny-only; Windows sudo disabled)",
   "genuineSecondInteractiveUser": false,
-  "strongestAclDenialIdentity": "NT AUTHORITY\\LOCAL SERVICE (S-1-5-19) vs current interactive SID"
+  "productionMultiUserGate": "NOT_PROVEN",
+  "note": "LocalService-only test ACL is not claimed as a substitute for second interactive user under production ACL."
 }

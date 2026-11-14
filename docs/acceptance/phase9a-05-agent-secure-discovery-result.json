@@ -1,7 +1,7 @@
 {
   "id": "agent-secure-discovery",
-  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
-  "whenUtc": "2026-11-14T09:41:30+00:00",
+  "tipSha": "6938263d32fb045589353c69eecc033d79c597a2",
+  "whenUtc": "2026-11-14T10:33:59.8030179+00:00",
   "result": "PASS",
   "discoveryMethod": "secure-bootstrap",
   "defaultDiscoveryMode": "Secure",

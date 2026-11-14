@@ -1,11 +1,13 @@
 {
   "id": "intended-sid-pipe-descriptor",
-  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
-  "whenUtc": "2026-11-14T09:47:08.6254239+00:00",
+  "tipSha": "6938263d32fb045589353c69eecc033d79c597a2",
+  "whenUtc": "2026-11-14T10:33:59.8030179+00:00",
   "result": "PASS",
   "pipeOk": true,
   "descriptorOk": true,
+  "pipeServerProcessIdMatched": true,
+  "acl": "production BootstrapAcl.CreatePipeSecurity / CreateFileSecurity",
   "userSid": "S-1-5-21-2097163997-1254372408-68186133-1001",
   "tokenLeak": null,
-  "notes": "Production SecureBootstrapHost: intended SID connected to SID-ACL named pipe and read ACL-protected connection descriptor."
+  "notes": "Production SecureBootstrapHost: intended SID connected to SID-ACL named pipe, pipe server process id matched host PID, and ACL-protected connection descriptor read succeeded."
 }

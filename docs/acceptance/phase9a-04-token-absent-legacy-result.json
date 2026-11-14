@@ -1,18 +1,10 @@
 {
   "id": "token-absent-and-legacy-gated",
-  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
-  "whenUtc": "2026-11-14T09:47:08.6254239+00:00",
+  "tipSha": "6938263d32fb045589353c69eecc033d79c597a2",
+  "whenUtc": "2026-11-14T10:33:59.8030179+00:00",
   "result": "PASS",
   "secureBannerOmitsToken": true,
   "legacyRequiresAck": true,
   "legacyBannerWarns": true,
-  "verifySecureReturns403WithoutToken": true,
-  "xunit": [
-    "StartupBanner_SecureMode_NeverIncludesBearerToken",
-    "StartupBanner_LegacyMode_IncludesBearerTokenAndRiskWarning",
-    "BootstrapOptions_LegacyRequiresAcknowledgementFlag",
-    "VerifyControllerTests.SecureMode_Returns403WithoutToken",
-    "VerifyControllerTests.LegacyMode_Returns200WithToken_WhenRiskAcknowledged",
-    "DriverConnectionResolverTests.LegacyVerifyDiscovery_RequiresRiskAcknowledgement"
-  ]
+  "notes": "Secure banner omits bearer/operator tokens; LegacyVerify HTTP path requires AcknowledgeLegacyVerifyRisk; legacy banner includes token and WARNING."
 }

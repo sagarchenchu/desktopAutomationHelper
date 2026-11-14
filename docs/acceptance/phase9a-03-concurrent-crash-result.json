@@ -1,10 +1,10 @@
 {
-  "id": "concurrent-and-crash-cleanup",
-  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
-  "whenUtc": "2026-11-14T09:47:08.6254239+00:00",
+  "id": "concurrent-reject-preserve-and-stale-cleanup",
+  "tipSha": "6938263d32fb045589353c69eecc033d79c597a2",
+  "whenUtc": "2026-11-14T10:33:59.8030179+00:00",
   "result": "PASS",
   "concurrentRefused": true,
-  "crashCleanupRestart": true,
-  "tokenAbsentFromConcurrentError": true,
-  "notes": "Second live SecureBootstrapHost start fails with 'already exists' and omits bearer tokens. Stale dead-pid descriptor cleaned; restart writes fresh payload."
+  "rejectedDisposePreservesDescriptor": true,
+  "stalePidAndCreationTimeCleanupRestart": true,
+  "notes": "Second live StartAsync refused (already holds / already exists); disposing rejected host preserved first host pid + ProcessStartTimeUtc + token; stale dead-pid descriptor with mismatched creation time cleaned and restart published new live descriptor."
 }
