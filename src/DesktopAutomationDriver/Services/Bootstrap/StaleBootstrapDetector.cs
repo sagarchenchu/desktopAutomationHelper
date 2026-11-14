@@ -4,7 +4,8 @@ namespace DesktopAutomationDriver.Services.Bootstrap;
 
 /// <summary>
 /// Detects stale bootstrap descriptors left behind after a driver crash.
-/// Stale = missing process, or PID alive but process creation time mismatches.
+/// Stale = missing process, or PID alive but OS process creation time does not
+/// exactly match the recorded value (PID reuse).
 /// </summary>
 public static class StaleBootstrapDetector
 {
@@ -38,8 +39,8 @@ public static class StaleBootstrapDetector
         if (actual is null)
             return true;
 
-        var delta = (actual.Value - payload.ProcessStartTimeUtc).Duration();
-        return delta > SecureBootstrapConstants.ProcessStartTimeTolerance;
+        // Exact OS creation-time match — no skew tolerance.
+        return actual.Value.UtcTicks != payload.ProcessStartTimeUtc.UtcTicks;
     }
 
     public static DateTimeOffset? TryGetProcessStartTimeUtc(int pid)
@@ -53,7 +54,7 @@ public static class StaleBootstrapDetector
             if (process.HasExited)
                 return null;
 
-            return process.StartTime.ToUniversalTime();
+            return ToUtcOffset(process.StartTime);
         }
         catch (ArgumentException)
         {
@@ -72,6 +73,14 @@ public static class StaleBootstrapDetector
     public static DateTimeOffset GetCurrentProcessStartTimeUtc()
     {
         using var process = Process.GetCurrentProcess();
-        return process.StartTime.ToUniversalTime();
+        return ToUtcOffset(process.StartTime);
+    }
+
+    private static DateTimeOffset ToUtcOffset(DateTime startTime)
+    {
+        var utc = startTime.Kind == DateTimeKind.Utc
+            ? startTime
+            : startTime.ToUniversalTime();
+        return new DateTimeOffset(utc.Ticks, TimeSpan.Zero);
     }
 }

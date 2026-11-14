@@ -35,10 +35,11 @@ public sealed class ConnectionDescriptorStore
     public string DescriptorPath => _descriptorPath;
 
     /// <summary>
-    /// Writes <paramref name="payload"/> atomically (temp file + replace).
-    /// The temp file is created with a restrictive <see cref="FileSecurity"/>
-    /// <em>before</em> any token bytes are written so a crash cannot leave a
-    /// world-readable secret.
+    /// Writes <paramref name="payload"/> atomically.
+    /// Temp file is created with restrictive <see cref="FileSecurity"/> before any
+    /// token bytes are written. <see cref="File.Move"/> onto the final path is the
+    /// publication point; any failure after rename rolls back by deleting the final
+    /// path (caller must hold the per-user host lock).
     /// </summary>
     public void WriteAtomic(SecureBootstrapPayload payload, SecurityIdentifier userSid)
     {
@@ -54,6 +55,7 @@ public sealed class ConnectionDescriptorStore
         var bytes = Encoding.UTF8.GetBytes(json);
         var tempPath = _descriptorPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
         var security = _fileSecurityFactory(userSid);
+        var published = false;
 
         try
         {
@@ -71,9 +73,21 @@ public sealed class ConnectionDescriptorStore
                 stream.Flush(flushToDisk: true);
             }
 
+            // Rename is the final publication — NTFS preserves the temp ACL.
             File.Move(tempPath, _descriptorPath, overwrite: true);
-            // Re-assert ACL on the final path after replace.
-            FileSystemAclExtensions.SetAccessControl(new FileInfo(_descriptorPath), security);
+            published = true;
+
+            try
+            {
+                // Defense-in-depth: re-assert ACL. On failure, roll back the published file.
+                FileSystemAclExtensions.SetAccessControl(new FileInfo(_descriptorPath), security);
+            }
+            catch
+            {
+                TryDelete(_descriptorPath);
+                published = false;
+                throw;
+            }
         }
         finally
         {

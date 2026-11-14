@@ -84,35 +84,46 @@ public sealed class SecureBootstrapClient
                 ? await _pipeReaderOverride(pipeName, cancellationToken).ConfigureAwait(false)
                 : await ReadFromPipeAsync(pipeName, sid, cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
         {
             // Connect/read timeout from our own CancelAfter — not caller cancellation.
             pipeError = ex;
-            _logger.LogDebug(ex, "Secure bootstrap named pipe timed out; trying descriptor file.");
+            _logger.LogDebug(ex, "Secure bootstrap named pipe timed out; falling back to descriptor file.");
         }
-        catch (Exception ex) when (ex is not OperationCanceledException and not DriverConnectionException)
+        catch (Exception ex)
         {
+            // Pipe unavailable OR rejected (auth/SID/PID/stale). Fall back to the
+            // ACL-protected descriptor — do not fail closed on pipe alone.
             pipeError = ex;
-            _logger.LogDebug(ex, "Secure bootstrap named pipe was unavailable; trying descriptor file.");
+            _logger.LogDebug(ex, "Secure bootstrap named pipe unavailable or rejected; falling back to descriptor file.");
         }
+
+        if (payload is not null)
+        {
+            // Pipe path already validated inside ReadFromPipeAsync; overrides still need checks.
+            if (_pipeReaderOverride is not null)
+                ValidatePayload(payload, sid, authenticatedServerProcessId: null);
+            return payload;
+        }
+
+        var descriptorPath = SecureBootstrapConstants.GetDefaultDescriptorPath(_localAppData());
+        payload = _descriptorReaderOverride is not null
+            ? _descriptorReaderOverride(descriptorPath)
+            : TryReadDescriptor(descriptorPath);
 
         if (payload is null)
         {
-            var descriptorPath = SecureBootstrapConstants.GetDefaultDescriptorPath(_localAppData());
-            payload = _descriptorReaderOverride is not null
-                ? _descriptorReaderOverride(descriptorPath)
-                : TryReadDescriptor(descriptorPath);
+            var detail = pipeError is null
+                ? "named pipe and connection descriptor were unavailable"
+                : $"named pipe failed ({pipeError.GetType().Name}) and connection descriptor was unavailable";
 
-            if (payload is null)
-            {
-                var detail = pipeError is null
-                    ? "named pipe and connection descriptor were unavailable"
-                    : $"named pipe failed ({pipeError.GetType().Name}) and connection descriptor was unavailable";
-
-                throw new DriverConnectionException(
-                    $"Unable to discover the desktop automation driver via secure bootstrap ({detail}). " +
-                    "Is the driver running under the same Windows user?");
-            }
+            throw new DriverConnectionException(
+                $"Unable to discover the desktop automation driver via secure bootstrap ({detail}). " +
+                "Is the driver running under the same Windows user?");
         }
 
         ValidatePayload(payload, sid, authenticatedServerProcessId: null);

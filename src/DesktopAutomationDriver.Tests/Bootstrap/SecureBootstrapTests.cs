@@ -33,9 +33,8 @@ public class SecureBootstrapTests
 
         Assert.True(StaleBootstrapDetector.IsStale(payload, _ => null));
         Assert.False(StaleBootstrapDetector.IsStale(payload, _ => start));
-        Assert.True(StaleBootstrapDetector.IsStale(
-            payload,
-            _ => start.Add(SecureBootstrapConstants.ProcessStartTimeTolerance).AddSeconds(1)));
+        // Exact OS creation time — any tick mismatch is stale (no tolerance).
+        Assert.True(StaleBootstrapDetector.IsStale(payload, _ => start.AddTicks(1)));
     }
 
     [Fact]
@@ -126,6 +125,8 @@ public class SecureBootstrapTests
             Assert.True(host.IsRunning);
             Assert.True(host.HasPublishedDescriptor);
             Assert.Equal(sid.Value, host.UserSid);
+            // Pipe ownership is established before StartAsync returns (descriptor ready).
+            Assert.True(File.Exists(descriptorPath));
 
             await using var client = new NamedPipeClientStream(
                 ".",
@@ -149,6 +150,37 @@ public class SecureBootstrapTests
         }
 
         Assert.False(File.Exists(descriptorPath));
+    }
+
+    [Fact]
+    public async Task PipeOwnershipFailure_DoesNotPublishDescriptor()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var identity = WindowsIdentity.GetCurrent();
+        var sid = identity.User ?? throw new InvalidOperationException("No SID");
+        var dir = Path.Combine(Path.GetTempPath(), "dah-bootstrap-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "connection.json");
+
+        // Hold the pipe name so SecureBootstrapHost cannot establish ownership.
+        var pipeName = SecureBootstrapConstants.BuildPipeName(sid.Value);
+        using var blocker = NamedPipeServerStreamAcl.Create(
+            pipeName,
+            PipeDirection.Out,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous,
+            0,
+            0,
+            BootstrapAcl.CreatePipeSecurity(sid));
+
+        var ctx = new DriverContext(Environment.UserName, sid.Value);
+        await using var host = new SecureBootstrapHost(ctx, descriptorPath: path, logger: NullLogger.Instance);
+        await Assert.ThrowsAnyAsync<Exception>(() => host.StartAsync());
+        Assert.False(host.HasPublishedDescriptor);
+        Assert.False(File.Exists(path));
     }
 
     [Fact]

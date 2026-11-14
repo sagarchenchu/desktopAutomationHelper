@@ -2,6 +2,10 @@ using System.Diagnostics;
 
 namespace DesktopAutomationAgent.Driver.Bootstrap;
 
+/// <summary>
+/// Stale = missing process, or PID alive but OS process creation time does not
+/// exactly match the recorded value (PID reuse).
+/// </summary>
 public static class StaleBootstrapDetector
 {
     public static bool IsStale(
@@ -31,8 +35,8 @@ public static class StaleBootstrapDetector
         if (actual is null)
             return true;
 
-        var delta = (actual.Value - payload.ProcessStartTimeUtc).Duration();
-        return delta > SecureBootstrapConstants.ProcessStartTimeTolerance;
+        // Exact OS creation-time match — no skew tolerance.
+        return actual.Value.UtcTicks != payload.ProcessStartTimeUtc.UtcTicks;
     }
 
     public static DateTimeOffset? TryGetProcessStartTimeUtc(int pid)
@@ -46,7 +50,7 @@ public static class StaleBootstrapDetector
             if (process.HasExited)
                 return null;
 
-            return process.StartTime.ToUniversalTime();
+            return ToUtcOffset(process.StartTime);
         }
         catch (ArgumentException)
         {
@@ -60,5 +64,13 @@ public static class StaleBootstrapDetector
         {
             return null;
         }
+    }
+
+    private static DateTimeOffset ToUtcOffset(DateTime startTime)
+    {
+        var utc = startTime.Kind == DateTimeKind.Utc
+            ? startTime
+            : startTime.ToUniversalTime();
+        return new DateTimeOffset(utc.Ticks, TimeSpan.Zero);
     }
 }

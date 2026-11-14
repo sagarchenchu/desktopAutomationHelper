@@ -146,6 +146,81 @@ public class DriverConnectionResolverTests
     }
 
     [Fact]
+    public async Task SecureDiscovery_FallsBackToDescriptor_WhenPipeUnavailable()
+    {
+        const string sid = "S-1-5-21-100-200-300-403";
+        const string token = "descriptor-fallback-token";
+        var processStart = DateTimeOffset.UtcNow;
+        var secureClient = new SecureBootstrapClient(
+            currentSid: () => sid,
+            localAppData: () => Path.GetTempPath(),
+            pipeReaderOverride: (_, _) => throw new IOException("pipe unavailable"),
+            descriptorReaderOverride: _ => new SecureBootstrapPayload
+            {
+                SchemaVersion = SecureBootstrapConstants.SchemaVersion,
+                UserSid = sid,
+                Username = "alice",
+                Port = 33211,
+                Token = token,
+                AuthorizationHeader = $"Bearer {token}",
+                Pid = Environment.ProcessId,
+                ProcessStartTimeUtc = processStart,
+                StartedAtUtc = DateTimeOffset.UtcNow,
+                PipeName = SecureBootstrapConstants.BuildPipeName(sid)
+            },
+            getProcessStartTimeUtc: _ => processStart);
+
+        var connection = await new DriverConnectionResolver(
+            TestSupport.Wrap(TestSupport.CreateOptions()),
+            TestSupport.CreateFactory(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("unused"))),
+            NullLogger<DriverConnectionResolver>.Instance,
+            () => "alice",
+            secureClient).ResolveAsync();
+
+        Assert.Equal("secure-bootstrap", connection.DiscoveryMethod);
+        Assert.Equal(token, connection.BearerToken);
+        Assert.Equal("http://127.0.0.1:33211", connection.SafeBaseUrl);
+    }
+
+    [Fact]
+    public async Task SecureDiscovery_FallsBackToDescriptor_WhenPipeRejected()
+    {
+        const string sid = "S-1-5-21-100-200-300-404";
+        const string token = "descriptor-after-pipe-reject";
+        var processStart = DateTimeOffset.UtcNow;
+        var secureClient = new SecureBootstrapClient(
+            currentSid: () => sid,
+            localAppData: () => Path.GetTempPath(),
+            pipeReaderOverride: (_, _) => throw new DriverConnectionException(
+                "Secure bootstrap named-pipe server process SID does not match the current Windows user SID."),
+            descriptorReaderOverride: _ => new SecureBootstrapPayload
+            {
+                SchemaVersion = SecureBootstrapConstants.SchemaVersion,
+                UserSid = sid,
+                Username = "alice",
+                Port = 33212,
+                Token = token,
+                AuthorizationHeader = $"Bearer {token}",
+                Pid = Environment.ProcessId,
+                ProcessStartTimeUtc = processStart,
+                StartedAtUtc = DateTimeOffset.UtcNow,
+                PipeName = SecureBootstrapConstants.BuildPipeName(sid)
+            },
+            getProcessStartTimeUtc: _ => processStart);
+
+        var connection = await new DriverConnectionResolver(
+            TestSupport.Wrap(TestSupport.CreateOptions()),
+            TestSupport.CreateFactory(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("unused"))),
+            NullLogger<DriverConnectionResolver>.Instance,
+            () => "alice",
+            secureClient).ResolveAsync();
+
+        Assert.Equal("secure-bootstrap", connection.DiscoveryMethod);
+        Assert.Equal(token, connection.BearerToken);
+        Assert.Equal("http://127.0.0.1:33212", connection.SafeBaseUrl);
+    }
+
+    [Fact]
     public async Task LegacyVerifyDiscovery_SucceedsWhenExplicitlyConfigured()
     {
         var user = Environment.UserName;

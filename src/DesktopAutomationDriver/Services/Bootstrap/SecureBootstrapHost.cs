@@ -106,8 +106,7 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
         if (Interlocked.CompareExchange(ref _started, 1, 0) != 0)
             throw new InvalidOperationException("Secure bootstrap host is already running.");
 
-        // Rejected hosts must never enter the publish/rollback path: no WriteAtomic,
-        // no DeleteIfExists, and no catch that could touch a live peer descriptor.
+        // Rejected hosts must never enter the publish/rollback path.
         if (!TryAcquireExclusiveLock())
         {
             Interlocked.Exchange(ref _started, 0);
@@ -116,6 +115,7 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
                 "Stop the other driver instance before starting a new one.");
         }
 
+        NamedPipeServerStream? primedServer = null;
         try
         {
             // Remove crash leftovers only after we own the lock.
@@ -124,13 +124,16 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
             var existing = _descriptorStore.TryRead();
             if (existing is not null && !StaleBootstrapDetector.IsStale(existing))
             {
-                // Live peer descriptor — release lock only; never delete/overwrite it.
                 ReleaseExclusiveLock();
                 Interlocked.Exchange(ref _started, 0);
                 throw new InvalidOperationException(
                     $"A live secure bootstrap descriptor already exists for this user (pid {existing.Pid}). " +
                     "Stop the other driver instance before starting a new one.");
             }
+
+            // Establish named-pipe ownership BEFORE publishing the descriptor so
+            // bootstrap is never "ready" without a live pipe server for this SID.
+            primedServer = CreateServerStream();
 
             _descriptorStore.WriteAtomic(_payload, _userSid);
             Interlocked.Exchange(ref _published, 1);
@@ -141,13 +144,16 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
                 PipeName,
                 DescriptorPath);
 
-            _listenTask = Task.Run(() => ListenLoopAsync(_cts.Token), CancellationToken.None);
+            var serverForListener = primedServer;
+            primedServer = null; // ownership transferred to listen loop
+            _listenTask = Task.Run(() => ListenLoopAsync(serverForListener, _cts.Token), CancellationToken.None);
             return Task.CompletedTask;
         }
         catch
         {
-            // Roll back only a descriptor this host just published. Never delete a
-            // peer's live file (rejected hosts never set _published).
+            primedServer?.Dispose();
+
+            // Roll back only a descriptor this host just published.
             if (Interlocked.Exchange(ref _published, 0) == 1)
                 _descriptorStore.DeleteIfExists();
 
@@ -167,7 +173,6 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
         {
             var security = _fileSecurityFactory(_userSid);
             var info = new FileInfo(_lockPath);
-            // Create or open with exclusive share — only one live host can hold it.
             _exclusiveLock = FileSystemAclExtensions.Create(
                 info,
                 FileMode.OpenOrCreate,
@@ -199,14 +204,14 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
         try { lockStream.Dispose(); } catch { /* best effort */ }
     }
 
-    private async Task ListenLoopAsync(CancellationToken cancellationToken)
+    private async Task ListenLoopAsync(NamedPipeServerStream? primedServer, CancellationToken cancellationToken)
     {
+        NamedPipeServerStream? server = primedServer;
         while (!cancellationToken.IsCancellationRequested)
         {
-            NamedPipeServerStream? server = null;
             try
             {
-                server = CreateServerStream();
+                server ??= CreateServerStream();
                 await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 var json = JsonSerializer.Serialize(_payload, JsonOptions);
@@ -236,6 +241,7 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
                 if (server is not null)
                 {
                     try { server.Dispose(); } catch { /* best effort */ }
+                    server = null;
                 }
             }
         }
@@ -276,7 +282,6 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
         }
 
         // Only the host that successfully published may delete the live descriptor.
-        // A rejected second StartAsync must not wipe the first instance's file.
         if (Interlocked.Exchange(ref _published, 0) == 1)
             _descriptorStore.DeleteIfExists();
 
