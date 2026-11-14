@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Reflection;
+using System.Security.AccessControl;
 using System.Text;
 using System.Text.Json;
 using DesktopAutomationDriver.Services;
@@ -883,11 +884,52 @@ public class Phase8DebugVisionTests
     public void StartupBanner_NeverIncludesOperatorToken()
     {
         var ctx = new DriverContext("banner-test-user");
-        var banner = StartupBanner.Format(ctx);
+        var aclPath = Path.Combine(Path.GetTempPath(), "DesktopAutomationDriver-test-acl", "operator-token");
+        var banner = StartupBanner.Format(ctx, aclPath);
         Assert.Contains("Bearer token", banner, StringComparison.Ordinal);
         Assert.Contains(ctx.BearerToken, banner, StringComparison.Ordinal);
         Assert.DoesNotContain(ctx.OperatorToken, banner, StringComparison.Ordinal);
         Assert.Contains("not logged", banner, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(aclPath, banner, StringComparison.Ordinal);
+        Assert.DoesNotContain("X-Operator-Token:", banner, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OperatorTokenAclSecret_WriteAndRead_CurrentUserOnly_DoesNotLogValue()
+    {
+        var ctx = new DriverContext("acl-secret-user");
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            "DesktopAutomationDriver-acl-tests",
+            Guid.NewGuid().ToString("N"),
+            "operator-token");
+
+        var written = OperatorTokenAclSecret.WriteCurrentUserOnly(ctx.OperatorToken, path);
+        Assert.Equal(path, written);
+        Assert.True(File.Exists(path));
+
+        var read = OperatorTokenAclSecret.TryRead(path);
+        Assert.Equal(ctx.OperatorToken, read);
+
+        var banner = StartupBanner.Format(ctx, path);
+        Assert.DoesNotContain(ctx.OperatorToken, banner, StringComparison.Ordinal);
+
+        var security = new FileInfo(path).GetAccessControl();
+        var rules = security.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier));
+        Assert.True(rules.Count >= 1);
+
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                Directory.Delete(dir, recursive: true);
+        }
+        catch
+        {
+            // best-effort cleanup
+        }
     }
 
     private static VisionFallbackOptions EnabledVisionOptions() => new()

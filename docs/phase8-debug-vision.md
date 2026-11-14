@@ -62,7 +62,7 @@ Bound via `IOptions<VisionFallbackOptions>` and exposed at:
 | `GET /vision/status` | Enabled flag + options |
 | `POST /vision/evaluate` | Eligibility for a semantic target |
 | `POST /vision/candidates` | Server HWND/cursor capture → opaque candidates |
-| `POST /vision/approve` | **Operator** approval (`X-Operator-Token`); action-bound; issues one-use execution token |
+| `POST /vision/approve` | **Operator** approval (`X-Operator-Token` from ACL secret, never logs); action-bound; issues one-use execution token |
 | `POST /vision/authorize` | Authorize with execution token (gated on `Vision:Enabled`; consumes on success) |
 | `POST /vision/hover` | Gated hover via execution token |
 | `POST /vision/doubleclick` | DoubleClickPolicy + execution token |

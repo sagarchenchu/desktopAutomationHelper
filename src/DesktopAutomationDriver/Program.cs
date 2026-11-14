@@ -18,6 +18,9 @@ WinForms.SetCompatibleTextRenderingDefault(false);
 // -----------------------------------------------------------------------
 var driverContext = new DriverContext();
 
+// Deliver operator token via current-user ACL file — never stdout/logs.
+var operatorTokenAclPath = OperatorTokenAclSecret.WriteCurrentUserOnly(driverContext.OperatorToken);
+
 var builder = WebApplication.CreateBuilder(args);
 
 // -----------------------------------------------------------------------
@@ -108,7 +111,7 @@ var probeTask = RunProbeServerAsync(driverContext, logger, probeCts.Token);
 // Wait briefly so the probe-port result is known before printing the banner.
 await Task.Delay(200);
 
-LogStartupBanner(driverContext, logger);
+LogStartupBanner(driverContext, logger, operatorTokenAclPath);
 
 app.Run();            // Blocks until Ctrl+C / shutdown signal
 probeCts.Cancel();
@@ -202,8 +205,9 @@ static async Task RunProbeServerAsync(
 // =======================================================================
 // Startup banner
 // =======================================================================
-static void LogStartupBanner(IDriverContext ctx, ILogger logger)
+static void LogStartupBanner(IDriverContext ctx, ILogger logger, string operatorTokenAclPath)
 {
     // Operator token must never appear in stdout/logs (StartupBanner.Format).
-    logger.LogInformation("{Banner}", StartupBanner.Format(ctx));
+    // Only the ACL file path is logged — never the secret value.
+    logger.LogInformation("{Banner}", StartupBanner.Format(ctx, operatorTokenAclPath));
 }
