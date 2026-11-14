@@ -12,19 +12,72 @@ public interface IWindowPixelCapture
 }
 
 /// <summary>
-/// CopyFromScreen capture of the live window <em>client</em> area.
-/// Client-area avoids title-bar active/inactive chrome churn after interactive presence dialogs.
+/// Captures real window client pixels via PrintWindow (not HWND/PID text).
+/// PrintWindow avoids CopyFromScreen composition/cursor/occlusion churn that
+/// otherwise invalidates approve fingerprints after the interactive presence dialog.
 /// </summary>
 public sealed class ScreenWindowPixelCapture : IWindowPixelCapture
 {
+    private const uint PwClientOnly = 0x1;
+    private const uint PwRenderFullContent = 0x2;
+
     public byte[]? CapturePng(IntPtr windowHandle, Rectangle bounds)
     {
         if (windowHandle == IntPtr.Zero)
             return null;
 
-        // Prefer client-area screen rect so presence MessageBox focus changes do not
-        // invalidate fingerprints via non-client chrome.
-        var captureBounds = TryGetClientScreenBounds(windowHandle) ?? bounds;
+        if (!GetClientRect(windowHandle, out var client)
+            || client.Right <= client.Left
+            || client.Bottom <= client.Top)
+        {
+            if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0)
+                return null;
+            return CaptureViaCopyFromScreen(bounds);
+        }
+
+        var width = client.Right - client.Left;
+        var height = client.Bottom - client.Top;
+        if (width <= 0 || height <= 0)
+            return null;
+
+        try
+        {
+            using var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                var hdc = graphics.GetHdc();
+                var printed = false;
+                try
+                {
+                    printed = PrintWindow(windowHandle, hdc, PwClientOnly | PwRenderFullContent)
+                        || PrintWindow(windowHandle, hdc, PwClientOnly)
+                        || PrintWindow(windowHandle, hdc, PwRenderFullContent)
+                        || PrintWindow(windowHandle, hdc, 0);
+                }
+                finally
+                {
+                    graphics.ReleaseHdc(hdc);
+                }
+
+                if (!printed)
+                    return CaptureViaCopyFromScreen(TryGetClientScreenBounds(windowHandle) ?? bounds);
+            }
+
+            using var stream = new MemoryStream();
+            bitmap.Save(stream, ImageFormat.Png);
+            var bytes = stream.ToArray();
+            if (bytes.Length < 32)
+                return null;
+            return bytes;
+        }
+        catch
+        {
+            return CaptureViaCopyFromScreen(TryGetClientScreenBounds(windowHandle) ?? bounds);
+        }
+    }
+
+    private static byte[]? CaptureViaCopyFromScreen(Rectangle captureBounds)
+    {
         if (captureBounds.IsEmpty || captureBounds.Width <= 0 || captureBounds.Height <= 0)
             return null;
 
@@ -45,7 +98,6 @@ public sealed class ScreenWindowPixelCapture : IWindowPixelCapture
             using var stream = new MemoryStream();
             bitmap.Save(stream, ImageFormat.Png);
             var bytes = stream.ToArray();
-            // Guard against empty / non-image placeholders.
             if (bytes.Length < 32)
                 return null;
             return bytes;
@@ -97,6 +149,9 @@ public sealed class ScreenWindowPixelCapture : IWindowPixelCapture
 
     [DllImport("user32.dll")]
     private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
 }
 
 /// <summary>Test double returning scripted PNG bytes.</summary>
