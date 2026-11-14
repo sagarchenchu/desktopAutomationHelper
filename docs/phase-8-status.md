@@ -9,7 +9,8 @@ Branch/base/head/PR:
 - Base: `origin/main`
 - Round-4 baseline (review): `7448395`
 - Round-4 product tip: `a647efd306cbdded76c7cb8bc45e7bd80fbc24a5` / `a647efd`
-- Branch HEAD may include docs-only follow-ups; DNU-26 tipSha must be the checkout under test
+- Branch HEAD / CI tip: `25311678a72bb715cf59f3d8ec3929c751910c62` / `2531167`
+- CI: **green** (4/4) on `2531167`
 - PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft** (do not merge)
 
 ### Round-4 fixes (this tip)
@@ -22,7 +23,9 @@ Branch/base/head/PR:
 ### Windows acceptance (DNU-26)
 
 - Overall: **PENDING**
-- Queue: re-run S1–S9 on this tip after CI; operator token via secure UI/ACL (not startup log)
+- Ready for Windows: **yes** (CI green on tip `2531167`)
+- tipSha for DNU-26: `25311678a72bb715cf59f3d8ec3929c751910c62`
+- Operator token via secure UI/ACL (not startup log)
 
 ### Exit gate
 
