@@ -469,12 +469,27 @@ public class Phase8DebugVisionTests
     [Fact]
     public void CustomDrawnCanvas_HasEmptyWinFormsName_ForInaccessibilityRule()
     {
-        // Compile-time fixture check: Name must stay empty so UIA AutomationId stays empty.
+        // Fixture check: Name must stay empty so UIA AutomationId stays empty.
+        // Strip comments first — the source intentionally documents "Do NOT set Name = UiIds.CustomDrawnCanvas".
         var source = File.ReadAllText(Path.Combine(
             FindRepoRoot(),
             "src", "DesktopAutomationTestApp", "CustomDrawnCanvas.cs"));
-        Assert.Contains("Name = string.Empty", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("Name = UiIds.CustomDrawnCanvas", source, StringComparison.Ordinal);
+        var withoutBlockComments = System.Text.RegularExpressions.Regex.Replace(
+            source, @"/\*.*?\*/", " ", System.Text.RegularExpressions.RegexOptions.Singleline);
+        var codeOnly = string.Join(
+            '\n',
+            withoutBlockComments
+                .Split('\n')
+                .Select(line =>
+                {
+                    var idx = line.IndexOf("//", StringComparison.Ordinal);
+                    return idx < 0 ? line : line[..idx];
+                }));
+
+        Assert.Contains("Name = string.Empty", codeOnly, StringComparison.Ordinal);
+        Assert.DoesNotContain("Name = UiIds.CustomDrawnCanvas", codeOnly, StringComparison.Ordinal);
+        // Tag may still reference the id as an app-only marker (not UIA AutomationId).
+        Assert.Contains("Tag = UiIds.CustomDrawnCanvas", codeOnly, StringComparison.Ordinal);
     }
 
     [Fact]
