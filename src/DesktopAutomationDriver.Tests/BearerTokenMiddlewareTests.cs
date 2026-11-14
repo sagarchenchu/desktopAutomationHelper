@@ -128,19 +128,9 @@ public class BearerTokenMiddlewareTests
     }
 
     [Fact]
-    public async Task VisionApprove_WithoutOperatorToken_Returns403()
+    public async Task VisionApprove_WithBearer_PassesMiddleware_PresenceEnforcedInCoordinator()
     {
-        var (middleware, ctx, _) = BuildMiddleware(
-            $"Bearer {ValidToken}",
-            path: "/vision/approve",
-            method: "POST");
-        await middleware.InvokeAsync(ctx);
-        Assert.Equal(403, ctx.Response.StatusCode);
-    }
-
-    [Fact]
-    public async Task VisionApprove_WithOperatorAndBearer_Succeeds()
-    {
+        // Human approval is interactive presence inside the coordinator — not ACL/X-Operator-Token.
         bool nextCalled = false;
         RequestDelegate next = _ => { nextCalled = true; return Task.CompletedTask; };
         var middleware = new BearerTokenMiddleware(next, BuildContext().Object);
@@ -148,10 +138,21 @@ public class BearerTokenMiddlewareTests
         httpContext.Request.Path = "/vision/approve";
         httpContext.Request.Method = "POST";
         httpContext.Request.Headers.Authorization = $"Bearer {ValidToken}";
-        httpContext.Request.Headers["X-Operator-Token"] = OperatorToken;
         httpContext.Response.Body = new MemoryStream();
 
         await middleware.InvokeAsync(httpContext);
         Assert.True(nextCalled);
+        _ = OperatorToken;
+    }
+
+    [Fact]
+    public async Task VisionApprove_WithoutBearer_Returns401()
+    {
+        var (middleware, ctx, _) = BuildMiddleware(
+            authHeaderValue: null,
+            path: "/vision/approve",
+            method: "POST");
+        await middleware.InvokeAsync(ctx);
+        Assert.Equal(401, ctx.Response.StatusCode);
     }
 }

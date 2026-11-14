@@ -62,7 +62,7 @@ Bound via `IOptions<VisionFallbackOptions>` and exposed at:
 | `GET /vision/status` | Enabled flag + options |
 | `POST /vision/evaluate` | Eligibility for a semantic target |
 | `POST /vision/candidates` | Server HWND/cursor capture → opaque candidates |
-| `POST /vision/approve` | **Operator** approval (`X-Operator-Token` from ACL secret, never logs); action-bound; issues one-use execution token |
+| `POST /vision/approve` | **Operator** approval (Bearer + driver interactive presence; ACL self-read is not human); action-bound; issues one-use execution token |
 | `POST /vision/authorize` | Authorize with execution token (gated on `Vision:Enabled`; consumes on success) |
 | `POST /vision/hover` | Gated hover via execution token |
 | `POST /vision/doubleclick` | DoubleClickPolicy + execution token |
@@ -79,8 +79,8 @@ Allowed only when:
 Authorization rules (fail-closed):
 
 - Server captures window/screenshot/UIA from HWND/cursor — client PNG/window not trusted
-- Opaque server-issued candidate id; **operator channel** distinct from automation bearer
-- Approval bound to **candidate + action**; revalidate live window; short-lived **one-use** execution token
+- Opaque server-issued candidate id; **interactive human presence** required to approve (ACL self-read is not human)
+- Approval bound to **candidate + action**; revalidate pixels vs **original** window baseline; short-lived **one-use** execution token
 - Humans are not forced through MaxScreenshotAgeMs for approve (CandidateTtl); token TTL gates authorize
 - Successful authorize **consumes** candidate/token; store has TTL + capacity
 - Destructive / unknown actions denied; labels Send/Approve/Publish/Install/Delete/Pay/… denied
@@ -121,9 +121,9 @@ Do **not** set `Name = CustomDrawnCanvas` — that made the control accessible.
 
 ## Windows acceptance
 
-Prior PASS claims (including DNU-25 on `dfd65d0`) are **retracted / superseded**. Re-run S1–S9 is **DNU-26** on one clean tip SHA after round-4.
-S5 must exercise candidates→approve→authorize Allowed=true; S7 destructive after approve with vision on.
-Operator token is never logged at startup — deliver via interactive UI / ACL-protected secret.
+Prior PASS claims (including DNU-26 on `f9913ef`) are **retracted / superseded**. Re-run S1–S9 is **DNU-27** on one clean tip SHA after round-5.
+S5 must exercise candidates→interactive presence approve→authorize Allowed=true; S7 destructive after approve with vision on.
+Approval requires driver-owned interactive presence — same-user ACL file self-read is not human approval.
 Helper: `docs/acceptance/phase8-assert-http-ok.ps1`.
 
 ## Limitations

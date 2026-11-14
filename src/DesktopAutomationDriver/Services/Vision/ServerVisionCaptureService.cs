@@ -1,21 +1,25 @@
-using System.Text;
 using DesktopAutomationDriver.Services.Debug;
 
 namespace DesktopAutomationDriver.Services.Vision;
 
 /// <summary>
-/// Captures live window + UIA under cursor via probes. Cursor UIA must belong to the
-/// requested window (HWND/PID) and lie inside live window bounds.
+/// Captures live window pixels + UIA under cursor via probes. Cursor UIA must belong to the
+/// requested window (HWND + fail-closed PID) and lie inside live window bounds.
 /// </summary>
 public sealed class ServerVisionCaptureService : IVisionCaptureService
 {
     private readonly ILiveWindowProbe _windowProbe;
     private readonly IUiaElementProbe _uiaProbe;
+    private readonly IWindowPixelCapture _pixels;
 
-    public ServerVisionCaptureService(ILiveWindowProbe windowProbe, IUiaElementProbe uiaProbe)
+    public ServerVisionCaptureService(
+        ILiveWindowProbe windowProbe,
+        IUiaElementProbe uiaProbe,
+        IWindowPixelCapture? pixels = null)
     {
         _windowProbe = windowProbe ?? throw new ArgumentNullException(nameof(windowProbe));
         _uiaProbe = uiaProbe ?? throw new ArgumentNullException(nameof(uiaProbe));
+        _pixels = pixels ?? new ScreenWindowPixelCapture();
     }
 
     public VisionServerCapture? Capture(IntPtr windowHandle, Point? cursorScreenPoint = null)
@@ -25,6 +29,10 @@ public sealed class ServerVisionCaptureService : IVisionCaptureService
 
         var window = _windowProbe.ProbeByHandle(windowHandle);
         if (window is null)
+            return null;
+
+        // Fail closed: window PID must be present and positive before any UIA bind.
+        if (window.ProcessId is not int windowPid || windowPid <= 0)
             return null;
 
         DebugUiaNode? target = null;
@@ -45,20 +53,18 @@ public sealed class ServerVisionCaptureService : IVisionCaptureService
                 return null;
             }
 
-            if (window.ProcessId is int expectedPid
-                && tree.Window.ProcessId is int treePid
-                && expectedPid > 0
-                && treePid > 0
-                && expectedPid != treePid)
-            {
+            // PID fail-closed: both must be positive and equal; missing UIA PID → reject.
+            if (tree.Window.ProcessId is not int treePid || treePid <= 0)
                 return null;
-            }
+            if (treePid != windowPid)
+                return null;
 
             target = tree.Target;
         }
 
-        var png = Encoding.UTF8.GetBytes(
-            $"server-vision-capture:{window.WindowHandleHex}:{window.ProcessId}:{window.Bounds.Width}x{window.Bounds.Height}:{window.Bounds.X},{window.Bounds.Y}");
+        var png = _pixels.CapturePng(windowHandle, window.Bounds);
+        if (png is null || png.Length == 0)
+            return null;
 
         return new VisionServerCapture
         {

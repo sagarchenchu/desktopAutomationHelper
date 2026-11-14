@@ -18,9 +18,6 @@ WinForms.SetCompatibleTextRenderingDefault(false);
 // -----------------------------------------------------------------------
 var driverContext = new DriverContext();
 
-// Deliver operator token via current-user ACL file — never stdout/logs.
-var operatorTokenAclPath = OperatorTokenAclSecret.WriteCurrentUserOnly(driverContext.OperatorToken);
-
 var builder = WebApplication.CreateBuilder(args);
 
 // -----------------------------------------------------------------------
@@ -73,7 +70,9 @@ builder.Services.AddSingleton<IVisionProvider, FakeVisionProvider>();
 builder.Services.AddSingleton(sp =>
     new VisionCandidateStore(sp.GetRequiredService<VisionFallbackOptions>()));
 builder.Services.AddSingleton<ILiveWindowProbe, Win32LiveWindowProbe>();
+builder.Services.AddSingleton<IWindowPixelCapture, ScreenWindowPixelCapture>();
 builder.Services.AddSingleton<IVisionCaptureService, ServerVisionCaptureService>();
+builder.Services.AddSingleton<IOperatorPresenceService, InteractiveOperatorPresenceService>();
 builder.Services.AddSingleton<CoordinateActionGuard>();
 builder.Services.AddSingleton<VisionFallbackCoordinator>();
 builder.Services.AddSingleton<IUiaElementProbe, FlaUIUiaElementProbe>();
@@ -111,7 +110,7 @@ var probeTask = RunProbeServerAsync(driverContext, logger, probeCts.Token);
 // Wait briefly so the probe-port result is known before printing the banner.
 await Task.Delay(200);
 
-LogStartupBanner(driverContext, logger, operatorTokenAclPath);
+LogStartupBanner(driverContext, logger);
 
 app.Run();            // Blocks until Ctrl+C / shutdown signal
 probeCts.Cancel();
@@ -205,9 +204,8 @@ static async Task RunProbeServerAsync(
 // =======================================================================
 // Startup banner
 // =======================================================================
-static void LogStartupBanner(IDriverContext ctx, ILogger logger, string operatorTokenAclPath)
+static void LogStartupBanner(IDriverContext ctx, ILogger logger)
 {
-    // Operator token must never appear in stdout/logs (StartupBanner.Format).
-    // Only the ACL file path is logged — never the secret value.
-    logger.LogInformation("{Banner}", StartupBanner.Format(ctx, operatorTokenAclPath));
+    // Operator token must never appear in stdout/logs. Approval requires interactive presence.
+    logger.LogInformation("{Banner}", StartupBanner.Format(ctx));
 }

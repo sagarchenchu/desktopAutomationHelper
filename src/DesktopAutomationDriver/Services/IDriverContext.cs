@@ -38,8 +38,8 @@ public interface IDriverContext
     string BearerToken { get; }
 
     /// <summary>
-    /// Separate operator token for human vision approval (<c>X-Operator-Token</c>).
-    /// Must not equal <see cref="BearerToken"/> — automation agents cannot self-approve.
+    /// Reserved operator secret (must not equal <see cref="BearerToken"/>).
+    /// Vision approval uses driver interactive presence — not ACL file self-read.
     /// </summary>
     string OperatorToken { get; }
 }

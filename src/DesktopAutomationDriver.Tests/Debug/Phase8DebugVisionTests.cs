@@ -1,6 +1,6 @@
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Reflection;
-using System.Security.AccessControl;
 using System.Text;
 using System.Text.Json;
 using DesktopAutomationDriver.Services;
@@ -869,14 +869,15 @@ public class Phase8DebugVisionTests
         var requested = MakeWindow(new IntPtr(0x100), 1000, new Rectangle(0, 0, 400, 300));
         var other = MakeWindow(new IntPtr(0x200), 2000, new Rectangle(500, 500, 400, 300));
         var windowProbe = new ScriptedLiveWindowProbe(requested);
+        var pixels = new ScriptedWindowPixelCapture(MakeSolidPng(Color.Silver, 16, 16));
         var uia = new ScriptedWindowBoundUiaProbe(other);
-        var capture = new ServerVisionCaptureService(windowProbe, uia);
+        var capture = new ServerVisionCaptureService(windowProbe, uia, pixels);
 
         Assert.Null(capture.Capture(requested.WindowHandle, new Point(50, 60)));
         Assert.Null(capture.Capture(requested.WindowHandle, new Point(900, 900)));
 
         var matchingUia = new ScriptedWindowBoundUiaProbe(requested);
-        var okCapture = new ServerVisionCaptureService(windowProbe, matchingUia);
+        var okCapture = new ServerVisionCaptureService(windowProbe, matchingUia, pixels);
         Assert.NotNull(okCapture.Capture(requested.WindowHandle, new Point(50, 60)));
     }
 
@@ -884,52 +885,183 @@ public class Phase8DebugVisionTests
     public void StartupBanner_NeverIncludesOperatorToken()
     {
         var ctx = new DriverContext("banner-test-user");
-        var aclPath = Path.Combine(Path.GetTempPath(), "DesktopAutomationDriver-test-acl", "operator-token");
-        var banner = StartupBanner.Format(ctx, aclPath);
+        var banner = StartupBanner.Format(ctx);
         Assert.Contains("Bearer token", banner, StringComparison.Ordinal);
         Assert.Contains(ctx.BearerToken, banner, StringComparison.Ordinal);
         Assert.DoesNotContain(ctx.OperatorToken, banner, StringComparison.Ordinal);
-        Assert.Contains("not logged", banner, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(aclPath, banner, StringComparison.Ordinal);
+        Assert.Contains("interactive presence", banner, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ACL secret path", banner, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("X-Operator-Token:", banner, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void OperatorTokenAclSecret_WriteAndRead_CurrentUserOnly_DoesNotLogValue()
+    public void OperatorTokenAclSecret_IsDisabled_NotHumanPresence()
     {
-        var ctx = new DriverContext("acl-secret-user");
-        var path = Path.Combine(
-            Path.GetTempPath(),
-            "DesktopAutomationDriver-acl-tests",
-            Guid.NewGuid().ToString("N"),
-            "operator-token");
+#pragma warning disable CS0618
+        Assert.Null(OperatorTokenAclSecret.TryRead());
+        Assert.Throws<InvalidOperationException>(() =>
+            OperatorTokenAclSecret.WriteCurrentUserOnly("should-not-write"));
+#pragma warning restore CS0618
+    }
 
-        var written = OperatorTokenAclSecret.WriteCurrentUserOnly(ctx.OperatorToken, path);
-        Assert.Equal(path, written);
-        Assert.True(File.Exists(path));
-
-        var read = OperatorTokenAclSecret.TryRead(path);
-        Assert.Equal(ctx.OperatorToken, read);
-
-        var banner = StartupBanner.Format(ctx, path);
-        Assert.DoesNotContain(ctx.OperatorToken, banner, StringComparison.Ordinal);
-
-        var security = new FileInfo(path).GetAccessControl();
-        var rules = security.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier));
-        Assert.True(rules.Count >= 1);
-
-        try
+    [Fact]
+    public void Approve_RequiresInteractivePresence_AclSelfReadIsNotEnough()
+    {
+        var window = MakeWindow(new IntPtr(0xA1), 101);
+        var options = EnabledVisionOptions();
+        var store = new VisionCandidateStore(options);
+        var probe = new ScriptedLiveWindowProbe(window);
+        var png = MakeSolidPng(Color.SteelBlue, 40, 30);
+        var capture = new ScriptedVisionCaptureService(new VisionServerCapture
         {
-            if (File.Exists(path))
-                File.Delete(path);
-            var dir = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
-                Directory.Delete(dir, recursive: true);
-        }
-        catch
+            Window = window,
+            SemanticTarget = InaccessibleTarget(),
+            PngBytes = png
+        });
+        var presence = new ScriptedOperatorPresenceService { Allow = false };
+        var coordinator = VisionFallbackCoordinator.ForTests(options, store, probe, capture, presence);
+
+        var (_, _, candidates) = coordinator.TryProduceCandidatesFromHandle(
+            window.WindowHandle, new Point(40, 50), query: "OK");
+        Assert.NotEmpty(candidates);
+
+        // Even if an agent could read a same-user ACL file, presence denial blocks approve.
+#pragma warning disable CS0618
+        Assert.Null(OperatorTokenAclSecret.TryRead());
+#pragma warning restore CS0618
+        var denied = coordinator.ApproveCandidate(candidates[0].Id!, "click");
+        Assert.False(denied.Allowed);
+        Assert.Contains("presence", denied.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, presence.ConfirmCalls);
+    }
+
+    [Fact]
+    public void Approve_FailsWhenVisibleContentChangesWithoutResize()
+    {
+        var window = MakeWindow(new IntPtr(0xB2), 202);
+        var options = EnabledVisionOptions();
+        var store = new VisionCandidateStore(options);
+        var probe = new ScriptedLiveWindowProbe(window);
+        var holder = new MutableCapture
         {
-            // best-effort cleanup
-        }
+            Window = window,
+            PngBytes = MakeSolidPng(Color.Red, 80, 60)
+        };
+        var capture = new ScriptedVisionCaptureService((hwnd, _) =>
+            hwnd == holder.Window.WindowHandle
+                ? new VisionServerCapture
+                {
+                    Window = holder.Window,
+                    SemanticTarget = InaccessibleTarget(),
+                    PngBytes = holder.PngBytes
+                }
+                : null);
+        var coordinator = VisionFallbackCoordinator.ForTests(options, store, probe, capture);
+
+        var (_, _, candidates) = coordinator.TryProduceCandidatesFromHandle(
+            window.WindowHandle, new Point(40, 50), query: "OK");
+        Assert.NotEmpty(candidates);
+
+        // Same bounds / window identity; only pixels change.
+        holder.PngBytes = MakeSolidPng(Color.Lime, 80, 60);
+        var approval = coordinator.ApproveCandidate(candidates[0].Id!, "click");
+        Assert.False(approval.Allowed);
+        Assert.Contains("fingerprint", approval.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Approve_ComparesAgainstOriginalBaseline_NotLiveVsLive()
+    {
+        var baseline = MakeWindow(new IntPtr(0xC3), 303, new Rectangle(10, 10, 400, 300));
+        var drifted = baseline with { DpiScaleX = 1.5, DpiScaleY = 1.5 };
+        var options = EnabledVisionOptions();
+        var store = new VisionCandidateStore(options);
+        var probe = new ScriptedLiveWindowProbe(hwnd =>
+            hwnd == baseline.WindowHandle ? drifted : null);
+        var png = MakeSolidPng(Color.Navy, 50, 40);
+        var capture = new ScriptedVisionCaptureService((hwnd, _) =>
+            hwnd == baseline.WindowHandle
+                ? new VisionServerCapture
+                {
+                    Window = drifted,
+                    SemanticTarget = InaccessibleTarget(),
+                    PngBytes = png
+                }
+                : null);
+        var coordinator = VisionFallbackCoordinator.ForTests(options, store, probe, capture);
+
+        // Issue against original baseline window identity.
+        var issued = store.Issue(new VisionCandidateTarget
+        {
+            Label = "OK",
+            Bounds = new Rectangle(40, 40, 80, 24),
+            Confidence = 0.9,
+            Window = baseline,
+            ProducedAtUtc = DateTimeOffset.UtcNow,
+            ScreenshotFingerprint = VisionFingerprint.Compute(png, "OK", new Rectangle(40, 40, 80, 24)),
+            AutoPromoted = false
+        }, DateTimeOffset.UtcNow, new Point(50, 60));
+
+        var approval = coordinator.ApproveCandidate(issued.Id, "click");
+        Assert.False(approval.Allowed);
+        Assert.Contains("DPI", approval.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ServerCapture_RejectsMissingOrMismatchedPid_FailClosed()
+    {
+        var requested = MakeWindow(new IntPtr(0x100), 1000, new Rectangle(0, 0, 400, 300));
+        var windowProbe = new ScriptedLiveWindowProbe(requested);
+        var pixels = new ScriptedWindowPixelCapture(MakeSolidPng(Color.Gray, 20, 20));
+
+        var uiaMissing = new ScriptedWindowBoundUiaProbe(
+            new DebugWindowIdentity
+            {
+                WindowHandle = requested.WindowHandle,
+                ProcessId = null,
+                Bounds = requested.Bounds,
+                DpiScaleX = 1,
+                DpiScaleY = 1
+            });
+        Assert.Null(new ServerVisionCaptureService(windowProbe, uiaMissing, pixels)
+            .Capture(requested.WindowHandle, new Point(50, 60)));
+
+        var zeroPid = new ScriptedWindowBoundUiaProbe(
+            requested with { ProcessId = 0 });
+        Assert.Null(new ServerVisionCaptureService(windowProbe, zeroPid, pixels)
+            .Capture(requested.WindowHandle, new Point(50, 60)));
+
+        var otherPid = new ScriptedWindowBoundUiaProbe(
+            requested with { ProcessId = 9999 });
+        Assert.Null(new ServerVisionCaptureService(windowProbe, otherPid, pixels)
+            .Capture(requested.WindowHandle, new Point(50, 60)));
+
+        var ok = new ScriptedWindowBoundUiaProbe(requested);
+        Assert.NotNull(new ServerVisionCaptureService(windowProbe, ok, pixels)
+            .Capture(requested.WindowHandle, new Point(50, 60)));
+    }
+
+    [Fact]
+    public void ServerCapture_UsesRealPixelBytes_NotHwndTextPlaceholder()
+    {
+        var window = MakeWindow(new IntPtr(0xD4), 404);
+        var png = MakeSolidPng(Color.Orange, 32, 24);
+        var pixels = new ScriptedWindowPixelCapture(png);
+        var capture = new ServerVisionCaptureService(
+            new ScriptedLiveWindowProbe(window),
+            new ScriptedWindowBoundUiaProbe(window),
+            pixels);
+
+        var result = capture.Capture(window.WindowHandle, new Point(20, 20));
+        Assert.NotNull(result);
+        Assert.Equal(png, result!.PngBytes);
+        Assert.False(Encoding.UTF8.GetString(result.PngBytes).Contains("server-vision-capture", StringComparison.Ordinal));
+        Assert.True(result.PngBytes.Length >= 32);
+        // PNG magic
+        Assert.Equal(0x89, result.PngBytes[0]);
+        Assert.Equal((byte)'P', result.PngBytes[1]);
+        Assert.Equal((byte)'N', result.PngBytes[2]);
+        Assert.Equal((byte)'G', result.PngBytes[3]);
     }
 
     private static VisionFallbackOptions EnabledVisionOptions() => new()
@@ -961,6 +1093,16 @@ public class Phase8DebugVisionTests
         IsSemanticAccessible = false,
         InaccessibilityReason = "custom-drawn"
     };
+
+    private static byte[] MakeSolidPng(Color color, int width, int height)
+    {
+        using var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bitmap))
+            g.Clear(color);
+        using var stream = new MemoryStream();
+        bitmap.Save(stream, ImageFormat.Png);
+        return stream.ToArray();
+    }
 
     private sealed class MutableCapture
     {

@@ -6,7 +6,7 @@ namespace DesktopAutomationDriver.Controllers;
 
 /// <summary>
 /// Config-gated vision surface. Candidates are server-captured; approval uses the operator channel
-/// (<c>X-Operator-Token</c>); authorize consumes a short-lived one-use execution token.
+/// (interactive presence); authorize consumes a short-lived one-use execution token.
 /// </summary>
 [ApiController]
 [Route("vision")]
@@ -101,7 +101,8 @@ public sealed class VisionController : ControllerBase
             candidates,
             autoPromoted = false,
             requiresHumanApproval = true,
-            requiresOperatorToken = true
+            requiresInteractivePresence = true,
+            requiresOperatorToken = false
         });
     }
 
@@ -113,8 +114,9 @@ public sealed class VisionController : ControllerBase
     }
 
     /// <summary>
-    /// Operator approval channel (middleware requires <c>X-Operator-Token</c>).
-    /// Revalidates live window and returns a short-lived one-use execution token.
+    /// Operator approval: bearer auth + driver-owned interactive presence
+    /// (ACL file self-read is not human approval). Revalidates pixels against the
+    /// original baseline and returns a short-lived one-use execution token.
     /// </summary>
     [HttpPost("approve")]
     public IActionResult Approve([FromBody] ApproveRequest request)

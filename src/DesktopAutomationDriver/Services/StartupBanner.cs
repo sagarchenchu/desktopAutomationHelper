@@ -5,17 +5,13 @@ namespace DesktopAutomationDriver.Services;
 /// </summary>
 public static class StartupBanner
 {
-    public static string Format(IDriverContext ctx, string? operatorTokenAclPath = null)
+    public static string Format(IDriverContext ctx)
     {
         ArgumentNullException.ThrowIfNull(ctx);
 
         var probeInfo = ctx.ProbePortActive
             ? $"http://localhost:{ctx.ProbePort}/verify  (active)"
             : $"port {ctx.ProbePort} unavailable — use main port for /verify";
-
-        var aclHint = string.IsNullOrWhiteSpace(operatorTokenAclPath)
-            ? "%LOCALAPPDATA%\\DesktopAutomationDriver\\operator-token"
-            : operatorTokenAclPath;
 
         var p = ctx.MainPort;
         var sb = new System.Text.StringBuilder();
@@ -26,7 +22,7 @@ public static class StartupBanner
         sb.AppendLine($"║  Windows user  : {ctx.Username,-44}║");
         sb.AppendLine($"║  Main port     : {ctx.MainPort,-44}║");
         sb.AppendLine($"║  Bearer token  : {ctx.BearerToken,-44}║");
-        sb.AppendLine("║  Operator token: (not logged — ACL secret file only)         ║");
+        sb.AppendLine("║  Operator token: (not logged — interactive presence only)    ║");
         sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
         sb.AppendLine("║  UNIFIED ENDPOINT (require: Authorization: Bearer <token>)   ║");
         sb.AppendLine("║                                                              ║");
@@ -77,9 +73,9 @@ public static class StartupBanner
         sb.AppendLine("╚══════════════════════════════════════════════════════════════╝");
         sb.AppendLine($"  Authorization header to use:");
         sb.AppendLine($"    Authorization: Bearer {ctx.BearerToken}");
-        sb.AppendLine("  Vision operator approval: POST /vision/approve with X-Operator-Token");
-        sb.AppendLine("  (operator token is never written to stdout/logs).");
-        sb.AppendLine($"  Operator ACL secret path (value not logged): {aclHint}");
+        sb.AppendLine("  Vision operator approval: POST /vision/approve (Bearer +");
+        sb.AppendLine("  driver interactive presence dialog). Never logged; ACL file");
+        sb.AppendLine("  self-read is not human approval.");
         return sb.ToString();
     }
 }

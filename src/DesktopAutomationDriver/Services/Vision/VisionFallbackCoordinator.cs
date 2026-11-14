@@ -4,8 +4,8 @@ using DesktopAutomationDriver.Services.Debug;
 namespace DesktopAutomationDriver.Services.Vision;
 
 /// <summary>
-/// Gated vision fallback: server capture → OCR candidate → store → operator approve
-/// (re-capture + fingerprint, action-bound one-use token) → atomic claim → authorize.
+/// Gated vision fallback: server capture → OCR candidate → store → human presence
+/// → re-capture vs original baseline fingerprint → action-bound one-use token → authorize.
 /// </summary>
 public sealed class VisionFallbackCoordinator
 {
@@ -16,6 +16,7 @@ public sealed class VisionFallbackCoordinator
     private readonly VisionCandidateStore _store;
     private readonly ILiveWindowProbe _windowProbe;
     private readonly IVisionCaptureService _capture;
+    private readonly IOperatorPresenceService _presence;
 
     public VisionFallbackCoordinator(
         VisionFallbackPolicy policy,
@@ -24,7 +25,8 @@ public sealed class VisionFallbackCoordinator
         CoordinateActionGuard guard,
         VisionCandidateStore store,
         ILiveWindowProbe windowProbe,
-        IVisionCaptureService capture)
+        IVisionCaptureService capture,
+        IOperatorPresenceService presence)
     {
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
         _screenshots = screenshots ?? throw new ArgumentNullException(nameof(screenshots));
@@ -33,18 +35,21 @@ public sealed class VisionFallbackCoordinator
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _windowProbe = windowProbe ?? throw new ArgumentNullException(nameof(windowProbe));
         _capture = capture ?? throw new ArgumentNullException(nameof(capture));
+        _presence = presence ?? throw new ArgumentNullException(nameof(presence));
     }
 
     public static VisionFallbackCoordinator ForTests(
         VisionFallbackOptions? options = null,
         VisionCandidateStore? store = null,
         ILiveWindowProbe? windowProbe = null,
-        IVisionCaptureService? capture = null)
+        IVisionCaptureService? capture = null,
+        IOperatorPresenceService? presence = null)
     {
         options ??= new VisionFallbackOptions { Enabled = false, Provider = "fake" };
         store ??= new VisionCandidateStore(options);
         windowProbe ??= new ScriptedLiveWindowProbe();
         capture ??= new ScriptedVisionCaptureService((_, _) => null);
+        presence ??= new ScriptedOperatorPresenceService { Allow = true };
         var policy = new VisionFallbackPolicy(options);
         return new VisionFallbackCoordinator(
             policy,
@@ -53,7 +58,8 @@ public sealed class VisionFallbackCoordinator
             new CoordinateActionGuard(options),
             store,
             windowProbe,
-            capture);
+            capture,
+            presence);
     }
 
     public VisionFallbackOptions Options => _policy.Options;
@@ -154,8 +160,9 @@ public sealed class VisionFallbackCoordinator
     }
 
     /// <summary>
-    /// Operator approval: re-capture window content, revalidate fingerprint/label/bounds,
-    /// then issue a short-lived one-use execution token.
+    /// Operator approval: requires driver-owned human presence, then re-captures pixels and
+    /// revalidates fingerprint/label/bounds against the <em>original</em> window baseline
+    /// (not live-vs-live), then issues a short-lived one-use execution token.
     /// </summary>
     public VisionApprovalResult ApproveCandidate(string candidateId, string action)
     {
@@ -175,6 +182,17 @@ public sealed class VisionFallbackCoordinator
         if (DestructiveActionHeuristics.IsDestructive(normalizedAction, issued.Snapshot.Label, false))
             return VisionApprovalResult.Deny("Destructive or unknown actions cannot be approved.");
 
+        // Genuine human presence — ACL file self-read is not sufficient.
+        if (!_presence.TryConfirmVisionApproval(
+                new OperatorPresenceRequest(issued.Id, normalizedAction, issued.Snapshot.Label),
+                out var presenceDeny))
+        {
+            return VisionApprovalResult.Deny(
+                string.IsNullOrWhiteSpace(presenceDeny)
+                    ? "Operator presence confirmation required."
+                    : presenceDeny);
+        }
+
         // Re-capture before issuing token — do not trust stale HWND-only identity.
         var recapture = _capture.Capture(
             issued.Snapshot.Window.WindowHandle,
@@ -182,17 +200,19 @@ public sealed class VisionFallbackCoordinator
         if (recapture is null)
             return VisionApprovalResult.Deny("Approval re-capture failed (window/cursor binding).");
 
+        var baseline = issued.Snapshot;
         var live = recapture.Window;
         var freshFingerprint = VisionFingerprint.Compute(
             recapture.PngBytes,
-            issued.Snapshot.Label,
-            issued.Snapshot.Bounds);
-        if (!VisionFingerprint.Matches(issued.Snapshot.ScreenshotFingerprint, freshFingerprint))
+            baseline.Label,
+            baseline.Bounds);
+        if (!VisionFingerprint.Matches(baseline.ScreenshotFingerprint, freshFingerprint))
             return VisionApprovalResult.Deny("Approval revalidation failed: content fingerprint changed.");
 
+        // Compare live probe against the ORIGINAL window identity/DPI/layout — not live-vs-live.
         var revalidation = _guard.EvaluateForApproval(new CoordinateActionRequest
         {
-            Candidate = issued.Snapshot with { Window = live },
+            Candidate = baseline,
             CurrentWindow = live,
             NowUtc = DateTimeOffset.UtcNow,
             Action = normalizedAction
@@ -203,8 +223,8 @@ public sealed class VisionFallbackCoordinator
         var token = "vtx-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         var approvedAt = DateTimeOffset.UtcNow;
 
-        // Refresh snapshot to live window + keep matched fingerprint; do not fake ProducedAtUtc alone.
-        issued.Snapshot = issued.Snapshot with
+        // Keep matched fingerprint; refresh live window only after original-baseline checks pass.
+        issued.Snapshot = baseline with
         {
             Window = live,
             ScreenshotFingerprint = freshFingerprint

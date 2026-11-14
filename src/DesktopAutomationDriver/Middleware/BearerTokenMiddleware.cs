@@ -7,8 +7,9 @@ namespace DesktopAutomationDriver.Middleware;
 /// ASP.NET Core middleware that enforces Bearer-token authentication on all
 /// routes except <c>GET /verify</c>.
 ///
-/// <c>POST /vision/approve</c> requires a separate operator channel
-/// (<c>X-Operator-Token</c>) and rejects the automation bearer for approval.
+/// <c>POST /vision/approve</c> still requires a valid automation bearer, but
+/// human approval is enforced by driver-owned interactive presence inside the
+/// coordinator — not by same-user ACL file self-read.
 /// </summary>
 public class BearerTokenMiddleware
 {
@@ -38,31 +39,6 @@ public class BearerTokenMiddleware
                 await _next(context);
                 return;
             }
-        }
-
-        // Operator approval channel — must not accept the automation bearer alone.
-        if (IsVisionApprovePath(path, context.Request.Method))
-        {
-            var operatorToken = context.Request.Headers["X-Operator-Token"].FirstOrDefault()?.Trim();
-            if (string.IsNullOrEmpty(operatorToken)
-                || !string.Equals(operatorToken, _driverContext.OperatorToken, StringComparison.Ordinal))
-            {
-                await WriteForbidden(context,
-                    "Vision approval requires X-Operator-Token (operator channel). " +
-                    "The automation Bearer token cannot approve candidates.");
-                return;
-            }
-
-            // Still require a valid automation bearer for non-public routes, but approval
-            // additionally requires the distinct operator token above.
-            if (!TryValidateBearer(context, out var bearerError))
-            {
-                await WriteUnauthorized(context, bearerError!);
-                return;
-            }
-
-            await _next(context);
-            return;
         }
 
         if (!TryValidateBearer(context, out var error))
@@ -98,10 +74,6 @@ public class BearerTokenMiddleware
         return true;
     }
 
-    private static bool IsVisionApprovePath(string path, string method) =>
-        path.StartsWith("/vision/approve", StringComparison.OrdinalIgnoreCase)
-        && string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase);
-
     private static async Task WriteUnauthorized(HttpContext context, string message)
     {
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -111,20 +83,6 @@ public class BearerTokenMiddleware
             {
                 status = 401,
                 value = new { error = "unauthorized", message }
-            },
-            JsonOpts);
-        await context.Response.WriteAsync(body);
-    }
-
-    private static async Task WriteForbidden(HttpContext context, string message)
-    {
-        context.Response.StatusCode = StatusCodes.Status403Forbidden;
-        context.Response.ContentType = "application/json";
-        var body = JsonSerializer.Serialize(
-            new
-            {
-                status = 403,
-                value = new { error = "forbidden", message }
             },
             JsonOpts);
         await context.Response.WriteAsync(body);
