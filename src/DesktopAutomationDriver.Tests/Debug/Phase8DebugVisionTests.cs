@@ -756,6 +756,204 @@ public class Phase8DebugVisionTests
     }
 
     [Fact]
+    public void ReApproval_InvalidatesOldExecutionToken_NoOrphanGrant()
+    {
+        var window = MakeWindow(new IntPtr(55), 550);
+        var options = EnabledVisionOptions();
+        var store = new VisionCandidateStore(options);
+        var probe = new ScriptedLiveWindowProbe(window);
+        var png = Encoding.UTF8.GetBytes("stable-png");
+        var capture = new ScriptedVisionCaptureService(new VisionServerCapture
+        {
+            Window = window,
+            SemanticTarget = InaccessibleTarget(),
+            PngBytes = png
+        });
+        var coordinator = VisionFallbackCoordinator.ForTests(options, store, probe, capture);
+
+        var (_, _, candidates) = coordinator.TryProduceCandidatesFromHandle(
+            window.WindowHandle, new Point(40, 50), query: "OK");
+        Assert.NotEmpty(candidates);
+
+        var first = coordinator.ApproveCandidate(candidates[0].Id!, "click");
+        Assert.True(first.Allowed);
+        Assert.Equal(1, store.TokenGrantCount);
+
+        var second = coordinator.ApproveCandidate(candidates[0].Id!, "click");
+        Assert.True(second.Allowed);
+        Assert.NotEqual(first.ExecutionToken, second.ExecutionToken);
+        Assert.Equal(1, store.TokenGrantCount);
+
+        var oldDenied = coordinator.AuthorizeCoordinateAction(first.ExecutionToken!, "click");
+        Assert.False(oldDenied.Allowed);
+
+        var newOk = coordinator.AuthorizeCoordinateAction(second.ExecutionToken!, "click");
+        Assert.True(newOk.Allowed);
+        Assert.Equal(0, store.TokenGrantCount);
+    }
+
+    [Fact]
+    public void ConcurrentAuthorize_OnlyOneConsumesToken()
+    {
+        var window = MakeWindow(new IntPtr(66), 660);
+        var options = EnabledVisionOptions();
+        var store = new VisionCandidateStore(options);
+        var probe = new ScriptedLiveWindowProbe(window);
+        var capture = new ScriptedVisionCaptureService(new VisionServerCapture
+        {
+            Window = window,
+            SemanticTarget = InaccessibleTarget(),
+            PngBytes = Encoding.UTF8.GetBytes("concurrent-png")
+        });
+        var coordinator = VisionFallbackCoordinator.ForTests(options, store, probe, capture);
+
+        var (_, _, candidates) = coordinator.TryProduceCandidatesFromHandle(
+            window.WindowHandle, new Point(40, 50), query: "OK");
+        var approval = coordinator.ApproveCandidate(candidates[0].Id!, "click");
+        Assert.True(approval.Allowed);
+
+        var barrier = new Barrier(2);
+        var results = new CoordinateActionDecision[2];
+        void Worker(int index)
+        {
+            barrier.SignalAndWait();
+            results[index] = coordinator.AuthorizeCoordinateAction(approval.ExecutionToken!, "click");
+        }
+
+        var t0 = new Thread(() => Worker(0));
+        var t1 = new Thread(() => Worker(1));
+        t0.Start();
+        t1.Start();
+        t0.Join();
+        t1.Join();
+
+        Assert.Equal(1, results.Count(r => r.Allowed));
+        Assert.Equal(1, results.Count(r => !r.Allowed));
+        Assert.Equal(0, store.TokenGrantCount);
+    }
+
+    [Fact]
+    public void Approve_DeniesWhenContentFingerprintChanges()
+    {
+        var window = MakeWindow(new IntPtr(77), 770);
+        var options = EnabledVisionOptions();
+        var store = new VisionCandidateStore(options);
+        var probe = new ScriptedLiveWindowProbe(window);
+        var holder = new MutableCapture { Window = window, PngBytes = Encoding.UTF8.GetBytes("content-v1") };
+        var capture = new ScriptedVisionCaptureService((hwnd, _) =>
+            hwnd == holder.Window.WindowHandle
+                ? new VisionServerCapture
+                {
+                    Window = holder.Window,
+                    SemanticTarget = InaccessibleTarget(),
+                    PngBytes = holder.PngBytes
+                }
+                : null);
+        var coordinator = VisionFallbackCoordinator.ForTests(options, store, probe, capture);
+
+        var (_, _, candidates) = coordinator.TryProduceCandidatesFromHandle(
+            window.WindowHandle, new Point(40, 50), query: "OK");
+        Assert.NotEmpty(candidates);
+
+        holder.PngBytes = Encoding.UTF8.GetBytes("content-v2-changed");
+        var approval = coordinator.ApproveCandidate(candidates[0].Id!, "click");
+        Assert.False(approval.Allowed);
+        Assert.Contains("fingerprint", approval.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, store.TokenGrantCount);
+    }
+
+    [Fact]
+    public void ServerCapture_RejectsCursorOnOtherWindow_AndOutsideBounds()
+    {
+        var requested = MakeWindow(new IntPtr(0x100), 1000, new Rectangle(0, 0, 400, 300));
+        var other = MakeWindow(new IntPtr(0x200), 2000, new Rectangle(500, 500, 400, 300));
+        var windowProbe = new ScriptedLiveWindowProbe(requested);
+        var uia = new ScriptedWindowBoundUiaProbe(other);
+        var capture = new ServerVisionCaptureService(windowProbe, uia);
+
+        Assert.Null(capture.Capture(requested.WindowHandle, new Point(50, 60)));
+        Assert.Null(capture.Capture(requested.WindowHandle, new Point(900, 900)));
+
+        var matchingUia = new ScriptedWindowBoundUiaProbe(requested);
+        var okCapture = new ServerVisionCaptureService(windowProbe, matchingUia);
+        Assert.NotNull(okCapture.Capture(requested.WindowHandle, new Point(50, 60)));
+    }
+
+    [Fact]
+    public void StartupBanner_NeverIncludesOperatorToken()
+    {
+        var ctx = new DriverContext("banner-test-user");
+        var banner = StartupBanner.Format(ctx);
+        Assert.Contains("Bearer token", banner, StringComparison.Ordinal);
+        Assert.Contains(ctx.BearerToken, banner, StringComparison.Ordinal);
+        Assert.DoesNotContain(ctx.OperatorToken, banner, StringComparison.Ordinal);
+        Assert.Contains("not logged", banner, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static VisionFallbackOptions EnabledVisionOptions() => new()
+    {
+        Enabled = true,
+        AllowWhenUiaInaccessible = true,
+        Provider = "fake",
+        MinimumConfidence = 0.5,
+        MaxScreenshotAgeMilliseconds = 5000,
+        CandidateTtlMilliseconds = 60_000,
+        ExecutionTokenTtlMilliseconds = 30_000
+    };
+
+    private static DebugWindowIdentity MakeWindow(
+        IntPtr hwnd,
+        int pid,
+        Rectangle? bounds = null) => new()
+    {
+        WindowHandle = hwnd,
+        ProcessId = pid,
+        Bounds = bounds ?? new Rectangle(0, 0, 400, 300),
+        DpiScaleX = 1,
+        DpiScaleY = 1
+    };
+
+    private static DebugUiaNode InaccessibleTarget() => new()
+    {
+        ControlType = "Custom",
+        IsSemanticAccessible = false,
+        InaccessibilityReason = "custom-drawn"
+    };
+
+    private sealed class MutableCapture
+    {
+        public required DebugWindowIdentity Window { get; init; }
+        public required byte[] PngBytes { get; set; }
+    }
+
+    private sealed class ScriptedWindowBoundUiaProbe : IUiaElementProbe
+    {
+        private readonly DebugWindowIdentity _window;
+
+        public ScriptedWindowBoundUiaProbe(DebugWindowIdentity window) => _window = window;
+
+        public DebugTreeCapture? CaptureAtPoint(Point screenPoint, int maxAncestry = 8, int maxChildren = 25) =>
+            UiaTreeCaptureService.FromNodes(
+                new DebugUiaNode
+                {
+                    ControlType = "Custom",
+                    IsSemanticAccessible = false,
+                    InaccessibilityReason = "custom-drawn",
+                    Bounds = new Rectangle(screenPoint.X - 5, screenPoint.Y - 5, 20, 20)
+                },
+                window: _window,
+                cursor: screenPoint);
+
+        public LocatorMatchProbeResult CountLocatorMatches(
+            IReadOnlyDictionary<string, object?> locator,
+            DebugWindowIdentity? scope) =>
+            LocatorMatchProbeResult.Ok(0);
+
+        public HoverProbeResult ProbeHover(Point screenPoint) =>
+            new() { ScreenPoint = screenPoint, NoOp = true };
+    }
+
+    [Fact]
     public void DebugSessionSnapshot_JsonSerializesWindowHandleAsHex_NotIntPtr()
     {
         // Repro for Windows acceptance: /debug/inspect returned 500 because STJ cannot serialize IntPtr.

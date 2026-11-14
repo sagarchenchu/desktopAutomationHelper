@@ -121,8 +121,9 @@ Do **not** set `Name = CustomDrawnCanvas` — that made the control accessible.
 
 ## Windows acceptance
 
-Prior PASS claims are **retracted**. Re-run S1–S9 is **DNU-25** on one clean tip SHA.
+Prior PASS claims (including DNU-25 on `dfd65d0`) are **retracted / superseded**. Re-run S1–S9 is **DNU-26** on one clean tip SHA after round-4.
 S5 must exercise candidates→approve→authorize Allowed=true; S7 destructive after approve with vision on.
+Operator token is never logged at startup — deliver via interactive UI / ACL-protected secret.
 Helper: `docs/acceptance/phase8-assert-http-ok.ps1`.
 
 ## Limitations

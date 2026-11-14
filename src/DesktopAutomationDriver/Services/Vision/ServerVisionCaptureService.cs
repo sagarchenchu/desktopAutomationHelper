@@ -4,8 +4,8 @@ using DesktopAutomationDriver.Services.Debug;
 namespace DesktopAutomationDriver.Services.Vision;
 
 /// <summary>
-/// Captures live window + UIA under cursor via probes. PNG bytes are a deterministic
-/// server-built envelope for the fake provider (real OCR adapters can replace later).
+/// Captures live window + UIA under cursor via probes. Cursor UIA must belong to the
+/// requested window (HWND/PID) and lie inside live window bounds.
 /// </summary>
 public sealed class ServerVisionCaptureService : IVisionCaptureService
 {
@@ -30,13 +30,35 @@ public sealed class ServerVisionCaptureService : IVisionCaptureService
         DebugUiaNode? target = null;
         if (cursorScreenPoint is { } cursor)
         {
+            if (window.Bounds.IsEmpty || !window.Bounds.Contains(cursor))
+                return null;
+
             var tree = _uiaProbe.CaptureAtPoint(cursor, maxAncestry: 4, maxChildren: 8);
-            target = tree?.Target;
+            if (tree is null)
+                return null;
+
+            // Bind cursor UIA tree to the requested window — reject other-window hits.
+            if (tree.Window is null
+                || tree.Window.WindowHandle != windowHandle
+                || tree.Window.WindowHandle != window.WindowHandle)
+            {
+                return null;
+            }
+
+            if (window.ProcessId is int expectedPid
+                && tree.Window.ProcessId is int treePid
+                && expectedPid > 0
+                && treePid > 0
+                && expectedPid != treePid)
+            {
+                return null;
+            }
+
+            target = tree.Target;
         }
 
-        // Server-built envelope — never accept client PNG for issuance.
         var png = Encoding.UTF8.GetBytes(
-            $"server-vision-capture:{window.WindowHandleHex}:{window.ProcessId}:{window.Bounds.Width}x{window.Bounds.Height}");
+            $"server-vision-capture:{window.WindowHandleHex}:{window.ProcessId}:{window.Bounds.Width}x{window.Bounds.Height}:{window.Bounds.X},{window.Bounds.Y}");
 
         return new VisionServerCapture
         {

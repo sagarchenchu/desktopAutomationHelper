@@ -4,8 +4,8 @@ using DesktopAutomationDriver.Services.Debug;
 namespace DesktopAutomationDriver.Services.Vision;
 
 /// <summary>
-/// Gated vision fallback: server capture → OCR candidate → store → operator approve (action-bound
-/// one-use execution token) → authorize with fresh probe. Automation cannot self-approve.
+/// Gated vision fallback: server capture → OCR candidate → store → operator approve
+/// (re-capture + fingerprint, action-bound one-use token) → atomic claim → authorize.
 /// </summary>
 public sealed class VisionFallbackCoordinator
 {
@@ -81,9 +81,6 @@ public sealed class VisionFallbackCoordinator
         return VisionEligibility.Denied;
     }
 
-    /// <summary>
-    /// Server-side issuance from HWND (+ optional cursor). Client image/window/UIA flags are not trusted.
-    /// </summary>
     public (VisionEligibility Eligibility, VisionScreenshot? Screenshot, IReadOnlyList<VisionCandidateTarget> Candidates)
         TryProduceCandidatesFromHandle(
             IntPtr windowHandle,
@@ -105,12 +102,10 @@ public sealed class VisionFallbackCoordinator
             capture.PngBytes,
             query: query,
             policyExplicitlyPermits: policyExplicitlyPermits,
-            persistDirectory: persistDirectory);
+            persistDirectory: persistDirectory,
+            cursorScreenPoint: capture.Cursor);
     }
 
-    /// <summary>
-    /// Internal/test path when window + bytes are already server-captured (e.g. Debug session UIA).
-    /// </summary>
     public (VisionEligibility Eligibility, VisionScreenshot? Screenshot, IReadOnlyList<VisionCandidateTarget> Candidates)
         TryProduceCandidates(
             DebugUiaNode? semanticTarget,
@@ -118,7 +113,8 @@ public sealed class VisionFallbackCoordinator
             byte[] windowPngBytes,
             string? query = null,
             bool policyExplicitlyPermits = false,
-            string? persistDirectory = null)
+            string? persistDirectory = null,
+            Point? cursorScreenPoint = null)
     {
         var eligibility = _policy.Evaluate(semanticTarget, policyExplicitlyPermits);
         if (eligibility is VisionEligibility.DisabledByDefault
@@ -138,21 +134,28 @@ public sealed class VisionFallbackCoordinator
         var issued = _provider.Analyze(screenshot, query)
             .Where(c => !c.AutoPromoted)
             .Where(c => c.Confidence >= _policy.Options.MinimumConfidence)
-            .Select(c => _store.Issue(
-                c with
-                {
-                    ProducedAtUtc = issuedAt,
-                    AutoPromoted = false,
-                    Window = window
-                },
-                issuedAt).Snapshot)
+            .Select(c =>
+            {
+                var fingerprint = VisionFingerprint.Compute(windowPngBytes, c.Label, c.Bounds);
+                return _store.Issue(
+                    c with
+                    {
+                        ProducedAtUtc = issuedAt,
+                        AutoPromoted = false,
+                        Window = window,
+                        ScreenshotFingerprint = fingerprint
+                    },
+                    issuedAt,
+                    cursorScreenPoint).Snapshot;
+            })
             .ToList();
 
         return (eligibility, screenshot, issued);
     }
 
     /// <summary>
-    /// Operator approval: bind action, re-capture/revalidate window, issue short-lived one-use execution token.
+    /// Operator approval: re-capture window content, revalidate fingerprint/label/bounds,
+    /// then issue a short-lived one-use execution token.
     /// </summary>
     public VisionApprovalResult ApproveCandidate(string candidateId, string action)
     {
@@ -172,13 +175,24 @@ public sealed class VisionFallbackCoordinator
         if (DestructiveActionHeuristics.IsDestructive(normalizedAction, issued.Snapshot.Label, false))
             return VisionApprovalResult.Deny("Destructive or unknown actions cannot be approved.");
 
-        var live = _windowProbe.ProbeByHandle(issued.Snapshot.Window.WindowHandle);
-        if (live is null)
-            return VisionApprovalResult.Deny("Fresh window probe failed during approval revalidation.");
+        // Re-capture before issuing token — do not trust stale HWND-only identity.
+        var recapture = _capture.Capture(
+            issued.Snapshot.Window.WindowHandle,
+            issued.CursorScreenPoint);
+        if (recapture is null)
+            return VisionApprovalResult.Deny("Approval re-capture failed (window/cursor binding).");
+
+        var live = recapture.Window;
+        var freshFingerprint = VisionFingerprint.Compute(
+            recapture.PngBytes,
+            issued.Snapshot.Label,
+            issued.Snapshot.Bounds);
+        if (!VisionFingerprint.Matches(issued.Snapshot.ScreenshotFingerprint, freshFingerprint))
+            return VisionApprovalResult.Deny("Approval revalidation failed: content fingerprint changed.");
 
         var revalidation = _guard.EvaluateForApproval(new CoordinateActionRequest
         {
-            Candidate = issued.Snapshot,
+            Candidate = issued.Snapshot with { Window = live },
             CurrentWindow = live,
             NowUtc = DateTimeOffset.UtcNow,
             Action = normalizedAction
@@ -188,11 +202,16 @@ public sealed class VisionFallbackCoordinator
 
         var token = "vtx-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         var approvedAt = DateTimeOffset.UtcNow;
+
+        // Refresh snapshot to live window + keep matched fingerprint; do not fake ProducedAtUtc alone.
+        issued.Snapshot = issued.Snapshot with
+        {
+            Window = live,
+            ScreenshotFingerprint = freshFingerprint
+        };
+
         if (!_store.TryBindApproval(candidateId, normalizedAction, token, approvedAt, out var bound) || bound is null)
             return VisionApprovalResult.Deny("Failed to bind approval / execution token.");
-
-        // Refresh snapshot window to the revalidated live probe for subsequent authorize.
-        bound.Snapshot = bound.Snapshot with { Window = live, ProducedAtUtc = approvedAt };
 
         return new VisionApprovalResult
         {
@@ -207,7 +226,9 @@ public sealed class VisionFallbackCoordinator
     }
 
     /// <summary>
-    /// Authorize with a short-lived one-use execution token (action-bound). Consumes on success.
+    /// Authorize with a short-lived one-use execution token. Validates action/match first
+    /// (wrong action must not burn the token), then atomically claims before Allowed=true.
+    /// Concurrent double-pass: only one claim wins; consume failure ⇒ Denied.
     /// </summary>
     public CoordinateActionDecision AuthorizeCoordinateAction(
         string executionToken,
@@ -218,26 +239,27 @@ public sealed class VisionFallbackCoordinator
             return Deny("Vision fallback disabled (Vision:Enabled=false).");
 
         if (string.IsNullOrWhiteSpace(executionToken)
-            || !_store.TryGetByExecutionToken(executionToken, out var issued))
+            || !_store.TryGetExecutionGrant(executionToken, out var grant))
         {
-            return Deny("Unknown, expired, or unissued execution token.");
+            return Deny("Unknown, expired, consumed, or mismatched execution token.");
         }
+
+        if (!_store.TryGet(grant.CandidateId, out var issued))
+            return Deny("Vision candidate missing for execution token.");
 
         if (issued.AutoPromoted || issued.Snapshot.AutoPromoted)
             return Deny("Auto-promoted vision candidates are denied.");
 
-        if (issued.Consumed || issued.ExecutionTokenConsumed)
-            return Deny("Execution token already consumed.");
-
-        if (issued.ExecutionTokenExpiresAtUtc is { } exp && exp < DateTimeOffset.UtcNow)
-            return Deny("Execution token expired.");
-
-        if (string.IsNullOrWhiteSpace(issued.ApprovedAction))
-            return Deny("Vision candidate is not approved; operator approval required.");
-
-        var requestedAction = VisionCandidateStore.NormalizeAction(action ?? issued.ApprovedAction);
-        if (!string.Equals(requestedAction, issued.ApprovedAction, StringComparison.Ordinal))
+        var requestedAction = VisionCandidateStore.NormalizeAction(action ?? grant.Action);
+        if (!string.Equals(requestedAction, grant.Action, StringComparison.Ordinal))
             return Deny("Action does not match operator-approved action.");
+
+        // Verify submitted token still equals issued token on the candidate.
+        if (!string.Equals(issued.ExecutionToken, executionToken, StringComparison.Ordinal)
+            || !string.Equals(grant.IssuedToken, executionToken, StringComparison.Ordinal))
+        {
+            return Deny("Execution token does not match issued token.");
+        }
 
         var live = _windowProbe.ProbeByHandle(issued.Snapshot.Window.WindowHandle);
         if (live is null)
@@ -251,17 +273,22 @@ public sealed class VisionFallbackCoordinator
             NowUtc = now,
             Action = requestedAction,
             IsDestructive = isDestructive,
-            // Freshness from approval/revalidation — not original issue time.
             FreshnessAnchorUtc = issued.ApprovedAtUtc ?? issued.Snapshot.ProducedAtUtc
         });
 
-        if (decision.Allowed)
-            _store.TryConsume(issued.Id, executionToken);
+        if (!decision.Allowed)
+            return decision;
+
+        // Atomic one-use claim — concurrent callers: only one TryRemove wins.
+        if (!_store.TryClaimExecutionToken(executionToken, out _))
+            return Deny("Execution token already claimed or consume race lost.");
+
+        if (!_store.TryConsumeAfterClaim(issued.Id, executionToken))
+            return Deny("Failed to consume execution token after authorization.");
 
         return decision;
     }
 
-    /// <summary>Legacy candidate-id authorize path — requires a live execution token on the candidate.</summary>
     public CoordinateActionDecision AuthorizeCoordinateActionByCandidateId(
         string candidateId,
         string action = "click",
@@ -300,7 +327,6 @@ public sealed class VisionApprovalResult
         new() { Allowed = false, Reason = reason };
 }
 
-/// <summary>Test double that echoes a scripted window identity for a given HWND.</summary>
 public sealed class ScriptedLiveWindowProbe : ILiveWindowProbe
 {
     private readonly Func<IntPtr, DebugWindowIdentity?> _probe;
