@@ -1,8 +1,8 @@
 {
     "scenarioId":  "07-stale-dpi-guards",
     "name":  "Stale/DPI/layout/destructive denied",
-    "tipSha":  "dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa",
-    "headSha":  "dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa",
+    "tipSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
+    "headSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
     "pass":  true,
     "probe":  {
                   "visionEnabledCustomDrawn":  true,
@@ -30,8 +30,8 @@
                                  "y":  100,
                                  "w":  800,
                                  "h":  600,
-                                 "pid":  6496,
-                                 "hwnd":  7144846,
+                                 "pid":  11944,
+                                 "hwnd":  5701658,
                                  "title":  "DA Test Harness"
                              }
               },
@@ -39,12 +39,12 @@
     "destructiveApproveReason":  "Destructive or unknown actions cannot be approved.",
     "destructiveLabelReason":  "Destructive or unknown actions cannot be approved.",
     "destructiveCandidateCount":  1,
-    "operatorTokenSource":  "driver startup log (X-Operator-Token / Operator token banner); not automation bearer / not GET /verify",
-    "destructiveCandidateId":  "vc-2187883e092e4992a1b35d47459b860e",
+    "operatorTokenSource":  "ACL-protected secret file (C:\\Users\\ADMIN\\AppData\\Local\\DesktopAutomationDriver\\operator-token); never startup log / not automation bearer / not GET /verify",
+    "destructiveCandidateId":  "vc-d1c6cc394c974f538a0728d5a57cdccd",
     "destructiveApproveHttpStatus":  400,
     "destructiveAuthorizeReason":  null,
     "destructiveAuthorizeAllowed":  false,
-    "note":  "DNU-25 S7: probe covers stale/DPI/layout; HTTP path vision-enabled Delete label → operator approve denied for Destructive (not Vision:Enabled=false)",
+    "note":  "DNU-26 S7: probe covers stale/DPI/layout; HTTP path vision-enabled Delete label -\u003e operator approve denied for Destructive (not Vision:Enabled=false)",
     "destructiveCandidateLabel":  "Delete",
     "visionEnabledForDestructive":  true,
     "destructiveApproveAllowed":  false

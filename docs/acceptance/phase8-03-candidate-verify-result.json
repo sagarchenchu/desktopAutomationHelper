@@ -1,10 +1,10 @@
 {
     "scenarioId":  "03-candidate-verify",
     "name":  "Candidate unique verify",
-    "tipSha":  "dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa",
-    "headSha":  "dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa",
+    "tipSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
+    "headSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
     "pass":  true,
-    "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114020720-b2a900635\\candidate.json",
+    "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114022941-664493a83\\candidate.json",
     "verifyHttpOk":  true,
     "startHttpOk":  true,
     "inspectHttpOk":  true,
