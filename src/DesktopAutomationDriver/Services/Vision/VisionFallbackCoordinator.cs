@@ -1,4 +1,6 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Threading;
 using DesktopAutomationDriver.Services.Debug;
 
 namespace DesktopAutomationDriver.Services.Vision;
@@ -193,6 +195,10 @@ public sealed class VisionFallbackCoordinator
                     : presenceDeny);
         }
 
+        // Presence MessageBox steals activation; restore target before pixel re-capture
+        // so client content matches the original baseline screenshot.
+        TryRestoreWindowForRecapture(issued.Snapshot.Window.WindowHandle);
+
         // Re-capture before issuing token — do not trust stale HWND-only identity.
         var recapture = _capture.Capture(
             issued.Snapshot.Window.WindowHandle,
@@ -331,6 +337,31 @@ public sealed class VisionFallbackCoordinator
 
     private static CoordinateActionDecision Deny(string reason) =>
         new() { Allowed = false, Reason = reason, ScreenPoint = null };
+
+    private static void TryRestoreWindowForRecapture(IntPtr windowHandle)
+    {
+        if (windowHandle == IntPtr.Zero)
+            return;
+        try
+        {
+            ShowWindow(windowHandle, SW_SHOW);
+            SetForegroundWindow(windowHandle);
+            // Brief settle so DWM/client paint matches pre-dialog baseline.
+            Thread.Sleep(75);
+        }
+        catch
+        {
+            // best-effort
+        }
+    }
+
+    private const int SW_SHOW = 5;
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
 
 public sealed class VisionApprovalResult

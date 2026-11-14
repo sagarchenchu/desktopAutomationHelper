@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 
 namespace DesktopAutomationDriver.Services.Vision;
 
@@ -10,27 +11,34 @@ public interface IWindowPixelCapture
     byte[]? CapturePng(IntPtr windowHandle, Rectangle bounds);
 }
 
-/// <summary>CopyFromScreen capture of the live window rectangle.</summary>
+/// <summary>
+/// CopyFromScreen capture of the live window <em>client</em> area.
+/// Client-area avoids title-bar active/inactive chrome churn after interactive presence dialogs.
+/// </summary>
 public sealed class ScreenWindowPixelCapture : IWindowPixelCapture
 {
     public byte[]? CapturePng(IntPtr windowHandle, Rectangle bounds)
     {
         if (windowHandle == IntPtr.Zero)
             return null;
-        if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0)
+
+        // Prefer client-area screen rect so presence MessageBox focus changes do not
+        // invalidate fingerprints via non-client chrome.
+        var captureBounds = TryGetClientScreenBounds(windowHandle) ?? bounds;
+        if (captureBounds.IsEmpty || captureBounds.Width <= 0 || captureBounds.Height <= 0)
             return null;
 
         try
         {
-            using var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
+            using var bitmap = new Bitmap(captureBounds.Width, captureBounds.Height, PixelFormat.Format32bppArgb);
             using (var graphics = Graphics.FromImage(bitmap))
             {
                 graphics.CopyFromScreen(
-                    bounds.X,
-                    bounds.Y,
+                    captureBounds.X,
+                    captureBounds.Y,
                     0,
                     0,
-                    bounds.Size,
+                    captureBounds.Size,
                     CopyPixelOperation.SourceCopy);
             }
 
@@ -47,6 +55,48 @@ public sealed class ScreenWindowPixelCapture : IWindowPixelCapture
             return null;
         }
     }
+
+    private static Rectangle? TryGetClientScreenBounds(IntPtr windowHandle)
+    {
+        try
+        {
+            if (!GetClientRect(windowHandle, out var client) || client.Right <= client.Left || client.Bottom <= client.Top)
+                return null;
+
+            var topLeft = new POINT { X = client.Left, Y = client.Top };
+            var bottomRight = new POINT { X = client.Right, Y = client.Bottom };
+            if (!ClientToScreen(windowHandle, ref topLeft) || !ClientToScreen(windowHandle, ref bottomRight))
+                return null;
+
+            return Rectangle.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
 }
 
 /// <summary>Test double returning scripted PNG bytes.</summary>
