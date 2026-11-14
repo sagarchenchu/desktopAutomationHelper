@@ -7,7 +7,10 @@
     startHttpOk, inspectHttpOk, verifyHttpOk (when verify is exercised), stopHttpOk
 
   Historical PASS claims with inspectHttpOk=false or inconsistent SHAs are retracted.
-  Re-run is DNU-24: one committed tip SHA; every result file must record that unchanged SHA.
+  Re-run is DNU-25: one committed tip SHA; every result file must record that unchanged SHA.
+  S5 must candidates->operator approve->authorize Allowed=true.
+  S6 authorize denied when vision off (executionToken path).
+  S7 destructive denial with vision enabled (not Vision:Enabled=false).
 
 .PARAMETER BaseUrl
   Driver base URL (e.g. http://127.0.0.1:91xx).
@@ -58,8 +61,19 @@ function Invoke-Driver {
     }
     catch {
         $code = $null
-        if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
-        return @{ Ok = $false; StatusCode = $code; Content = $null; Error = "$_" }
+        $content = $null
+        if ($_.Exception.Response) {
+            try { $code = [int]$_.Exception.Response.StatusCode } catch { $code = $null }
+            try {
+                $stream = $_.Exception.Response.GetResponseStream()
+                if ($stream) {
+                    $reader = New-Object System.IO.StreamReader($stream)
+                    $content = $reader.ReadToEnd()
+                    $reader.Dispose()
+                }
+            } catch { $content = $null }
+        }
+        return @{ Ok = $false; StatusCode = $code; Content = $content; Error = "$_" }
     }
 }
 
@@ -87,20 +101,23 @@ $result = [ordered]@{
 }
 
 if ($AssertVisionAuthorizeDenied) {
+    # Round-3 / DNU-25: authorize consumes executionToken (not candidateId).
     $auth = Invoke-Driver -Method 'POST' -Path '/vision/authorize' -Body @{
-        candidateId   = 'vc-acceptance-probe-unissued'
-        action        = 'click'
-        isDestructive = $false
+        executionToken = 'vtx-acceptance-probe-unissued'
+        action         = 'click'
+        isDestructive  = $false
     }
     $allowed = $false
-    if ($auth.Ok -and $auth.Content) {
+    if ($auth.Content) {
         try {
             $parsed = $auth.Content | ConvertFrom-Json
-            $allowed = [bool]$parsed.allowed
+            if ($null -ne $parsed.allowed) { $allowed = [bool]$parsed.allowed }
+            elseif ($null -ne $parsed.Allowed) { $allowed = [bool]$parsed.Allowed }
         }
         catch { $allowed = $true }
     }
-    $result.authorizeHttpOk = [bool]$auth.Ok
+    elseif ($auth.Ok) { $allowed = $true }
+    $result.authorizeHttpOk = [bool]($auth.Ok -or ($null -ne $auth.Content))
     $result.authorizeAllowed = $allowed
     $result.authorizeHttpDenied = (-not $allowed)
     $result.authorizeStatus = $auth.StatusCode

@@ -9,6 +9,7 @@ Branch/base/head/PR:
 - Base: `origin/main`
 - Round-3 baseline: `554daad`
 - Product tip (tested / tipSha): `dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa` / `dfd65d0`
+- Evidence HEAD: see branch tip after DNU-25 evidence commit (tipSha in result files remains `dfd65d0`)
 - PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 - **draft** (do not merge)
 
 ### Windows acceptance (DNU-25)
