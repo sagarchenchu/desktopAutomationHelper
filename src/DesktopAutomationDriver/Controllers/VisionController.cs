@@ -5,8 +5,8 @@ using Microsoft.AspNetCore.Mvc;
 namespace DesktopAutomationDriver.Controllers;
 
 /// <summary>
-/// Config-gated vision surface. Candidates are server-captured; approval uses the operator channel
-/// (interactive presence); authorize consumes a short-lived one-use execution token.
+/// Config-gated vision surface. Candidates are server-captured; approval uses operator
+/// confirmation UX (UIA-automatable; not OS human-presence); authorize consumes a one-use token.
 /// </summary>
 [ApiController]
 [Route("vision")]
@@ -37,8 +37,11 @@ public sealed class VisionController : ControllerBase
             maxScreenshotAgeMilliseconds = _options.MaxScreenshotAgeMilliseconds,
             candidateTtlMilliseconds = _options.CandidateTtlMilliseconds,
             executionTokenTtlMilliseconds = _options.ExecutionTokenTtlMilliseconds,
+            operatorConfirmationTimeoutMilliseconds = _options.OperatorConfirmationTimeoutMilliseconds,
             maxStoredCandidates = _options.MaxStoredCandidates,
-            minimumConfidence = _options.MinimumConfidence
+            minimumConfidence = _options.MinimumConfidence,
+            operatorConfirmationIsUxOnly = true,
+            operatorConfirmationUiaAutomatable = true
         });
 
     public sealed class EvaluateRequest
@@ -101,7 +104,10 @@ public sealed class VisionController : ControllerBase
             candidates,
             autoPromoted = false,
             requiresHumanApproval = true,
-            requiresInteractivePresence = true,
+            requiresOperatorConfirmationUx = true,
+            operatorConfirmationIsUxOnly = true,
+            operatorConfirmationUiaAutomatable = true,
+            requiresInteractivePresence = false,
             requiresOperatorToken = false
         });
     }
@@ -114,14 +120,14 @@ public sealed class VisionController : ControllerBase
     }
 
     /// <summary>
-    /// Operator approval: bearer auth + driver-owned interactive presence
-    /// (ACL file self-read is not human approval). Revalidates pixels against the
-    /// original baseline and returns a short-lived one-use execution token.
+    /// Operator approval: bearer auth + operator confirmation UX dialog.
+    /// The dialog is UIA-automatable and is not OS-enforced human presence.
+    /// Timeout / cancel / single-flight deny. Revalidates pixels vs original baseline.
     /// </summary>
     [HttpPost("approve")]
-    public IActionResult Approve([FromBody] ApproveRequest request)
+    public IActionResult Approve([FromBody] ApproveRequest request, CancellationToken cancellationToken)
     {
-        var result = _coordinator.ApproveCandidate(request.CandidateId, request.Action);
+        var result = _coordinator.ApproveCandidate(request.CandidateId, request.Action, cancellationToken);
         if (!result.Allowed)
         {
             return BadRequest(new

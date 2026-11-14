@@ -62,7 +62,7 @@ Bound via `IOptions<VisionFallbackOptions>` and exposed at:
 | `GET /vision/status` | Enabled flag + options |
 | `POST /vision/evaluate` | Eligibility for a semantic target |
 | `POST /vision/candidates` | Server HWND/cursor capture → opaque candidates |
-| `POST /vision/approve` | **Operator** approval (Bearer + driver interactive presence; ACL self-read is not human); action-bound; issues one-use execution token |
+| `POST /vision/approve` | **Operator confirmation UX** (Bearer + desktop dialog; UIA-automatable — not OS human-presence); action-bound; one-use execution token |
 | `POST /vision/authorize` | Authorize with execution token (gated on `Vision:Enabled`; consumes on success) |
 | `POST /vision/hover` | Gated hover via execution token |
 | `POST /vision/doubleclick` | DoubleClickPolicy + execution token |
@@ -79,7 +79,7 @@ Allowed only when:
 Authorization rules (fail-closed):
 
 - Server captures window/screenshot/UIA from HWND/cursor — client PNG/window not trusted
-- Opaque server-issued candidate id; **interactive human presence** required to approve (ACL self-read is not human)
+- Opaque server-issued candidate id; **operator confirmation UX** required to approve (UIA-automatable dialog — not OS human-presence; ACL self-read unused)
 - Approval bound to **candidate + action**; revalidate pixels vs **original** window baseline; short-lived **one-use** execution token
 - Humans are not forced through MaxScreenshotAgeMs for approve (CandidateTtl); token TTL gates authorize
 - Successful authorize **consumes** candidate/token; store has TTL + capacity
@@ -121,9 +121,9 @@ Do **not** set `Name = CustomDrawnCanvas` — that made the control accessible.
 
 ## Windows acceptance
 
-**DNU-27 PASS** on tipSha `f0b2229` (round-5 `c62bec3` + PrintWindow client capture). Prior DNU-26 PASS on `f9913ef` superseded.
-S5: candidates→interactive presence approve→authorize Allowed=true; content-change-without-resize deny; S7 destructive with vision on.
-Approval requires driver-owned interactive presence — same-user ACL file self-read is not human approval.
+Prior PASS claims (including DNU-27 on `f0b2229`) are **retracted / superseded**. Re-run S1–S9 is **DNU-28** after round-6.
+S5: candidates→operator confirmation UX approve→authorize Allowed=true; S7 destructive with vision on.
+Approval uses **operator confirmation UX** (desktop dialog; UIA-automatable) — **not** OS-enforced human presence. Timeout/cancel/single-flight deny. ACL file unused.
 Helper: `docs/acceptance/phase8-assert-http-ok.ps1`.
 
 ## Limitations
@@ -131,6 +131,7 @@ Helper: `docs/acceptance/phase8-assert-http-ok.ps1`.
 - Real OCR providers are not enabled in Phase 8 (fake only)
 - No headless claim
 - Vision remains independently gated from Debug Mode
+- Operator confirmation dialog is UIA-automatable (not a presence broker)
 - Manual Windows acceptance required before leaving draft / merge
 
 ## Exit gate

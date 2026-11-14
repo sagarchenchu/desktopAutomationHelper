@@ -22,7 +22,7 @@ public static class StartupBanner
         sb.AppendLine($"║  Windows user  : {ctx.Username,-44}║");
         sb.AppendLine($"║  Main port     : {ctx.MainPort,-44}║");
         sb.AppendLine($"║  Bearer token  : {ctx.BearerToken,-44}║");
-        sb.AppendLine("║  Operator token: (not logged — interactive presence only)    ║");
+        sb.AppendLine("║  Operator token: (not logged — confirmation UX dialog)       ║");
         sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
         sb.AppendLine("║  UNIFIED ENDPOINT (require: Authorization: Bearer <token>)   ║");
         sb.AppendLine("║                                                              ║");
@@ -73,9 +73,9 @@ public static class StartupBanner
         sb.AppendLine("╚══════════════════════════════════════════════════════════════╝");
         sb.AppendLine($"  Authorization header to use:");
         sb.AppendLine($"    Authorization: Bearer {ctx.BearerToken}");
-        sb.AppendLine("  Vision operator approval: POST /vision/approve (Bearer +");
-        sb.AppendLine("  driver interactive presence dialog). Never logged; ACL file");
-        sb.AppendLine("  self-read is not human approval.");
+        sb.AppendLine("  Vision approve: POST /vision/approve (Bearer + operator");
+        sb.AppendLine("  confirmation UX dialog). Dialog is UIA-automatable — not");
+        sb.AppendLine("  OS-enforced human presence. ACL file self-read is not used.");
         return sb.ToString();
     }
 }

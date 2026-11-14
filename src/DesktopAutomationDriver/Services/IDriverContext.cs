@@ -39,7 +39,7 @@ public interface IDriverContext
 
     /// <summary>
     /// Reserved operator secret (must not equal <see cref="BearerToken"/>).
-    /// Vision approval uses driver interactive presence — not ACL file self-read.
+    /// Vision approval uses operator confirmation UX (not ACL file self-read).
     /// </summary>
     string OperatorToken { get; }
 }

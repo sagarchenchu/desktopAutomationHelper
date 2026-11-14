@@ -1,11 +1,11 @@
 namespace DesktopAutomationDriver.Services;
 
 /// <summary>
-/// Intentionally disabled. Same-user ACL file delivery is not human approval —
-/// agents can self-read the file. Vision approval requires driver-owned interactive
-/// presence (<see cref="Vision.IOperatorPresenceService"/>).
+/// Intentionally disabled. Same-user ACL file delivery is not an approval channel.
+/// Vision approval uses operator confirmation UX
+/// (<see cref="Vision.IOperatorPresenceService"/>) — UIA-automatable, not OS presence.
 /// </summary>
-[Obsolete("ACL operator-token files are not human presence. Use InteractiveOperatorPresenceService.")]
+[Obsolete("ACL operator-token files are disabled. Use InteractiveOperatorPresenceService (UX confirmation).")]
 public static class OperatorTokenAclSecret
 {
     public const string RelativeDirectoryName = "DesktopAutomationDriver";
@@ -23,7 +23,7 @@ public static class OperatorTokenAclSecret
     /// <summary>Always throws — ACL self-read delivery is removed.</summary>
     public static string WriteCurrentUserOnly(string token, string? path = null) =>
         throw new InvalidOperationException(
-            "Operator ACL secret files are disabled. Vision approval requires interactive human presence.");
+            "Operator ACL secret files are disabled. Vision approval uses operator confirmation UX.");
 
     /// <summary>Always returns null — ACL self-read is not an approval channel.</summary>
     public static string? TryRead(string? path = null) => null;

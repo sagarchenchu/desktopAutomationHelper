@@ -7,9 +7,8 @@ namespace DesktopAutomationDriver.Middleware;
 /// ASP.NET Core middleware that enforces Bearer-token authentication on all
 /// routes except <c>GET /verify</c>.
 ///
-/// <c>POST /vision/approve</c> still requires a valid automation bearer, but
-/// human approval is enforced by driver-owned interactive presence inside the
-/// coordinator — not by same-user ACL file self-read.
+/// <c>POST /vision/approve</c> requires a valid automation bearer; the coordinator
+/// then runs operator confirmation UX (UIA-automatable dialog — not OS human-presence).
 /// </summary>
 public class BearerTokenMiddleware
 {

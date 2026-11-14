@@ -889,13 +889,15 @@ public class Phase8DebugVisionTests
         Assert.Contains("Bearer token", banner, StringComparison.Ordinal);
         Assert.Contains(ctx.BearerToken, banner, StringComparison.Ordinal);
         Assert.DoesNotContain(ctx.OperatorToken, banner, StringComparison.Ordinal);
-        Assert.Contains("interactive presence", banner, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("confirmation UX", banner, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("UIA-automatable", banner, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("ACL secret path", banner, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("X-Operator-Token:", banner, StringComparison.Ordinal);
+        Assert.DoesNotContain("human presence", banner, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void OperatorTokenAclSecret_IsDisabled_NotHumanPresence()
+    public void OperatorTokenAclSecret_IsDisabled_NotApprovalChannel()
     {
 #pragma warning disable CS0618
         Assert.Null(OperatorTokenAclSecret.TryRead());
@@ -905,7 +907,7 @@ public class Phase8DebugVisionTests
     }
 
     [Fact]
-    public void Approve_RequiresInteractivePresence_AclSelfReadIsNotEnough()
+    public void Approve_RequiresOperatorConfirmationUx_AclSelfReadIsNotEnough()
     {
         var window = MakeWindow(new IntPtr(0xA1), 101);
         var options = EnabledVisionOptions();
@@ -925,14 +927,107 @@ public class Phase8DebugVisionTests
             window.WindowHandle, new Point(40, 50), query: "OK");
         Assert.NotEmpty(candidates);
 
-        // Even if an agent could read a same-user ACL file, presence denial blocks approve.
 #pragma warning disable CS0618
         Assert.Null(OperatorTokenAclSecret.TryRead());
 #pragma warning restore CS0618
         var denied = coordinator.ApproveCandidate(candidates[0].Id!, "click");
         Assert.False(denied.Allowed);
-        Assert.Contains("presence", denied.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("confirmation", denied.Reason, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, presence.ConfirmCalls);
+    }
+
+    [Fact]
+    public void OperatorConfirmation_SingleFlight_DeniesSecondCaller()
+    {
+        var request = new OperatorPresenceRequest("vc-1", "click", "OK");
+        var holding = new HoldingPresenceService(TimeSpan.FromMilliseconds(500));
+        var gate = new ManualResetEventSlim(false);
+        var firstStarted = new ManualResetEventSlim(false);
+        var firstOk = false;
+
+        var a = new Thread(() =>
+        {
+            firstStarted.Set();
+            firstOk = holding.TryConfirmVisionApproval(request, out _);
+            gate.Set();
+        });
+        a.Start();
+        Assert.True(firstStarted.Wait(1000));
+        Thread.Sleep(30);
+        var concurrentOk = holding.TryConfirmVisionApproval(request, out var concurrentReason);
+        Assert.False(concurrentOk);
+        Assert.Contains("single-flight", concurrentReason, StringComparison.OrdinalIgnoreCase);
+        Assert.True(gate.Wait(2000));
+        Assert.True(firstOk);
+    }
+
+    [Fact]
+    public void OperatorConfirmation_Cancel_Denies()
+    {
+        var svc = new ScriptedOperatorPresenceService
+        {
+            Allow = true,
+            ArtificialDelay = TimeSpan.FromSeconds(5)
+        };
+        using var cts = new CancellationTokenSource(50);
+        var ok = svc.TryConfirmVisionApproval(
+            new OperatorPresenceRequest("vc-cancel", "click", "OK"),
+            out var reason,
+            cts.Token);
+        Assert.False(ok);
+        Assert.Contains("cancelled", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void OperatorConfirmation_Timeout_Denies_WithoutUnlimitedJoin()
+    {
+        // Short timeout; form never receives Yes — must deny via timeout, not hang.
+        var svc = new InteractiveOperatorPresenceService(TimeSpan.FromMilliseconds(600));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var ok = svc.TryConfirmVisionApproval(
+            new OperatorPresenceRequest("vc-timeout", "click", "OK"),
+            out var reason);
+        sw.Stop();
+        Assert.False(ok);
+        Assert.Contains("timed out", reason, StringComparison.OrdinalIgnoreCase);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"Join appeared unbounded: {sw.Elapsed}");
+    }
+
+    /// <summary>Scripted single-flight for unit tests (mirrors Interactive lock semantics).</summary>
+    private sealed class HoldingPresenceService : IOperatorPresenceService
+    {
+        private readonly TimeSpan _hold;
+        private int _inFlight;
+
+        public HoldingPresenceService(TimeSpan hold) => _hold = hold;
+
+        public bool TryConfirmVisionApproval(
+            OperatorPresenceRequest request,
+            out string denyReason,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0)
+            {
+                denyReason = "Operator confirmation already in progress (single-flight).";
+                return false;
+            }
+
+            try
+            {
+                if (cancellationToken.WaitHandle.WaitOne(_hold))
+                {
+                    denyReason = "Operator confirmation cancelled.";
+                    return false;
+                }
+
+                denyReason = string.Empty;
+                return true;
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _inFlight, 0);
+            }
+        }
     }
 
     [Fact]

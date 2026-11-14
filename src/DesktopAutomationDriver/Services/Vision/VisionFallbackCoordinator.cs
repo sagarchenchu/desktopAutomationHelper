@@ -6,7 +6,7 @@ using DesktopAutomationDriver.Services.Debug;
 namespace DesktopAutomationDriver.Services.Vision;
 
 /// <summary>
-/// Gated vision fallback: server capture → OCR candidate → store → human presence
+/// Gated vision fallback: server capture → OCR candidate → store → operator confirmation UX
 /// → re-capture vs original baseline fingerprint → action-bound one-use token → authorize.
 /// </summary>
 public sealed class VisionFallbackCoordinator
@@ -162,11 +162,14 @@ public sealed class VisionFallbackCoordinator
     }
 
     /// <summary>
-    /// Operator approval: requires driver-owned human presence, then re-captures pixels and
-    /// revalidates fingerprint/label/bounds against the <em>original</em> window baseline
-    /// (not live-vs-live), then issues a short-lived one-use execution token.
+    /// Operator approval: requires operator confirmation UX (UIA-automatable dialog —
+    /// not OS-enforced human presence), then re-captures pixels and revalidates against
+    /// the <em>original</em> window baseline, then issues a short-lived one-use execution token.
     /// </summary>
-    public VisionApprovalResult ApproveCandidate(string candidateId, string action)
+    public VisionApprovalResult ApproveCandidate(
+        string candidateId,
+        string action,
+        CancellationToken cancellationToken = default)
     {
         if (!_policy.Options.Enabled)
             return VisionApprovalResult.Deny("Vision fallback disabled (Vision:Enabled=false).");
@@ -184,18 +187,19 @@ public sealed class VisionFallbackCoordinator
         if (DestructiveActionHeuristics.IsDestructive(normalizedAction, issued.Snapshot.Label, false))
             return VisionApprovalResult.Deny("Destructive or unknown actions cannot be approved.");
 
-        // Genuine human presence — ACL file self-read is not sufficient.
+        // Operator confirmation UX (not OS human-presence). ACL file self-read is not a channel.
         if (!_presence.TryConfirmVisionApproval(
                 new OperatorPresenceRequest(issued.Id, normalizedAction, issued.Snapshot.Label),
-                out var presenceDeny))
+                out var presenceDeny,
+                cancellationToken))
         {
             return VisionApprovalResult.Deny(
                 string.IsNullOrWhiteSpace(presenceDeny)
-                    ? "Operator presence confirmation required."
+                    ? "Operator confirmation required."
                     : presenceDeny);
         }
 
-        // Presence MessageBox steals activation; restore target before pixel re-capture
+        // Confirmation dialog steals activation; restore target before pixel re-capture
         // so client content matches the original baseline screenshot.
         TryRestoreWindowForRecapture(issued.Snapshot.Window.WindowHandle);
 

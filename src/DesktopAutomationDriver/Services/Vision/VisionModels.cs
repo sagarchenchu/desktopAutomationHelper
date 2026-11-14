@@ -30,6 +30,12 @@ public sealed class VisionFallbackOptions
     /// <summary>How long a post-approval execution token remains valid (one-use).</summary>
     public int ExecutionTokenTtlMilliseconds { get; set; } = 30_000;
 
+    /// <summary>
+    /// Max wait for the operator confirmation dialog (UX gate; UIA-automatable, not OS presence).
+    /// Timeout denies approval. Clamped by <see cref="InteractiveOperatorPresenceService"/>.
+    /// </summary>
+    public int OperatorConfirmationTimeoutMilliseconds { get; set; } = 60_000;
+
     /// <summary>Maximum retained issued candidates (oldest evicted).</summary>
     public int MaxStoredCandidates { get; set; } = 64;
 

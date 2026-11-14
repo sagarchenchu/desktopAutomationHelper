@@ -72,7 +72,8 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<ILiveWindowProbe, Win32LiveWindowProbe>();
 builder.Services.AddSingleton<IWindowPixelCapture, ScreenWindowPixelCapture>();
 builder.Services.AddSingleton<IVisionCaptureService, ServerVisionCaptureService>();
-builder.Services.AddSingleton<IOperatorPresenceService, InteractiveOperatorPresenceService>();
+builder.Services.AddSingleton<IOperatorPresenceService>(sp =>
+    new InteractiveOperatorPresenceService(sp.GetRequiredService<VisionFallbackOptions>()));
 builder.Services.AddSingleton<CoordinateActionGuard>();
 builder.Services.AddSingleton<VisionFallbackCoordinator>();
 builder.Services.AddSingleton<IUiaElementProbe, FlaUIUiaElementProbe>();
@@ -206,6 +207,6 @@ static async Task RunProbeServerAsync(
 // =======================================================================
 static void LogStartupBanner(IDriverContext ctx, ILogger logger)
 {
-    // Operator token must never appear in stdout/logs. Approval requires interactive presence.
+    // Operator token must never appear in stdout/logs. Approval uses operator confirmation UX.
     logger.LogInformation("{Banner}", StartupBanner.Format(ctx));
 }

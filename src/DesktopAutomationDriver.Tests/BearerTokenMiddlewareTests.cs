@@ -128,9 +128,9 @@ public class BearerTokenMiddlewareTests
     }
 
     [Fact]
-    public async Task VisionApprove_WithBearer_PassesMiddleware_PresenceEnforcedInCoordinator()
+    public async Task VisionApprove_WithBearer_PassesMiddleware_ConfirmationUxInCoordinator()
     {
-        // Human approval is interactive presence inside the coordinator — not ACL/X-Operator-Token.
+        // Operator confirmation UX runs inside the coordinator — not ACL/X-Operator-Token.
         bool nextCalled = false;
         RequestDelegate next = _ => { nextCalled = true; return Task.CompletedTask; };
         var middleware = new BearerTokenMiddleware(next, BuildContext().Object);
