@@ -57,6 +57,14 @@ public class DriverContextTests
     }
 
     [Fact]
+    public void DriverContext_OperatorTokenDiffersFromBearer()
+    {
+        var ctx = new DriverContext("testuser");
+        Assert.False(string.IsNullOrWhiteSpace(ctx.OperatorToken));
+        Assert.NotEqual(ctx.BearerToken, ctx.OperatorToken);
+    }
+
+    [Fact]
     public void DriverContext_ProbePortAlwaysIs9102()
     {
         var ctx = new DriverContext("testuser");

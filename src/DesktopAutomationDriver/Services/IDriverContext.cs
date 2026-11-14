@@ -36,4 +36,10 @@ public interface IDriverContext
     /// (except <c>GET /verify</c>).
     /// </summary>
     string BearerToken { get; }
+
+    /// <summary>
+    /// Reserved operator secret (must not equal <see cref="BearerToken"/>).
+    /// Vision approval uses operator confirmation UX (not ACL file self-read).
+    /// </summary>
+    string OperatorToken { get; }
 }

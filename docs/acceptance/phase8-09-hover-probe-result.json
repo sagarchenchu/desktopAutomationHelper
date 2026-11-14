@@ -1,0 +1,99 @@
+{
+    "scenarioId":  "09-hover-probe",
+    "name":  "Hover probe (not UIA capability)",
+    "tipSha":  "9c927cad21168afc584138a77b686c5362731640",
+    "headSha":  "9c927cad21168afc584138a77b686c5362731640",
+    "pass":  true,
+    "inspectHttpOk":  null,
+    "note":  "Hover via POST /debug/hover mouse probe (not a UIA capability)",
+    "verifyHttpOk":  null,
+    "hoverBody":  {
+                      "screenPoint":  {
+                                          "isEmpty":  false,
+                                          "x":  540,
+                                          "y":  250
+                                      },
+                      "before":  {
+                                     "automationId":  "ClickButton",
+                                     "name":  "Click Me",
+                                     "className":  "WindowsForms10.Button.app.0.1f550a4_r3_ad1",
+                                     "controlType":  "Button",
+                                     "path":  "target",
+                                     "depth":  0,
+                                     "bounds":  {
+                                                    "location":  {
+                                                                     "isEmpty":  false,
+                                                                     "x":  502,
+                                                                     "y":  235
+                                                                 },
+                                                    "size":  {
+                                                                 "isEmpty":  false,
+                                                                 "width":  75,
+                                                                 "height":  30
+                                                             },
+                                                    "x":  502,
+                                                    "y":  235,
+                                                    "width":  75,
+                                                    "height":  30,
+                                                    "left":  502,
+                                                    "top":  235,
+                                                    "right":  577,
+                                                    "bottom":  265,
+                                                    "isEmpty":  false
+                                                },
+                                     "availablePatterns":  [
+                                                               "Invoke"
+                                                           ],
+                                     "isOffscreen":  false,
+                                     "isEnabled":  true,
+                                     "isSemanticAccessible":  true
+                                 },
+                      "after":  {
+                                    "automationId":  "ClickButton",
+                                    "name":  "Click Me",
+                                    "className":  "WindowsForms10.Button.app.0.1f550a4_r3_ad1",
+                                    "controlType":  "Button",
+                                    "path":  "target",
+                                    "depth":  0,
+                                    "bounds":  {
+                                                   "location":  {
+                                                                    "isEmpty":  false,
+                                                                    "x":  502,
+                                                                    "y":  235
+                                                                },
+                                                   "size":  {
+                                                                "isEmpty":  false,
+                                                                "width":  75,
+                                                                "height":  30
+                                                            },
+                                                   "x":  502,
+                                                   "y":  235,
+                                                   "width":  75,
+                                                   "height":  30,
+                                                   "left":  502,
+                                                   "top":  235,
+                                                   "right":  577,
+                                                   "bottom":  265,
+                                                   "isEmpty":  false
+                                               },
+                                    "availablePatterns":  [
+                                                              "Invoke"
+                                                          ],
+                                    "isOffscreen":  false,
+                                    "isEnabled":  true,
+                                    "isSemanticAccessible":  true
+                                },
+                      "structureChanged":  false,
+                      "stateChanged":  false,
+                      "noOp":  true,
+                      "probedAtUtc":  "2026-11-14T08:30:02.8243191+00:00"
+                  },
+    "point":  {
+                  "y":  250,
+                  "x":  540
+              },
+    "startHttpOk":  true,
+    "stopHttpOk":  true,
+    "hoverHttpOk":  true,
+    "httpAllOk":  true
+}

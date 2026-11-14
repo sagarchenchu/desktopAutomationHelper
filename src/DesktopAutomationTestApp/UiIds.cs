@@ -38,6 +38,10 @@ public static class UiIds
 
     public const string SampleGrid = "SampleGrid";
     public const string RefreshGridButton = "RefreshGridButton";
+
+    /// <summary>Custom-drawn Phase 8 fixture (weak UIA identity).</summary>
+    public const string CustomDrawnCanvas = "CustomDrawnCanvas";
+    public const string CustomDrawnGroup = "CustomDrawnGroup";
     public const string SelectedGridCellLabel = "SelectedGridCellLabel";
 
     public const string OpenChildWindowButton = "OpenChildWindowButton";

@@ -1773,9 +1773,10 @@ It never references driver internals (no project reference, no FlaUI).
 | Phase 4E — Jira adapter + suite orchestration | Complete (`docs/phase4e-jira-suite-orchestration.md`) — read-only provider-neutral Jira source; sequential suites |
 | Phase 5 — MCP interface | Complete (`docs/phase5-mcp-interface.md`) — local stdio MCP adapter over existing services |
 | Phase 6 — Guarded AI planner | Complete (`docs/phase6-guarded-ai-planner.md`) — NL goal to retrieve to typed proposal to Phase 2 candidate; model never calls driver |
-| Phase 7 — Bounded execution recovery | This work (`docs/phase7-bounded-recovery.md`) — classified recovery ladder with budgets; never silent plan/repo rewrite |
+| Phase 7 — Bounded execution recovery | Complete (`docs/phase7-bounded-recovery.md`) — classified recovery ladder with budgets; never silent plan/repo rewrite |
+| Phase 8 — Debug Mode and vision fallback | This work (`docs/phase8-debug-vision.md`) — isolated Debug Mode services + gated vision; never auto-promote; no headless claim |
 
-The agent does **not** perform unrestricted self-healing, schedule suites, or expose a public remote MCP. Live Jira remains read-only (Phase 4E). AI planning is proposal-only by default. Bounded recovery (Phase 7) only applies explicit recoverable classifications within budget.
+The agent does **not** perform unrestricted self-healing, schedule suites, or expose a public remote MCP. Live Jira remains read-only (Phase 4E). AI planning is proposal-only by default. Bounded recovery (Phase 7) only applies explicit recoverable classifications within budget. Vision fallback (Phase 8) is disabled by default and never replaces working UIA locators.
 
 ```cmd
 dotnet run --project src/DesktopAutomationAgent -- init
@@ -1916,7 +1917,8 @@ Artifact distinctions
 ```
 
 Shared-host discovery limits: [`docs/shared-host-driver-discovery-security.md`](docs/shared-host-driver-discovery-security.md).
-Future Debug Mode boundaries: [`docs/debug-mode-design-boundaries.md`](docs/debug-mode-design-boundaries.md).
+Debug Mode boundaries: [`docs/debug-mode-design-boundaries.md`](docs/debug-mode-design-boundaries.md).
+Phase 8 Debug Mode + vision: [`docs/phase8-debug-vision.md`](docs/phase8-debug-vision.md).
 
 ## License
 

@@ -1,0 +1,18 @@
+{
+    "scenarioId":  "06-vision-default-off",
+    "name":  "Vision disabled by default",
+    "tipSha":  "9c927cad21168afc584138a77b686c5362731640",
+    "headSha":  "9c927cad21168afc584138a77b686c5362731640",
+    "pass":  true,
+    "assertVisionAuthorizeDenied":  true,
+    "eligibility":  "DisabledByDefault",
+    "visionStatusEnabled":  false,
+    "authorizeAllowed":  false,
+    "authorizeReason":  "Vision fallback disabled (Vision:Enabled=false).",
+    "authorizeHttpOk":  true,
+    "candidatesHttpOk":  true,
+    "candidateCount":  0,
+    "authorizeHttpDenied":  true,
+    "statusHttpOk":  true,
+    "note":  "S6 requires /vision/authorize Allowed=false when Vision:Enabled=false (executionToken path)"
+}

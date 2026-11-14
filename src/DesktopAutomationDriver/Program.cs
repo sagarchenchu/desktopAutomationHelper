@@ -3,7 +3,9 @@ using System.Text;
 using System.Text.Json;
 using DesktopAutomationDriver.Middleware;
 using DesktopAutomationDriver.Services;
+using DesktopAutomationDriver.Services.Debug;
 using DesktopAutomationDriver.Services.NativeUia;
+using DesktopAutomationDriver.Services.Vision;
 using WinForms = System.Windows.Forms.Application;
 
 WinForms.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
@@ -51,6 +53,37 @@ builder.Services.AddSingleton<INativeUiaGridService, NativeUiaGridService>();
 builder.Services.AddSingleton<INativeUiaTreeDiagnosticService, NativeUiaTreeDiagnosticService>();
 builder.Services.AddSingleton<IUiOperationCatalog, UiOperationCatalog>();
 builder.Services.AddSingleton<IUiService, UiService>();
+
+// Phase 8 — Debug Mode + vision fallback (isolated services; overlay stays UI/menu only).
+// Vision is config-gated (Vision:Enabled, default false). Production HTTP: /vision/*.
+builder.Services.Configure<VisionFallbackOptions>(builder.Configuration.GetSection("Vision"));
+builder.Services.AddSingleton(sp =>
+{
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<VisionFallbackOptions>>().Value
+                  ?? new VisionFallbackOptions();
+    // Fail closed: never enable vision unless the bound config explicitly sets Enabled=true.
+    return options;
+});
+builder.Services.AddSingleton<VisionFallbackPolicy>();
+builder.Services.AddSingleton<VisionScreenshotService>();
+builder.Services.AddSingleton<IVisionProvider, FakeVisionProvider>();
+builder.Services.AddSingleton(sp =>
+    new VisionCandidateStore(sp.GetRequiredService<VisionFallbackOptions>()));
+builder.Services.AddSingleton<ILiveWindowProbe, Win32LiveWindowProbe>();
+builder.Services.AddSingleton<IWindowPixelCapture, ScreenWindowPixelCapture>();
+builder.Services.AddSingleton<IVisionCaptureService, ServerVisionCaptureService>();
+builder.Services.AddSingleton<IOperatorPresenceService>(sp =>
+    new InteractiveOperatorPresenceService(sp.GetRequiredService<VisionFallbackOptions>()));
+builder.Services.AddSingleton<CoordinateActionGuard>();
+builder.Services.AddSingleton<VisionFallbackCoordinator>();
+builder.Services.AddSingleton<IUiaElementProbe, FlaUIUiaElementProbe>();
+builder.Services.AddSingleton<UiaTreeCaptureService>();
+builder.Services.AddSingleton<LocatorCandidateGenerator>();
+builder.Services.AddSingleton<CandidateVerificationService>();
+builder.Services.AddSingleton<DebugArtifactWriter>();
+builder.Services.AddSingleton<IHighlightSurface, WinFormsHighlightSurface>();
+builder.Services.AddSingleton<NonInteractiveHighlightService>();
+builder.Services.AddSingleton<IDebugSessionCoordinator, DebugSessionCoordinator>();
 
 builder.Logging.AddConsole();
 
@@ -174,69 +207,6 @@ static async Task RunProbeServerAsync(
 // =======================================================================
 static void LogStartupBanner(IDriverContext ctx, ILogger logger)
 {
-    var probeInfo = ctx.ProbePortActive
-        ? $"http://localhost:{ctx.ProbePort}/verify  (active)"
-        : $"port {ctx.ProbePort} unavailable — use main port for /verify";
-
-    var p = ctx.MainPort;
-    var sb = new System.Text.StringBuilder();
-    sb.AppendLine();
-    sb.AppendLine("╔══════════════════════════════════════════════════════════════╗");
-    sb.AppendLine("║          Desktop Automation Driver — Started                 ║");
-    sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
-    sb.AppendLine($"║  Windows user  : {ctx.Username,-44}║");
-    sb.AppendLine($"║  Main port     : {ctx.MainPort,-44}║");
-    sb.AppendLine($"║  Bearer token  : {ctx.BearerToken,-44}║");
-    sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
-    sb.AppendLine("║  UNIFIED ENDPOINT (require: Authorization: Bearer <token>)   ║");
-    sb.AppendLine("║                                                              ║");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/ui  <- all operations");
-    sb.AppendLine("║                                                              ║");
-    sb.AppendLine("║  Operations: launch, close, maximize, minimize,              ║");
-    sb.AppendLine("║    switchwindow, refresh, screenshot, listelements,          ║");
-    sb.AppendLine("║    listwindows, exists, waitfor, isenabled, isvisible,       ║");
-    sb.AppendLine("║    isclickable, iseditable, ischecked, getvalue, gettext,    ║");
-    sb.AppendLine("║    getname, getcontroltype, getselected,                     ║");
-    sb.AppendLine("║    gettabledata, gettableheaders,                            ║");
-    sb.AppendLine("║    isrightof, isleftof, isabove, isbelow, getposition,       ║");
-    sb.AppendLine("║    click, clickmenu, clickmenupath, clicklogicalmenupath,    ║");
-    sb.AppendLine("║    inspectlogicalmenu, doubleclick, rightclick, hover,       ║");
-    sb.AppendLine("║    focus, type, typedate, clear, sendkeys, scroll, check,    ║");
-    sb.AppendLine("║    uncheck, select, openheaderdropdown,                      ║");
-    sb.AppendLine("║    selectheaderdropdownitem, alertok, alertcancel,           ║");
-    sb.AppendLine("║    alertclose, popupok                                       ║");
-    sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
-    sb.AppendLine("║  OTHER ENDPOINTS (require: Authorization: Bearer <token>)    ║");
-    sb.AppendLine("║                                                              ║");
-    sb.AppendLine($"║  GET  http://127.0.0.1:{p}/status");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/session");
-    sb.AppendLine($"║  GET  http://127.0.0.1:{p}/sessions");
-    sb.AppendLine($"║  GET  http://127.0.0.1:{p}/session/{{id}}");
-    sb.AppendLine($"║  DEL  http://127.0.0.1:{p}/session/{{id}}");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/session/{{id}}/element");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/record/start");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/playback");
-    sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
-    sb.AppendLine("║  SIMPLE ENDPOINTS (require: Authorization: Bearer <token>)   ║");
-    sb.AppendLine("║                                                              ║");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/launch");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/close");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/listallwindows");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/switchwindow");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/maximize");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/click/name");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/click/aid");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/click/advanced");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/doubleclick/name");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/doubleclick/aid");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/select/combobox/name");
-    sb.AppendLine($"║  POST http://127.0.0.1:{p}/select/combobox/aid");
-    sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
-    sb.AppendLine("║  PROBE (no auth)                                             ║");
-    sb.AppendLine($"║  {probeInfo,-62}║");
-    sb.AppendLine("╚══════════════════════════════════════════════════════════════╝");
-    sb.AppendLine($"  Authorization header to use:");
-    sb.AppendLine($"    Authorization: Bearer {ctx.BearerToken}");
-
-    logger.LogInformation("{Banner}", sb.ToString());
+    // Operator token must never appear in stdout/logs. Approval uses operator confirmation UX.
+    logger.LogInformation("{Banner}", StartupBanner.Format(ctx));
 }

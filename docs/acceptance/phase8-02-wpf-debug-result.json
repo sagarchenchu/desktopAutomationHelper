@@ -1,0 +1,20 @@
+{
+    "scenarioId":  "02-wpf-debug",
+    "name":  "WPF debug inspect",
+    "tipSha":  "9c927cad21168afc584138a77b686c5362731640",
+    "headSha":  "9c927cad21168afc584138a77b686c5362731640",
+    "pass":  true,
+    "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114082759-05c9d906c\\candidate.json",
+    "verifyHttpOk":  true,
+    "startHttpOk":  true,
+    "inspectHttpOk":  true,
+    "point":  {
+                  "y":  349,
+                  "x":  659
+              },
+    "candidateCount":  1,
+    "inspectHttpError":  null,
+    "autoPromoted":  false,
+    "stopHttpOk":  true,
+    "httpAllOk":  true
+}

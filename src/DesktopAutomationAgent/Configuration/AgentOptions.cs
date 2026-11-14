@@ -23,4 +23,7 @@ public sealed class AgentOptions
     public PlanningOptions Planning { get; set; } = new();
 
     public RecoveryOptions Recovery { get; set; } = new();
+
+    /// <summary>Phase 8 vision fallback. Disabled by default.</summary>
+    public VisionOptions Vision { get; set; } = new();
 }

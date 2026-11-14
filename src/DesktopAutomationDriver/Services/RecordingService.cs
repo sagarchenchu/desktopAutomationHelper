@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using DesktopAutomationDriver.Models.Recording;
 using DesktopAutomationDriver.Models.Request;
 using DesktopAutomationDriver.Services.Assistive;
+using DesktopAutomationDriver.Services.Debug;
 using FlaUI.Core.AutomationElements;
 using FlaUI.UIA3;
 
@@ -27,6 +28,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
 
     private readonly ILogger<RecordingService> _logger;
     private readonly IUiSessionContext _sessionContext;
+    private readonly IDebugSessionCoordinator? _debugCoordinator;
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -170,10 +172,14 @@ public sealed class RecordingService : IRecordingService, IDisposable
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
-    public RecordingService(ILogger<RecordingService> logger, IUiSessionContext sessionContext)
+    public RecordingService(
+        ILogger<RecordingService> logger,
+        IUiSessionContext sessionContext,
+        IDebugSessionCoordinator? debugCoordinator = null)
     {
         _logger = logger;
         _sessionContext = sessionContext;
+        _debugCoordinator = debugCoordinator;
     }
 
     // ── IRecordingService ────────────────────────────────────────────────────
@@ -312,7 +318,7 @@ public sealed class RecordingService : IRecordingService, IDisposable
                     _logger.LogWarning(ex, "Could not create UIA3Automation on overlay thread");
                 }
 
-                _overlayWindow = new RecordingOverlayWindow(this, _logger);
+                _overlayWindow = new RecordingOverlayWindow(this, _logger, _debugCoordinator);
                 WinForms.Application.Run(_overlayWindow);
 
                 // Clean up after the form closes
