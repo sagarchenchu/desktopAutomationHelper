@@ -78,6 +78,37 @@ public class DriverConnectionResolverTests
     }
 
     [Fact]
+    public async Task SecureDiscovery_PipeTimeoutWithoutCallerCancel_MapsToDriverConnectionException()
+    {
+        const string sid = "S-1-5-21-100-200-300-402";
+        var secureClient = new SecureBootstrapClient(
+            currentSid: () => sid,
+            localAppData: () => Path.GetTempPath(),
+            pipeReaderOverride: async (_, _) =>
+            {
+                // Simulate CancelAfter timeout: OCE while caller token is still open.
+                var timedOut = new CancellationTokenSource();
+                timedOut.Cancel();
+                timedOut.Token.ThrowIfCancellationRequested();
+                await Task.CompletedTask;
+                return null;
+            },
+            descriptorReaderOverride: _ => null,
+            isProcessAlive: _ => false);
+
+        var options = TestSupport.CreateOptions();
+        var resolver = new DriverConnectionResolver(
+            TestSupport.Wrap(options),
+            TestSupport.CreateFactory(new FakeHttpMessageHandler(_ => throw new InvalidOperationException("unused"))),
+            NullLogger<DriverConnectionResolver>.Instance,
+            () => "alice",
+            secureClient);
+
+        var ex = await Assert.ThrowsAsync<DriverConnectionException>(() => resolver.ResolveAsync());
+        Assert.Contains("secure bootstrap", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task SecureDiscovery_RejectsStaleDescriptor()
     {
         const string sid = "S-1-5-21-100-200-300-401";

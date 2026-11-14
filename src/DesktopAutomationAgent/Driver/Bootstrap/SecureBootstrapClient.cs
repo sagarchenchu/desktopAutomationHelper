@@ -84,6 +84,12 @@ public sealed class SecureBootstrapClient
                 ? await _pipeReaderOverride(pipeName, cancellationToken).ConfigureAwait(false)
                 : await ReadFromPipeAsync(pipeName, cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Connect/read timeout from our own CancelAfter — not caller cancellation.
+            pipeError = ex;
+            _logger.LogDebug(ex, "Secure bootstrap named pipe timed out; trying descriptor file.");
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             pipeError = ex;

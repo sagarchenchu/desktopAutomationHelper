@@ -68,19 +68,32 @@ public class AgentReadinessServiceTests
     }
 
     [Fact]
-    public async Task Doctor_ReturnsDriverUnavailableForVerifyFailure()
+    public async Task Doctor_ReturnsDriverUnavailableForSecureDiscoveryFailure()
     {
-        var options = TestSupport.CreateOptions();
+        var options = TestSupport.CreateOptions(); // DiscoveryMode=Secure by default
         var workspace = TestSupport.CreateWorkspace(options);
         workspace.Initialize();
 
         var handler = new FakeHttpMessageHandler(_ =>
-            throw new HttpRequestException("connection refused"));
+            throw new HttpRequestException("HTTP verify must not be used in Secure mode"));
+
+        // Fast-fail secure bootstrap (no 3s pipe timeout) so doctor maps to DriverUnavailable.
+        var secureClient = new DesktopAutomationAgent.Driver.Bootstrap.SecureBootstrapClient(
+            currentSid: () => "S-1-5-21-1-2-3-4",
+            localAppData: static () => Path.GetTempPath(),
+            pipeReaderOverride: (_, _) => Task.FromResult<DesktopAutomationAgent.Driver.Bootstrap.SecureBootstrapPayload?>(null),
+            descriptorReaderOverride: _ => null,
+            isProcessAlive: _ => false);
 
         var readiness = new AgentReadinessService(
             TestSupport.Wrap(options),
             workspace,
-            new DriverConnectionResolver(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverConnectionResolver>.Instance),
+            new DriverConnectionResolver(
+                TestSupport.Wrap(options),
+                TestSupport.CreateFactory(handler),
+                NullLogger<DriverConnectionResolver>.Instance,
+                static () => Environment.UserName,
+                secureClient),
             new DriverCatalogClient(TestSupport.Wrap(options), TestSupport.CreateFactory(handler), NullLogger<DriverCatalogClient>.Instance),
             NullLogger<AgentReadinessService>.Instance);
 
