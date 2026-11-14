@@ -1,7 +1,8 @@
 {
     "scenarioId":  "01-winforms-debug",
     "name":  "WinForms debug inspect",
-    "headSha":  "ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf",
+    "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+    "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
     "pass":  true,
     "stopStatus":  200,
     "verifyStatus":  200,
@@ -11,7 +12,7 @@
     "inspectHttpOk":  true,
     "verifyHttpError":  null,
     "autoPromoted":  false,
-    "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114002727-63baa09ad\\candidate.json",
+    "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114011134-84ab46f6f\\candidate.json",
     "inspectHttpError":  null,
     "stopHttpOk":  true,
     "verifyHttpOk":  true,

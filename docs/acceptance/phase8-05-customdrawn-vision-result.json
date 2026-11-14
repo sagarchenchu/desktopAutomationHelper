@@ -1,7 +1,8 @@
 {
     "scenarioId":  "05-customdrawn-vision",
     "name":  "CustomDrawnCanvas vision path",
-    "headSha":  "ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf",
+    "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+    "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
     "pass":  true,
     "inspectTarget":  {
                           "automationId":  "",

@@ -2,34 +2,37 @@
 
 ## Required final report
 
-Phase 8 status: **CHANGES REQUESTED → round-2 fixes pushed** — P1/P2 from user review of draft PR #148 @ `785304f` addressed on branch. Prior Windows 9/9 PASS claims **retracted** (SHA inconsistency + security gaps). Windows S1–S9 re-run is **DNU-24** (queued). PR remains **draft**. Do **not** merge.
+Phase 8 status: **WINDOWS ACCEPTANCE PASS** - DNU-24 SHA-consistent S1-S9 on tipSha `7d0bcd6`. Prior DNU-23 PASS retracted after round-2. PR #148 remains **draft**. Do **not** merge.
 
 Branch/base/head/PR:
 - Feature branch: `feature/driver-phase-8-debug-vision`
 - Base: `origin/main`
-- Round-2 review baseline: `785304f`
-- Tip: `7d0bcd66c62826e201c591b8579d88f540029886` / `7d0bcd6`
-- PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft** (do not merge)
+- Round-2 baseline: `785304f`
+- Product tip (tested / tipSha): `7d0bcd66c62826e201c591b8579d88f540029886` / `7d0bcd6`
+- PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 - **draft** (do not merge)
 
-### Round-2 review fixes
+### Windows acceptance (DNU-24)
 
-| # | Item | Status |
+- Overall: **PASS** (9/9)
+- tipSha consistency: **PASS** - all `docs/acceptance/phase8-*-result.json` + `phase8-windows-summary.json` + acceptance md record `7d0bcd66c62826e201c591b8579d88f540029886` (no post-hoc rewrite)
+- HTTP gates: start/inspect/verify/stop OK where used (S1-S5, S9)
+- S5: real CustomDrawnCanvas + `Vision:Enabled` gated opaque candidate path (`AllowedUiaInaccessible`, candidates >= 1)
+- S6: `/vision/status` off, `/vision/candidates` empty/`DisabledByDefault`, `/vision/authorize` denied (`Vision:Enabled=false`)
+
+| # | Result | HTTP notes |
 |---|---|---|
-| P1-1 | Gate `AuthorizeCoordinateAction` / `POST /vision/authorize` on `Vision:Enabled`; S6 asserts authorize deny when off | Fixed |
-| P1-2 | Opaque server-issued candidate id; server clock; stored approval; fresh Win32/UIA HWND/PID/bounds/DPI probe; reject unapproved/auto-promoted; no trust of client window/timestamps | Fixed |
-| P1-3 | Retract inconsistent acceptance SHAs; leave Windows re-run to DNU-24; do not claim 9/9 PASS | Fixed |
-| P2 | Fail-closed destructive heuristics: Send/Approve/Publish/Install labels + unknown action strings denied | Fixed |
+| 1 | PASS | start/inspect/verify/stop OK |
+| 2 | PASS | start/inspect/verify/stop OK |
+| 3 | PASS | start/inspect/verify/stop OK |
+| 4 | PASS | start/inspect/stop OK (verify N/A) |
+| 5 | PASS | start/inspect/verify/stop OK + live inaccessible vision |
+| 6 | PASS | status/candidates off + authorize denied |
+| 7 | PASS | stale/DPI/layout/destructive + opaque-id authorize deny |
+| 8 | PASS | sensitive screenshot not persisted |
+| 9 | PASS | `/debug/hover` mouse probe |
 
-### Vision auth surfaces
-
-- Issue: `POST /vision/candidates` → opaque `vc-…` ids (`requiresHumanApproval=true`)
-- Approve: `POST /vision/approve` `{ candidateId }`
-- Authorize: `POST /vision/authorize` `{ candidateId, action }` — gated on `Vision:Enabled`, approval, fresh probe
-
-### Windows acceptance
-
-**PENDING (DNU-24).** Do not claim PASS. One clean tip SHA; every result file must record that SHA. S6 must include authorize deny when vision off (`-AssertVisionAuthorizeDenied`).
+Evidence: `docs/acceptance/phase8-*` (+ store mirror under Project `docs/acceptance/`).
 
 ### Exit gate
 
-Code fixes in; Windows re-acceptance pending DNU-24. PR stays draft; do not merge unless instructed.
+Windows re-acceptance **PASS** on single tipSha `7d0bcd6`. PR stays **draft**; do not merge unless instructed.

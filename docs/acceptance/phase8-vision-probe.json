@@ -18,14 +18,14 @@
   "staleReason": "Stale vision candidate (age 5000ms \u003E 500ms).",
   "dpiReason": "DPI scale changed since candidate capture.",
   "layoutReason": "Window layout/bounds changed since candidate capture.",
-  "destructiveReason": "Destructive coordinate actions and destructive candidate labels are denied.",
+  "destructiveReason": "Destructive or unknown coordinate actions and destructive candidate labels are denied.",
   "window": {
     "x": 100,
     "y": 100,
     "w": 800,
     "h": 600,
-    "pid": 2252,
-    "hwnd": 5571616,
+    "pid": 8144,
+    "hwnd": 5506120,
     "title": "DA Test Harness"
   }
 }

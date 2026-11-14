@@ -1,17 +1,382 @@
 {
-  "headSha": "PENDING_DNU24",
-  "branch": "feature/driver-phase-8-debug-vision",
-  "pr": 148,
-  "overallPass": false,
-  "productNote": "DNU-23 PASS claim retracted due to SHA inconsistency (summary vs scenario files) and round-2 security fixes. Windows S1–S9 re-run is DNU-24 on one committed tip SHA. Scenario 6 must assert POST /vision/authorize denied when Vision:Enabled=false. Authorization uses opaque server-issued candidate ids + approval + fresh Win32 probe.",
-  "httpRequirement": {
-    "startHttpOk": true,
-    "inspectHttpOk": true,
-    "verifyHttpOk": true,
-    "stopHttpOk": true,
-    "authorizeDeniedWhenVisionOff": true,
-    "helperScript": "docs/acceptance/phase8-assert-http-ok.ps1"
-  },
-  "scenarios": [],
-  "status": "PENDING"
+    "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+    "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+    "branch":  "feature/driver-phase-8-debug-vision",
+    "pr":  148,
+    "executedAtUtc":  "2026-11-14T01:12:20.0733728+00:00",
+    "machine":  "DESKTOP-5JD30DR",
+    "overallPass":  true,
+    "productNote":  "DNU-24 SHA-consistent re-acceptance on tip including round-2 gated authorize + opaque ids (7d0bcd6+). Requires startHttpOk/inspectHttpOk/verifyHttpOk/stopHttpOk. S5 CustomDrawn + Vision:Enabled. S6 /vision/authorize denied when vision off. One tipSha across all result files.",
+    "httpRequirement":  {
+                            "startHttpOk":  true,
+                            "stopHttpOk":  true,
+                            "verifyHttpOk":  true,
+                            "helperScript":  "docs/acceptance/phase8-assert-http-ok.ps1",
+                            "inspectHttpOk":  true
+                        },
+    "shaConsistency":  {
+                           "allScenarioTipShasMatch":  true,
+                           "note":  "Every phase8-*-result.json and this summary record the same tipSha; no post-hoc rewrite.",
+                           "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886"
+                       },
+    "scenarios":  [
+                      {
+                          "scenarioId":  "01-winforms-debug",
+                          "name":  "WinForms debug inspect",
+                          "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "pass":  true,
+                          "stopStatus":  200,
+                          "verifyStatus":  200,
+                          "candidateCount":  1,
+                          "startHttpOk":  true,
+                          "startStatus":  200,
+                          "inspectHttpOk":  true,
+                          "verifyHttpError":  null,
+                          "autoPromoted":  false,
+                          "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114011134-84ab46f6f\\candidate.json",
+                          "inspectHttpError":  null,
+                          "stopHttpOk":  true,
+                          "verifyHttpOk":  true,
+                          "point":  {
+                                        "y":  250,
+                                        "x":  540
+                                    },
+                          "httpAllOk":  true,
+                          "unique":  true,
+                          "interceptsClicks":  false,
+                          "inspectStatus":  200
+                      },
+                      {
+                          "scenarioId":  "02-wpf-debug",
+                          "name":  "WPF debug inspect",
+                          "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "pass":  true,
+                          "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114011142-b3556a95a\\candidate.json",
+                          "verifyHttpOk":  true,
+                          "startHttpOk":  true,
+                          "inspectHttpOk":  true,
+                          "point":  {
+                                        "y":  349,
+                                        "x":  659
+                                    },
+                          "candidateCount":  1,
+                          "inspectHttpError":  null,
+                          "autoPromoted":  false,
+                          "stopHttpOk":  true,
+                          "httpAllOk":  true
+                      },
+                      {
+                          "scenarioId":  "03-candidate-verify",
+                          "name":  "Candidate unique verify",
+                          "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "pass":  true,
+                          "artifactPath":  "C:\\Users\\ADMIN\\DesktopDriver\\desktopAutomationHelper\\artifacts\\phase8-acceptance\\debug-candidates\\debug-candidates\\dbg-20261114011150-b89dc2cb2\\candidate.json",
+                          "verifyHttpOk":  true,
+                          "startHttpOk":  true,
+                          "inspectHttpOk":  true,
+                          "verification":  {
+                                               "unique":  true,
+                                               "ambiguous":  false,
+                                               "notFound":  false,
+                                               "probeUnavailable":  false,
+                                               "matchCount":  1,
+                                               "message":  "Candidate locator resolves uniquely."
+                                           },
+                          "unique":  true,
+                          "stopHttpOk":  true,
+                          "artifactOk":  true,
+                          "httpAllOk":  true
+                      },
+                      {
+                          "scenarioId":  "04-highlight-passthrough",
+                          "name":  "Highlight does not intercept clicks",
+                          "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "pass":  true,
+                          "clickError":  null,
+                          "beforeStatus":  "Status",
+                          "httpAllOk":  true,
+                          "startHttpOk":  true,
+                          "inspectHttpOk":  true,
+                          "apiClickOk":  true,
+                          "findMatch":  true,
+                          "statusChanged":  true,
+                          "inspectHttpError":  null,
+                          "afterStatus":  "Status: ClickButton clicked",
+                          "verifyHttpOk":  null,
+                          "point":  {
+                                        "y":  250,
+                                        "x":  540
+                                    },
+                          "note":  "clickuia must succeed while yellow highlight is visible (WS_EX_TRANSPARENT / STA overlay)",
+                          "stopHttpOk":  true,
+                          "clickOk":  true
+                      },
+                      {
+                          "scenarioId":  "05-customdrawn-vision",
+                          "name":  "CustomDrawnCanvas vision path",
+                          "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "pass":  true,
+                          "inspectTarget":  {
+                                                "automationId":  "",
+                                                "name":  "",
+                                                "className":  "WindowsForms10.Window.8.app.0.1f550a4_r3_ad1",
+                                                "controlType":  "Pane",
+                                                "path":  "target",
+                                                "depth":  0,
+                                                "bounds":  {
+                                                               "location":  {
+                                                                                "isEmpty":  false,
+                                                                                "x":  490,
+                                                                                "y":  674
+                                                                            },
+                                                               "size":  {
+                                                                            "isEmpty":  false,
+                                                                            "width":  940,
+                                                                            "height":  196
+                                                                        },
+                                                               "x":  490,
+                                                               "y":  674,
+                                                               "width":  940,
+                                                               "height":  196,
+                                                               "left":  490,
+                                                               "top":  674,
+                                                               "right":  1430,
+                                                               "bottom":  870,
+                                                               "isEmpty":  false
+                                                           },
+                                                "availablePatterns":  [
+
+                                                                      ],
+                                                "isOffscreen":  false,
+                                                "isEnabled":  true,
+                                                "isSemanticAccessible":  false,
+                                                "inaccessibilityReason":  "custom-drawn-or-empty-identity"
+                                            },
+                          "targetInaccessible":  true,
+                          "point":  {
+                                        "y":  699,
+                                        "x":  630
+                                    },
+                          "note":  "Real CustomDrawnCanvas (empty Name/AutomationId) + Vision:Enabled gated /debug/inspect fallback and /vision/candidates",
+                          "canvasFoundVia":  "customdrawn-group-offset",
+                          "stopHttpOk":  true,
+                          "visionStatusEnabled":  true,
+                          "visionEligibility":  "AllowedUiaInaccessible",
+                          "visionCandidateCountInspect":  1,
+                          "inspectHttpOk":  true,
+                          "visionCandidateCountHttp":  1,
+                          "canvasArtifact":  null,
+                          "verifyHttpOk":  true,
+                          "autoPromoted":  false,
+                          "liveVisionOk":  true,
+                          "startHttpOk":  true,
+                          "httpAllOk":  true,
+                          "visionCandidatesHttpOk":  true,
+                          "legacyAutomationIdMatches":  0,
+                          "inspectHttpError":  null
+                      },
+                      {
+                          "scenarioId":  "06-vision-default-off",
+                          "name":  "Vision disabled by default",
+                          "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "pass":  true,
+                          "assertVisionAuthorizeDenied":  true,
+                          "eligibility":  "DisabledByDefault",
+                          "visionStatusEnabled":  false,
+                          "authorizeAllowed":  false,
+                          "authorizeReason":  "Vision fallback disabled (Vision:Enabled=false).",
+                          "authorizeHttpOk":  true,
+                          "candidatesHttpOk":  true,
+                          "candidateCount":  0,
+                          "authorizeHttpDenied":  true,
+                          "statusHttpOk":  true,
+                          "note":  "S6 requires /vision/authorize Allowed=false when Vision:Enabled=false"
+                      },
+                      {
+                          "scenarioId":  "07-stale-dpi-guards",
+                          "name":  "Stale/DPI/layout/destructive denied",
+                          "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "pass":  true,
+                          "destructiveLabelHttpOk":  true,
+                          "destructiveLabelReason":  "Vision fallback disabled (Vision:Enabled=false).",
+                          "probe":  {
+                                        "visionEnabledCustomDrawn":  true,
+                                        "visionDisabledByDefault":  true,
+                                        "staleDenied":  true,
+                                        "dpiDenied":  true,
+                                        "layoutDenied":  true,
+                                        "destructiveDenied":  true,
+                                        "sensitiveNotPersisted":  true,
+                                        "hoverIsNotUiaCapability":  true,
+                                        "hoverOutcome":  "hover-noop",
+                                        "hoverPoint":  {
+                                                           "x":  500,
+                                                           "y":  400
+                                                       },
+                                        "eligibilityEnabled":  "AllowedUiaInaccessible",
+                                        "candidateCountEnabled":  1,
+                                        "eligibilityDisabled":  "DisabledByDefault",
+                                        "staleReason":  "Stale vision candidate (age 5000ms \u003e 500ms).",
+                                        "dpiReason":  "DPI scale changed since candidate capture.",
+                                        "layoutReason":  "Window layout/bounds changed since candidate capture.",
+                                        "destructiveReason":  "Destructive or unknown coordinate actions and destructive candidate labels are denied.",
+                                        "window":  {
+                                                       "x":  100,
+                                                       "y":  100,
+                                                       "w":  800,
+                                                       "h":  600,
+                                                       "pid":  8144,
+                                                       "hwnd":  5506120,
+                                                       "title":  "DA Test Harness"
+                                                   }
+                                    },
+                          "note":  "Probe covers stale/DPI/layout/destructive labels; HTTP authorize uses opaque candidateId (unissued → deny)",
+                          "destructiveLabelDenied":  true
+                      },
+                      {
+                          "scenarioId":  "08-sensitive-screenshot",
+                          "name":  "Sensitive screenshot not persisted",
+                          "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "pass":  true,
+                          "probe":  {
+                                        "visionEnabledCustomDrawn":  true,
+                                        "visionDisabledByDefault":  true,
+                                        "staleDenied":  true,
+                                        "dpiDenied":  true,
+                                        "layoutDenied":  true,
+                                        "destructiveDenied":  true,
+                                        "sensitiveNotPersisted":  true,
+                                        "hoverIsNotUiaCapability":  true,
+                                        "hoverOutcome":  "hover-noop",
+                                        "hoverPoint":  {
+                                                           "x":  500,
+                                                           "y":  400
+                                                       },
+                                        "eligibilityEnabled":  "AllowedUiaInaccessible",
+                                        "candidateCountEnabled":  1,
+                                        "eligibilityDisabled":  "DisabledByDefault",
+                                        "staleReason":  "Stale vision candidate (age 5000ms \u003e 500ms).",
+                                        "dpiReason":  "DPI scale changed since candidate capture.",
+                                        "layoutReason":  "Window layout/bounds changed since candidate capture.",
+                                        "destructiveReason":  "Destructive or unknown coordinate actions and destructive candidate labels are denied.",
+                                        "window":  {
+                                                       "x":  100,
+                                                       "y":  100,
+                                                       "w":  800,
+                                                       "h":  600,
+                                                       "pid":  8144,
+                                                       "hwnd":  5506120,
+                                                       "title":  "DA Test Harness"
+                                                   }
+                                    }
+                      },
+                      {
+                          "scenarioId":  "09-hover-probe",
+                          "name":  "Hover probe (not UIA capability)",
+                          "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+                          "pass":  true,
+                          "inspectHttpOk":  null,
+                          "note":  "Hover via POST /debug/hover mouse probe (not a UIA capability)",
+                          "verifyHttpOk":  null,
+                          "hoverBody":  {
+                                            "screenPoint":  {
+                                                                "isEmpty":  false,
+                                                                "x":  540,
+                                                                "y":  250
+                                                            },
+                                            "before":  {
+                                                           "automationId":  "ClickButton",
+                                                           "name":  "Click Me",
+                                                           "className":  "WindowsForms10.Button.app.0.1f550a4_r3_ad1",
+                                                           "controlType":  "Button",
+                                                           "path":  "target",
+                                                           "depth":  0,
+                                                           "bounds":  {
+                                                                          "location":  {
+                                                                                           "isEmpty":  false,
+                                                                                           "x":  502,
+                                                                                           "y":  235
+                                                                                       },
+                                                                          "size":  {
+                                                                                       "isEmpty":  false,
+                                                                                       "width":  75,
+                                                                                       "height":  30
+                                                                                   },
+                                                                          "x":  502,
+                                                                          "y":  235,
+                                                                          "width":  75,
+                                                                          "height":  30,
+                                                                          "left":  502,
+                                                                          "top":  235,
+                                                                          "right":  577,
+                                                                          "bottom":  265,
+                                                                          "isEmpty":  false
+                                                                      },
+                                                           "availablePatterns":  [
+                                                                                     "Invoke"
+                                                                                 ],
+                                                           "isOffscreen":  false,
+                                                           "isEnabled":  true,
+                                                           "isSemanticAccessible":  true
+                                                       },
+                                            "after":  {
+                                                          "automationId":  "ClickButton",
+                                                          "name":  "Click Me",
+                                                          "className":  "WindowsForms10.Button.app.0.1f550a4_r3_ad1",
+                                                          "controlType":  "Button",
+                                                          "path":  "target",
+                                                          "depth":  0,
+                                                          "bounds":  {
+                                                                         "location":  {
+                                                                                          "isEmpty":  false,
+                                                                                          "x":  502,
+                                                                                          "y":  235
+                                                                                      },
+                                                                         "size":  {
+                                                                                      "isEmpty":  false,
+                                                                                      "width":  75,
+                                                                                      "height":  30
+                                                                                  },
+                                                                         "x":  502,
+                                                                         "y":  235,
+                                                                         "width":  75,
+                                                                         "height":  30,
+                                                                         "left":  502,
+                                                                         "top":  235,
+                                                                         "right":  577,
+                                                                         "bottom":  265,
+                                                                         "isEmpty":  false
+                                                                     },
+                                                          "availablePatterns":  [
+                                                                                    "Invoke"
+                                                                                ],
+                                                          "isOffscreen":  false,
+                                                          "isEnabled":  true,
+                                                          "isSemanticAccessible":  true
+                                                      },
+                                            "structureChanged":  false,
+                                            "stateChanged":  false,
+                                            "noOp":  true,
+                                            "probedAtUtc":  "2026-11-14T01:12:18.2332355+00:00"
+                                        },
+                          "point":  {
+                                        "y":  250,
+                                        "x":  540
+                                    },
+                          "startHttpOk":  true,
+                          "stopHttpOk":  true,
+                          "hoverHttpOk":  true,
+                          "httpAllOk":  true
+                      }
+                  ],
+    "status":  "PASS"
 }
