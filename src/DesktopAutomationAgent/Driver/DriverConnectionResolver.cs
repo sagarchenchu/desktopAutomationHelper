@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using DesktopAutomationAgent.Configuration;
+using DesktopAutomationAgent.Driver.Bootstrap;
 using DesktopAutomationAgent.Driver.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -18,12 +19,13 @@ public sealed class DriverConnectionResolver : IDriverConnectionResolver
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<DriverConnectionResolver> _logger;
     private readonly Func<string> _currentUserName;
+    private readonly SecureBootstrapClient _secureBootstrapClient;
 
     public DriverConnectionResolver(
         IOptions<AgentOptions> options,
         IHttpClientFactory httpClientFactory,
         ILogger<DriverConnectionResolver> logger)
-        : this(options, httpClientFactory, logger, static () => Environment.UserName)
+        : this(options, httpClientFactory, logger, static () => Environment.UserName, secureBootstrapClient: null)
     {
     }
 
@@ -31,12 +33,15 @@ public sealed class DriverConnectionResolver : IDriverConnectionResolver
         IOptions<AgentOptions> options,
         IHttpClientFactory httpClientFactory,
         ILogger<DriverConnectionResolver> logger,
-        Func<string> currentUserName)
+        Func<string> currentUserName,
+        SecureBootstrapClient? secureBootstrapClient = null)
     {
         _options = options.Value.Driver;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
         _currentUserName = currentUserName;
+        _secureBootstrapClient = secureBootstrapClient
+            ?? new SecureBootstrapClient(logger: logger);
     }
 
     public async Task<DriverConnection> ResolveAsync(CancellationToken cancellationToken = default)
@@ -61,7 +66,45 @@ public sealed class DriverConnectionResolver : IDriverConnectionResolver
             };
         }
 
-        return await DiscoverViaVerifyAsync(cancellationToken).ConfigureAwait(false);
+        if (_options.UsesLegacyVerifyDiscovery)
+            return await DiscoverViaVerifyAsync(cancellationToken).ConfigureAwait(false);
+
+        return await DiscoverViaSecureBootstrapAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<DriverConnection> DiscoverViaSecureBootstrapAsync(CancellationToken cancellationToken)
+    {
+        SecureBootstrapPayload payload;
+        try
+        {
+            payload = await _secureBootstrapClient.DiscoverAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DriverConnectionException)
+        {
+            // Already redacted by DriverConnectionException; rethrow as-is.
+            throw;
+        }
+
+        var token = !string.IsNullOrWhiteSpace(payload.Token)
+            ? payload.Token
+            : ExtractBearerToken(payload.AuthorizationHeader);
+
+        if (string.IsNullOrWhiteSpace(token))
+            throw new DriverConnectionException("Secure bootstrap token was empty after parsing.");
+
+        var baseUri = new Uri($"http://127.0.0.1:{payload.Port}/");
+        _logger.LogInformation(
+            "Discovered driver via secure bootstrap for SID {UserSid} at {BaseUrl}",
+            payload.UserSid,
+            $"{baseUri.Scheme}://{baseUri.Authority}");
+
+        return new DriverConnection
+        {
+            BaseUri = baseUri,
+            BearerToken = token,
+            DiscoveryMethod = "secure-bootstrap",
+            DiscoveredUsername = payload.Username
+        };
     }
 
     private async Task<DriverConnection> DiscoverViaVerifyAsync(CancellationToken cancellationToken)
@@ -75,7 +118,10 @@ public sealed class DriverConnectionResolver : IDriverConnectionResolver
                 "For a remote driver, set Driver:BaseUrl and Driver:BearerToken explicitly.");
         }
 
-        _logger.LogInformation("Discovering driver via verify endpoint {VerifyUrl}", verifyUri);
+        _logger.LogWarning(
+            "Discovering driver via LEGACY verify endpoint {VerifyUrl}. " +
+            "Unauthenticated HTTP token return is unsafe on shared hosts.",
+            verifyUri);
 
         using var client = _httpClientFactory.CreateClient("driver-unauthenticated");
         client.Timeout = TimeSpan.FromSeconds(_options.RequestTimeoutSeconds);

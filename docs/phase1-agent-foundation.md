@@ -44,25 +44,32 @@ Copy `automation/config/agentsettings.example.json` to
 Supply **both** `Driver:BaseUrl` and `Driver:BearerToken`. Providing only one
 is a configuration error (exit code `2`).
 
-### Verify-endpoint discovery
+### Secure bootstrap discovery (default)
 
-When both explicit values are absent, the agent calls `Driver:VerifyUrl`
-(default `http://localhost:9102/verify`), reads `username`, `port`, `token`,
-and `authorizationHeader`, then builds:
+When both explicit values are absent, `Driver:DiscoveryMode=Secure` (default)
+reads connection material from the SID ACL-protected named pipe
+`DesktopAutomationDriver.bootstrap.{SID}` or the ACL-protected descriptor under
+`%LOCALAPPDATA%\DesktopAutomationDriver\bootstrap\connection.json`, then builds:
 
 `http://127.0.0.1:{port}/`
 
-Verify discovery is **loopback-only**. A remote `VerifyUrl` is rejected even when
+### Legacy verify-endpoint discovery (opt-in)
+
+`Driver:DiscoveryMode=LegacyVerify` plus `AcknowledgeLegacyVerifyRisk=true`
+calls `Driver:VerifyUrl` (default `http://localhost:9102/verify`). This is
+**unsafe on shared hosts**. See `docs/shared-host-driver-discovery-security.md`.
+
+Legacy verify discovery is **loopback-only**. A remote `VerifyUrl` is rejected even when
 `AllowRemoteDriver=true`. For a remote driver, configure `BaseUrl` and
 `BearerToken` explicitly. `AllowRemoteDriver` only relaxes explicit BaseUrl checks.
 
 `doctor --json` writes a single JSON document to stdout. Structured logs always
 go to stderr so CI parsers are not polluted.
 
-### Citrix username validation
+### Citrix identity validation
 
-Because port 9102 may belong to another user on a shared Citrix/RDS host, the
-discovered username is compared with `Environment.UserName`
+Secure bootstrap matches the **Windows SID**. Legacy `/verify` still compares
+discovered username with `Environment.UserName`
 (case-insensitive; domain/`UPN` suffixes stripped). On mismatch the agent:
 
 - rejects the connection

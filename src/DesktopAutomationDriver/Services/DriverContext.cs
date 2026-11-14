@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using DesktopAutomationDriver.Services.Bootstrap;
 
 namespace DesktopAutomationDriver.Services;
 
@@ -17,6 +18,9 @@ public sealed class DriverContext : IDriverContext
     public string Username { get; }
 
     /// <inheritdoc/>
+    public string UserSid { get; }
+
+    /// <inheritdoc/>
     public int MainPort { get; }
 
     /// <inheritdoc/>
@@ -31,15 +35,23 @@ public sealed class DriverContext : IDriverContext
     /// <inheritdoc/>
     public string OperatorToken { get; }
 
-    public DriverContext() : this(Environment.UserName) { }
+    public DriverContext() : this(Environment.UserName, WindowsUserSid.TryGetCurrent()) { }
 
     /// <summary>
     /// Internal constructor that accepts an explicit username so tests can
     /// verify port-computation logic without relying on the running OS user.
     /// </summary>
-    internal DriverContext(string username)
+    internal DriverContext(string username) : this(username, userSid: null) { }
+
+    /// <summary>
+    /// Internal constructor for tests that need a fixed SID without touching WindowsIdentity.
+    /// </summary>
+    internal DriverContext(string username, string? userSid)
     {
         Username = username;
+        UserSid = string.IsNullOrWhiteSpace(userSid)
+            ? WindowsUserSid.TryGetCurrent() ?? string.Empty
+            : userSid.Trim();
         MainPort = ComputeUserPort(username);
         BearerToken = GenerateToken();
         // Distinct from BearerToken so automation cannot self-approve vision candidates.

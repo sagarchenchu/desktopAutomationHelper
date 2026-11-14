@@ -26,7 +26,9 @@ internal static class TestSupport
         string? bearerToken = null,
         string? verifyUrl = "http://localhost:9102/verify",
         bool allowRemote = false,
-        int maxPlanBytes = 1_048_576)
+        int maxPlanBytes = 1_048_576,
+        string discoveryMode = "Secure",
+        bool acknowledgeLegacyVerifyRisk = false)
     {
         return new AgentOptions
         {
@@ -34,6 +36,8 @@ internal static class TestSupport
             {
                 BaseUrl = baseUrl,
                 BearerToken = bearerToken,
+                DiscoveryMode = discoveryMode,
+                AcknowledgeLegacyVerifyRisk = acknowledgeLegacyVerifyRisk,
                 VerifyUrl = verifyUrl ?? "http://localhost:9102/verify",
                 AllowRemoteDriver = allowRemote,
                 RequestTimeoutSeconds = 5,

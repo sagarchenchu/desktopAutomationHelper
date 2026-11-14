@@ -299,7 +299,7 @@ public static class AgentOptionsValidator
         {
             throw new AgentConfigurationException(
                 "Driver:BaseUrl and Driver:BearerToken must be supplied together. " +
-                "Provide both for an explicit connection, or omit both to use verify-endpoint discovery.");
+                "Provide both for an explicit connection, or omit both to use auto-discovery.");
         }
 
         if (driver.RequestTimeoutSeconds <= 0)
@@ -308,19 +308,39 @@ public static class AgentOptionsValidator
         if (driver.ExpectedCatalogSchemaVersion <= 0)
             throw new AgentConfigurationException("Driver:ExpectedCatalogSchemaVersion must be greater than zero.");
 
-        if (!hasUrl && string.IsNullOrWhiteSpace(driver.VerifyUrl))
-            throw new AgentConfigurationException("Driver:VerifyUrl is required when explicit BaseUrl/BearerToken are not set.");
+        if (!hasUrl)
+        {
+            if (!driver.UsesSecureDiscovery && !driver.UsesLegacyVerifyDiscovery)
+            {
+                throw new AgentConfigurationException(
+                    "Driver:DiscoveryMode must be 'Secure' (default) or 'LegacyVerify'.");
+            }
+
+            if (driver.UsesLegacyVerifyDiscovery)
+            {
+                if (!driver.AcknowledgeLegacyVerifyRisk)
+                {
+                    throw new AgentConfigurationException(
+                        "Driver:DiscoveryMode=LegacyVerify also requires Driver:AcknowledgeLegacyVerifyRisk=true. " +
+                        "Unauthenticated HTTP /verify returns the bearer token and is unsafe on shared Citrix/RDS/VDI hosts. " +
+                        "Prefer Driver:DiscoveryMode=Secure.");
+                }
+
+                if (string.IsNullOrWhiteSpace(driver.VerifyUrl))
+                {
+                    throw new AgentConfigurationException(
+                        "Driver:VerifyUrl is required when Driver:DiscoveryMode=LegacyVerify.");
+                }
+
+                // Legacy verify discovery always targets a loopback probe and then builds
+                // http://127.0.0.1:{port}/. Remote verify hosts are rejected even when
+                // AllowRemoteDriver is true; use explicit BaseUrl+BearerToken instead.
+                DriverUrlRules.EnsureAllowed(driver.VerifyUrl, allowRemote: false);
+            }
+        }
 
         if (hasUrl)
             DriverUrlRules.EnsureAllowed(driver.BaseUrl!, driver.AllowRemoteDriver);
-
-        if (!hasUrl)
-        {
-            // Verify discovery always targets a loopback probe and then builds
-            // http://127.0.0.1:{port}/. Remote verify hosts are rejected even when
-            // AllowRemoteDriver is true; use explicit BaseUrl+BearerToken instead.
-            DriverUrlRules.EnsureAllowed(driver.VerifyUrl, allowRemote: false);
-        }
     }
 }
 

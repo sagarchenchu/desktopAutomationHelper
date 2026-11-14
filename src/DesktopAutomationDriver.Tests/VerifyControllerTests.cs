@@ -1,7 +1,10 @@
 using DesktopAutomationDriver.Controllers;
 using DesktopAutomationDriver.Models.Response;
 using DesktopAutomationDriver.Services;
+using DesktopAutomationDriver.Services.Bootstrap;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace DesktopAutomationDriver.Tests;
@@ -20,6 +23,7 @@ public class VerifyControllerTests
     {
         var mock = new Mock<IDriverContext>();
         mock.Setup(c => c.Username).Returns(username);
+        mock.Setup(c => c.UserSid).Returns("S-1-5-21-1-2-3-4");
         mock.Setup(c => c.MainPort).Returns(mainPort);
         mock.Setup(c => c.BearerToken).Returns(token);
         mock.Setup(c => c.OperatorToken).Returns(token + "-op");
@@ -28,63 +32,72 @@ public class VerifyControllerTests
         return mock;
     }
 
-    [Fact]
-    public void Verify_Returns200()
+    private static VerifyController CreateController(
+        IDriverContext context,
+        BootstrapDiscoveryMode mode = BootstrapDiscoveryMode.Secure,
+        bool acknowledgeLegacyRisk = false)
     {
-        var controller = new VerifyController(BuildContextMock().Object);
-        var result = controller.Verify();
-        Assert.IsType<OkObjectResult>(result);
+        var options = Options.Create(new BootstrapOptions
+        {
+            Mode = mode,
+            AcknowledgeLegacyVerifyRisk = acknowledgeLegacyRisk
+        });
+        return new VerifyController(context, options);
     }
 
     [Fact]
-    public void Verify_ResponseContainsToken()
+    public void SecureMode_Returns403WithoutToken()
+    {
+        const string token = "must-not-appear";
+        var controller = CreateController(BuildContextMock(token: token).Object);
+
+        var result = Assert.IsType<ObjectResult>(controller.Verify());
+        Assert.Equal(StatusCodes.Status403Forbidden, result.StatusCode);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(result.Value);
+        Assert.DoesNotContain(token, json, StringComparison.Ordinal);
+        Assert.Contains("secure_bootstrap_required", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void LegacyMode_Returns200WithToken_WhenRiskAcknowledged()
     {
         var mock = BuildContextMock(token: "abc123token");
-        var controller = new VerifyController(mock.Object);
+        var controller = CreateController(
+            mock.Object,
+            BootstrapDiscoveryMode.LegacyVerify,
+            acknowledgeLegacyRisk: true);
 
         var ok = Assert.IsType<OkObjectResult>(controller.Verify());
         var response = Assert.IsType<WebDriverResponse<VerifyResponse>>(ok.Value);
         Assert.Equal("abc123token", response.Value!.Token);
+        Assert.Equal("Bearer abc123token", response.Value.AuthorizationHeader);
     }
 
     [Fact]
-    public void Verify_AuthorizationHeaderFormatIsCorrect()
+    public void LegacyMode_ResponseContainsMainPortAndUsername()
     {
-        var mock = BuildContextMock(token: "mytoken123");
-        var controller = new VerifyController(mock.Object);
-
-        var ok = Assert.IsType<OkObjectResult>(controller.Verify());
-        var response = Assert.IsType<WebDriverResponse<VerifyResponse>>(ok.Value);
-        Assert.Equal("Bearer mytoken123", response.Value!.AuthorizationHeader);
-    }
-
-    [Fact]
-    public void Verify_ResponseContainsMainPort()
-    {
-        var mock = BuildContextMock(mainPort: 31500);
-        var controller = new VerifyController(mock.Object);
+        var mock = BuildContextMock(username: "domain\\alice", mainPort: 31500, token: "t");
+        var controller = CreateController(
+            mock.Object,
+            BootstrapDiscoveryMode.LegacyVerify,
+            acknowledgeLegacyRisk: true);
 
         var ok = Assert.IsType<OkObjectResult>(controller.Verify());
         var response = Assert.IsType<WebDriverResponse<VerifyResponse>>(ok.Value);
         Assert.Equal(31500, response.Value!.Port);
+        Assert.Equal("domain\\alice", response.Value.Username);
+        Assert.True(response.Value.Running);
     }
 
     [Fact]
-    public void Verify_ResponseContainsUsername()
-    {
-        var mock = BuildContextMock(username: "domain\\alice");
-        var controller = new VerifyController(mock.Object);
-
-        var ok = Assert.IsType<OkObjectResult>(controller.Verify());
-        var response = Assert.IsType<WebDriverResponse<VerifyResponse>>(ok.Value);
-        Assert.Equal("domain\\alice", response.Value!.Username);
-    }
-
-    [Fact]
-    public void Verify_WhenProbePortActive_IncludesProbePort()
+    public void LegacyMode_WhenProbePortActive_IncludesProbePort()
     {
         var mock = BuildContextMock(probePortActive: true, probePort: 9102);
-        var controller = new VerifyController(mock.Object);
+        var controller = CreateController(
+            mock.Object,
+            BootstrapDiscoveryMode.LegacyVerify,
+            acknowledgeLegacyRisk: true);
 
         var ok = Assert.IsType<OkObjectResult>(controller.Verify());
         var response = Assert.IsType<WebDriverResponse<VerifyResponse>>(ok.Value);
@@ -92,23 +105,16 @@ public class VerifyControllerTests
     }
 
     [Fact]
-    public void Verify_WhenProbePortInactive_ProbePortIsNull()
+    public void LegacyMode_WhenProbePortInactive_ProbePortIsNull()
     {
         var mock = BuildContextMock(probePortActive: false);
-        var controller = new VerifyController(mock.Object);
+        var controller = CreateController(
+            mock.Object,
+            BootstrapDiscoveryMode.LegacyVerify,
+            acknowledgeLegacyRisk: true);
 
         var ok = Assert.IsType<OkObjectResult>(controller.Verify());
         var response = Assert.IsType<WebDriverResponse<VerifyResponse>>(ok.Value);
         Assert.Null(response.Value!.ProbePort);
-    }
-
-    [Fact]
-    public void Verify_RunningIsAlwaysTrue()
-    {
-        var controller = new VerifyController(BuildContextMock().Object);
-
-        var ok = Assert.IsType<OkObjectResult>(controller.Verify());
-        var response = Assert.IsType<WebDriverResponse<VerifyResponse>>(ok.Value);
-        Assert.True(response.Value!.Running);
     }
 }

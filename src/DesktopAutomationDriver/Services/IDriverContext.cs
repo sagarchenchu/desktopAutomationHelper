@@ -10,6 +10,12 @@ public interface IDriverContext
     string Username { get; }
 
     /// <summary>
+    /// Windows security identifier (SID) of the user who launched the driver.
+    /// Used for secure bootstrap ACL checks — never rely on username alone.
+    /// </summary>
+    string UserSid { get; }
+
+    /// <summary>
     /// Deterministic port derived from <see cref="Username"/>.
     /// Each Windows account always maps to the same port (range 30000–39999)
     /// so multiple users on a shared machine do not collide.
@@ -33,7 +39,8 @@ public interface IDriverContext
     /// <summary>
     /// Randomly generated opaque token that must be sent as
     /// <c>Authorization: Bearer &lt;token&gt;</c> with every request
-    /// (except <c>GET /verify</c>).
+    /// (except legacy <c>GET /verify</c> when explicitly enabled).
+    /// Never log this value in secure bootstrap mode.
     /// </summary>
     string BearerToken { get; }
 

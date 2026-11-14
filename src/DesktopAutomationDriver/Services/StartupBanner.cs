@@ -1,18 +1,19 @@
+using DesktopAutomationDriver.Services.Bootstrap;
+
 namespace DesktopAutomationDriver.Services;
 
 /// <summary>
-/// Formats the driver startup banner. Operator token must never appear in the output.
+/// Formats the driver startup banner. Bearer and operator tokens must never appear
+/// in secure bootstrap mode. Operator token must never appear in any mode.
 /// </summary>
 public static class StartupBanner
 {
-    public static string Format(IDriverContext ctx)
+    public static string Format(IDriverContext ctx, BootstrapOptions? bootstrap = null)
     {
         ArgumentNullException.ThrowIfNull(ctx);
+        bootstrap ??= new BootstrapOptions();
 
-        var probeInfo = ctx.ProbePortActive
-            ? $"http://localhost:{ctx.ProbePort}/verify  (active)"
-            : $"port {ctx.ProbePort} unavailable — use main port for /verify";
-
+        var probeInfo = DescribeProbe(ctx, bootstrap);
         var p = ctx.MainPort;
         var sb = new System.Text.StringBuilder();
         sb.AppendLine();
@@ -20,8 +21,19 @@ public static class StartupBanner
         sb.AppendLine("║          Desktop Automation Driver — Started                 ║");
         sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
         sb.AppendLine($"║  Windows user  : {ctx.Username,-44}║");
+        if (!string.IsNullOrWhiteSpace(ctx.UserSid))
+            sb.AppendLine($"║  User SID      : {Truncate(ctx.UserSid, 44),-44}║");
         sb.AppendLine($"║  Main port     : {ctx.MainPort,-44}║");
-        sb.AppendLine($"║  Bearer token  : {ctx.BearerToken,-44}║");
+        sb.AppendLine($"║  Bootstrap     : {DescribeMode(bootstrap),-44}║");
+        if (bootstrap.IsSecure)
+        {
+            sb.AppendLine("║  Bearer token  : (not logged — secure SID bootstrap)         ║");
+        }
+        else
+        {
+            sb.AppendLine($"║  Bearer token  : {ctx.BearerToken,-44}║");
+        }
+
         sb.AppendLine("║  Operator token: (not logged — confirmation UX dialog)       ║");
         sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
         sb.AppendLine("║  UNIFIED ENDPOINT (require: Authorization: Bearer <token>)   ║");
@@ -68,14 +80,51 @@ public static class StartupBanner
         sb.AppendLine($"║  POST http://127.0.0.1:{p}/select/combobox/name");
         sb.AppendLine($"║  POST http://127.0.0.1:{p}/select/combobox/aid");
         sb.AppendLine("╠══════════════════════════════════════════════════════════════╣");
-        sb.AppendLine("║  PROBE (no auth)                                             ║");
+        sb.AppendLine("║  DISCOVERY                                                   ║");
         sb.AppendLine($"║  {probeInfo,-62}║");
         sb.AppendLine("╚══════════════════════════════════════════════════════════════╝");
-        sb.AppendLine($"  Authorization header to use:");
-        sb.AppendLine($"    Authorization: Bearer {ctx.BearerToken}");
+        if (bootstrap.IsSecure)
+        {
+            sb.AppendLine("  Secure bootstrap: retrieve the bearer token from the SID");
+            sb.AppendLine("  ACL-protected named pipe / connection descriptor (never HTTP).");
+        }
+        else
+        {
+            sb.AppendLine("  WARNING: LegacyVerify returns the bearer token from HTTP /verify.");
+            sb.AppendLine("  Unsafe on shared Citrix/RDS/VDI hosts.");
+            sb.AppendLine("  Authorization header to use:");
+            sb.AppendLine($"    Authorization: Bearer {ctx.BearerToken}");
+        }
+
         sb.AppendLine("  Vision approve: POST /vision/approve (Bearer + operator");
         sb.AppendLine("  confirmation UX dialog). Dialog is UIA-automatable — not");
         sb.AppendLine("  OS-enforced human presence. ACL file self-read is not used.");
         return sb.ToString();
+    }
+
+    private static string DescribeMode(BootstrapOptions bootstrap) =>
+        bootstrap.IsSecure
+            ? "Secure (SID pipe/descriptor)"
+            : "LegacyVerify (HTTP /verify — RISKY)";
+
+    private static string DescribeProbe(IDriverContext ctx, BootstrapOptions bootstrap)
+    {
+        if (bootstrap.IsSecure)
+        {
+            return string.IsNullOrWhiteSpace(ctx.UserSid)
+                ? "secure SID pipe/descriptor (SID unresolved at banner time)"
+                : $"pipe {SecureBootstrapConstants.BuildPipeName(ctx.UserSid)}";
+        }
+
+        return ctx.ProbePortActive
+            ? $"http://localhost:{ctx.ProbePort}/verify  (active — LEGACY)"
+            : $"port {ctx.ProbePort} unavailable — use main port for /verify (LEGACY)";
+    }
+
+    private static string Truncate(string value, int max)
+    {
+        if (value.Length <= max)
+            return value;
+        return value[..(max - 3)] + "...";
     }
 }
