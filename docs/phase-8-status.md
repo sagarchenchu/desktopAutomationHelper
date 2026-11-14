@@ -8,8 +8,10 @@ Branch/base/head/PR:
 - Feature branch: `feature/driver-phase-8-debug-vision`
 - Base: `origin/main`
 - Review baseline: `212e270`
-- Tip: `8bf785fe30dd79ffe835962300ba9870d7372fa3` / `8bf785f`
+- Product fix tip: `8bf785f`
+- Tip (CI green): `ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf` / `ab05a0f`
 - PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft** (do not merge)
+- CI: **green** on `ab05a0f` (4/4 — Build and Test + Publish Standalone Packages)
 
 ### Review fixes (P1/P2)
 
