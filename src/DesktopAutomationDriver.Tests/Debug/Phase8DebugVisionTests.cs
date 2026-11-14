@@ -889,12 +889,13 @@ public class Phase8DebugVisionTests
         Assert.False(string.IsNullOrWhiteSpace(ctx.OperatorToken));
         Assert.Contains("Bearer token", banner, StringComparison.Ordinal);
         Assert.Contains(ctx.BearerToken, banner, StringComparison.Ordinal);
-        // Secret value must never appear. Do not ban the honest disclaimer phrase
-        // "not OS-enforced human presence" (that is intentional UX-honesty copy).
+        // Secret value must never appear. Disclaimer may wrap across lines in the banner.
         Assert.DoesNotContain(ctx.OperatorToken, banner, StringComparison.Ordinal);
         Assert.Contains("confirmation UX", banner, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("UIA-automatable", banner, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("not OS-enforced human presence", banner, StringComparison.OrdinalIgnoreCase);
+        var bannerFlat = string.Join(' ',
+            banner.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        Assert.Contains("not OS-enforced human presence", bannerFlat, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("ACL secret path", banner, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("X-Operator-Token:", banner, StringComparison.Ordinal);
     }
