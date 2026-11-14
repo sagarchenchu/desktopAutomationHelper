@@ -26,6 +26,9 @@ public sealed class SecureBootstrapPayload
     [JsonPropertyName("pid")]
     public int Pid { get; set; }
 
+    [JsonPropertyName("processStartTimeUtc")]
+    public DateTimeOffset ProcessStartTimeUtc { get; set; }
+
     [JsonPropertyName("startedAtUtc")]
     public DateTimeOffset StartedAtUtc { get; set; }
 

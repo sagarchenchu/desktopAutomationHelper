@@ -43,6 +43,7 @@ public class DriverConnectionResolverTests
     {
         const string sid = "S-1-5-21-100-200-300-400";
         const string token = "secure-discovered-token";
+        var processStart = DateTimeOffset.UtcNow;
         var secureClient = new SecureBootstrapClient(
             currentSid: () => sid,
             localAppData: () => Path.GetTempPath(),
@@ -55,11 +56,12 @@ public class DriverConnectionResolverTests
                 Token = token,
                 AuthorizationHeader = $"Bearer {token}",
                 Pid = Environment.ProcessId,
+                ProcessStartTimeUtc = processStart,
                 StartedAtUtc = DateTimeOffset.UtcNow,
                 PipeName = SecureBootstrapConstants.BuildPipeName(sid)
             }),
             descriptorReaderOverride: _ => null,
-            isProcessAlive: _ => true);
+            getProcessStartTimeUtc: _ => processStart);
 
         var options = TestSupport.CreateOptions(); // DiscoveryMode defaults to Secure
         var resolver = new DriverConnectionResolver(
@@ -94,7 +96,7 @@ public class DriverConnectionResolverTests
                 return null;
             },
             descriptorReaderOverride: _ => null,
-            isProcessAlive: _ => false);
+            getProcessStartTimeUtc: _ => null);
 
         var options = TestSupport.CreateOptions();
         var resolver = new DriverConnectionResolver(
@@ -125,9 +127,10 @@ public class DriverConnectionResolverTests
                 Port = 33201,
                 Token = token,
                 Pid = 424242,
+                ProcessStartTimeUtc = DateTimeOffset.UtcNow.AddMinutes(-10),
                 StartedAtUtc = DateTimeOffset.UtcNow
             },
-            isProcessAlive: _ => false);
+            getProcessStartTimeUtc: _ => null);
 
         var options = TestSupport.CreateOptions();
         var resolver = new DriverConnectionResolver(

@@ -23,11 +23,15 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
     private readonly SecureBootstrapPayload _payload;
     private readonly SecurityIdentifier _userSid;
     private readonly ConnectionDescriptorStore _descriptorStore;
+    private readonly string _lockPath;
     private readonly Func<SecurityIdentifier, PipeSecurity> _pipeSecurityFactory;
+    private readonly Func<SecurityIdentifier, FileSecurity> _fileSecurityFactory;
     private readonly ILogger _logger;
     private readonly CancellationTokenSource _cts = new();
+    private FileStream? _exclusiveLock;
     private Task? _listenTask;
     private int _started;
+    private int _published;
     private int _disposed;
 
     public SecureBootstrapHost(
@@ -52,9 +56,15 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
             ?? SecureBootstrapConstants.GetDefaultDescriptorPath(localAppData);
 
         _descriptorStore = new ConnectionDescriptorStore(path, fileSecurityFactory);
+        _lockPath = Path.Combine(
+            Path.GetDirectoryName(path)
+            ?? throw new InvalidOperationException("Descriptor path has no directory."),
+            SecureBootstrapConstants.HostLockFileName);
         _pipeSecurityFactory = pipeSecurityFactory ?? BootstrapAcl.CreatePipeSecurity;
+        _fileSecurityFactory = fileSecurityFactory ?? BootstrapAcl.CreateFileSecurity;
         _logger = logger ?? NullLogger.Instance;
 
+        var processStart = StaleBootstrapDetector.GetCurrentProcessStartTimeUtc();
         _payload = new SecureBootstrapPayload
         {
             SchemaVersion = SecureBootstrapConstants.SchemaVersion,
@@ -64,6 +74,7 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
             Token = driverContext.BearerToken,
             AuthorizationHeader = $"Bearer {driverContext.BearerToken}",
             Pid = Environment.ProcessId,
+            ProcessStartTimeUtc = processStart,
             StartedAtUtc = DateTimeOffset.UtcNow,
             PipeName = PipeName
         };
@@ -77,34 +88,103 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
 
     public bool IsRunning => Volatile.Read(ref _started) == 1;
 
+    /// <summary>True when this host successfully published the live descriptor.</summary>
+    public bool HasPublishedDescriptor => Volatile.Read(ref _published) == 1;
+
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (Interlocked.CompareExchange(ref _started, 1, 0) != 0)
             throw new InvalidOperationException("Secure bootstrap host is already running.");
 
-        // Remove crash leftovers before advertising a new descriptor / pipe.
-        _descriptorStore.TryCleanupStale();
-
-        // Fail fast if another live instance still owns the descriptor.
-        var existing = _descriptorStore.TryRead();
-        if (existing is not null && !StaleBootstrapDetector.IsStale(existing))
+        try
         {
-            Interlocked.Exchange(ref _started, 0);
-            throw new InvalidOperationException(
-                $"A live secure bootstrap descriptor already exists for this user (pid {existing.Pid}). " +
-                "Stop the other driver instance before starting a new one.");
+            // Exclusive per-user lock first — covers races where two processes
+            // both observe a missing/stale descriptor before either publishes.
+            if (!TryAcquireExclusiveLock())
+            {
+                Interlocked.Exchange(ref _started, 0);
+                throw new InvalidOperationException(
+                    "A live secure bootstrap instance already holds the per-user lock for this SID. " +
+                    "Stop the other driver instance before starting a new one.");
+            }
+
+            // Remove crash leftovers only after we own the lock.
+            _descriptorStore.TryCleanupStale();
+
+            var existing = _descriptorStore.TryRead();
+            if (existing is not null && !StaleBootstrapDetector.IsStale(existing))
+            {
+                ReleaseExclusiveLock();
+                Interlocked.Exchange(ref _started, 0);
+                throw new InvalidOperationException(
+                    $"A live secure bootstrap descriptor already exists for this user (pid {existing.Pid}). " +
+                    "Stop the other driver instance before starting a new one.");
+            }
+
+            _descriptorStore.WriteAtomic(_payload, _userSid);
+            Interlocked.Exchange(ref _published, 1);
+
+            _logger.LogInformation(
+                "Secure bootstrap active for SID {UserSid} via named pipe {PipeName} and descriptor {DescriptorPath}",
+                UserSid,
+                PipeName,
+                DescriptorPath);
+
+            _listenTask = Task.Run(() => ListenLoopAsync(_cts.Token), CancellationToken.None);
+            return Task.CompletedTask;
         }
+        catch
+        {
+            // Roll back a partially published descriptor if StartAsync fails after write.
+            if (Interlocked.Exchange(ref _published, 0) == 1)
+                _descriptorStore.DeleteIfExists();
 
-        _descriptorStore.WriteAtomic(_payload, _userSid);
+            ReleaseExclusiveLock();
+            Interlocked.Exchange(ref _started, 0);
+            throw;
+        }
+    }
 
-        _logger.LogInformation(
-            "Secure bootstrap active for SID {UserSid} via named pipe {PipeName} and descriptor {DescriptorPath}",
-            UserSid,
-            PipeName,
-            DescriptorPath);
+    private bool TryAcquireExclusiveLock()
+    {
+        var directory = Path.GetDirectoryName(_lockPath)
+            ?? throw new InvalidOperationException("Lock path has no directory.");
+        Directory.CreateDirectory(directory);
 
-        _listenTask = Task.Run(() => ListenLoopAsync(_cts.Token), CancellationToken.None);
-        return Task.CompletedTask;
+        try
+        {
+            var security = _fileSecurityFactory(_userSid);
+            var info = new FileInfo(_lockPath);
+            // Create or open with exclusive share — only one live host can hold it.
+            _exclusiveLock = FileSystemAclExtensions.Create(
+                info,
+                FileMode.OpenOrCreate,
+                FileSystemRights.Read | FileSystemRights.Write,
+                FileShare.None,
+                bufferSize: 1,
+                FileOptions.DeleteOnClose,
+                security);
+            return true;
+        }
+        catch (IOException)
+        {
+            _exclusiveLock = null;
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            _exclusiveLock = null;
+            return false;
+        }
+    }
+
+    private void ReleaseExclusiveLock()
+    {
+        var lockStream = Interlocked.Exchange(ref _exclusiveLock, null);
+        if (lockStream is null)
+            return;
+
+        try { lockStream.Dispose(); } catch { /* best effort */ }
     }
 
     private async Task ListenLoopAsync(CancellationToken cancellationToken)
@@ -132,7 +212,6 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
             }
             catch (UnauthorizedAccessException ex)
             {
-                // Never include token material in error logs.
                 _logger.LogWarning(ex, "Secure bootstrap pipe access denied for SID {UserSid}.", UserSid);
             }
             catch (Exception ex)
@@ -166,7 +245,6 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
 
     public async ValueTask DisposeAsync()
     {
-        // Idempotent: tests and await-using may dispose more than once.
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
@@ -185,7 +263,12 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
             catch { /* ignore shutdown races */ }
         }
 
-        _descriptorStore.DeleteIfExists();
+        // Only the host that successfully published may delete the live descriptor.
+        // A rejected second StartAsync must not wipe the first instance's file.
+        if (Interlocked.Exchange(ref _published, 0) == 1)
+            _descriptorStore.DeleteIfExists();
+
+        ReleaseExclusiveLock();
 
         try
         {

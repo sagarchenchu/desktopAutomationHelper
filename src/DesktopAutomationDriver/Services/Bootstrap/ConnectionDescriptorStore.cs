@@ -33,8 +33,10 @@ public sealed class ConnectionDescriptorStore
     public string DescriptorPath => _descriptorPath;
 
     /// <summary>
-    /// Writes <paramref name="payload"/> atomically (temp file + replace) and applies
-    /// a SID-restricted ACL. Never logs the token.
+    /// Writes <paramref name="payload"/> atomically (temp file + replace).
+    /// The temp file is created with a restrictive <see cref="FileSecurity"/>
+    /// <em>before</em> any token bytes are written so a crash cannot leave a
+    /// world-readable secret.
     /// </summary>
     public void WriteAtomic(SecureBootstrapPayload payload, SecurityIdentifier userSid)
     {
@@ -53,22 +55,22 @@ public sealed class ConnectionDescriptorStore
 
         try
         {
-            // Write then ACL the temp file before publish so the token is never
-            // world-readable as the final path.
-            using (var stream = new FileStream(
-                       tempPath,
+            var tempInfo = new FileInfo(tempPath);
+            using (var stream = FileSystemAclExtensions.Create(
+                       tempInfo,
                        FileMode.CreateNew,
-                       FileAccess.Write,
+                       FileSystemRights.Write | FileSystemRights.Read,
                        FileShare.None,
                        bufferSize: 4096,
-                       FileOptions.None))
+                       FileOptions.None,
+                       security))
             {
                 stream.Write(bytes, 0, bytes.Length);
                 stream.Flush(flushToDisk: true);
             }
 
-            FileSystemAclExtensions.SetAccessControl(new FileInfo(tempPath), security);
             File.Move(tempPath, _descriptorPath, overwrite: true);
+            // Re-assert ACL on the final path after replace.
             FileSystemAclExtensions.SetAccessControl(new FileInfo(_descriptorPath), security);
         }
         finally
@@ -102,14 +104,13 @@ public sealed class ConnectionDescriptorStore
     }
 
     /// <summary>
-    /// Removes a stale descriptor when the owning process is dead. Returns true when removed.
+    /// Removes a stale descriptor when the owning process is dead / PID-reused.
     /// </summary>
-    public bool TryCleanupStale(Func<int, bool>? isProcessAlive = null)
+    public bool TryCleanupStale(Func<int, DateTimeOffset?>? getProcessStartTimeUtc = null)
     {
         var existing = TryRead();
         if (existing is null)
         {
-            // Corrupt / unreadable file still blocks restart — remove if present.
             if (File.Exists(_descriptorPath))
             {
                 TryDelete(_descriptorPath);
@@ -119,7 +120,7 @@ public sealed class ConnectionDescriptorStore
             return false;
         }
 
-        if (!StaleBootstrapDetector.IsStale(existing, isProcessAlive))
+        if (!StaleBootstrapDetector.IsStale(existing, getProcessStartTimeUtc))
             return false;
 
         TryDelete(_descriptorPath);

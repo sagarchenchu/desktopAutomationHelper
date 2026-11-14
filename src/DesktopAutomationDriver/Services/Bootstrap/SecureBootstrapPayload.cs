@@ -29,6 +29,13 @@ public sealed class SecureBootstrapPayload
     [JsonPropertyName("pid")]
     public int Pid { get; set; }
 
+    /// <summary>
+    /// UTC start time of the owning driver process. Used with <see cref="Pid"/>
+    /// to detect PID reuse after crashes.
+    /// </summary>
+    [JsonPropertyName("processStartTimeUtc")]
+    public DateTimeOffset ProcessStartTimeUtc { get; set; }
+
     [JsonPropertyName("startedAtUtc")]
     public DateTimeOffset StartedAtUtc { get; set; }
 

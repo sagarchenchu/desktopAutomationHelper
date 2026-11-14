@@ -83,7 +83,7 @@ public class AgentReadinessServiceTests
             localAppData: static () => Path.GetTempPath(),
             pipeReaderOverride: (_, _) => Task.FromResult<DesktopAutomationAgent.Driver.Bootstrap.SecureBootstrapPayload?>(null),
             descriptorReaderOverride: _ => null,
-            isProcessAlive: _ => false);
+            getProcessStartTimeUtc: _ => null);
 
         var readiness = new AgentReadinessService(
             TestSupport.Wrap(options),

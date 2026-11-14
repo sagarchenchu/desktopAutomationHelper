@@ -10,6 +10,9 @@ public static class SecureBootstrapConstants
     public const string RelativeDirectoryName = "DesktopAutomationDriver";
     public const string BootstrapFolderName = "bootstrap";
     public const string DescriptorFileName = "connection.json";
+    public const string HostLockFileName = "host.lock";
+
+    public static readonly TimeSpan ProcessStartTimeTolerance = TimeSpan.FromSeconds(2);
 
     public static string BuildPipeName(string userSid)
     {

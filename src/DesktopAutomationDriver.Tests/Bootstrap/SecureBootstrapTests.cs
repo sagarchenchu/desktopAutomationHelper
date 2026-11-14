@@ -18,23 +18,28 @@ public class SecureBootstrapTests
     };
 
     [Fact]
-    public void StaleDetector_MarksDeadPidAsStale()
+    public void StaleDetector_MarksDeadPidAndCreationTimeMismatchAsStale()
     {
+        var start = DateTimeOffset.Parse("2024-01-01T00:00:00Z");
         var payload = new SecureBootstrapPayload
         {
             SchemaVersion = SecureBootstrapConstants.SchemaVersion,
             UserSid = "S-1-5-21-1-2-3-4",
             Port = 32000,
             Token = "x",
-            Pid = 999999
+            Pid = 999999,
+            ProcessStartTimeUtc = start
         };
 
-        Assert.True(StaleBootstrapDetector.IsStale(payload, _ => false));
-        Assert.False(StaleBootstrapDetector.IsStale(payload, _ => true));
+        Assert.True(StaleBootstrapDetector.IsStale(payload, _ => null));
+        Assert.False(StaleBootstrapDetector.IsStale(payload, _ => start));
+        Assert.True(StaleBootstrapDetector.IsStale(
+            payload,
+            _ => start.Add(SecureBootstrapConstants.ProcessStartTimeTolerance).AddSeconds(1)));
     }
 
     [Fact]
-    public void ConnectionDescriptor_WriteAtomic_AndCleanupStale()
+    public void ConnectionDescriptor_WriteAtomic_CreatesWithRestrictiveAcl_AndCleanupStale()
     {
         if (!OperatingSystem.IsWindows())
             return;
@@ -48,7 +53,16 @@ public class SecureBootstrapTests
             using var identity = WindowsIdentity.GetCurrent();
             var sid = identity.User ?? throw new InvalidOperationException("No SID");
 
-            var store = new ConnectionDescriptorStore(path);
+            FileSecurity? securityAtCreate = null;
+            var store = new ConnectionDescriptorStore(
+                path,
+                userSid =>
+                {
+                    securityAtCreate = BootstrapAcl.CreateFileSecurity(userSid);
+                    return securityAtCreate;
+                });
+
+            var start = StaleBootstrapDetector.GetCurrentProcessStartTimeUtc();
             var live = new SecureBootstrapPayload
             {
                 SchemaVersion = SecureBootstrapConstants.SchemaVersion,
@@ -58,23 +72,27 @@ public class SecureBootstrapTests
                 Token = "descriptor-live-token",
                 AuthorizationHeader = "Bearer descriptor-live-token",
                 Pid = Environment.ProcessId,
+                ProcessStartTimeUtc = start,
                 StartedAtUtc = DateTimeOffset.UtcNow,
                 PipeName = SecureBootstrapConstants.BuildPipeName(sid.Value)
             };
 
             store.WriteAtomic(live, sid);
             Assert.True(File.Exists(path));
+            Assert.NotNull(securityAtCreate);
 
             var read = store.TryRead();
             Assert.NotNull(read);
             Assert.Equal(live.Token, read!.Token);
             Assert.Equal(sid.Value, read.UserSid);
+            Assert.Equal(start, read.ProcessStartTimeUtc);
 
-            // Stale cleanup should not remove a live descriptor.
-            Assert.False(store.TryCleanupStale(_ => true));
+            // Matching creation time → not stale.
+            Assert.False(store.TryCleanupStale(_ => start));
             Assert.True(File.Exists(path));
 
-            Assert.True(store.TryCleanupStale(_ => false));
+            // Dead / missing process → stale cleanup.
+            Assert.True(store.TryCleanupStale(_ => null));
             Assert.False(File.Exists(path));
         }
         finally
@@ -106,6 +124,7 @@ public class SecureBootstrapTests
             await host.StartAsync();
 
             Assert.True(host.IsRunning);
+            Assert.True(host.HasPublishedDescriptor);
             Assert.Equal(sid.Value, host.UserSid);
 
             await using var client = new NamedPipeClientStream(
@@ -124,6 +143,8 @@ public class SecureBootstrapTests
             Assert.Equal(ctx.BearerToken, payload!.Token);
             Assert.Equal(sid.Value, payload.UserSid);
             Assert.Equal(ctx.MainPort, payload.Port);
+            Assert.Equal(Environment.ProcessId, payload.Pid);
+            Assert.NotEqual(default, payload.ProcessStartTimeUtc);
             Assert.DoesNotContain(ctx.BearerToken, host.PipeName, StringComparison.Ordinal);
         }
 
@@ -216,6 +237,7 @@ public class SecureBootstrapTests
                 Port = 32001,
                 Token = "acl-denied-token",
                 Pid = Environment.ProcessId,
+                ProcessStartTimeUtc = StaleBootstrapDetector.GetCurrentProcessStartTimeUtc(),
                 StartedAtUtc = DateTimeOffset.UtcNow
             };
 
@@ -268,7 +290,7 @@ public class SecureBootstrapTests
     }
 
     [Fact]
-    public async Task ConcurrentStart_SecondLiveInstanceFails()
+    public async Task ConcurrentStart_SecondLiveInstanceFails_AndRejectedDisposePreservesDescriptor()
     {
         if (!OperatingSystem.IsWindows())
             return;
@@ -283,12 +305,27 @@ public class SecureBootstrapTests
         var ctx2 = new DriverContext(Environment.UserName, sid.Value);
         await using var host1 = new SecureBootstrapHost(ctx1, descriptorPath: path, logger: NullLogger.Instance);
         await host1.StartAsync();
+        Assert.True(host1.HasPublishedDescriptor);
+        Assert.True(File.Exists(path));
 
-        await using var host2 = new SecureBootstrapHost(ctx2, descriptorPath: path, logger: NullLogger.Instance);
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => host2.StartAsync());
-        Assert.Contains("already exists", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(ctx1.BearerToken, ex.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain(ctx2.BearerToken, ex.Message, StringComparison.Ordinal);
+        var tokenBefore = File.ReadAllText(path);
+
+        await using (var host2 = new SecureBootstrapHost(ctx2, descriptorPath: path, logger: NullLogger.Instance))
+        {
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => host2.StartAsync());
+            Assert.True(
+                ex.Message.Contains("already holds", StringComparison.OrdinalIgnoreCase)
+                || ex.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase),
+                $"Unexpected rejection message: {ex.Message}");
+            Assert.DoesNotContain(ctx1.BearerToken, ex.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(ctx2.BearerToken, ex.Message, StringComparison.Ordinal);
+            Assert.False(host2.HasPublishedDescriptor);
+        }
+
+        // Disposing the rejected second host must not wipe the live descriptor.
+        Assert.True(File.Exists(path));
+        Assert.Equal(tokenBefore, File.ReadAllText(path));
+        Assert.Contains(ctx1.BearerToken, File.ReadAllText(path), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -312,6 +349,7 @@ public class SecureBootstrapTests
             Port = 32222,
             Token = "dead-instance-token",
             Pid = 424242,
+            ProcessStartTimeUtc = DateTimeOffset.UtcNow.AddMinutes(-5),
             StartedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5),
             PipeName = SecureBootstrapConstants.BuildPipeName(sid.Value)
         }, sid);
@@ -325,6 +363,7 @@ public class SecureBootstrapTests
             Assert.NotNull(restarted);
             Assert.Equal(ctx.BearerToken, restarted!.Token);
             Assert.Equal(Environment.ProcessId, restarted.Pid);
+            Assert.NotEqual(default, restarted.ProcessStartTimeUtc);
             Assert.DoesNotContain("dead-instance-token", restarted.Token, StringComparison.Ordinal);
         }
 

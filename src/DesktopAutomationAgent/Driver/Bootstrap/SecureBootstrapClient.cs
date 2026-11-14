@@ -22,7 +22,7 @@ public sealed class SecureBootstrapClient
     private readonly Func<string> _localAppData;
     private readonly Func<string, CancellationToken, Task<SecureBootstrapPayload?>>? _pipeReaderOverride;
     private readonly Func<string, SecureBootstrapPayload?>? _descriptorReaderOverride;
-    private readonly Func<int, bool>? _isProcessAlive;
+    private readonly Func<int, DateTimeOffset?>? _getProcessStartTimeUtc;
     private readonly ILogger _logger;
     private readonly TimeSpan _pipeConnectTimeout;
 
@@ -34,7 +34,7 @@ public sealed class SecureBootstrapClient
             static () => Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             pipeReaderOverride: null,
             descriptorReaderOverride: null,
-            isProcessAlive: null,
+            getProcessStartTimeUtc: null,
             pipeConnectTimeout,
             logger)
     {
@@ -45,7 +45,7 @@ public sealed class SecureBootstrapClient
         Func<string> localAppData,
         Func<string, CancellationToken, Task<SecureBootstrapPayload?>>? pipeReaderOverride,
         Func<string, SecureBootstrapPayload?>? descriptorReaderOverride,
-        Func<int, bool>? isProcessAlive,
+        Func<int, DateTimeOffset?>? getProcessStartTimeUtc,
         TimeSpan? pipeConnectTimeout = null,
         ILogger? logger = null)
     {
@@ -53,7 +53,7 @@ public sealed class SecureBootstrapClient
         _localAppData = localAppData;
         _pipeReaderOverride = pipeReaderOverride;
         _descriptorReaderOverride = descriptorReaderOverride;
-        _isProcessAlive = isProcessAlive;
+        _getProcessStartTimeUtc = getProcessStartTimeUtc;
         _pipeConnectTimeout = pipeConnectTimeout ?? TimeSpan.FromSeconds(3);
         _logger = logger ?? NullLogger.Instance;
     }
@@ -82,7 +82,7 @@ public sealed class SecureBootstrapClient
         {
             payload = _pipeReaderOverride is not null
                 ? await _pipeReaderOverride(pipeName, cancellationToken).ConfigureAwait(false)
-                : await ReadFromPipeAsync(pipeName, cancellationToken).ConfigureAwait(false);
+                : await ReadFromPipeAsync(pipeName, sid, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
@@ -90,7 +90,7 @@ public sealed class SecureBootstrapClient
             pipeError = ex;
             _logger.LogDebug(ex, "Secure bootstrap named pipe timed out; trying descriptor file.");
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException and not DriverConnectionException)
         {
             pipeError = ex;
             _logger.LogDebug(ex, "Secure bootstrap named pipe was unavailable; trying descriptor file.");
@@ -115,11 +115,14 @@ public sealed class SecureBootstrapClient
             }
         }
 
-        ValidatePayload(payload, sid);
+        ValidatePayload(payload, sid, authenticatedServerProcessId: null);
         return payload;
     }
 
-    private async Task<SecureBootstrapPayload?> ReadFromPipeAsync(string pipeName, CancellationToken cancellationToken)
+    private async Task<SecureBootstrapPayload?> ReadFromPipeAsync(
+        string pipeName,
+        string expectedSid,
+        CancellationToken cancellationToken)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         linked.CancelAfter(_pipeConnectTimeout);
@@ -132,12 +135,38 @@ public sealed class SecureBootstrapClient
 
         await client.ConnectAsync(linked.Token).ConfigureAwait(false);
 
+        // Authenticate the remote server process BEFORE reading/trusting any payload bytes.
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new DriverConnectionException(
+                "Secure bootstrap named-pipe authentication requires Windows.");
+        }
+
+        if (!NamedPipeServerAuthenticator.TryGetServerIdentity(client, out var serverPid, out var serverSid)
+            || string.IsNullOrWhiteSpace(serverSid))
+        {
+            throw new DriverConnectionException(
+                "Unable to authenticate the secure bootstrap named-pipe server process.");
+        }
+
+        if (!string.Equals(serverSid.Trim(), expectedSid.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DriverConnectionException(
+                "Secure bootstrap named-pipe server process SID does not match the current Windows user SID.");
+        }
+
         using var reader = new StreamReader(client, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
         var json = await reader.ReadToEndAsync(linked.Token).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(json))
             return null;
 
-        return JsonSerializer.Deserialize<SecureBootstrapPayload>(json, JsonOptions);
+        var payload = JsonSerializer.Deserialize<SecureBootstrapPayload>(json, JsonOptions);
+        if (payload is null)
+            return null;
+
+        // Re-validate claims against the OS-authenticated server identity.
+        ValidatePayload(payload, expectedSid, authenticatedServerProcessId: serverPid);
+        return payload;
     }
 
     private static SecureBootstrapPayload? TryReadDescriptor(string path)
@@ -164,12 +193,15 @@ public sealed class SecureBootstrapClient
         }
     }
 
-    private void ValidatePayload(SecureBootstrapPayload payload, string expectedSid)
+    private void ValidatePayload(
+        SecureBootstrapPayload payload,
+        string expectedSid,
+        int? authenticatedServerProcessId)
     {
-        if (StaleBootstrapDetector.IsStale(payload, _isProcessAlive))
+        if (StaleBootstrapDetector.IsStale(payload, _getProcessStartTimeUtc))
         {
             throw new DriverConnectionException(
-                "Secure bootstrap descriptor is stale (owning driver process is not running). " +
+                "Secure bootstrap descriptor is stale (owning driver process is not running or PID was reused). " +
                 "Start the desktop automation driver and retry.");
         }
 
@@ -177,6 +209,12 @@ public sealed class SecureBootstrapClient
         {
             throw new DriverConnectionException(
                 "Secure bootstrap payload SID does not match the current Windows user SID.");
+        }
+
+        if (authenticatedServerProcessId is int serverPid && payload.Pid != serverPid)
+        {
+            throw new DriverConnectionException(
+                "Secure bootstrap payload PID does not match the authenticated named-pipe server process.");
         }
 
         if (payload.Port <= 0)

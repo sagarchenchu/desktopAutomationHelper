@@ -27,8 +27,17 @@
 
 Additional properties:
 
-- **Atomic create/cleanup** of the descriptor (temp file + replace; delete on shutdown).
-- **Stale detection** via owning PID; crash leftovers are removed on next start.
+- **Atomic create/cleanup** of the descriptor: temp file is created with a restrictive
+  `FileSecurity` **before** token bytes are written (crash must not leave a
+  world-readable secret), then replaced into place; deleted only by the host that
+  published it.
+- **Exclusive per-user lock** (`host.lock`) serializes publication; a rejected second
+  start must not delete the live descriptor on dispose.
+- **Named-pipe server authentication**: the agent resolves the server process via
+  `GetNamedPipeServerProcessId` and verifies the process token SID before trusting
+  payload fields (SID / PID / port / token).
+- **Stale detection** via owning **PID + process creation time** (PID reuse safe);
+  crash leftovers are removed on next start.
 - **Concurrent starts** refuse to overwrite a live descriptor.
 - **No token logging** in secure mode (startup banner, traces, errors).
 
