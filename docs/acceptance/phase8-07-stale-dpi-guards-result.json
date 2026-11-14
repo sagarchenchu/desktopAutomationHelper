@@ -1,11 +1,9 @@
 {
     "scenarioId":  "07-stale-dpi-guards",
     "name":  "Stale/DPI/layout/destructive denied",
-    "tipSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
-    "headSha":  "7d0bcd66c62826e201c591b8579d88f540029886",
+    "tipSha":  "dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa",
+    "headSha":  "dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa",
     "pass":  true,
-    "destructiveLabelHttpOk":  true,
-    "destructiveLabelReason":  "Vision fallback disabled (Vision:Enabled=false).",
     "probe":  {
                   "visionEnabledCustomDrawn":  true,
                   "visionDisabledByDefault":  true,
@@ -32,11 +30,22 @@
                                  "y":  100,
                                  "w":  800,
                                  "h":  600,
-                                 "pid":  8144,
-                                 "hwnd":  5506120,
+                                 "pid":  6496,
+                                 "hwnd":  7144846,
                                  "title":  "DA Test Harness"
                              }
               },
-    "note":  "Probe covers stale/DPI/layout/destructive labels; HTTP authorize uses opaque candidateId (unissued → deny)",
-    "destructiveLabelDenied":  true
+    "destructiveLabelDenied":  true,
+    "destructiveApproveReason":  "Destructive or unknown actions cannot be approved.",
+    "destructiveLabelReason":  "Destructive or unknown actions cannot be approved.",
+    "destructiveCandidateCount":  1,
+    "operatorTokenSource":  "driver startup log (X-Operator-Token / Operator token banner); not automation bearer / not GET /verify",
+    "destructiveCandidateId":  "vc-2187883e092e4992a1b35d47459b860e",
+    "destructiveApproveHttpStatus":  400,
+    "destructiveAuthorizeReason":  null,
+    "destructiveAuthorizeAllowed":  false,
+    "note":  "DNU-25 S7: probe covers stale/DPI/layout; HTTP path vision-enabled Delete label → operator approve denied for Destructive (not Vision:Enabled=false)",
+    "destructiveCandidateLabel":  "Delete",
+    "visionEnabledForDestructive":  true,
+    "destructiveApproveAllowed":  false
 }

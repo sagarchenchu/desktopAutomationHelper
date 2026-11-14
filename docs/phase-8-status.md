@@ -2,27 +2,36 @@
 
 ## Required final report
 
-Phase 8 status: **CHANGES REQUESTED → round-3 fixes pushed** — P1/P2 from review @ `554daad` addressed. Prior Windows PASS claims **retracted**. Windows S1–S9 re-run is **DNU-25** (queued). PR remains **draft**. Do **not** merge.
+Phase 8 status: **WINDOWS ACCEPTANCE PASS** - DNU-25 authorize-path S1-S9 on tipSha `dfd65d0`. Prior PASS claims retracted after round-3. PR #148 remains **draft**. Do **not** merge.
 
 Branch/base/head/PR:
 - Feature branch: `feature/driver-phase-8-debug-vision`
+- Base: `origin/main`
 - Round-3 baseline: `554daad`
-- Tip: `dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa` / `dfd65d0`
-- PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft**
+- Product tip (tested / tipSha): `dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa` / `dfd65d0`
+- PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 - **draft** (do not merge)
 
-### Round-3 review fixes
+### Windows acceptance (DNU-25)
 
-| # | Item | Status |
+- Overall: **PASS**
+- tipSha consistency: **PASS** - all `docs/acceptance/phase8-*-result.json` + summary + acceptance md record `dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa` (no post-hoc rewrite)
+- HTTP gates: start/inspect/verify/stop OK where used (S1-S5, S9)
+- S5: candidates -> operator approve (`X-Operator-Token` from startup log) -> authorize Allowed=`True`
+- S6: `/vision/authorize` denied when vision off
+- S7: vision enabled; destructive reason: `Destructive or unknown actions cannot be approved.`
+
+| # | Result | HTTP notes |
 |---|---|---|
-| P1-1 | Separate operator channel (`X-Operator-Token`); approve bound to candidate+action; revalidate; short-lived one-use execution token | Fixed |
-| P1-2 | Server HWND/cursor capture for `/vision/candidates` (no client PNG/window trust) | Fixed |
-| P1-3 | Retract incomplete acceptance; DNU-25 pending; S5/S7 success-path notes | Fixed |
-| P2 | Candidate store TTL/capacity + consume on successful authorize | Fixed |
-
-### Windows acceptance
-
-**PENDING (DNU-25).** Do not claim 9/9 PASS.
+| 1 | PASS | start/inspect/verify/stop |
+| 2 | PASS | start/inspect/verify/stop |
+| 3 | PASS | start/inspect/verify/stop |
+| 4 | PASS | start/inspect/stop (verify N/A) |
+| 5 | PASS | candidates->approve->authorize Allowed=true |
+| 6 | PASS | status/candidates off + authorize denied |
+| 7 | PASS | guards + destructive after approve (vision on) |
+| 8 | PASS | sensitive not persisted |
+| 9 | PASS | /debug/hover |
 
 ### Exit gate
 
-Code fixes in; Windows re-acceptance pending DNU-25. PR stays draft; do not merge unless instructed.
+Windows re-acceptance PASS on single tipSha. PR stays draft; do not merge unless instructed.

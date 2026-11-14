@@ -1,10 +1,18 @@
 {
-  "scenarioId": "06-vision-default-off",
-  "name": "Vision disabled by default",
-  "headSha": "PENDING_DNU25",
-  "pass": false,
-  "status": "PENDING",
-  "visionStatusEnabled": false,
-  "authorizeHttpDenied": true,
-  "note": "DNU-25: authorize must deny when Vision:Enabled=false. Prior PASS retracted."
+    "scenarioId":  "06-vision-default-off",
+    "name":  "Vision disabled by default",
+    "tipSha":  "dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa",
+    "headSha":  "dfd65d040ccb5eda2a856f54b5a53793a3e6cdfa",
+    "pass":  true,
+    "assertVisionAuthorizeDenied":  true,
+    "eligibility":  "DisabledByDefault",
+    "visionStatusEnabled":  false,
+    "authorizeAllowed":  false,
+    "authorizeReason":  "Vision fallback disabled (Vision:Enabled=false).",
+    "authorizeHttpOk":  true,
+    "candidatesHttpOk":  true,
+    "candidateCount":  0,
+    "authorizeHttpDenied":  true,
+    "statusHttpOk":  true,
+    "note":  "S6 requires /vision/authorize Allowed=false when Vision:Enabled=false (executionToken path)"
 }
