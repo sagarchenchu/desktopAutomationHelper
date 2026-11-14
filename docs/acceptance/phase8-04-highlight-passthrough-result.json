@@ -1,8 +1,8 @@
 {
     "scenarioId":  "04-highlight-passthrough",
     "name":  "Highlight does not intercept clicks",
-    "tipSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
-    "headSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
+    "tipSha":  "8eeef9290e45342f5981cbb492dffd4eda840eed",
+    "headSha":  "8eeef9290e45342f5981cbb492dffd4eda840eed",
     "pass":  true,
     "clickError":  null,
     "beforeStatus":  "Status",

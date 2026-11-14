@@ -1,14 +1,14 @@
 {
     "scenarioId":  "07-stale-dpi-guards",
     "name":  "Stale/DPI/layout/destructive denied",
-    "tipSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
-    "headSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
+    "tipSha":  "8eeef9290e45342f5981cbb492dffd4eda840eed",
+    "headSha":  "8eeef9290e45342f5981cbb492dffd4eda840eed",
     "pass":  true,
     "destructiveApproveHttpStatus":  400,
-    "operatorPresenceSource":  "Driver InteractiveOperatorPresenceService MessageBox on interactive desktop (title contains \"Vision approval\"); Yes clicked via UI Automation. ACL file self-read disabled / not used.",
+    "operatorPresenceSource":  "Driver InteractiveOperatorPresenceService operator confirmation UX dialog (title contains \"Operator confirmation\"); Yes clicked via UI Automation — proves UIA-automatable UX gate, NOT OS human-presence. ACL file self-read disabled / not used.",
     "destructiveCandidateCount":  1,
     "destructiveCandidatesHttpOk":  true,
-    "destructiveCandidateId":  "vc-679ec83949434918be96d4d589b220f7",
+    "destructiveCandidateId":  "vc-587c297a7a764aaf95d6edff704a6503",
     "destructiveAuthorizeReason":  null,
     "destructiveLabelDenied":  true,
     "destructiveCandidatesEligibility":  "AllowedUiaInaccessible",
@@ -38,18 +38,18 @@
                                  "y":  100,
                                  "w":  800,
                                  "h":  600,
-                                 "pid":  15272,
-                                 "hwnd":  10683552,
+                                 "pid":  15620,
+                                 "hwnd":  10290208,
                                  "title":  "DA Test Harness"
                              }
               },
     "destructiveApproveAllowed":  false,
-    "note":  "DNU-27 S7: probe covers stale/DPI/layout; HTTP path vision-enabled Delete label -\u003e approve denied for Destructive before presence (not Vision:Enabled=false)",
+    "note":  "DNU-29 S7: probe covers stale/DPI/layout; HTTP path vision-enabled Delete label -\u003e approve denied for Destructive before confirmation UX (not Vision:Enabled=false)",
     "destructiveApproveReason":  "Destructive or unknown actions cannot be approved.",
     "destructiveLabelReason":  "Destructive or unknown actions cannot be approved.",
     "destructiveCandidatesError":  null,
     "destructiveAuthorizeAllowed":  false,
     "destructiveCandidateLabel":  "Delete",
     "visionEnabledForDestructive":  true,
-    "pixelCapturePath":  "ServerVisionCaptureService -\u003e ScreenWindowPixelCapture PrintWindow client PNG (not HWND/PID text); restore foreground after presence before re-capture"
+    "pixelCapturePath":  "ServerVisionCaptureService -\u003e ScreenWindowPixelCapture PrintWindow client PNG (not HWND/PID text); restore foreground after confirmation before re-capture"
 }
