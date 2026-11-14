@@ -8,7 +8,7 @@ Branch/base/head/PR:
 - Feature branch: `feature/driver-phase-8-debug-vision`
 - Base: `origin/main`
 - Round-5 baseline (review): `9f9f962`
-- Product tip: *(set after push)*
+- Product tip: `c62bec336382a2b1902ab4c44a7313cb0e8e82e2` / `c62bec3`
 - PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft** (do not merge)
 
 ### Round-5 fixes
