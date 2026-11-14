@@ -1,0 +1,10 @@
+{
+  "id": "concurrent-and-crash-cleanup",
+  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
+  "whenUtc": "2026-11-14T09:47:08.6254239+00:00",
+  "result": "PASS",
+  "concurrentRefused": true,
+  "crashCleanupRestart": true,
+  "tokenAbsentFromConcurrentError": true,
+  "notes": "Second live SecureBootstrapHost start fails with 'already exists' and omits bearer tokens. Stale dead-pid descriptor cleaned; restart writes fresh payload."
+}

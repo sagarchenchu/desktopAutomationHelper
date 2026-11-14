@@ -1,0 +1,50 @@
+{
+  "scenario": "phase9a-live-windows-evidence",
+  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
+  "whenUtc": "2026-11-14T09:47:08.6254239+00:00",
+  "currentUser": "DESKTOP-5JD30DR\\ADMIN",
+  "currentSid": "S-1-5-21-2097163997-1254372408-68186133-1001",
+  "genuineSecondInteractiveUser": false,
+  "gap": "Host cannot create/run as second interactive Windows user (System error 5; medium integrity, Administrators deny-only). Strongest available ACL denial uses distinct well-known LocalService SID S-1-5-19 vs interactive SID — real Windows DACL enforcement, not a same-user mock. Interactive multi-user isolation remains unproven on this host.",
+  "scenarios": [
+    {
+      "id": "intended-sid-pipe-descriptor",
+      "result": "PASS",
+      "pipeOk": true,
+      "descriptorOk": true,
+      "error": null,
+      "tokenLeak": null,
+      "userSid": "S-1-5-21-2097163997-1254372408-68186133-1001"
+    },
+    {
+      "id": "other-identity-acl-denial",
+      "result": "PASS",
+      "denialIdentity": "NT AUTHORITY\\LOCAL SERVICE",
+      "denialSid": "S-1-5-19",
+      "pipeDenied": true,
+      "pipeDeniedType": "System.UnauthorizedAccessException",
+      "pipeDeniedMessage": "Access to the path is denied.",
+      "serverAcceptedForeignIdentity": false,
+      "descriptorDenied": true,
+      "descriptorNotes": [
+        "write-denied: Access to the path is denied."
+      ],
+      "genuineSecondInteractiveUser": false
+    },
+    {
+      "id": "concurrent-and-crash-cleanup",
+      "result": "PASS",
+      "concurrentRefused": true,
+      "crashCleanupRestart": true,
+      "error": null
+    },
+    {
+      "id": "token-absent-and-legacy-gated",
+      "result": "PASS",
+      "secureBannerOmitsToken": true,
+      "legacyRequiresAck": true,
+      "legacyBannerWarns": true
+    }
+  ],
+  "OVERALL": "PASS"
+}

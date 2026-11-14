@@ -1,0 +1,15 @@
+{
+  "id": "agent-secure-discovery",
+  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
+  "whenUtc": "2026-11-14T09:41:30+00:00",
+  "result": "PASS",
+  "discoveryMethod": "secure-bootstrap",
+  "defaultDiscoveryMode": "Secure",
+  "xunitPassed": [
+    "DriverConnectionResolverTests.SecureDiscovery_IsDefaultAndUsesSecureBootstrap",
+    "DriverConnectionResolverTests.SecureDiscovery_RejectsStaleDescriptor",
+    "DriverConnectionResolverTests.SecureDiscovery_PipeTimeoutWithoutCallerCancel_MapsToDriverConnectionException",
+    "AgentReadinessServiceTests.Doctor_ReturnsDriverUnavailableForSecureDiscoveryFailure"
+  ],
+  "agentFilteredTests": { "passed": 22, "total": 22 }
+}

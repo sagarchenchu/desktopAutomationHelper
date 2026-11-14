@@ -1,0 +1,11 @@
+{
+  "id": "intended-sid-pipe-descriptor",
+  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
+  "whenUtc": "2026-11-14T09:47:08.6254239+00:00",
+  "result": "PASS",
+  "pipeOk": true,
+  "descriptorOk": true,
+  "userSid": "S-1-5-21-2097163997-1254372408-68186133-1001",
+  "tokenLeak": null,
+  "notes": "Production SecureBootstrapHost: intended SID connected to SID-ACL named pipe and read ACL-protected connection descriptor."
+}

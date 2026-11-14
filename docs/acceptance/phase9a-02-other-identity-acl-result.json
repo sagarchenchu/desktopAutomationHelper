@@ -1,0 +1,19 @@
+{
+  "id": "other-identity-acl-denial",
+  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
+  "whenUtc": "2026-11-14T09:47:08.6254239+00:00",
+  "result": "PASS",
+  "denialIdentity": "NT AUTHORITY\\LOCAL SERVICE",
+  "denialSid": "S-1-5-19",
+  "pipeDenied": true,
+  "pipeDeniedType": "System.UnauthorizedAccessException",
+  "pipeDeniedMessage": "Access to the path is denied.",
+  "serverAcceptedForeignIdentity": false,
+  "descriptorDenied": true,
+  "descriptorNotes": [
+    "write-denied: Access to the path is denied."
+  ],
+  "genuineSecondInteractiveUser": false,
+  "gap": "Not a second interactive Windows user. Strongest available distinct SID ACL denial on this host (LocalService-only DACL).",
+  "notes": "BootstrapAcl.CreatePipeSecurityAllowingOnly / CreateFileSecurityAllowingOnly — Windows DACL denial, not a same-user mock."
+}

@@ -1,0 +1,25 @@
+{
+  "phase": "9A",
+  "tipSha": "b27e5f2fc8a6bc00d1f7a2f57a5edde991d49f08",
+  "branch": "feature/security-phase-9a-secure-bootstrap",
+  "pr": 151,
+  "prDraft": true,
+  "whenUtc": "2026-11-14T09:47:08.6254239+00:00",
+  "host": "DESKTOP-5JD30DR",
+  "user": "DESKTOP-5JD30DR\\ADMIN",
+  "userSid": "S-1-5-21-2097163997-1254372408-68186133-1001",
+  "OVERALL": "PASS",
+  "genuineSecondInteractiveUser": false,
+  "gap": "Host cannot create/run as second interactive Windows user (System error 5; medium integrity). ACL denial proven against LocalService SID S-1-5-19 (real distinct Windows SID / DACL), not a same-user mock. Interactive multi-user isolation remains unproven on this host.",
+  "scenarios": {
+    "intendedSidPipeDescriptor": "PASS",
+    "otherIdentityAclDenial": "PASS",
+    "concurrentAndCrashCleanup": "PASS",
+    "tokenAbsentAndLegacyGated": "PASS",
+    "agentSecureDiscovery": "PASS"
+  },
+  "xunit": {
+    "driverSecureBootstrapAndVerify": { "passed": 15, "total": 15 },
+    "agentDiscoveryAndReadiness": { "passed": 22, "total": 22 }
+  }
+}
