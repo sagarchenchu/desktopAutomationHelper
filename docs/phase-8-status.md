@@ -8,7 +8,8 @@ Branch/base/head/PR:
 - Feature branch: `feature/driver-phase-8-debug-vision`
 - Base: `origin/main`
 - Round-4 baseline (review): `7448395`
-- Product tip: `a647efd306cbdded76c7cb8bc45e7bd80fbc24a5` / `a647efd`
+- Round-4 product tip: `a647efd306cbdded76c7cb8bc45e7bd80fbc24a5` / `a647efd`
+- Branch HEAD may include docs-only follow-ups; DNU-26 tipSha must be the checkout under test
 - PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft** (do not merge)
 
 ### Round-4 fixes (this tip)
