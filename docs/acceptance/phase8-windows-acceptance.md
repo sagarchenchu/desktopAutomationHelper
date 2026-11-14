@@ -1,6 +1,6 @@
 # Phase 8 - Windows acceptance
 
-- Tip tested: `ab05a0f` CI-green base + `WinFormsHighlightSurface` STA overlay fix (this evidence commit)
+- Tip tested: CI-green `ab05a0f` + STA highlight fix + DNU-23 evidence (see branch HEAD / `a09fe2f` lineage after rebase)
 - Branch: `feature/driver-phase-8-debug-vision`
 - PR: #148 (**draft** - not merged)
 - When: 2026-11-14T00:28:13.0536693+00:00

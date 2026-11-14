@@ -10,7 +10,7 @@ Branch/base/head/PR:
 - Review baseline: `212e270`
 - Product review fixes: `8bf785f`
 - CI assertion fix (green): `ab05a0f0a60b6f7f1473995ce75cb4eaec7f3acf` / `ab05a0f`
-- Tip tested / evidence tip: `bac8a1f` (ab05a0f + highlight STA fix + acceptance evidence; see HEAD after tip-pointer commit)
+- Tip tested / evidence tip: `a09fe2f` (ab05a0f + highlight STA fix + DNU-23 acceptance evidence)
 - PR: https://github.com/sagarchenchu/desktopAutomationHelper/pull/148 — **draft** (do not merge)
 - CI: **green** on `ab05a0f` (Build and Test + Publish Standalone Packages)
 
