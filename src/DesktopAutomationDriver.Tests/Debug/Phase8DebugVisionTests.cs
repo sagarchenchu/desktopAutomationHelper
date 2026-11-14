@@ -154,7 +154,8 @@ public class Phase8DebugVisionTests
 
             var json = File.ReadAllText(inspected.ArtifactPath!);
             Assert.Contains("\"autoPromoted\": false", json, StringComparison.Ordinal);
-            Assert.Contains("requiresHumanApproval", json, StringComparison.Ordinal);
+            Assert.Contains("\"requiresHumanApproval\": false", json, StringComparison.Ordinal);
+            Assert.Contains("\"requiresOperatorConfirmationUx\": true", json, StringComparison.Ordinal);
 
             var stopped = coordinator.Stop();
             Assert.False(stopped.IsActive);
@@ -980,6 +981,53 @@ public class Phase8DebugVisionTests
             cts.Token);
         Assert.False(ok);
         Assert.Contains("cancelled", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void InteractiveOperatorConfirmation_Cancel_DeniesAndReleasesSingleFlight()
+    {
+        // Exercises production InteractiveOperatorPresenceService cancel path (not scripted).
+        var svc = new InteractiveOperatorPresenceService(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource();
+        var started = new ManualResetEventSlim(false);
+        var done = new ManualResetEventSlim(false);
+        var ok = true;
+        string? reason = null;
+
+        var worker = new Thread(() =>
+        {
+            started.Set();
+            ok = svc.TryConfirmVisionApproval(
+                new OperatorPresenceRequest("vc-interactive-cancel", "click", "OK"),
+                out reason,
+                cts.Token);
+            done.Set();
+        })
+        {
+            IsBackground = true,
+            Name = "InteractiveConfirmCancelTest"
+        };
+        worker.Start();
+
+        Assert.True(started.Wait(TimeSpan.FromSeconds(2)));
+        // Allow STA dialog thread to start / wait on ready before cancelling.
+        Thread.Sleep(250);
+        Assert.True(svc.IsInFlight);
+        cts.Cancel();
+
+        Assert.True(done.Wait(TimeSpan.FromSeconds(15)), "Confirmation did not return after cancel.");
+        Assert.False(ok);
+        Assert.Contains("cancelled", reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.False(svc.IsInFlight);
+
+        // Single-flight must be released — a follow-up call must not hit single-flight deny.
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
+        var second = svc.TryConfirmVisionApproval(
+            new OperatorPresenceRequest("vc-interactive-cancel-2", "click", "OK"),
+            out var reason2,
+            cts2.Token);
+        Assert.False(second);
+        Assert.DoesNotContain("single-flight", reason2, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

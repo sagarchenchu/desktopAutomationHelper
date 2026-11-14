@@ -59,6 +59,9 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
 
     public TimeSpan Timeout => _timeout;
 
+    /// <summary>True while a confirmation is in flight (for tests).</summary>
+    public bool IsInFlight => Volatile.Read(ref _inFlight) != 0;
+
     public bool TryConfirmVisionApproval(
         OperatorPresenceRequest request,
         out string denyReason,
@@ -79,12 +82,16 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
             return false;
         }
 
+        Thread? uiThread = null;
         try
         {
-            return ShowConfirmation(request, out denyReason, cancellationToken);
+            return ShowConfirmation(request, out denyReason, cancellationToken, out uiThread);
         }
         finally
         {
+            // Hold single-flight until the background dialog thread has terminated.
+            if (uiThread is not null)
+                JoinUiThread(uiThread);
             Interlocked.Exchange(ref _inFlight, 0);
         }
     }
@@ -92,15 +99,16 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
     private bool ShowConfirmation(
         OperatorPresenceRequest request,
         out string denyReason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        out Thread? uiThread)
     {
         denyReason = string.Empty;
+        uiThread = null;
         var dialogResult = DialogResultBox.No;
         Exception? uiError = null;
 
         if (System.Windows.Forms.Application.MessageLoop)
         {
-            // Already on a UI thread — ShowDialog with a timeout timer (no unbounded wait).
             using var form = CreateConfirmationForm(request);
             using var timeoutTimer = new System.Windows.Forms.Timer
             {
@@ -154,7 +162,6 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
         }
         else
         {
-            // Off UI thread — STA helper with bounded Join (never unlimited).
             System.Windows.Forms.Form? form = null;
             var timedOut = false;
             var cancelled = false;
@@ -204,23 +211,36 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
                 Name = "VisionOperatorConfirmation"
             };
             thread.SetApartmentState(ApartmentState.STA);
+            uiThread = thread;
             thread.Start();
 
-            // Wait until form exists or thread failed, then wait for completion with timeout.
-            if (!ready.Wait(_timeout, cancellationToken))
+            // Wait until form exists or thread failed. OCE must be caught — cancel/timeout
+            // still closes the form and joins before releasing single-flight.
+            bool readySignaled;
+            try
             {
-                cancelled = cancellationToken.IsCancellationRequested;
-                timedOut = !cancelled;
+                readySignaled = ready.Wait(_timeout, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                cancelled = true;
                 TryCloseForm(form);
-                thread.Join(CleanupJoinMilliseconds);
-                denyReason = cancelled
-                    ? "Operator confirmation cancelled."
-                    : "Operator confirmation timed out.";
+                // Caller finally joins uiThread before releasing _inFlight.
+                denyReason = "Operator confirmation cancelled.";
+                return false;
+            }
+
+            if (!readySignaled)
+            {
+                timedOut = true;
+                TryCloseForm(form);
+                denyReason = "Operator confirmation timed out.";
                 return false;
             }
 
             if (uiError is not null)
             {
+                TryCloseForm(form);
                 denyReason = "Operator confirmation UI failed.";
                 return false;
             }
@@ -235,10 +255,13 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
             {
                 timedOut = true;
                 TryCloseForm(form);
-                thread.Join(CleanupJoinMilliseconds);
+                // Remaining join happens in caller finally via JoinUiThread.
                 denyReason = "Operator confirmation timed out.";
                 return false;
             }
+
+            // Thread already terminated — clear so finally does not double-join unnecessarily.
+            uiThread = null;
 
             if (cancelled || cancellationToken.IsCancellationRequested)
             {
@@ -260,6 +283,19 @@ public sealed class InteractiveOperatorPresenceService : IOperatorPresenceServic
         }
 
         return true;
+    }
+
+    private static void JoinUiThread(Thread thread)
+    {
+        if (!thread.IsAlive)
+            return;
+
+        if (thread.Join(CleanupJoinMilliseconds))
+            return;
+
+        // Best-effort second join window; single-flight stays held until IsAlive is false
+        // or this budget is exhausted.
+        thread.Join(CleanupJoinMilliseconds);
     }
 
     private static void TryCloseForm(System.Windows.Forms.Form? form)

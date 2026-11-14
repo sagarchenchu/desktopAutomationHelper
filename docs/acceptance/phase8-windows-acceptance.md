@@ -39,6 +39,6 @@ Helper: [`phase8-assert-http-ok.ps1`](phase8-assert-http-ok.ps1) (`-AssertVision
 ## S5 / S7 evidence highlights
 
 - Prior DNU-27 evidence superseded; do not treat JSON result files as current tip PASS.
-- S5 approval: **operator confirmation UX** (dialog Yes may be clicked via UIA in acceptance). This is **not** claimed as human-presence enforcement.
+- S5 approval: **operator confirmation UX** (`requiresOperatorConfirmationUx=true`, `requiresHumanApproval=false`; dialog Yes may be clicked via UIA). Not human-approval / presence enforcement.
 - Confirmation: timeout / cancel / single-flight deny.
 - S7: destructive deny after approve with vision enabled.

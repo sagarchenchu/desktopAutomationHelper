@@ -47,7 +47,7 @@ Feature logic is isolated per `docs/debug-mode-design-boundaries.md`.
 - Explicit start/stop and **Ctrl+D**
 - Inspect under cursor **without clicking**
 - Yellow highlight does **not** intercept clicks
-- Candidate artifacts only; `autoPromoted=false`; human approval required
+- Candidate artifacts only; `autoPromoted=false`; operator confirmation UX (not human-approval claim)
 - Live locator probe: **probe unavailable** ≠ zero-match; never invent unique from stale in-memory capture
 - HTTP: `GET/POST /debug/status|start|stop|toggle|inspect|verify|hover|doubleclick-allowed`
 
@@ -131,7 +131,7 @@ Helper: `docs/acceptance/phase8-assert-http-ok.ps1`.
 - Real OCR providers are not enabled in Phase 8 (fake only)
 - No headless claim
 - Vision remains independently gated from Debug Mode
-- Operator confirmation dialog is UIA-automatable (not a presence broker)
+- Operator confirmation dialog is UIA-automatable (not a presence broker); API sets `requiresHumanApproval=false` and `requiresOperatorConfirmationUx=true`
 - Manual Windows acceptance required before leaving draft / merge
 
 ## Exit gate

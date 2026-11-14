@@ -54,7 +54,8 @@ public sealed class DebugArtifactWriter
             sessionId = safeSession,
             writtenAtUtc = DateTimeOffset.UtcNow,
             autoPromoted = false,
-            requiresHumanApproval = true,
+            requiresHumanApproval = false,
+            requiresOperatorConfirmationUx = true,
             cursor = new { x = capture.Cursor.X, y = capture.Cursor.Y },
             window = capture.Window is null
                 ? null

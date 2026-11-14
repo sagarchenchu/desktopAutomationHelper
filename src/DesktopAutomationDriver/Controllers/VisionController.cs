@@ -103,7 +103,8 @@ public sealed class VisionController : ControllerBase
             eligibility = eligibility.ToString(),
             candidates,
             autoPromoted = false,
-            requiresHumanApproval = true,
+            // UIA-automatable dialog path — do not claim human approval.
+            requiresHumanApproval = false,
             requiresOperatorConfirmationUx = true,
             operatorConfirmationIsUxOnly = true,
             operatorConfirmationUiaAutomatable = true,

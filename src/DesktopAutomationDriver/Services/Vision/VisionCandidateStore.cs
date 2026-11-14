@@ -44,7 +44,8 @@ public sealed class VisionCandidateStore
             ExpiresAtUtc = issuedAtUtc.AddMilliseconds(Math.Max(1, _options.CandidateTtlMilliseconds)),
             CursorScreenPoint = cursorScreenPoint,
             AutoPromoted = false,
-            RequiresHumanApproval = true
+            // Operator confirmation UX only — not OS-enforced human approval.
+            RequiresHumanApproval = false
         };
 
         lock (_gate)
@@ -256,7 +257,8 @@ public sealed class VisionIssuedCandidate
     public DateTimeOffset IssuedAtUtc { get; init; }
     public DateTimeOffset ExpiresAtUtc { get; init; }
     public Point? CursorScreenPoint { get; init; }
-    public bool RequiresHumanApproval { get; init; } = true;
+    /// <summary>Legacy field; always false for Phase 8 UX confirmation path.</summary>
+    public bool RequiresHumanApproval { get; init; }
     public bool AutoPromoted { get; init; }
 
     public string? ApprovedAction { get; set; }
