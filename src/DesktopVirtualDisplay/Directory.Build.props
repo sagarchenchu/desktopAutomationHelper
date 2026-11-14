@@ -1,0 +1,10 @@
+<!-- Adapted from Microsoft Windows Driver Samples; see LICENSE-MS-PL.txt. -->
+<Project>
+  <PropertyGroup>
+    <VddPackages>$(MSBuildThisFileDirectory)packages\</VddPackages>
+    <VddKitVersion>10.0.26100.6584</VddKitVersion>
+  </PropertyGroup>
+  <Import Project="$(VddPackages)Microsoft.Windows.WDK.x64.$(VddKitVersion)\build\native\Microsoft.Windows.WDK.x64.props" />
+  <Import Project="$(VddPackages)Microsoft.Windows.SDK.CPP.x64.$(VddKitVersion)\build\native\Microsoft.Windows.SDK.cpp.x64.props" />
+  <Import Project="$(VddPackages)Microsoft.Windows.SDK.CPP.$(VddKitVersion)\build\native\Microsoft.Windows.SDK.cpp.props" />
+</Project>
