@@ -98,14 +98,13 @@ public class SecureBootstrapTests
             Guid.NewGuid().ToString("N"),
             "connection.json");
 
-        await using var host = new SecureBootstrapHost(
+        await using (var host = new SecureBootstrapHost(
             ctx,
             descriptorPath: descriptorPath,
-            logger: NullLogger.Instance);
-        await host.StartAsync();
-
-        try
+            logger: NullLogger.Instance))
         {
+            await host.StartAsync();
+
             Assert.True(host.IsRunning);
             Assert.Equal(sid.Value, host.UserSid);
 
@@ -127,11 +126,8 @@ public class SecureBootstrapTests
             Assert.Equal(ctx.MainPort, payload.Port);
             Assert.DoesNotContain(ctx.BearerToken, host.PipeName, StringComparison.Ordinal);
         }
-        finally
-        {
-            await host.DisposeAsync();
-            Assert.False(File.Exists(descriptorPath));
-        }
+
+        Assert.False(File.Exists(descriptorPath));
     }
 
     [Fact]
@@ -288,18 +284,11 @@ public class SecureBootstrapTests
         await using var host1 = new SecureBootstrapHost(ctx1, descriptorPath: path, logger: NullLogger.Instance);
         await host1.StartAsync();
 
-        try
-        {
-            await using var host2 = new SecureBootstrapHost(ctx2, descriptorPath: path, logger: NullLogger.Instance);
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => host2.StartAsync());
-            Assert.Contains("already exists", ex.Message, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain(ctx1.BearerToken, ex.Message, StringComparison.Ordinal);
-            Assert.DoesNotContain(ctx2.BearerToken, ex.Message, StringComparison.Ordinal);
-        }
-        finally
-        {
-            await host1.DisposeAsync();
-        }
+        await using var host2 = new SecureBootstrapHost(ctx2, descriptorPath: path, logger: NullLogger.Instance);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => host2.StartAsync());
+        Assert.Contains("already exists", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(ctx1.BearerToken, ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(ctx2.BearerToken, ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -328,16 +317,17 @@ public class SecureBootstrapTests
         }, sid);
 
         var ctx = new DriverContext(Environment.UserName, sid.Value);
-        await using var host = new SecureBootstrapHost(ctx, descriptorPath: path, logger: NullLogger.Instance);
-        await host.StartAsync();
+        await using (var host = new SecureBootstrapHost(ctx, descriptorPath: path, logger: NullLogger.Instance))
+        {
+            await host.StartAsync();
 
-        var restarted = store.TryRead();
-        Assert.NotNull(restarted);
-        Assert.Equal(ctx.BearerToken, restarted!.Token);
-        Assert.Equal(Environment.ProcessId, restarted.Pid);
-        Assert.DoesNotContain("dead-instance-token", restarted.Token, StringComparison.Ordinal);
+            var restarted = store.TryRead();
+            Assert.NotNull(restarted);
+            Assert.Equal(ctx.BearerToken, restarted!.Token);
+            Assert.Equal(Environment.ProcessId, restarted.Pid);
+            Assert.DoesNotContain("dead-instance-token", restarted.Token, StringComparison.Ordinal);
+        }
 
-        await host.DisposeAsync();
         Assert.False(File.Exists(path));
     }
 

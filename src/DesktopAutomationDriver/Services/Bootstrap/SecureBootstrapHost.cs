@@ -28,6 +28,7 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
     private readonly CancellationTokenSource _cts = new();
     private Task? _listenTask;
     private int _started;
+    private int _disposed;
 
     public SecureBootstrapHost(
         IDriverContext driverContext,
@@ -165,7 +166,19 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
 
     public async ValueTask DisposeAsync()
     {
-        _cts.Cancel();
+        // Idempotent: tests and await-using may dispose more than once.
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        try
+        {
+            _cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Already canceled/disposed by a racing shutdown path.
+        }
+
         if (_listenTask is not null)
         {
             try { await _listenTask.ConfigureAwait(false); }
@@ -173,7 +186,16 @@ public sealed class SecureBootstrapHost : ISecureBootstrapHost
         }
 
         _descriptorStore.DeleteIfExists();
-        _cts.Dispose();
+
+        try
+        {
+            _cts.Dispose();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Best-effort.
+        }
+
         Interlocked.Exchange(ref _started, 0);
         GC.SuppressFinalize(this);
     }
