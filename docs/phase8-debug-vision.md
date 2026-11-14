@@ -121,8 +121,8 @@ Do **not** set `Name = CustomDrawnCanvas` — that made the control accessible.
 
 ## Windows acceptance
 
-Prior PASS claims (including DNU-26 on `f9913ef`) are **retracted / superseded**. Re-run S1–S9 is **DNU-27** on one clean tip SHA after round-5.
-S5 must exercise candidates→interactive presence approve→authorize Allowed=true; S7 destructive after approve with vision on.
+**DNU-27 PASS** on tipSha `f0b2229` (round-5 `c62bec3` + PrintWindow client capture). Prior DNU-26 PASS on `f9913ef` superseded.
+S5: candidates→interactive presence approve→authorize Allowed=true; content-change-without-resize deny; S7 destructive with vision on.
 Approval requires driver-owned interactive presence — same-user ACL file self-read is not human approval.
 Helper: `docs/acceptance/phase8-assert-http-ok.ps1`.
 

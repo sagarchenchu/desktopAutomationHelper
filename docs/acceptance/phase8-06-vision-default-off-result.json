@@ -1,8 +1,8 @@
 {
     "scenarioId":  "06-vision-default-off",
     "name":  "Vision disabled by default",
-    "tipSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
-    "headSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
+    "tipSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
+    "headSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
     "pass":  true,
     "assertVisionAuthorizeDenied":  true,
     "eligibility":  "DisabledByDefault",

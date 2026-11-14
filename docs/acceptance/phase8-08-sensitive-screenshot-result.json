@@ -1,8 +1,8 @@
 {
     "scenarioId":  "08-sensitive-screenshot",
     "name":  "Sensitive screenshot not persisted",
-    "tipSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
-    "headSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
+    "tipSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
+    "headSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
     "pass":  true,
     "probe":  {
                   "visionEnabledCustomDrawn":  true,
@@ -30,8 +30,8 @@
                                  "y":  100,
                                  "w":  800,
                                  "h":  600,
-                                 "pid":  11944,
-                                 "hwnd":  5701658,
+                                 "pid":  15272,
+                                 "hwnd":  10683552,
                                  "title":  "DA Test Harness"
                              }
               }

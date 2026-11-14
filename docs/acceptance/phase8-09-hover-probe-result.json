@@ -1,8 +1,8 @@
 {
     "scenarioId":  "09-hover-probe",
     "name":  "Hover probe (not UIA capability)",
-    "tipSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
-    "headSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
+    "tipSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
+    "headSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
     "pass":  true,
     "inspectHttpOk":  null,
     "note":  "Hover via POST /debug/hover mouse probe (not a UIA capability)",
@@ -86,7 +86,7 @@
                       "structureChanged":  false,
                       "stateChanged":  false,
                       "noOp":  true,
-                      "probedAtUtc":  "2026-11-14T02:30:20.2434707+00:00"
+                      "probedAtUtc":  "2026-11-14T04:59:49.7938395+00:00"
                   },
     "point":  {
                   "y":  250,

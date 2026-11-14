@@ -1,9 +1,17 @@
 {
     "scenarioId":  "07-stale-dpi-guards",
     "name":  "Stale/DPI/layout/destructive denied",
-    "tipSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
-    "headSha":  "f9913efc1010e3ca3f4641ada4ce2d84c445433b",
+    "tipSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
+    "headSha":  "f0b222905055cad7d02e03fc0b280123ce79a531",
     "pass":  true,
+    "destructiveApproveHttpStatus":  400,
+    "operatorPresenceSource":  "Driver InteractiveOperatorPresenceService MessageBox on interactive desktop (title contains \"Vision approval\"); Yes clicked via UI Automation. ACL file self-read disabled / not used.",
+    "destructiveCandidateCount":  1,
+    "destructiveCandidatesHttpOk":  true,
+    "destructiveCandidateId":  "vc-679ec83949434918be96d4d589b220f7",
+    "destructiveAuthorizeReason":  null,
+    "destructiveLabelDenied":  true,
+    "destructiveCandidatesEligibility":  "AllowedUiaInaccessible",
     "probe":  {
                   "visionEnabledCustomDrawn":  true,
                   "visionDisabledByDefault":  true,
@@ -30,22 +38,18 @@
                                  "y":  100,
                                  "w":  800,
                                  "h":  600,
-                                 "pid":  11944,
-                                 "hwnd":  5701658,
+                                 "pid":  15272,
+                                 "hwnd":  10683552,
                                  "title":  "DA Test Harness"
                              }
               },
-    "destructiveLabelDenied":  true,
+    "destructiveApproveAllowed":  false,
+    "note":  "DNU-27 S7: probe covers stale/DPI/layout; HTTP path vision-enabled Delete label -\u003e approve denied for Destructive before presence (not Vision:Enabled=false)",
     "destructiveApproveReason":  "Destructive or unknown actions cannot be approved.",
     "destructiveLabelReason":  "Destructive or unknown actions cannot be approved.",
-    "destructiveCandidateCount":  1,
-    "operatorTokenSource":  "ACL-protected secret file (C:\\Users\\ADMIN\\AppData\\Local\\DesktopAutomationDriver\\operator-token); never startup log / not automation bearer / not GET /verify",
-    "destructiveCandidateId":  "vc-d1c6cc394c974f538a0728d5a57cdccd",
-    "destructiveApproveHttpStatus":  400,
-    "destructiveAuthorizeReason":  null,
+    "destructiveCandidatesError":  null,
     "destructiveAuthorizeAllowed":  false,
-    "note":  "DNU-26 S7: probe covers stale/DPI/layout; HTTP path vision-enabled Delete label -\u003e operator approve denied for Destructive (not Vision:Enabled=false)",
     "destructiveCandidateLabel":  "Delete",
     "visionEnabledForDestructive":  true,
-    "destructiveApproveAllowed":  false
+    "pixelCapturePath":  "ServerVisionCaptureService -\u003e ScreenWindowPixelCapture PrintWindow client PNG (not HWND/PID text); restore foreground after presence before re-capture"
 }
