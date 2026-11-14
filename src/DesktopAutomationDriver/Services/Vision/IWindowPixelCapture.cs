@@ -14,7 +14,7 @@ public interface IWindowPixelCapture
 /// <summary>
 /// Captures real window client pixels via PrintWindow (not HWND/PID text).
 /// PrintWindow avoids CopyFromScreen composition/cursor/occlusion churn that
-/// otherwise invalidates approve fingerprints after the interactive presence dialog.
+/// otherwise invalidates approve fingerprints after the operator confirmation dialog.
 /// </summary>
 public sealed class ScreenWindowPixelCapture : IWindowPixelCapture
 {
